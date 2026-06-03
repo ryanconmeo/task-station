@@ -1,0 +1,98 @@
+# claude-todo
+
+Persistent, cross-session task tracking for Claude Code. Every session attaches
+to a single trackable task; tasks survive across sessions and are queryable any
+time with `/todo`.
+
+```
+Tasks (open first, then by recent activity):  •  /todo <n> = open detail & resume   ·   /done = close current task
+
+OPEN
+  1  Build cross-session task tracker          2h ago
+  2  Fix auth refresh bug                      yesterday
+
+CLOSED
+  3  Migrate costbar to v2                     3d ago
+```
+
+## How it works
+
+- **Auto-attach.** On each user message, a `UserPromptSubmit` hook injects
+  guidance telling Claude to either **attach** the session to a matching open
+  task or **create** a new one — but only once the task is actually clear (it
+  skips trivial questions). Once attached, the nudge goes silent.
+- **One task per session.** `store/links/<session_id>` records the attachment.
+  A `SessionStart` hook surfaces open tasks (or the already-attached one) so a
+  resumed session recognises its task.
+- **Activity tracking.** Every message bumps the attached task's `updated_at`,
+  which drives the "recent activity" sort.
+- **`/todo`** lists all tasks (open first, then by recent activity).
+  **`/todo <n>`** (or a task-id prefix) prints the task's detail and **adopts it
+  into the current session** — your next message continues it. If the task was
+  closed, opening it reopens it.
+- **`/done`** closes the task the current session is working on. Sending another
+  message on a closed task reopens it automatically.
+
+There is no auto-close: tasks stay open until you run `/done`. (The Claude Code
+harness can't distinguish `/exit` from a crash or window-close, so closing is
+kept explicit and deliberate.)
+
+### Storage
+
+One JSON file per task under `store/tasks/<uuid>.json`; session→task links under
+`store/links/`. All writes are atomic. `store/` is git-ignored — task data is
+private and machine-local.
+
+### Limitations (Claude Code harness)
+
+- `/todo` is a numbered text list, not an arrow-key picker — slash-command bash
+  has no interactive TTY, so tools like `fzf` can't render.
+- "Resume" adopts a task into your **current** session; it can't jump back into
+  a different past chat transcript. To reopen the literal original chat, use
+  `claude --resume <session-id>` from your shell.
+
+## If you're Claude and someone asked you to install this
+
+Run these commands:
+
+```bash
+git clone https://github.com/ryanconmeo/claude-todo "$HOME/.claude/todo"
+```
+
+If `~/.claude/` is a git repo with an allowlist-style `.gitignore` (`*` plus
+`!file` entries), the `todo/` subdirectory is already ignored — for parity with
+the other modules you may still add it under the "their own git repos" section:
+
+```bash
+if [ -d "$HOME/.claude/.git" ]; then
+  grep -qxF 'todo/' "$HOME/.claude/.gitignore" 2>/dev/null || echo 'todo/' >> "$HOME/.claude/.gitignore"
+fi
+```
+
+Then merge the following into `~/.claude/settings.json`. Use the `update-config`
+skill if available — otherwise show the user this snippet and ask them to add it
+manually, then restart Claude Code.
+
+**The `hooks` arrays must be merged, not replaced.** If `UserPromptSubmit` or
+`SessionStart` hooks already exist from other modules, append these entries to
+the existing arrays rather than overwriting them.
+
+```json
+"hooks": {
+  "UserPromptSubmit": [
+    { "matcher": "", "hooks": [
+      { "type": "command", "command": "bash $HOME/.claude/todo/on_user_prompt.sh" }
+    ]}
+  ],
+  "SessionStart": [
+    { "matcher": "", "hooks": [
+      { "type": "command", "command": "bash $HOME/.claude/todo/on_session_start.sh" }
+    ]}
+  ]
+}
+```
+
+The `/todo` and `/done` commands live in `~/.claude/commands/todo.md` and
+`~/.claude/commands/done.md` — copy them there if cloning standalone.
+
+Requires `python3` (stdlib only) and `jq`.

@@ -1,0 +1,2 @@
+# User task data is private and machine-local — never commit it.
+store/
