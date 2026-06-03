@@ -22,7 +22,9 @@ CLOSED
   task or **create** a new one. The nudge spells out a concrete test for what
   counts as trackable (a concrete task that edits files / spans multiple steps,
   not a question or one-line fix) so the decision isn't left to a vague "skip
-  trivial questions". Once attached, the nudge goes silent.
+  trivial questions". When Claude attaches or creates a task it announces it in
+  one short line (e.g. "📋 Tracking this as a new task: …"); after that the nudge
+  goes silent.
 - **Miss escalation.** Each message that goes by without the session attaching
   bumps a per-session counter; after a few unattached messages the nudge
   escalates ("N messages in and still untracked — attach now, or `skip`"). This

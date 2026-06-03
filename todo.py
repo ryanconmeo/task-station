@@ -425,7 +425,9 @@ def cmd_prompt_context(a):
     lines.append("  • Otherwise → create:")
     lines.append("      python3 %s/todo.py create --session %s --title '<short title>' --summary '<1-3 sentence summary>'"
                  % (BASE, a.session))
-    lines.append("Do this silently as a side action; do not announce it unless asked.")
+    lines.append("Do this as a side action, but DO tell the user in one short line when you "
+                 "create or attach a task — e.g. \"📋 Tracking this as a new task: <title>\" or "
+                 "\"📋 Attached to existing task: <title>\".")
     print("\n".join(lines))
 
 
