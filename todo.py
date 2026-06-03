@@ -9,6 +9,7 @@ Subcommands:
   create  --session ID --title T --summary S   create a task, attach the session
   attach  --session ID --task REF              attach session to an existing task
   bump    --session ID                          touch the attached task's activity
+  skip    --session ID                          mark session intentionally untracked (silences nudge)
   done    --session ID                          close the attached task
   render  --session ID --arg STR                /todo entrypoint (list | detail+attach)
   prompt-context --session ID                   UserPromptSubmit hook context
@@ -21,6 +22,7 @@ id-prefix. All writes are atomic (temp file + os.replace).
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -33,6 +35,8 @@ LINKS_DIR = os.path.join(STORE, "links")
 
 LOG_KEEP = 25          # max activity-log entries kept per task
 NUDGE_PROMPT_MAX = 120  # chars of the prompt stored in the activity log
+NUDGE_ESCALATE_AFTER = 4   # unattached prompts before the nudge escalates
+SKIP_SENTINEL = "__skip__"  # link value marking a session intentionally untracked
 
 
 # ---------------------------------------------------------------- storage ----
@@ -122,6 +126,32 @@ def clear_link(session):
         pass
 
 
+def _count_path(session):
+    return _link_path(session) + ".n"
+
+
+def get_count(session):
+    """How many prompts this session has gone without attaching to a task."""
+    try:
+        with open(_count_path(session)) as f:
+            return int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def bump_count(session):
+    n = get_count(session) + 1
+    _atomic_write(_count_path(session), str(n))
+    return n
+
+
+def clear_count(session):
+    try:
+        os.remove(_count_path(session))
+    except OSError:
+        pass
+
+
 # -------------------------------------------------------------- utilities ----
 
 def rel_time(ts):
@@ -152,6 +182,45 @@ def resolve_ref(ref):
         if t["id"] == ref or t["id"].startswith(ref):
             return t
     return None
+
+
+_DEDUP_STOPWORDS = {
+    "the", "and", "for", "with", "from", "into", "all", "new", "add", "fix",
+    "update", "make", "use", "via", "per", "out", "off", "this", "that",
+}
+
+
+def _norm_tokens(s):
+    toks = re.findall(r"[a-z0-9]+", (s or "").lower())
+    return {t for t in toks if len(t) > 2 and t not in _DEDUP_STOPWORDS}
+
+
+def similar_open_task(title):
+    """Return the most similar OPEN task if its title strongly overlaps `title`.
+
+    Scores the larger of Jaccard overlap and containment (share of the new
+    title's tokens already covered by an existing one). Containment only counts
+    when at least two tokens are shared, so a one-word title can't match
+    everything. Containment handles noise like a trailing "(Volt-1234)" tag and
+    singular/plural drift that would otherwise sink a pure-Jaccard score.
+    """
+    want = _norm_tokens(title)
+    if not want:
+        return None
+    best, best_score = None, 0.0
+    for t in sorted_tasks():
+        if t.get("status") != "open":
+            continue
+        have = _norm_tokens(t.get("title", ""))
+        if not have:
+            continue
+        inter = len(want & have)
+        jaccard = inter / len(want | have)
+        containment = inter / len(want) if inter >= 2 else 0.0
+        score = max(jaccard, containment)
+        if score > best_score:
+            best, best_score = t, score
+    return best if best_score >= 0.6 else None
 
 
 def add_log(task, note):
@@ -190,10 +259,19 @@ def new_task(title, summary):
 # ------------------------------------------------------------- subcommands ----
 
 def cmd_create(a):
+    if not getattr(a, "force", False):
+        dup = similar_open_task(a.title)
+        if dup:
+            print("Not created — likely a duplicate of open task [%s] %s.\n"
+                  "Attach instead:  python3 %s/todo.py attach --session %s --task %s\n"
+                  "Or re-run create with --force to make a separate task."
+                  % (dup["id"][:8], dup["title"], BASE, a.session, dup["id"][:8]))
+            return
     task = new_task(a.title, a.summary)
     touch(task, session=a.session, note="created")
     save_task(task)
     set_link(a.session, task["id"])
+    clear_count(a.session)
     print("Created and attached to task [%s] %s" % (task["id"][:8], task["title"]))
 
 
@@ -206,6 +284,7 @@ def cmd_attach(a):
     touch(task, session=a.session, note="attached", reopen=True)
     save_task(task)
     set_link(a.session, task["id"])
+    clear_count(a.session)
     print("Attached to task [%s] %s%s"
           % (task["id"][:8], task["title"], " (reopened)" if reopened else ""))
 
@@ -219,6 +298,13 @@ def cmd_bump(a):
         return
     touch(task, session=a.session, note=os.environ.get("TODO_PROMPT", ""), reopen=True)
     save_task(task)
+
+
+def cmd_skip(a):
+    set_link(a.session, SKIP_SENTINEL)
+    clear_count(a.session)
+    print("This session is marked untracked — the [todo] nudge will stay silent. "
+          "Attaching to or creating a task later resumes tracking.")
 
 
 def cmd_done(a):
@@ -289,12 +375,16 @@ def cmd_render(a):
     touch(task, session=a.session, note="resumed", reopen=True)
     save_task(task)
     set_link(a.session, task["id"])
+    clear_count(a.session)
     print(_format_detail(task, a.session))
 
 
 def cmd_prompt_context(a):
     """UserPromptSubmit: bump if attached; otherwise nudge Claude to attach/create."""
     task_id = get_link(a.session)
+    if task_id == SKIP_SENTINEL:
+        return  # session intentionally untracked: stay silent
+
     task = load_task(task_id) if task_id else None
     if task:
         was_closed = task.get("status") == "closed"
@@ -305,7 +395,8 @@ def cmd_prompt_context(a):
                   % (task["id"][:8], task["title"]))
         return  # attached & open: stay silent to avoid clutter
 
-    # Not attached: surface open tasks and tell Claude how to attach/create.
+    # Not attached: count the miss, surface open tasks, and nudge Claude.
+    n = bump_count(a.session)
     opens = [t for t in sorted_tasks() if t["status"] == "open"]
     lines = ["[todo] This session is not attached to a tracked task yet."]
     if opens:
@@ -313,10 +404,23 @@ def cmd_prompt_context(a):
         for t in opens[:8]:
             lines.append("  - [%s] %s (%s)" % (t["id"][:8], t["title"], rel_time(t.get("updated_ts"))))
     lines.append("")
-    lines.append("Once you clearly understand the user's task (skip trivial questions):")
-    lines.append("  • If it matches an open task above, attach to it:")
+
+    if n >= NUDGE_ESCALATE_AFTER:
+        lines.append("⚠ %d messages in and still untracked. If this session is doing real "
+                     "work, attach or create a task NOW. If it is just Q&A, silence this with:" % n)
+        lines.append("      python3 %s/todo.py skip --session %s" % (BASE, a.session))
+        lines.append("")
+
+    lines.append("Track this session (attach or create) the moment ALL of these hold:")
+    lines.append("  - it is a concrete task, not a question / explanation / discussion")
+    lines.append("  - acting on it will edit files, run a multi-step process, or take more than ~2-3 tool calls")
+    lines.append("  - you understand it well enough to write a one-line title")
+    lines.append('TRACK examples:  "duplicate the review skills", "add dark mode", "fix the auth bug"')
+    lines.append('SKIP examples:   "what does this do?", "when is X true?", "reword this", a one-line typo fix')
+    lines.append("If you have already started editing files and still are not attached — attach now.")
+    lines.append("  • Matches an open task above → attach:")
     lines.append("      python3 %s/todo.py attach --session %s --task <task-id>" % (BASE, a.session))
-    lines.append("  • Otherwise create a new one:")
+    lines.append("  • Otherwise → create:")
     lines.append("      python3 %s/todo.py create --session %s --title '<short title>' --summary '<1-3 sentence summary>'"
                  % (BASE, a.session))
     lines.append("Do this silently as a side action; do not announce it unless asked.")
@@ -325,6 +429,8 @@ def cmd_prompt_context(a):
 
 def cmd_session_start(a):
     task_id = get_link(a.session)
+    if task_id == SKIP_SENTINEL:
+        return  # session intentionally untracked: stay silent
     task = load_task(task_id) if task_id else None
     if task:
         print("[todo] This session is attached to task [%s] %s (%s). Continue it; /done to close."
@@ -349,13 +455,16 @@ def main():
 
     sp = sub.add_parser("create"); sp.add_argument("--session", required=True)
     sp.add_argument("--title", required=True); sp.add_argument("--summary", default="")
-    sp.set_defaults(fn=cmd_create)
+    sp.add_argument("--force", action="store_true"); sp.set_defaults(fn=cmd_create)
 
     sp = sub.add_parser("attach"); sp.add_argument("--session", required=True)
     sp.add_argument("--task", required=True); sp.set_defaults(fn=cmd_attach)
 
     sp = sub.add_parser("bump"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_bump)
+
+    sp = sub.add_parser("skip"); sp.add_argument("--session", required=True)
+    sp.set_defaults(fn=cmd_skip)
 
     sp = sub.add_parser("done"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_done)

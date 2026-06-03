@@ -19,8 +19,20 @@ CLOSED
 
 - **Auto-attach.** On each user message, a `UserPromptSubmit` hook injects
   guidance telling Claude to either **attach** the session to a matching open
-  task or **create** a new one — but only once the task is actually clear (it
-  skips trivial questions). Once attached, the nudge goes silent.
+  task or **create** a new one. The nudge spells out a concrete test for what
+  counts as trackable (a concrete task that edits files / spans multiple steps,
+  not a question or one-line fix) so the decision isn't left to a vague "skip
+  trivial questions". Once attached, the nudge goes silent.
+- **Miss escalation.** Each message that goes by without the session attaching
+  bumps a per-session counter; after a few unattached messages the nudge
+  escalates ("N messages in and still untracked — attach now, or `skip`"). This
+  closes the feedback loop so a real task can't silently stay untracked.
+- **Skip.** `todo.py skip --session <id>` marks a session intentionally
+  untracked (e.g. a pure Q&A session); the nudge then stays silent for it.
+  Attaching to or creating a task later resumes tracking.
+- **Create dedup.** `create` refuses to make a near-duplicate of an existing
+  open task (title overlap by Jaccard or containment) and points at the match to
+  `attach` instead; pass `--force` to override.
 - **One task per session.** `store/links/<session_id>` records the attachment.
   A `SessionStart` hook surfaces open tasks (or the already-attached one) so a
   resumed session recognises its task.
