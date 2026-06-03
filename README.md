@@ -42,8 +42,9 @@ CLOSED
   **`/todo <n>`** (or a task-id prefix) prints the task's detail and **adopts it
   into the current session** — your next message continues it. If the task was
   closed, opening it reopens it.
-- **`/done`** closes the task the current session is working on. Sending another
-  message on a closed task reopens it automatically.
+- **`/done`** closes the task the current session is working on **and detaches
+  the session** from it, so a follow-up message can't silently reopen it. To
+  pick the task back up, use `/todo <n>`, which re-attaches and reopens it.
 
 There is no auto-close: tasks stay open until you run `/done`. (The Claude Code
 harness can't distinguish `/exit` from a crash or window-close, so closing is

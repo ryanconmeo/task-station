@@ -316,7 +316,9 @@ def cmd_done(a):
     task["status"] = "closed"
     touch(task, session=a.session, note="closed")
     save_task(task)
-    print("Closed task [%s] %s. Send a message on it later to reopen."
+    clear_link(a.session)   # detach so a later message can't silently reopen it
+    clear_count(a.session)
+    print("Closed task [%s] %s and detached this session. Reopen later with /todo."
           % (task["id"][:8], task["title"]))
 
 

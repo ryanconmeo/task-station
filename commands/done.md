@@ -1,5 +1,5 @@
 ---
-description: Close the task this session is currently working on. Sending another message on it later reopens it.
+description: Close the task this session is working on and detach the session. Reopen later with /todo.
 allowed-tools: Bash
 disable-model-invocation: true
 ---
