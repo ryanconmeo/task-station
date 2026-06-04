@@ -7,6 +7,11 @@
 # process ancestry (login/-zsh/script), not Claude's pty. We walk up the parent
 # chain and keep the last /dev/ttys* we see.
 #
+# NOTE: For the window to actually close WITHOUT a confirmation dialog, the
+# Terminal profile's "Prompt before closing" must be set to "Never"
+# (Settings -> Profiles -> <profile> -> Shell). Otherwise `close` pops a
+# "terminate running processes?" dialog and the window stays open.
+#
 # Usage: close-session-window.sh [--dry-run]
 set -u
 
@@ -43,8 +48,9 @@ osascript \
   -e 'repeat with t in tabs of w' \
   -e "if tty of t is \"/dev/$win_tty\" then" \
   -e 'close w saving no' \
-  -e 'return' \
+  -e 'return "closed"' \
   -e 'end if' \
   -e 'end repeat' \
   -e 'end repeat' \
+  -e 'return "no-match"' \
   -e 'end tell'
