@@ -92,10 +92,46 @@ def color_for_prompt(prompt):
     return None
 
 
-def normalize(color):
-    """Map an arbitrary string to a known category key; fall back to DEFAULT."""
+def _build_aliases():
+    """Reverse lookup so a category can be named by key, emoji dot, [TAG]/TAG,
+    or human label — whatever the caller copied out of the legend/picker.
+
+    Exact keys are registered first so they can never be shadowed; everything
+    else uses setdefault so the first (primary) category wins a shared token
+    (e.g. the 🟡 dot and the "reserved" label, which two entries each carry)."""
+    m = {}
+    for key in CATEGORIES:
+        m[key] = key
+    for key, meta in CATEGORIES.items():
+        m.setdefault(meta["dot"], key)
+        m.setdefault(meta["tag"].lower(), key)
+        m.setdefault("[%s]" % meta["tag"].lower(), key)
+        m.setdefault(meta["label"].lower(), key)
+    return m
+
+
+_ALIASES = _build_aliases()
+
+
+def resolve(color):
+    """Resolve a key / emoji dot / [TAG] / label to a known category key, or
+    None if the input matches no category. Case-insensitive."""
     c = (color or "").strip().lower()
-    return c if c in CATEGORIES else DEFAULT
+    return _ALIASES.get(c) if c else None
+
+
+def is_known(color):
+    """True when `color` names a real category (vs. the DEFAULT fallback).
+
+    Lets callers tell "the user explicitly chose general" from "the user typed
+    something we didn't understand" — the latter must not silently become black."""
+    return resolve(color) is not None
+
+
+def normalize(color):
+    """Map a category key, emoji dot, [TAG], or label to a known category key;
+    fall back to DEFAULT for anything unrecognized."""
+    return resolve(color) or DEFAULT
 
 
 def label(color):

@@ -341,7 +341,12 @@ def cmd_create(a):
                   "Or re-run create with --force to make a separate task."
                   % (dup["id"][:8], dup["title"], BASE, a.session, dup["id"][:8]))
             return
-    task = new_task(a.title, a.summary, getattr(a, "color", None))
+    requested = getattr(a, "color", None)
+    if cats and requested and not cats.is_known(requested):
+        print("⚠ --color '%s' is not a known category; defaulting to %s. "
+              "Recategorize later with: attach --color <key|emoji|[TAG]>."
+              % (requested, cats.DEFAULT))
+    task = new_task(a.title, a.summary, requested)
     touch(task, session=a.session, note="created")
     save_task(task)
     set_link(a.session, task["id"])
@@ -357,12 +362,21 @@ def cmd_attach(a):
         print("No task matching '%s'." % a.task)
         return
     reopened = task.get("status") == "closed"
-    # When categories are on, set the colour if one was passed, or backfill a
-    # default on a task that predates categories. An explicit --color wins.
+    # When categories are on: a recognized --color (re)categorizes the task —
+    # this is how a task auto-tracked as the default 'general' gets corrected to
+    # its real topic later. An unrecognized --color is REFUSED, not silently
+    # mapped to the default, so a typo / stray emoji can't quietly mislabel the
+    # task. With no --color we only backfill the default on a task that has none.
     if cats:
         requested = getattr(a, "color", None)
-        if requested:
+        if requested and cats.is_known(requested):
             task["color"] = cats.normalize(requested)
+        elif requested:
+            print("⚠ Ignoring --color '%s': not a known category. Use a key, "
+                  "emoji, or [TAG] — e.g. brown, 🟤, or MIGRATION. (Keeping %s.)"
+                  % (requested, task.get("color") or cats.DEFAULT))
+            if not task.get("color"):
+                task["color"] = cats.DEFAULT
         elif not task.get("color"):
             task["color"] = cats.DEFAULT
     touch(task, session=a.session, note="attached", reopen=True)
@@ -553,7 +567,7 @@ def cmd_prompt_context(a):
                          "create/attach this task, and DON'T re-run the tint alias."
                          % (skill_color, cats.label(skill_color), skill_color))
         lines.extend(cats.picker_lines())
-        lines.append("  • Matches an open task above → attach (pass --color to backfill if it has none):")
+        lines.append("  • Matches an open task above → attach (pass --color to set OR recategorize it; accepts a key, emoji, or [TAG]):")
         lines.append("      python3 %s/todo.py attach --session %s --task <task-id> [--color <color>]" % (BASE, a.session))
         lines.append("  • Otherwise → create with its colour:")
         lines.append("      python3 %s/todo.py create --session %s --color <color> --title '<short title>' --summary '<1-3 sentence summary>'"
