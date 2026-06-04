@@ -56,7 +56,11 @@ Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Vo
   `<emoji> [TAG]` after each task and prints a legend. Each colour name is also a
   zsh alias that switches the Terminal.app profile, so on attach / create /
   resume Claude runs `zsh -ic '<color>'` to tint the terminal to the task's
-  category. **All of this is isolated in `categories.py`** — `todo.py` imports it
+  category. **Skills tint immediately:** when a prompt invokes a slash command
+  mapped in `SKILL_COLORS` (e.g. `/volt:review-pr-auto` → orange), the
+  `UserPromptSubmit` hook tints the terminal synchronously *before Claude
+  responds*, so the colour applies the instant the skill runs. **All of this is
+  isolated in `categories.py`** — `todo.py` imports it
   defensively and runs as a plain, colourless tracker without it. If you like the
   tags but lack the profile aliases, keep the file and set `TINT_TERMINAL = False`
   to drop just the tint suggestions. Full taxonomy, wiring, and the three opt-out

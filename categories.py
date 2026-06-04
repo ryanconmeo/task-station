@@ -3,6 +3,9 @@
 If this module is importable, `todo.py` tags each task with a category — an
 emoji dot + `[TAG]` after the title, a legend under the list — and, when
 TINT_TERMINAL is on, suggests a zsh alias that tints the terminal to match.
+It also maps skill (slash-command) invocations to a category so the
+UserPromptSubmit hook can tint the terminal the instant a skill runs (see
+SKILL_COLORS / color_for_prompt and on_user_prompt.sh).
 
 This file is the ONLY place the colour taxonomy and the terminal-tinting live.
 `todo.py` imports it defensively, so the tracker degrades gracefully:
@@ -16,6 +19,8 @@ switch the Terminal.app profile (the author's aliases map e.g. `green` →
 `Green Sands`). Edit CATEGORIES to your own taxonomy; the keys only need to be
 valid alias names if you leave TINT_TERMINAL on.
 """
+
+import re
 
 # Turn OFF if you don't have <Color>-named Terminal profiles + matching zsh
 # aliases. Tags/labels still render; only the `zsh -ic '<color>'` hints vanish.
@@ -34,10 +39,57 @@ CATEGORIES = {
     "white":  {"dot": "⚪", "tag": "SKILLS",    "label": "skills and memories"},
     "silver": {"dot": "🩶", "tag": "SILVER",    "label": "reserved"},
     "gold":   {"dot": "🟡", "tag": "GOLD",      "label": "reserved"},
-    "brown":  {"dot": "🟤", "tag": "MIGRATION", "label": "legacy data migration for Volt"},
+    "brown":  {"dot": "🟤", "tag": "MIGRATION", "label": "ConnX & legacy migration for Volt"},
 }
 DEFAULT = "black"
 _TAG_WIDTH = max(len(m["tag"]) for m in CATEGORIES.values()) + 2  # +2 for "[]"
+
+# Skill (slash-command) → category, applied IMMEDIATELY on prompt-submit so the
+# terminal tints the moment a skill runs — no waiting for Claude to decide.
+# Each entry is (regex, colour); the regex is `search`ed (case-insensitive)
+# against the invoked command name WITH any "plugin:" prefix kept, e.g.
+# "volt:review-pr-auto" or "connxlandingzone:review-branch-lite". First match
+# wins; an unmatched skill (or a plain typed prompt) tints nothing. Edit freely.
+SKILL_COLORS = [
+    (r"fix-pr",                                                    "red"),     # fixing PR feedback / defects
+    (r"review|security-review",                                    "orange"),  # PR / code review (incl. connx reviews)
+    (r"^connxlandingzone:",                                        "brown"),   # ConnX building (non-review; reviews matched above stay orange)
+    (r"story-runner",                                              "green"),   # Volt feature work
+    (r"update-config|keybindings|permission|schedule|statusline|"
+     r"\binit\b|claude-api|\bloop\b|deep-research|simplify|verify", "white"),   # Claude tooling
+]
+
+_CMD_RE = re.compile(r"<command-name>\s*/?\s*([^<\s]+)", re.I)
+
+
+def command_name(prompt):
+    """The invoked slash-command / skill name (sans leading slash), or None.
+
+    Slash commands reach the UserPromptSubmit hook wrapped as
+    `<command-name>/volt:review-pr-auto</command-name>`; a hand-typed prompt
+    that simply starts with `/foo` is also recognised. Anything else → None."""
+    if not prompt:
+        return None
+    m = _CMD_RE.search(prompt)
+    if m:
+        return m.group(1).strip().lstrip("/") or None
+    s = prompt.strip()
+    if s.startswith("/") and len(s) > 1:
+        return s[1:].split()[0]
+    return None
+
+
+def color_for_prompt(prompt):
+    """Category colour for a skill-invocation prompt, or None when the prompt
+    invokes no skill / no SKILL_COLORS pattern matches. Used by the hook to tint
+    the terminal the instant a skill runs."""
+    name = command_name(prompt)
+    if not name:
+        return None
+    for pat, color in SKILL_COLORS:
+        if re.search(pat, name, re.I):
+            return normalize(color)
+    return None
 
 
 def normalize(color):

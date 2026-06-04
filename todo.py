@@ -489,6 +489,22 @@ def cmd_render(a):
     print(_format_detail(task, a.session))
 
 
+def cmd_prompt_color(a):
+    """Print the category colour a skill-invocation prompt maps to (or nothing).
+
+    The UserPromptSubmit hook calls this FIRST and, if it prints a colour, runs
+    `zsh -ic '<colour>'` straight away — so a skill like /volt:review-pr-auto
+    tints the terminal the instant it's run, before Claude responds. Silent
+    (prints nothing) when categories are off, the prompt isn't a skill, or the
+    skill has no mapping."""
+    if not cats or not hasattr(cats, "color_for_prompt"):
+        return
+    prompt = a.prompt if getattr(a, "prompt", None) is not None else os.environ.get("TODO_PROMPT", "")
+    color = cats.color_for_prompt(prompt)
+    if color:
+        print(color)
+
+
 def cmd_prompt_context(a):
     """UserPromptSubmit: bump if attached; otherwise nudge Claude to attach/create."""
     task_id = get_link(a.session)
@@ -529,13 +545,20 @@ def cmd_prompt_context(a):
     lines.append('SKIP examples:   "what does this do?", "when is X true?", "reword this", a one-line typo fix')
     lines.append("If you have already started editing files and still are not attached — attach now.")
     if cats:
+        skill_color = (cats.color_for_prompt(os.environ.get("TODO_PROMPT", ""))
+                       if hasattr(cats, "color_for_prompt") else None)
+        if skill_color:
+            lines.append("This prompt invokes a skill mapped to category '%s' (%s) — the terminal "
+                         "has ALREADY been tinted to it by the hook. Prefer --color %s when you "
+                         "create/attach this task, and DON'T re-run the tint alias."
+                         % (skill_color, cats.label(skill_color), skill_color))
         lines.extend(cats.picker_lines())
         lines.append("  • Matches an open task above → attach (pass --color to backfill if it has none):")
         lines.append("      python3 %s/todo.py attach --session %s --task <task-id> [--color <color>]" % (BASE, a.session))
         lines.append("  • Otherwise → create with its colour:")
         lines.append("      python3 %s/todo.py create --session %s --color <color> --title '<short title>' --summary '<1-3 sentence summary>'"
                      % (BASE, a.session))
-        if cats.TINT_TERMINAL:
+        if cats.TINT_TERMINAL and not skill_color:
             lines.append("The command prints the category and a `zsh -ic '<color>'` line — RUN that "
                          "alias to tint this terminal to the task's colour.")
     else:
@@ -598,6 +621,9 @@ def main():
 
     sp = sub.add_parser("render"); sp.add_argument("--session", required=True)
     sp.add_argument("--arg", default=""); sp.set_defaults(fn=cmd_render)
+
+    sp = sub.add_parser("prompt-color"); sp.add_argument("--session", default=None)
+    sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_color)
 
     sp = sub.add_parser("prompt-context"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_prompt_context)
