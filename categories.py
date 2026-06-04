@@ -30,14 +30,14 @@ TINT_TERMINAL = True
 CATEGORIES = {
     "red":    {"dot": "🔴", "tag": "BUG",       "label": "bug"},
     "orange": {"dot": "🟠", "tag": "REVIEW",    "label": "code review"},
-    "yellow": {"dot": "🟡", "tag": "PERSONAL",  "label": "personal projects"},
+    "yellow": {"dot": "🟡", "tag": "YELLOW",    "label": "reserved"},
     "green":  {"dot": "🟢", "tag": "VOLT",      "label": "coding for Volt"},
     "blue":   {"dot": "🔵", "tag": "DEVOPS",    "label": "devops"},
     "purple": {"dot": "🟣", "tag": "SPECIAL",   "label": "special"},
     "black":  {"dot": "⚫", "tag": "GENERAL",   "label": "general"},
     "pink":   {"dot": "🩷", "tag": "DESIGN",    "label": "design"},
     "white":  {"dot": "⚪", "tag": "SKILLS",    "label": "skills and memories"},
-    "silver": {"dot": "🩶", "tag": "SILVER",    "label": "reserved"},
+    "silver": {"dot": "🩶", "tag": "PERSONAL",  "label": "personal projects"},
     "gold":   {"dot": "🟨", "tag": "FIX PR",    "label": "fixing PR review feedback"},
     "brown":  {"dot": "🟤", "tag": "MIGRATION", "label": "ConnX & legacy migration for Volt"},
 }

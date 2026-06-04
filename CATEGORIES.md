@@ -24,21 +24,21 @@ Every task carries a `color` — one of the keys below. The colour does two jobs
 |--------|-----|--------------|-----------------------------------|
 | red    | 🔴  | `[BUG]`       | bug                               |
 | orange | 🟠  | `[REVIEW]`    | code review                       |
-| yellow | 🟡  | `[PERSONAL]`  | personal projects                 |
+| yellow | 🟡  | `[YELLOW]`    | reserved (unassigned)             |
 | green  | 🟢  | `[VOLT]`      | coding for Volt                   |
 | blue   | 🔵  | `[DEVOPS]`    | devops                            |
 | purple | 🟣  | `[SPECIAL]`   | special                           |
 | black  | ⚫  | `[GENERAL]`   | general (the default)             |
 | pink   | 🩷  | `[DESIGN]`    | design                            |
 | white  | ⚪  | `[SKILLS]`    | skills and memories               |
-| silver | 🩶  | `[SILVER]`    | reserved (unassigned)             |
+| silver | 🩶  | `[PERSONAL]`  | personal projects                 |
 | gold   | 🟨  | `[FIX PR]`    | fixing PR review feedback         |
 | brown  | 🟤  | `[MIGRATION]` | ConnX & legacy migration for Volt |
 
 Each task is rendered as `<dot> [TAG]` — e.g. `🔴 [BUG]`.
 
 `black` / general is the fallback for anything that doesn't fit a category.
-`silver` is reserved — leave it unassigned until it gets a meaning.
+`yellow` is reserved — leave it unassigned until it gets a meaning.
 
 ## Choosing a colour
 
