@@ -84,6 +84,14 @@ def _iso(ts):
     return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
 
 
+def _iso_to_ts(s):
+    """Epoch seconds for an ISO string written by _iso, or None if unparseable."""
+    try:
+        return datetime.fromisoformat(s).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
 def _task_path(task_id):
     return os.path.join(TASKS_DIR, task_id + ".json")
 
@@ -273,9 +281,33 @@ def touch(task, session=None, note=None, reopen=False):
     task["updated_ts"] = _now()
     if reopen and task.get("status") == "closed":
         task["status"] = "open"
-    if session and session not in task.get("sessions", []):
-        task.setdefault("sessions", []).append(session)
+    if session:
+        if session not in task.get("sessions", []):
+            task.setdefault("sessions", []).append(session)
+        # Record where this session is running so /todo can later hand back a
+        # `cd … && claude --resume …` one-liner that reopens it in the right dir.
+        task.setdefault("session_meta", {})[session] = {"cwd": os.getcwd(), "ts": _now()}
     add_log(task, note)
+
+
+def resume_command(task, current_session=None):
+    """`cd <dir> && claude --resume <id>` for the best session to jump back into.
+
+    Prefers the most recently active session OTHER than the current one — that's
+    the terminal holding the real working context — and falls back to the current
+    session when it's the only one on record. Returns None for pre-upgrade tasks
+    that never recorded a session cwd.
+    """
+    meta = task.get("session_meta") or {}
+    others = [(sid, m) for sid, m in meta.items() if sid != current_session]
+    pool = others or list(meta.items())
+    if not pool:
+        return None
+    sid, m = max(pool, key=lambda kv: kv[1].get("ts", 0))
+    cwd = m.get("cwd")
+    if not cwd:
+        return None
+    return "cd %s && claude --resume %s" % (cwd, sid)
 
 
 def new_task(title, summary, color=None):
@@ -420,9 +452,10 @@ def _format_detail(task, session):
     log = task.get("log", [])
     if log:
         out.append("")
-        out.append("Recent activity:")
-        for e in log[-8:]:
-            out.append("  • %s" % e.get("note", ""))
+        out.append("Recent activity (most recent last):")
+        for e in log[-12:]:
+            when = rel_time(_iso_to_ts(e.get("ts", "")))
+            out.append("  • [%s] %s" % (when, e.get("note", "")))
     out.append("")
     out.append("This session is now ATTACHED to this task (id %s). Continue the work "
                "described above; the user's next message resumes it. To close it, use /done."
@@ -431,6 +464,12 @@ def _format_detail(task, session):
         cmd = cats.tint_command(task.get("color"))
         if cmd:
             out.append("Tint this terminal to match the category — run:  " + cmd)
+    resume = resume_command(task, session)
+    if resume:
+        out.append("")
+        out.append("Resume the working session that holds this task's context "
+                   "(cd + resume, one command):")
+        out.append("    " + resume)
     return "\n".join(out)
 
 
