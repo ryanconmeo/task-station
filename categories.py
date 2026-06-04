@@ -38,7 +38,7 @@ CATEGORIES = {
     "pink":   {"dot": "🩷", "tag": "DESIGN",    "label": "design"},
     "white":  {"dot": "⚪", "tag": "SKILLS",    "label": "skills and memories"},
     "silver": {"dot": "🩶", "tag": "SILVER",    "label": "reserved"},
-    "gold":   {"dot": "🟡", "tag": "GOLD",      "label": "reserved"},
+    "gold":   {"dot": "🟨", "tag": "FIX PR",    "label": "fixing PR review feedback"},
     "brown":  {"dot": "🟤", "tag": "MIGRATION", "label": "ConnX & legacy migration for Volt"},
 }
 DEFAULT = "black"
@@ -51,7 +51,7 @@ _TAG_WIDTH = max(len(m["tag"]) for m in CATEGORIES.values()) + 2  # +2 for "[]"
 # "volt:review-pr-auto" or "connxlandingzone:review-branch-lite". First match
 # wins; an unmatched skill (or a plain typed prompt) tints nothing. Edit freely.
 SKILL_COLORS = [
-    (r"fix-pr",                                                    "red"),     # fixing PR feedback / defects
+    (r"fix-pr",                                                    "gold"),    # fixing PR review feedback
     (r"review|security-review",                                    "orange"),  # PR / code review (incl. connx reviews)
     (r"^connxlandingzone:",                                        "brown"),   # ConnX building (non-review; reviews matched above stay orange)
     (r"story-runner",                                              "green"),   # Volt feature work

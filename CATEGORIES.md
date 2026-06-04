@@ -32,21 +32,21 @@ Every task carries a `color` — one of the keys below. The colour does two jobs
 | pink   | 🩷  | `[DESIGN]`    | design                            |
 | white  | ⚪  | `[SKILLS]`    | skills and memories               |
 | silver | 🩶  | `[SILVER]`    | reserved (unassigned)             |
-| gold   | 🟡  | `[GOLD]`      | reserved (unassigned)             |
+| gold   | 🟨  | `[FIX PR]`    | fixing PR review feedback         |
 | brown  | 🟤  | `[MIGRATION]` | ConnX & legacy migration for Volt |
 
 Each task is rendered as `<dot> [TAG]` — e.g. `🔴 [BUG]`.
 
 `black` / general is the fallback for anything that doesn't fit a category.
-`silver` and `gold` are reserved — leave them unassigned until they get a
-meaning.
+`silver` is reserved — leave it unassigned until it gets a meaning.
 
 ## Choosing a colour
 
 Pick from the *nature of the work*, not the surface keywords:
 
 - **red** — fixing a defect / broken behaviour (e.g. "balance sheet plant columns bug").
-- **orange** — reviewing or responding to PR review feedback / review threads.
+- **orange** — reviewing someone's code / a PR (running a review, leaving review threads).
+- **gold** — fixing PR *review feedback* on your own PR (addressing threads, pushing fixes, replying/resolving).
 - **green** — building Volt product features / coding in the Volt app.
 - **blue** — infra, deploys, DNS, domains, CI, environment setup.
 - **pink** — UI/UX, theming, dark mode, layout, visual design.
@@ -67,7 +67,7 @@ matches the name — *with* its `plugin:` prefix kept, so `volt:` and
 
 | Pattern (regex, matched on the command name)        | Colour | Example skills                                  |
 |-----------------------------------------------------|--------|-------------------------------------------------|
-| `fix-pr`                                            | red    | `my-fix-pr` (fixing PR feedback / defects)      |
+| `fix-pr`                                            | gold   | `my-fix-pr` (fixing PR review feedback)         |
 | `review`, `security-review`                         | orange | any review — incl. `connxlandingzone:review-*`, `volt:review-*`, `code-review` |
 | `^connxlandingzone:` (after the review rule)        | brown  | non-review ConnX building, e.g. a future `connxlandingzone:build-*` / `:deploy` |
 | `story-runner`                                      | green  | `volt:story-runner`, `story-runner-auto`        |
