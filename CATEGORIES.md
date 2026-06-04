@@ -1,0 +1,88 @@
+# Task categories & terminal colours
+
+Every task carries a `color` — one of the keys below. The colour does two jobs:
+
+1. **List rendering.** `/todo` appends the category's `<emoji> [TAG]` after each
+   task title — the emoji dot carries the colour, the bracketed tag names it
+   (see `color_tag()` / `legend_line()` in `todo.py`). ANSI tag-tinting was
+   tried and dropped: the slash-command output pipe strips escape sequences,
+   leaving raw `\033[…m` codes on screen, so the emoji conveys colour instead.
+2. **Terminal tinting.** Each colour name is *also* the name of a zsh alias in
+   `~/.zshrc` that switches the Terminal.app profile (`<Color> Sands`). When a
+   session attaches to, creates, or resumes a task, Claude runs that alias —
+   `zsh -ic '<color>'` — so the whole terminal is tinted to the task's category.
+
+## The taxonomy
+
+| Color  | Dot | Tag          | Category                          |
+|--------|-----|--------------|-----------------------------------|
+| red    | 🔴  | `[BUG]`       | bug                               |
+| orange | 🟠  | `[REVIEW]`    | code review                       |
+| yellow | 🟡  | `[PERSONAL]`  | personal projects                 |
+| green  | 🟢  | `[VOLT]`      | coding for Volt                   |
+| blue   | 🔵  | `[DEVOPS]`    | devops                            |
+| purple | 🟣  | `[SPECIAL]`   | special                           |
+| black  | ⚫  | `[GENERAL]`   | general (the default)             |
+| pink   | 🩷  | `[DESIGN]`    | design                            |
+| white  | ⚪  | `[SKILLS]`    | skills and memories               |
+| silver | 🩶  | `[SILVER]`    | reserved (unassigned)             |
+| gold   | 🟡  | `[GOLD]`      | reserved (unassigned)             |
+| brown  | 🟤  | `[MIGRATION]` | legacy data migration for Volt    |
+
+Each task is rendered as `<dot> [TAG]` — e.g. `🔴 [BUG]`.
+
+`black` / general is the fallback for anything that doesn't fit a category.
+`silver` and `gold` are reserved — leave them unassigned until they get a
+meaning.
+
+## Choosing a colour
+
+Pick from the *nature of the work*, not the surface keywords:
+
+- **red** — fixing a defect / broken behaviour (e.g. "balance sheet plant columns bug").
+- **orange** — reviewing or responding to PR review feedback / review threads.
+- **green** — building Volt product features / coding in the Volt app.
+- **blue** — infra, deploys, DNS, domains, CI, environment setup.
+- **pink** — UI/UX, theming, dark mode, layout, visual design.
+- **white** — Claude tooling: skills, slash commands, hooks, memory, this todo system.
+- **brown** — migrating legacy (VAX) data into Volt.
+- **purple** — anything genuinely special / one-off that warrants standing out.
+- **black** — general / catch-all when nothing above fits.
+
+## How it's wired — `categories.py` is an optional plugin
+
+All category/colour logic lives in **`categories.py`**, not in the core. `todo.py`
+imports it defensively (`try: import categories as cats / except: cats = None`),
+so the tracker degrades gracefully for anyone who doesn't want your colours:
+
+- **No `categories.py`** (deleted or never installed) → a plain, colourless
+  tracker: no `[TAG]` column, no legend, `--color` is accepted but ignored, no
+  tint hints. Nothing depends on your aliases.
+- **`categories.py` present, `TINT_TERMINAL = False`** → tasks still get the
+  `<emoji> [TAG]` decoration and labels, but no `zsh -ic '<color>'` suggestions
+  (for people without the `*Sands*` Terminal profiles / aliases).
+- **`categories.py` present, `TINT_TERMINAL = True`** (the author's setup) →
+  full behaviour: tags, legend, and tint suggestions on create/attach/resume.
+
+`categories.py` exposes: `CATEGORIES` + `DEFAULT` (the taxonomy), `normalize`,
+`label`, `tag`, `summary`, `legend`, `tint_command` (returns `None` when tinting
+is off), and `picker_lines` (the colour-choosing guidance for the hook). To
+change the taxonomy, edit only that file — `todo.py` never names a colour.
+
+- `create` takes `--color`; `attach` takes an optional `--color` to set or
+  backfill one. When categories are on they print the category and (if tinting
+  is on) the exact `zsh -ic '<color>'` line to run.
+- The `UserPromptSubmit` and `SessionStart` hooks surface the colour so a new or
+  resumed session knows which alias to run — but only when categories are on.
+
+## The aliases (in `~/.zshrc`)
+
+Each is:
+
+```sh
+alias <color>='osascript -e "tell app \"Terminal\" to set current settings of front window to settings set \"<Color> Sands\""'
+```
+
+so the Terminal.app profile named `<Color> Sands` must exist for the tint to
+take effect. Running `zsh -ic '<color>'` evaluates the alias in an interactive
+shell (where aliases are loaded), tinting the front Terminal window.

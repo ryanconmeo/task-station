@@ -38,6 +38,36 @@ NUDGE_PROMPT_MAX = 120  # chars of the prompt stored in the activity log
 NUDGE_ESCALATE_AFTER = 4   # unattached prompts before the nudge escalates
 SKIP_SENTINEL = "__skip__"  # link value marking a session intentionally untracked
 
+# Categories / colours are an OPTIONAL plugin: all of that logic lives in
+# categories.py. If it's absent (or fails to import), `cats` is None and the
+# tracker runs plain and colourless — no tags, no --color, no tint hints. See
+# categories.py and CATEGORIES.md.
+try:
+    import categories as cats
+except Exception:
+    cats = None
+
+
+def cat_color(color):
+    """Normalised colour to store on a task, or None when categories are off."""
+    return cats.normalize(color) if cats else None
+
+
+def cat_tag(color, pad=False):
+    """`<emoji> [TAG]` for the list, or "" when categories are off."""
+    return cats.tag(color, pad=pad) if cats else ""
+
+
+def cat_lines(color):
+    """Category summary + (optional) tint-command lines, or [] when off."""
+    if not cats:
+        return []
+    out = [cats.summary(color)]
+    cmd = cats.tint_command(color)
+    if cmd:
+        out.append("Tint this terminal to match — run:  " + cmd)
+    return out
+
 
 # ---------------------------------------------------------------- storage ----
 
@@ -170,14 +200,22 @@ def rel_time(ts):
 
 
 def resolve_ref(ref):
-    """Resolve a /todo argument to a task dict: 1-based index or id/prefix."""
+    """Resolve a /todo argument to a task dict.
+
+    A small all-digit ref within the listing range is a 1-based index. Anything
+    else is matched against task ids by exact match or prefix — including a
+    longer all-digit string (an id prefix that happens to contain no hex
+    letters, e.g. "03471986"), which would otherwise be misread as an index.
+    """
     ref = (ref or "").strip()
     if not ref:
         return None
     listing = sorted_tasks()
     if ref.isdigit():
-        i = int(ref) - 1
-        return listing[i] if 0 <= i < len(listing) else None
+        i = int(ref)
+        if 1 <= i <= len(listing):
+            return listing[i - 1]
+        # Out of index range: fall through and treat as an id prefix.
     for t in listing:
         if t["id"] == ref or t["id"].startswith(ref):
             return t
@@ -240,9 +278,9 @@ def touch(task, session=None, note=None, reopen=False):
     add_log(task, note)
 
 
-def new_task(title, summary):
+def new_task(title, summary, color=None):
     ts = _now()
-    return {
+    t = {
         "id": str(uuid.uuid4()),
         "title": title.strip() or "Untitled task",
         "summary": summary.strip(),
@@ -254,6 +292,10 @@ def new_task(title, summary):
         "sessions": [],
         "log": [],
     }
+    c = cat_color(color)
+    if c is not None:
+        t["color"] = c
+    return t
 
 
 # ------------------------------------------------------------- subcommands ----
@@ -267,12 +309,14 @@ def cmd_create(a):
                   "Or re-run create with --force to make a separate task."
                   % (dup["id"][:8], dup["title"], BASE, a.session, dup["id"][:8]))
             return
-    task = new_task(a.title, a.summary)
+    task = new_task(a.title, a.summary, getattr(a, "color", None))
     touch(task, session=a.session, note="created")
     save_task(task)
     set_link(a.session, task["id"])
     clear_count(a.session)
     print("Created and attached to task [%s] %s" % (task["id"][:8], task["title"]))
+    for line in cat_lines(task.get("color")):
+        print(line)
 
 
 def cmd_attach(a):
@@ -281,12 +325,22 @@ def cmd_attach(a):
         print("No task matching '%s'." % a.task)
         return
     reopened = task.get("status") == "closed"
+    # When categories are on, set the colour if one was passed, or backfill a
+    # default on a task that predates categories. An explicit --color wins.
+    if cats:
+        requested = getattr(a, "color", None)
+        if requested:
+            task["color"] = cats.normalize(requested)
+        elif not task.get("color"):
+            task["color"] = cats.DEFAULT
     touch(task, session=a.session, note="attached", reopen=True)
     save_task(task)
     set_link(a.session, task["id"])
     clear_count(a.session)
     print("Attached to task [%s] %s%s"
           % (task["id"][:8], task["title"], " (reopened)" if reopened else ""))
+    for line in cat_lines(task.get("color")):
+        print(line)
 
 
 def cmd_bump(a):
@@ -337,7 +391,16 @@ def _format_list():
             lines.append("")
             lines.append("OPEN" if t["status"] == "open" else "CLOSED")
             last_status = t["status"]
-        lines.append("%3d  %-40.40s  %s" % (idx, t["title"], rel_time(t.get("updated_ts"))))
+        tag = cat_tag(t.get("color"), pad=True)
+        if tag:
+            lines.append("%3d  %-40.40s  %s  %s"
+                         % (idx, t["title"], tag, rel_time(t.get("updated_ts"))))
+        else:
+            lines.append("%3d  %-40.40s  %s"
+                         % (idx, t["title"], rel_time(t.get("updated_ts"))))
+    if cats:
+        lines.append("")
+        lines.append(cats.legend())
     return ("Tasks (open first, then by recent activity):" + attached_note + "\n"
             + "\n".join(lines))
 
@@ -346,6 +409,8 @@ def _format_detail(task, session):
     out = []
     out.append("Task [%s]  —  %s" % (task["id"][:8], task["status"].upper()))
     out.append("Title:   %s" % task["title"])
+    if cats:
+        out.append(cats.summary(task.get("color")))
     out.append("Created: %s (%s)" % (rel_time(task.get("created_ts")), task.get("created_at", "")))
     out.append("Updated: %s" % rel_time(task.get("updated_ts")))
     out.append("Sessions attached: %d" % len(task.get("sessions", [])))
@@ -362,6 +427,10 @@ def _format_detail(task, session):
     out.append("This session is now ATTACHED to this task (id %s). Continue the work "
                "described above; the user's next message resumes it. To close it, use /done."
                % task["id"])
+    if cats:
+        cmd = cats.tint_command(task.get("color"))
+        if cmd:
+            out.append("Tint this terminal to match the category — run:  " + cmd)
     return "\n".join(out)
 
 
@@ -420,11 +489,22 @@ def cmd_prompt_context(a):
     lines.append('TRACK examples:  "duplicate the review skills", "add dark mode", "fix the auth bug"')
     lines.append('SKIP examples:   "what does this do?", "when is X true?", "reword this", a one-line typo fix')
     lines.append("If you have already started editing files and still are not attached — attach now.")
-    lines.append("  • Matches an open task above → attach:")
-    lines.append("      python3 %s/todo.py attach --session %s --task <task-id>" % (BASE, a.session))
-    lines.append("  • Otherwise → create:")
-    lines.append("      python3 %s/todo.py create --session %s --title '<short title>' --summary '<1-3 sentence summary>'"
-                 % (BASE, a.session))
+    if cats:
+        lines.extend(cats.picker_lines())
+        lines.append("  • Matches an open task above → attach (pass --color to backfill if it has none):")
+        lines.append("      python3 %s/todo.py attach --session %s --task <task-id> [--color <color>]" % (BASE, a.session))
+        lines.append("  • Otherwise → create with its colour:")
+        lines.append("      python3 %s/todo.py create --session %s --color <color> --title '<short title>' --summary '<1-3 sentence summary>'"
+                     % (BASE, a.session))
+        if cats.TINT_TERMINAL:
+            lines.append("The command prints the category and a `zsh -ic '<color>'` line — RUN that "
+                         "alias to tint this terminal to the task's colour.")
+    else:
+        lines.append("  • Matches an open task above → attach:")
+        lines.append("      python3 %s/todo.py attach --session %s --task <task-id>" % (BASE, a.session))
+        lines.append("  • Otherwise → create:")
+        lines.append("      python3 %s/todo.py create --session %s --title '<short title>' --summary '<1-3 sentence summary>'"
+                     % (BASE, a.session))
     lines.append("Do this as a side action, but DO tell the user in one short line when you "
                  "create or attach a task — e.g. \"📋 Tracking this as a new task: <title>\" or "
                  "\"📋 Attached to existing task: <title>\".")
@@ -437,8 +517,10 @@ def cmd_session_start(a):
         return  # session intentionally untracked: stay silent
     task = load_task(task_id) if task_id else None
     if task:
-        print("[todo] This session is attached to task [%s] %s (%s). Continue it; /done to close."
-              % (task["id"][:8], task["title"], task["status"]))
+        msg = ["[todo] This session is attached to task [%s] %s (%s). Continue it; /done to close."
+               % (task["id"][:8], task["title"], task["status"])]
+        msg.extend(cat_lines(task.get("color")))
+        print("\n".join(msg))
         return
     opens = [t for t in sorted_tasks() if t["status"] == "open"]
     if not opens:
@@ -459,10 +541,12 @@ def main():
 
     sp = sub.add_parser("create"); sp.add_argument("--session", required=True)
     sp.add_argument("--title", required=True); sp.add_argument("--summary", default="")
+    sp.add_argument("--color", default=None)
     sp.add_argument("--force", action="store_true"); sp.set_defaults(fn=cmd_create)
 
     sp = sub.add_parser("attach"); sp.add_argument("--session", required=True)
-    sp.add_argument("--task", required=True); sp.set_defaults(fn=cmd_attach)
+    sp.add_argument("--task", required=True); sp.add_argument("--color", default=None)
+    sp.set_defaults(fn=cmd_attach)
 
     sp = sub.add_parser("bump"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_bump)

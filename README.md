@@ -8,11 +8,13 @@ time with `/todo`.
 Tasks (open first, then by recent activity):  •  /todo <n> = open detail & resume   ·   /done = close current task
 
 OPEN
-  1  Build cross-session task tracker          2h ago
-  2  Fix auth refresh bug                      yesterday
+  1  Build cross-session task tracker       ⚪ [SKILLS]     2h ago
+  2  Fix auth refresh bug                   🔴 [BUG]        yesterday
 
 CLOSED
-  3  Migrate costbar to v2                     3d ago
+  3  Migrate costbar to v2                  🟤 [MIGRATION]  3d ago
+
+Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Volt · 🔵 [DEVOPS] devops · 🩷 [DESIGN] design · ⚪ [SKILLS] skills and memories · 🟤 [MIGRATION] legacy data migration for Volt · …
 ```
 
 ## How it works
@@ -48,6 +50,18 @@ CLOSED
   the session** from it, so a follow-up message can't silently reopen it. To
   pick the task back up, use `/todo <n>`, which re-attaches and reopens it.
 
+- **Categories & terminal colours (optional plugin).** If `categories.py` is
+  present, every task carries a `color` from a taxonomy (bug/red,
+  code-review/orange, devops/blue, design/pink, …); `/todo` appends a
+  `<emoji> [TAG]` after each task and prints a legend. Each colour name is also a
+  zsh alias that switches the Terminal.app profile, so on attach / create /
+  resume Claude runs `zsh -ic '<color>'` to tint the terminal to the task's
+  category. **All of this is isolated in `categories.py`** — `todo.py` imports it
+  defensively and runs as a plain, colourless tracker without it. If you like the
+  tags but lack the profile aliases, keep the file and set `TINT_TERMINAL = False`
+  to drop just the tint suggestions. Full taxonomy, wiring, and the three opt-out
+  levels are in [`CATEGORIES.md`](CATEGORIES.md).
+
 There is no auto-close: tasks stay open until you run `/done`. (The Claude Code
 harness can't distinguish `/exit` from a crash or window-close, so closing is
 kept explicit and deliberate.)
@@ -72,6 +86,18 @@ Run these commands:
 
 ```bash
 git clone https://github.com/ryanconmeo/claude-todo "$HOME/.claude/todo"
+```
+
+The clone ships `categories.py` with the author's colour taxonomy and terminal
+tinting **on**. It is an optional plugin — adjust it to taste:
+
+```bash
+# Don't want categories/colours at all → plain tracker:
+rm "$HOME/.claude/todo/categories.py"
+# Want the tags but you don't have <Color> Sands Terminal profiles + aliases →
+# keep the file and turn off tinting:
+#   edit categories.py and set  TINT_TERMINAL = False
+# Want your own categories → edit the CATEGORIES dict in categories.py.
 ```
 
 If `~/.claude/` is a git repo with an allowlist-style `.gitignore` (`*` plus
