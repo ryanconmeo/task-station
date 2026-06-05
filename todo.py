@@ -136,6 +136,30 @@ def sorted_tasks():
     )
 
 
+def _max_seq(tasks=None):
+    tasks = tasks if tasks is not None else all_tasks()
+    return max((t.get("seq") or 0 for t in tasks), default=0)
+
+
+def ensure_seqs():
+    """Backfill stable per-task sequence numbers, assigned in creation order.
+
+    Every task gets a permanent `seq` the first time it's seen — the number a
+    user sees in `/todo` and types as `/todo <n>`. Unlike the old render-time
+    index, a task keeps its number even as others are added, closed, or reorder
+    by recent activity. Idempotent: tasks that already have a seq keep it.
+    """
+    tasks = all_tasks()
+    missing = [t for t in tasks if not t.get("seq")]
+    if not missing:
+        return
+    n = _max_seq(tasks)
+    for t in sorted(missing, key=lambda t: t.get("created_ts", 0)):
+        n += 1
+        t["seq"] = n
+        save_task(t)
+
+
 # ------------------------------------------------------------------ links ----
 
 def _link_path(session):
@@ -210,20 +234,23 @@ def rel_time(ts):
 def resolve_ref(ref):
     """Resolve a /todo argument to a task dict.
 
-    A small all-digit ref within the listing range is a 1-based index. Anything
-    else is matched against task ids by exact match or prefix — including a
-    longer all-digit string (an id prefix that happens to contain no hex
-    letters, e.g. "03471986"), which would otherwise be misread as an index.
+    An all-digit ref is matched against tasks' stable `seq` numbers (the numbers
+    shown in the listing). Anything else — or a digit string matching no seq —
+    is matched against task ids by exact match or prefix, so a longer all-digit
+    id prefix that happens to contain no hex letters (e.g. "03471986") still
+    resolves correctly.
     """
     ref = (ref or "").strip()
     if not ref:
         return None
+    ensure_seqs()
     listing = sorted_tasks()
     if ref.isdigit():
         i = int(ref)
-        if 1 <= i <= len(listing):
-            return listing[i - 1]
-        # Out of index range: fall through and treat as an id prefix.
+        for t in listing:
+            if t.get("seq") == i:
+                return t
+        # No task with that number: fall through and treat as an id prefix.
     for t in listing:
         if t["id"] == ref or t["id"].startswith(ref):
             return t
@@ -347,6 +374,8 @@ def cmd_create(a):
               "Recategorize later with: attach --color <key|emoji|[TAG]>."
               % (requested, cats.DEFAULT))
     task = new_task(a.title, a.summary, requested)
+    ensure_seqs()                      # number any pre-seq tasks before we pick ours
+    task["seq"] = _max_seq() + 1       # stable number, never reused even after /done
     touch(task, session=a.session, note="created")
     save_task(task)
     set_link(a.session, task["id"])
@@ -423,16 +452,15 @@ def cmd_done(a):
 
 
 def _format_list():
+    ensure_seqs()                      # guarantee every task has its stable number
     listing = sorted_tasks()
     if not listing:
         return ("No tasks yet. One will be tracked automatically once the work "
                 "in a session becomes clear, or say so explicitly.")
     lines = []
     attached_note = "  •  /todo <n> = open detail & resume   ·   /done = close current task"
-    idx = 0
     last_status = None
     for t in listing:
-        idx += 1
         if t["status"] != last_status:
             lines.append("")
             lines.append("OPEN" if t["status"] == "open" else "CLOSED")
@@ -440,10 +468,10 @@ def _format_list():
         tag = cat_tag(t.get("color"), pad=True)
         if tag:
             lines.append("%3d  %-40.40s  %s  %s"
-                         % (idx, t["title"], tag, rel_time(t.get("updated_ts"))))
+                         % (t["seq"], t["title"], tag, rel_time(t.get("updated_ts"))))
         else:
             lines.append("%3d  %-40.40s  %s"
-                         % (idx, t["title"], rel_time(t.get("updated_ts"))))
+                         % (t["seq"], t["title"], rel_time(t.get("updated_ts"))))
     if cats:
         lines.append("")
         lines.append(cats.legend())
