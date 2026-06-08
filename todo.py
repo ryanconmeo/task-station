@@ -359,6 +359,45 @@ def _session_msgcount(path):
     return n
 
 
+def _find_session_path(sid):
+    """Locate a session's transcript across ALL project buckets.
+
+    A session's bucket is its LAUNCH cwd, which can differ from whatever cwd /todo
+    happened to record (e.g. you launched from ~ but cd'd into a worktree before the
+    task was touched). So we search every bucket by session id rather than trusting
+    the recorded cwd. Returns the `.jsonl` path, or None."""
+    try:
+        buckets = os.listdir(PROJECTS_ROOT)
+    except OSError:
+        return None
+    for b in buckets:
+        p = os.path.join(PROJECTS_ROOT, b, sid + ".jsonl")
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _session_cwd(path):
+    """The cwd a session was launched in, read from the transcript itself —
+    authoritative (Claude Code records it on every entry), and decode-free (we never
+    have to reverse the lossy bucket-name encoding). None if unreadable/absent."""
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    cwd = json.loads(line).get("cwd")
+                except ValueError:
+                    continue
+                if cwd:
+                    return cwd
+    except OSError:
+        return None
+    return None
+
+
 def _load_delegate_registry():
     try:
         with open(DELEGATE_REGISTRY) as f:
@@ -404,35 +443,51 @@ def resume_command(task, current_session=None):
 
     GUARANTEE: only ever resumes one of THIS task's own recorded sessions — never
     another task's. (Critical: every hub shares the home bucket, so a whole-bucket
-    fallback or `claude --continue` could resume an unrelated task. We never do
-    that.) Prefers role:hub entries, validates each candidate's transcript is live
-    (in its own bucket), and picks the newest live one. If the task has recorded
-    sessions but none are live, starts a FRESH `claude` in the most-recent recorded
-    cwd. Returns None only when no session has a recorded cwd."""
+    fallback or `claude --continue` could resume an unrelated task. We never do that.)
+
+    SELF-CORRECTING cwd: the resume directory comes from the *transcript itself* (its
+    recorded launch cwd), located by searching every bucket for the session id — NOT
+    from whatever cwd /todo happened to capture. So a session is still found and
+    resumed correctly even if it was recorded against the wrong directory (e.g. you
+    launched from ~ but cd'd into a worktree before the task was touched). Prefers the
+    most recent SUBSTANTIVE session (so merely opening `/todo <n>` to look — a 1-2
+    message session — never displaces the real working session); if none of the
+    task's sessions have a findable live transcript, starts fresh. Returns None only
+    when there are no recorded sessions."""
     meta = task.get("session_meta") or {}
     if not meta:
         return None
     hubs = [(sid, m) for sid, m in meta.items() if m.get("role") == "hub"]
     pool = hubs or list(meta.items())
-    # Among THIS task's own sessions, keep the ones whose transcript is still live.
+    # For each of THIS task's sessions, find its transcript ANYWHERE and read the
+    # cwd from the transcript — independent of the (possibly wrong) recorded cwd.
     live = []
     for sid, m in pool:
-        cwd = m.get("cwd")
-        if not cwd:
+        path = _find_session_path(sid)
+        if not path:
             continue
-        path = os.path.join(_project_dir_for(cwd), sid + ".jsonl")
-        if _session_msgcount(path) >= 1:
-            live.append((sid, m, os.path.getmtime(path)))
+        msgs = _session_msgcount(path)
+        if msgs >= 1:
+            cwd = _session_cwd(path) or m.get("cwd")
+            if cwd:
+                live.append((sid, cwd, os.path.getmtime(path), msgs))
     if live:
-        ordered = [x for x in live if x[0] != current_session] or live
-        ordered.sort(key=lambda x: x[2], reverse=True)   # newest transcript first
-        sid, m, _ = ordered[0]
-        return "cd %s && claude --resume %s" % (m["cwd"], sid)
-    # Recorded but none live → fresh start (NEVER --continue in the shared bucket).
+        # Prefer SUBSTANTIVE sessions: a session that merely ran `/todo <n>` to look
+        # has 1-2 messages and must not displace the real working session. Among
+        # sessions past a small substance floor, take the most recent; only if none
+        # clear the floor do we fall back to the most recent of any.
+        SUBSTANCE_FLOOR = 3
+        cands = [x for x in live if x[3] >= SUBSTANCE_FLOOR] or live
+        cands = [x for x in cands if x[0] != current_session] or cands
+        cands.sort(key=lambda x: x[2], reverse=True)   # newest transcript first
+        sid, cwd, _, _ = cands[0]
+        return "cd %s && claude --resume %s" % (cwd, sid)
+    # No findable live transcript for any recorded session → fresh start
+    # (NEVER --continue, which in the shared home bucket could resume a different task).
     pool.sort(key=lambda kv: kv[1].get("ts", 0), reverse=True)
     for sid, m in pool:
         if m.get("cwd"):
-            return ("cd %s && claude   # no live session on record — starting fresh; "
+            return ("cd %s && claude   # no live session found — starting fresh; "
                     "re-attach with /todo %s" % (m["cwd"], task.get("seq", "")))
     return None
 
