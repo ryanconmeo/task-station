@@ -270,6 +270,11 @@ def _norm_tokens(s):
     return {t for t in toks if len(t) > 2 and t not in _DEDUP_STOPWORDS}
 
 
+def _norm_nums(s):
+    """Numeric identifiers in a title (PR/bug/story numbers, phase numbers)."""
+    return set(re.findall(r"\d+", s or ""))
+
+
 def similar_open_task(title):
     """Return the most similar OPEN task if its title strongly overlaps `title`.
 
@@ -278,15 +283,26 @@ def similar_open_task(title):
     when at least two tokens are shared, so a one-word title can't match
     everything. Containment handles noise like a trailing "(Volt-1234)" tag and
     singular/plural drift that would otherwise sink a pure-Jaccard score.
+
+    Numeric IDs are treated as identity: if the new title carries number(s)
+    (a PR/bug/story #) and a candidate shares none of them, they are different
+    work items and the candidate is skipped — this stops short, generic titles
+    ("Auto-review PR 697") from colliding on process words ("auto", "review")
+    alone with an unrelated open task.
     """
     want = _norm_tokens(title)
     if not want:
         return None
+    want_nums = _norm_nums(title)
     best, best_score = None, 0.0
     for t in sorted_tasks():
         if t.get("status") != "open":
             continue
-        have = _norm_tokens(t.get("title", ""))
+        cand_title = t.get("title", "")
+        # A numbered new title only matches a candidate sharing one of its numbers.
+        if want_nums and not (want_nums & _norm_nums(cand_title)):
+            continue
+        have = _norm_tokens(cand_title)
         if not have:
             continue
         inter = len(want & have)
