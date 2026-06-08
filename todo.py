@@ -71,6 +71,47 @@ def cat_lines(color):
     return out
 
 
+# ----------------------------------------------------------------- effort ----
+# Optional per-task effort estimate (complexity / scope), shown as a column in
+# the /todo list. Canonical t-shirt sizes; a 1-char gauge bar makes the column
+# scannable at a glance. Stored on the task as one of EFFORT_ORDER, or absent.
+EFFORT_ORDER = ["XS", "S", "M", "L", "XL"]
+EFFORT_GAUGE = {"XS": "▁", "S": "▃", "M": "▅", "L": "▆", "XL": "█"}
+EFFORT_WORD = {"XS": "trivial", "S": "small", "M": "medium", "L": "large", "XL": "huge"}
+_EFFORT_ALIASES = {
+    "xs": "XS", "tiny": "XS", "trivial": "XS", "1": "XS",
+    "s": "S", "small": "S", "2": "S",
+    "m": "M", "med": "M", "medium": "M", "3": "M",
+    "l": "L", "large": "L", "big": "L", "4": "L",
+    "xl": "XL", "huge": "XL", "epic": "XL", "5": "XL", "xxl": "XL",
+}
+
+
+def normalize_effort(val):
+    """Map an agent/user-supplied effort token to a canonical size, or None.
+
+    Accepts the sizes themselves (xs/s/m/l/xl), words (small/large/…) and the
+    numeric 1–5 scale. Unknown input returns None so a typo never mislabels a
+    task — the caller leaves the field unset rather than guessing."""
+    if not val:
+        return None
+    return _EFFORT_ALIASES.get(str(val).strip().lower())
+
+
+def effort_cell(effort):
+    """Fixed-width `<gauge> <size>` cell for the list, or a neutral placeholder.
+
+    The gauge is one display column; the size label is padded to 2 so XS/XL line
+    up with S/M/L. Unknown effort renders `· —` so the column stays aligned."""
+    if effort in EFFORT_GAUGE:
+        return "%s %-2s" % (EFFORT_GAUGE[effort], effort)
+    return "· --"
+
+
+def effort_legend():
+    return "Effort:  " + "  ".join("%s %s" % (EFFORT_GAUGE[s], s) for s in EFFORT_ORDER)
+
+
 # ---------------------------------------------------------------- storage ----
 
 def _ensure_dirs():
@@ -531,7 +572,7 @@ def resume_command(task, current_session=None):
     return None
 
 
-def new_task(title, summary, color=None):
+def new_task(title, summary, color=None, effort=None):
     ts = _now()
     t = {
         "id": str(uuid.uuid4()),
@@ -548,6 +589,9 @@ def new_task(title, summary, color=None):
     c = cat_color(color)
     if c is not None:
         t["color"] = c
+    e = normalize_effort(effort)
+    if e is not None:
+        t["effort"] = e
     return t
 
 
@@ -567,7 +611,10 @@ def cmd_create(a):
         print("⚠ --color '%s' is not a known category; defaulting to %s. "
               "Recategorize later with: attach --color <key|emoji|[TAG]>."
               % (requested, cats.DEFAULT))
-    task = new_task(a.title, a.summary, requested)
+    if getattr(a, "effort", None) and not normalize_effort(a.effort):
+        print("⚠ --effort '%s' is not a known size; leaving it unset. "
+              "Use xs/s/m/l/xl (or 1–5)." % a.effort)
+    task = new_task(a.title, a.summary, requested, getattr(a, "effort", None))
     ensure_seqs()                      # number any pre-seq tasks before we pick ours
     task["seq"] = _max_seq() + 1       # stable number, never reused even after /done
     touch(task, session=a.session, note="created")
@@ -660,14 +707,16 @@ def _format_list():
             lines.append("OPEN" if t["status"] == "open" else "CLOSED")
             last_status = t["status"]
         tag = cat_tag(t.get("color"), pad=True)
+        eff = effort_cell(t.get("effort"))
         if tag:
-            lines.append("%3d  %-40.40s  %s  %s"
-                         % (t["seq"], t["title"], tag, rel_time(t.get("updated_ts"))))
+            lines.append("%3d  %-40.40s  %s  %s  %s"
+                         % (t["seq"], t["title"], tag, eff, rel_time(t.get("updated_ts"))))
         else:
-            lines.append("%3d  %-40.40s  %s"
-                         % (t["seq"], t["title"], rel_time(t.get("updated_ts"))))
+            lines.append("%3d  %-40.40s  %s  %s"
+                         % (t["seq"], t["title"], eff, rel_time(t.get("updated_ts"))))
+    lines.append("")
+    lines.append(effort_legend())
     if cats:
-        lines.append("")
         lines.append(cats.legend())
     return ("Tasks (open first, then by recent activity):" + attached_note + "\n"
             + "\n".join(lines))
@@ -679,6 +728,9 @@ def _format_detail(task, session):
     out.append("Title:   %s" % task["title"])
     if cats:
         out.append(cats.summary(task.get("color")))
+    eff = task.get("effort")
+    if eff in EFFORT_GAUGE:
+        out.append("Effort:  %s %s (%s)" % (EFFORT_GAUGE[eff], eff, EFFORT_WORD[eff]))
     out.append("Created: %s (%s)" % (rel_time(task.get("created_ts")), task.get("created_at", "")))
     out.append("Updated: %s" % rel_time(task.get("updated_ts")))
     out.append("Sessions attached: %d" % len(task.get("sessions", [])))
@@ -801,12 +853,27 @@ def cmd_update(a):
         changed.append("summary+")
     if a.color is not None and cats:
         task["color"] = cat_color(a.color); changed.append("color")
+    if a.effort is not None:
+        e = normalize_effort(a.effort)
+        if e is None:
+            print("update: ignoring --effort %r — use xs/s/m/l/xl (or 1–5)." % a.effort)
+        else:
+            task["effort"] = e; changed.append("effort")
     if not changed:
-        print("update: nothing to change (pass --title/--summary/--append-summary/--color)")
+        print("update: nothing to change (pass --title/--summary/--append-summary/--color/--effort)")
         return
     touch(task, note="scope updated: " + ", ".join(changed))
     save_task(task)
     print("updated task %s: %s" % (task.get("seq", task["id"][:8]), ", ".join(changed)))
+    # A scope change is the moment effort might have grown or shrunk — prompt a
+    # re-rate so the column tracks reality, but only when this update touched
+    # scope WITHOUT already re-rating (so re-setting effort itself stays quiet).
+    if {"title", "summary", "summary+"} & set(changed) and "effort" not in changed:
+        cur = task.get("effort")
+        shown = ("currently %s %s" % (EFFORT_GAUGE[cur], cur)) if cur in EFFORT_GAUGE else "currently unset"
+        print("  ↳ scope changed (%s). If the work now looks bigger or smaller, re-rate:\n"
+              "      python3 %s/todo.py update --task %s --effort <xs|s|m|l|xl>"
+              % (shown, BASE, task.get("seq", task["id"][:8])))
 
 
 def cmd_pin(a):
@@ -918,8 +985,9 @@ def cmd_prompt_context(a):
         lines.extend(cats.picker_lines())
         lines.append("  • Matches an open task above → attach (pass --color to set OR recategorize it; accepts a key, emoji, or [TAG]):")
         lines.append("      python3 %s/todo.py attach --session %s --task <task-id> [--color <color>]" % (BASE, a.session))
-        lines.append("  • Otherwise → create with its colour:")
-        lines.append("      python3 %s/todo.py create --session %s --color <color> --title '<short title>' --summary '<1-3 sentence summary>'"
+        lines.append("  • Otherwise → create with its colour and an effort estimate "
+                     "(xs/s/m/l/xl — your read of the task's complexity & scope):")
+        lines.append("      python3 %s/todo.py create --session %s --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'"
                      % (BASE, a.session))
         if cats.TINT_TERMINAL and not skill_color:
             lines.append("The command prints the category and a `zsh -ic '<color>'` line — RUN that "
@@ -927,8 +995,8 @@ def cmd_prompt_context(a):
     else:
         lines.append("  • Matches an open task above → attach:")
         lines.append("      python3 %s/todo.py attach --session %s --task <task-id>" % (BASE, a.session))
-        lines.append("  • Otherwise → create:")
-        lines.append("      python3 %s/todo.py create --session %s --title '<short title>' --summary '<1-3 sentence summary>'"
+        lines.append("  • Otherwise → create (with an effort estimate — xs/s/m/l/xl — for the task's complexity & scope):")
+        lines.append("      python3 %s/todo.py create --session %s --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'"
                      % (BASE, a.session))
     lines.append("Do this as a side action, but DO tell the user in one short line when you "
                  "create or attach a task — e.g. \"📋 Tracking this as a new task: <title>\" or "
@@ -966,7 +1034,7 @@ def main():
 
     sp = sub.add_parser("create"); sp.add_argument("--session", required=True)
     sp.add_argument("--title", required=True); sp.add_argument("--summary", default="")
-    sp.add_argument("--color", default=None)
+    sp.add_argument("--color", default=None); sp.add_argument("--effort", default=None)
     sp.add_argument("--force", action="store_true"); sp.set_defaults(fn=cmd_create)
 
     sp = sub.add_parser("attach"); sp.add_argument("--session", required=True)
@@ -997,7 +1065,8 @@ def main():
     sp = sub.add_parser("update"); sp.add_argument("--task", required=True)
     sp.add_argument("--title", default=None); sp.add_argument("--summary", default=None)
     sp.add_argument("--append-summary", dest="append_summary", default=None)
-    sp.add_argument("--color", default=None); sp.set_defaults(fn=cmd_update)
+    sp.add_argument("--color", default=None); sp.add_argument("--effort", default=None)
+    sp.set_defaults(fn=cmd_update)
 
     sp = sub.add_parser("pin"); sp.add_argument("--task", required=True)
     sp.add_argument("--session", required=True); sp.set_defaults(fn=cmd_pin)

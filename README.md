@@ -13,12 +13,13 @@ both: the tracker knows *what* you're doing and *where*; delegate does the work
 Tasks (open first, then by recent activity):  •  /todo <n> = open detail & resume   ·   /done = close current task
 
 OPEN
-  1  Build cross-session task tracker       ⚪ [SKILLS]     2h ago
-  2  Fix auth refresh bug                   🔴 [BUG]        yesterday
+  1  Build cross-session task tracker       ⚪ [SKILLS]     ▆ L   2h ago
+  2  Fix auth refresh bug                   🔴 [BUG]        ▃ S   yesterday
 
 CLOSED
-  3  Migrate costbar to v2                  🟤 [MIGRATION]  3d ago
+  3  Migrate costbar to v2                  🟤 [MIGRATION]  █ XL  3d ago
 
+Effort:  ▁ XS  ▃ S  ▅ M  ▆ L  █ XL
 Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Volt · 🔵 [DEVOPS] devops · 🩷 [DESIGN] design · ⚪ [SKILLS] skills and memories · 🟤 [MIGRATION] legacy data migration for Volt · …
 ```
 
@@ -47,6 +48,20 @@ Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Vo
   resumed session recognises its task.
 - **Activity tracking.** Every message bumps the attached task's `updated_at`,
   which drives the "recent activity" sort.
+- **Effort estimate.** Each task carries an optional t-shirt size
+  (`XS`/`S`/`M`/`L`/`XL`) capturing its complexity & scope, shown as a gauged
+  column (`▃ S`) in the list and spelled out in the detail view. Claude sets it
+  at `create` time (the auto-attach nudge asks for it); adjust later with
+  `todo.py update --task <n> --effort <xs|s|m|l|xl>`. `--effort` also accepts the
+  numeric 1–5 scale and words (`small`/`large`/…); unknown values are ignored
+  rather than guessed, so a task simply shows `· --` until one is set.
+- **Effort re-rates on scope change.** It isn't auto-derived from churn (that
+  would measure activity, not size) — instead, whenever an `update` amends a
+  task's title/summary/scope *without* also re-rating, it prints a one-line
+  prompt to reconsider the effort (showing the current size). So as scope grows
+  or shrinks, Claude bumps the size up or down to match — the estimate tracks
+  reality at exactly the moments scope actually moves, with no nudge noise on
+  otherwise-silent attached sessions.
 - **`/todo`** lists all tasks (open first, then by recent activity). Each task
   shows its **stable number** (`seq`), assigned in creation order the first time
   it's seen and never reused — so a task keeps the same number even as others
