@@ -457,6 +457,16 @@ def resume_command(task, current_session=None):
     meta = task.get("session_meta") or {}
     if not meta:
         return None
+    # An explicit pin wins (PK-style): always resume that exact session, with the cwd
+    # self-corrected from its transcript. Falls through to the heuristic only if the
+    # pinned session has no findable live transcript (so a stale pin can't strand you).
+    pin = task.get("pinned_session")
+    if pin:
+        path = _find_session_path(pin)
+        if path and _session_msgcount(path) >= 1:
+            cwd = _session_cwd(path) or (meta.get(pin) or {}).get("cwd")
+            if cwd:
+                return "cd %s && claude --resume %s" % (cwd, pin)
     hubs = [(sid, m) for sid, m in meta.items() if m.get("role") == "hub"]
     pool = hubs or list(meta.items())
     # For each of THIS task's sessions, find its transcript ANYWHERE and read the
@@ -668,7 +678,7 @@ def _format_detail(task, session):
         out.append("Resume the working session that holds this task's context "
                    "(cd + resume, one command):")
         if resume:
-            out.append("    Hub:  " + resume)
+            out.append("    Hub%s:  %s" % (" (pinned)" if task.get("pinned_session") else "", resume))
         if workers:
             out.append("  In-project workers this task has delegated into "
                        "(drop into one directly to debug a repo):")
@@ -768,6 +778,49 @@ def cmd_update(a):
     touch(task, note="scope updated: " + ", ".join(changed))
     save_task(task)
     print("updated task %s: %s" % (task.get("seq", task["id"][:8]), ", ".join(changed)))
+
+
+def cmd_pin(a):
+    """Pin a specific session as the task's canonical resume target (PK-style).
+
+    `/todo` then always resumes THIS session, overriding the most-recent-substantive
+    heuristic — the cwd is still read live from the transcript, so the pin survives
+    directory changes. A pin with no findable live transcript is ignored (falls back
+    to the heuristic) so it can't strand you."""
+    task = resolve_ref(a.task) or load_task(a.task)
+    if not task:
+        sys.stderr.write("pin: no task matching %r\n" % a.task)
+        return
+    task["pinned_session"] = a.session
+    meta = task.setdefault("session_meta", {})
+    if a.session not in meta:
+        path = _find_session_path(a.session)
+        meta[a.session] = {"cwd": (_session_cwd(path) if path else None) or os.getcwd(),
+                           "ts": _now(), "role": "hub"}
+    touch(task, note="pinned resume session %s" % a.session[:8])
+    save_task(task)
+    label = task.get("seq", task["id"][:8])
+    if _find_session_path(a.session):
+        print("Pinned task %s → session %s\n  resume: %s"
+              % (label, a.session[:8], resume_command(task)))
+    else:
+        print("Pinned task %s → session %s — note: no transcript found for that id yet; "
+              "/todo falls back to the heuristic until it appears." % (label, a.session[:8]))
+
+
+def cmd_unpin(a):
+    """Drop a task's pinned resume session — revert to most-recent-substantive."""
+    task = resolve_ref(a.task) or load_task(a.task)
+    if not task:
+        sys.stderr.write("unpin: no task matching %r\n" % a.task)
+        return
+    if task.pop("pinned_session", None):
+        touch(task, note="unpinned resume session")
+        save_task(task)
+        print("Unpinned task %s — resume reverts to most-recent-substantive."
+              % task.get("seq", task["id"][:8]))
+    else:
+        print("Task %s was not pinned." % task.get("seq", task["id"][:8]))
 
 
 def cmd_prompt_color(a):
@@ -916,6 +969,12 @@ def main():
     sp.add_argument("--title", default=None); sp.add_argument("--summary", default=None)
     sp.add_argument("--append-summary", dest="append_summary", default=None)
     sp.add_argument("--color", default=None); sp.set_defaults(fn=cmd_update)
+
+    sp = sub.add_parser("pin"); sp.add_argument("--task", required=True)
+    sp.add_argument("--session", required=True); sp.set_defaults(fn=cmd_pin)
+
+    sp = sub.add_parser("unpin"); sp.add_argument("--task", required=True)
+    sp.set_defaults(fn=cmd_unpin)
 
     sp = sub.add_parser("prompt-color"); sp.add_argument("--session", default=None)
     sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_color)

@@ -58,6 +58,14 @@ Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Vo
 - **`/done`** closes the task the current session is working on **and detaches
   the session** from it, so a follow-up message can't silently reopen it. To
   pick the task back up, use `/todo <n>`, which re-attaches and reopens it.
+- **Resume resolution.** `/todo <n>` resumes the task's **most-recent substantive
+  session**, finding it by id across all project buckets and reading the launch
+  directory from the transcript itself — so it self-corrects even if the recorded
+  cwd was wrong (e.g. you launched from `~` but `cd`'d into a worktree), and a 1-2
+  message "just looking" session never displaces real work. It only ever resumes
+  one of the task's *own* sessions, and starts fresh rather than risk a different
+  task's session. To override the heuristic, **`todo.py pin --task <n> --session
+  <id>`** locks a specific session (PK-style; `unpin` reverts).
 
 - **Categories & terminal colours (optional plugin).** If `categories.py` is
   present, every task carries a `color` from a taxonomy (bug/red,
