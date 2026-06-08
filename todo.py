@@ -473,6 +473,19 @@ def resume_command(task, current_session=None):
     meta = task.get("session_meta") or {}
     if not meta:
         return None
+    # Prepend the category's tint alias so resuming in a fresh interactive zsh
+    # re-tints the terminal to the task's colour before launching claude. The bare
+    # alias (e.g. `green`) is expanded by the user's interactive shell; we gate on
+    # tint_command() so the prefix vanishes when TINT_TERMINAL is off. The earlier
+    # `return None` (no sessions) needs no tint — there's nothing to resume.
+    #
+    # SAFE WITHOUT THE ALIASES: we join with `; 2>/dev/null`, NOT `&&`. If the user
+    # hasn't installed the `~/.zshrc` colour aliases, `green` is an unknown command —
+    # but `2>/dev/null` swallows the "command not found" and `;` lets the resume run
+    # regardless. So the line tints when aliases exist and is a silent no-op when they
+    # don't; the cd + claude --resume always executes either way.
+    tint = (cats.tint_command(task.get("color")) if cats else None)
+    pfx = ("%s 2>/dev/null; " % cats.normalize(task.get("color"))) if tint else ""
     # An explicit pin wins (PK-style): always resume that exact session, with the cwd
     # self-corrected from its transcript. Falls through to the heuristic only if the
     # pinned session has no findable live transcript (so a stale pin can't strand you).
@@ -482,7 +495,7 @@ def resume_command(task, current_session=None):
         if path and _session_msgcount(path) >= 1:
             cwd = _session_cwd(path) or (meta.get(pin) or {}).get("cwd")
             if cwd:
-                return "cd %s && claude --resume %s" % (cwd, pin)
+                return "%scd %s && claude --resume %s" % (pfx, cwd, pin)
     hubs = [(sid, m) for sid, m in meta.items() if m.get("role") == "hub"]
     pool = hubs or list(meta.items())
     # For each of THIS task's sessions, find its transcript ANYWHERE and read the
@@ -507,14 +520,14 @@ def resume_command(task, current_session=None):
         cands = [x for x in cands if x[0] != current_session] or cands
         cands.sort(key=lambda x: x[2], reverse=True)   # newest transcript first
         sid, cwd, _, _ = cands[0]
-        return "cd %s && claude --resume %s" % (cwd, sid)
+        return "%scd %s && claude --resume %s" % (pfx, cwd, sid)
     # No findable live transcript for any recorded session → fresh start
     # (NEVER --continue, which in the shared home bucket could resume a different task).
     pool.sort(key=lambda kv: kv[1].get("ts", 0), reverse=True)
     for sid, m in pool:
         if m.get("cwd"):
-            return ("cd %s && claude   # no live session found — starting fresh; "
-                    "re-attach with /todo %s" % (m["cwd"], task.get("seq", "")))
+            return ("%scd %s && claude   # no live session found — starting fresh; "
+                    "re-attach with /todo %s" % (pfx, m["cwd"], task.get("seq", "")))
     return None
 
 

@@ -11,6 +11,12 @@ Every task carries a `color` — one of the keys below. The colour does two jobs
    `~/.zshrc` that switches the Terminal.app profile (`<Color> Sands`). When a
    session attaches to, creates, or resumes a task, Claude runs that alias —
    `zsh -ic '<color>'` — so the whole terminal is tinted to the task's category.
+   The **resume one-liner** that `/todo <n>` prints carries the tint too: it's
+   prefixed with the bare alias so the terminal re-colours when you paste it into a
+   fresh window — e.g. `green 2>/dev/null; cd <dir> && claude --resume <id>`. The
+   prefix is joined with `;` (not `&&`) and redirects stderr to `/dev/null`, so for
+   anyone without the colour aliases installed it's a silent no-op and the `cd` +
+   resume still runs. The prefix is dropped entirely when `TINT_TERMINAL = False`.
 3. **Immediate skill tinting.** When a prompt *invokes a skill* (a slash
    command like `/volt:review-pr-auto`), the `UserPromptSubmit` hook tints the
    terminal to the skill's category **synchronously, before Claude responds** —

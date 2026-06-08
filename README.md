@@ -65,7 +65,13 @@ Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Vo
   message "just looking" session never displaces real work. It only ever resumes
   one of the task's *own* sessions, and starts fresh rather than risk a different
   task's session. To override the heuristic, **`todo.py pin --task <n> --session
-  <id>`** locks a specific session (PK-style; `unpin` reverts).
+  <id>`** locks a specific session (PK-style; `unpin` reverts). The printed resume
+  one-liner also **re-tints the terminal to the task's colour** — it's prefixed with
+  the category's zsh alias (e.g. `green 2>/dev/null; cd … && claude --resume …`), so
+  pasting it into a fresh window restores the colour. The prefix is joined with `;`
+  and swallows stderr, so it's a silent no-op for anyone who hasn't installed the
+  colour aliases — the `cd` + resume always runs. (Omitted entirely when
+  `TINT_TERMINAL = False`.)
 
 - **Categories & terminal colours (optional plugin).** If `categories.py` is
   present, every task carries a `color` from a taxonomy (bug/red,
