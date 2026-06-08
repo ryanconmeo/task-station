@@ -73,10 +73,18 @@ def cat_lines(color):
 
 # ----------------------------------------------------------------- effort ----
 # Optional per-task effort estimate (complexity / scope), shown as a column in
-# the /todo list. Canonical t-shirt sizes; a 1-char gauge bar makes the column
-# scannable at a glance. Stored on the task as one of EFFORT_ORDER, or absent.
+# the /todo list. Canonical t-shirt sizes; a 5-segment filled bar makes the
+# column scannable at a glance — count of filled segments (not bar height) is
+# the size cue, which reads instantly even on a single row. Stored on the task
+# as one of EFFORT_ORDER, or absent.
 EFFORT_ORDER = ["XS", "S", "M", "L", "XL"]
-EFFORT_GAUGE = {"XS": "▁", "S": "▃", "M": "▅", "L": "▆", "XL": "█"}
+_EFFORT_SLOTS = len(EFFORT_ORDER)
+# filled ▰ to (index+1), empty ▱ for the rest → ▰▱▱▱▱ (XS) … ▰▰▰▰▰ (XL)
+EFFORT_GAUGE = {
+    s: "▰" * (i + 1) + "▱" * (_EFFORT_SLOTS - i - 1)
+    for i, s in enumerate(EFFORT_ORDER)
+}
+EFFORT_GAUGE_EMPTY = "▱" * _EFFORT_SLOTS  # placeholder when effort is unset
 EFFORT_WORD = {"XS": "trivial", "S": "small", "M": "medium", "L": "large", "XL": "huge"}
 _EFFORT_ALIASES = {
     "xs": "XS", "tiny": "XS", "trivial": "XS", "1": "XS",
@@ -101,11 +109,12 @@ def normalize_effort(val):
 def effort_cell(effort):
     """Fixed-width `<gauge> <size>` cell for the list, or a neutral placeholder.
 
-    The gauge is one display column; the size label is padded to 2 so XS/XL line
-    up with S/M/L. Unknown effort renders `· —` so the column stays aligned."""
+    The gauge is a fixed 5-segment bar; the size label is padded to 2 so XS/XL
+    line up with S/M/L. Unknown effort renders an all-empty bar + `--` so the
+    column stays aligned."""
     if effort in EFFORT_GAUGE:
         return "%s %-2s" % (EFFORT_GAUGE[effort], effort)
-    return "· --"
+    return "%s --" % EFFORT_GAUGE_EMPTY
 
 
 def effort_legend():
