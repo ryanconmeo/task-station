@@ -11,7 +11,7 @@ The block above is the live output of the task tracker.
 
 Each task is colour-coded by category (an `<emoji> [TAG]` after the title — the emoji dot carries the colour, the tag names it). The categories map to zsh aliases that tint the Terminal.app profile — see `~/.claude/todo/CATEGORIES.md`.
 
-- If it is a **list**, present it to the user as-is (a numbered list, open tasks first, then closed, each sorted by most recent activity), keeping the category `<emoji> [TAG]`s intact. Remind them they can run `/todo <number>` to open and resume a task, and `/done` to close the task this session is working on. Do not take any other action.
+- If it is a **list**, present it to the user as a **clean Markdown table** — never a plain numbered list. Render **two separate tables**, an **Open** one first then a **Closed** one, each preserving the tracker's ordering (open first, then by most recent activity). Use exactly these columns: `#` (task number, right-aligned), `Task` (title), `Category` (the `<emoji> [TAG]` kept intact), `Effort` (the `▰▱` bar + size), `Activity` (the relative timestamp). After the tables, remind them they can run `/todo <number>` to open and resume a task, and `/done` to close the task this session is working on. Do not take any other action.
 - If it is a **task detail**, this session has just been attached to that task (reopened if it was closed). Do all of the following, in order:
   1. The detail prints the task's category and a `zsh -ic '<color>'` line — **run that command** to tint this terminal to the task's colour.
   2. Give the user a **detailed recap** — not a one-liner. Draw on the full summary and the recent-activity log:
