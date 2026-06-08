@@ -32,6 +32,8 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 STORE = os.path.join(BASE, "store")
 TASKS_DIR = os.path.join(STORE, "tasks")
 LINKS_DIR = os.path.join(STORE, "links")
+DELEGATE_REGISTRY = os.path.join(BASE, "delegate", "workers.json")
+PROJECTS_ROOT = os.path.expanduser("~/.claude/projects")
 
 LOG_KEEP = 25          # max activity-log entries kept per task
 NUDGE_PROMPT_MAX = 120  # chars of the prompt stored in the activity log
@@ -313,28 +315,126 @@ def touch(task, session=None, note=None, reopen=False):
             task.setdefault("sessions", []).append(session)
         # Record where this session is running so /todo can later hand back a
         # `cd … && claude --resume …` one-liner that reopens it in the right dir.
-        task.setdefault("session_meta", {})[session] = {"cwd": os.getcwd(), "ts": _now()}
+        task.setdefault("session_meta", {})[session] = {"cwd": os.getcwd(), "ts": _now(), "role": "hub"}
     add_log(task, note)
 
 
-def resume_command(task, current_session=None):
-    """`cd <dir> && claude --resume <id>` for the best session to jump back into.
+def _project_dir_for(cwd):
+    """The session-transcript bucket Claude Code uses for a given launch cwd."""
+    return os.path.join(PROJECTS_ROOT, cwd.replace("/", "-"))
 
-    Prefers the most recently active session OTHER than the current one — that's
-    the terminal holding the real working context — and falls back to the current
-    session when it's the only one on record. Returns None for pre-upgrade tasks
-    that never recorded a session cwd.
-    """
+
+def _session_msgcount(path):
+    """Count of non-empty, non-system user messages in a transcript (0 if unreadable).
+
+    Used to tell a real working session from an empty/stray one — size alone lies
+    (a freshly-spawned empty session can still be several KB of system init)."""
+    n = 0
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                msg = o.get("message")
+                if not isinstance(msg, dict) or msg.get("role") != "user":
+                    continue
+                c = msg.get("content")
+                if isinstance(c, str):
+                    t = c
+                elif isinstance(c, list):
+                    t = " ".join(b.get("text", "") for b in c
+                                 if isinstance(b, dict) and b.get("type") == "text")
+                else:
+                    t = ""
+                t = t.strip()
+                if t and not t.startswith("<"):
+                    n += 1
+    except OSError:
+        return 0
+    return n
+
+
+def _load_delegate_registry():
+    try:
+        with open(DELEGATE_REGISTRY) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def worker_lines(task):
+    """Resume lines for the in-project workers this task has delegated into.
+
+    Worker session-ids are read LIVE from the delegate registry (keyed
+    <seq>:<project>[:<label>]) so they reflect delegate's own self-healing rather
+    than a stale snapshot. Lists the default worker per repo plus any labelled
+    concurrent ones. Returns [] when the task has no recorded projects."""
+    projects = task.get("projects") or []
+    if not projects:
+        return []
+    reg = _load_delegate_registry()
+    seq = task.get("seq")
+    out = []
+    for p in projects:
+        base = "%s:%s" % (seq, p)
+        keys = sorted(k for k in reg if k == base or k.startswith(base + ":"))
+        if not keys:
+            out.append("    %-22s (no worker recorded yet)" % p)
+            continue
+        for k in keys:
+            e = reg.get(k, {})
+            d, sid = e.get("dir"), e.get("session_id")
+            disp = p if k == base else "%s [%s]" % (p, e.get("label") or k.split(":", 2)[-1])
+            if d and sid:
+                out.append("    %-22s cd %s && claude --resume %s" % (disp, d, sid))
+            elif d:
+                out.append("    %-22s cd %s && claude   (no active worker yet)" % (disp, d))
+            else:
+                out.append("    %-22s (no worker recorded yet)" % disp)
+    return out
+
+
+def resume_command(task, current_session=None):
+    """`cd <dir> && claude …` for the HUB session that holds this task's context.
+
+    GUARANTEE: only ever resumes one of THIS task's own recorded sessions — never
+    another task's. (Critical: every hub shares the home bucket, so a whole-bucket
+    fallback or `claude --continue` could resume an unrelated task. We never do
+    that.) Prefers role:hub entries, validates each candidate's transcript is live
+    (in its own bucket), and picks the newest live one. If the task has recorded
+    sessions but none are live, starts a FRESH `claude` in the most-recent recorded
+    cwd. Returns None only when no session has a recorded cwd."""
     meta = task.get("session_meta") or {}
-    others = [(sid, m) for sid, m in meta.items() if sid != current_session]
-    pool = others or list(meta.items())
-    if not pool:
+    if not meta:
         return None
-    sid, m = max(pool, key=lambda kv: kv[1].get("ts", 0))
-    cwd = m.get("cwd")
-    if not cwd:
-        return None
-    return "cd %s && claude --resume %s" % (cwd, sid)
+    hubs = [(sid, m) for sid, m in meta.items() if m.get("role") == "hub"]
+    pool = hubs or list(meta.items())
+    # Among THIS task's own sessions, keep the ones whose transcript is still live.
+    live = []
+    for sid, m in pool:
+        cwd = m.get("cwd")
+        if not cwd:
+            continue
+        path = os.path.join(_project_dir_for(cwd), sid + ".jsonl")
+        if _session_msgcount(path) >= 1:
+            live.append((sid, m, os.path.getmtime(path)))
+    if live:
+        ordered = [x for x in live if x[0] != current_session] or live
+        ordered.sort(key=lambda x: x[2], reverse=True)   # newest transcript first
+        sid, m, _ = ordered[0]
+        return "cd %s && claude --resume %s" % (m["cwd"], sid)
+    # Recorded but none live → fresh start (NEVER --continue in the shared bucket).
+    pool.sort(key=lambda kv: kv[1].get("ts", 0), reverse=True)
+    for sid, m in pool:
+        if m.get("cwd"):
+            return ("cd %s && claude   # no live session on record — starting fresh; "
+                    "re-attach with /todo %s" % (m["cwd"], task.get("seq", "")))
+    return None
 
 
 def new_task(title, summary, color=None):
@@ -507,11 +607,17 @@ def _format_detail(task, session):
         if cmd:
             out.append("Tint this terminal to match the category — run:  " + cmd)
     resume = resume_command(task, session)
-    if resume:
+    workers = worker_lines(task)
+    if resume or workers:
         out.append("")
         out.append("Resume the working session that holds this task's context "
                    "(cd + resume, one command):")
-        out.append("    " + resume)
+        if resume:
+            out.append("    Hub:  " + resume)
+        if workers:
+            out.append("  In-project workers this task has delegated into "
+                       "(drop into one directly to debug a repo):")
+            out.extend(workers)
     return "\n".join(out)
 
 
@@ -529,6 +635,84 @@ def cmd_render(a):
     set_link(a.session, task["id"])
     clear_count(a.session)
     print(_format_detail(task, a.session))
+
+
+def cmd_add_project(a):
+    """Record that a task has delegated work into a repo (project). Idempotent.
+
+    Called by delegate.py when a worker is spawned with --seq, so /todo can
+    list the task's in-project workers in its detail view. No session attach, no
+    activity-log entry — keeps the link bookkeeping quiet."""
+    task = resolve_ref(a.task) or load_task(a.task)
+    if not task:
+        sys.stderr.write("add-project: no task matching %r\n" % a.task)
+        return
+    projs = task.setdefault("projects", [])
+    if a.project not in projs:
+        projs.append(a.project)
+        task["updated_ts"] = _now()
+        save_task(task)
+
+
+def cmd_session_title(a):
+    """Print the window/title-bar label for an attached session (or nothing).
+
+    The SessionStart hook puts this in hookSpecificOutput.sessionTitle so the
+    terminal reads `todo-<seq> · <title>` — the closest we get to auto-labelling
+    the hub (the resume-NAME can't be set programmatically on a running session)."""
+    task_id = get_link(a.session)
+    if not task_id or task_id == SKIP_SENTINEL:
+        return
+    task = load_task(task_id)
+    if not task:
+        return
+    ensure_seqs()
+    print("todo-%s · %s" % (task.get("seq", "?"), task["title"]))
+
+
+def cmd_whoami(a):
+    """Map any session id → its task. The backstop that identifies a session
+    regardless of whether it was ever named."""
+    task_id = get_link(a.session)
+    if task_id == SKIP_SENTINEL:
+        print("session %s: intentionally untracked (skipped)" % a.session[:8])
+        return
+    task = load_task(task_id) if task_id else None
+    if not task:
+        print("session %s: not attached to any task" % a.session[:8])
+        return
+    ensure_seqs()
+    print("session %s → todo %s · %s (%s)"
+          % (a.session[:8], task.get("seq", "?"), task["title"], task["status"]))
+
+
+def cmd_update(a):
+    """Amend a task's title / summary / scope / colour after creation.
+
+    Fills the gap that `summary` was otherwise frozen at create — keeps the task
+    description current as scope drifts."""
+    task = resolve_ref(a.task) or load_task(a.task)
+    if not task:
+        sys.stderr.write("update: no task matching %r\n" % a.task)
+        return
+    changed = []
+    if a.title is not None:
+        task["title"] = a.title.strip(); changed.append("title")
+    if a.summary is not None:
+        task["summary"] = a.summary.strip(); changed.append("summary")
+    if a.append_summary:
+        base = (task.get("summary") or "").rstrip()
+        add = a.append_summary.strip()
+        task["summary"] = (base + "\n" + add) if base else add
+        changed.append("summary+")
+    if a.color is not None and cats:
+        task["color"] = cat_color(a.color); changed.append("color")
+    if not changed:
+        print("update: nothing to change (pass --title/--summary/--append-summary/--color)")
+        return
+    touch(task, note="scope updated: " + ", ".join(changed))
+    save_task(task)
+    print("updated task %s: %s" % (task.get("seq", task["id"][:8]), ", ".join(changed)))
 
 
 def cmd_prompt_color(a):
@@ -663,6 +847,20 @@ def main():
 
     sp = sub.add_parser("render"); sp.add_argument("--session", required=True)
     sp.add_argument("--arg", default=""); sp.set_defaults(fn=cmd_render)
+
+    sp = sub.add_parser("add-project"); sp.add_argument("--task", required=True)
+    sp.add_argument("--project", required=True); sp.set_defaults(fn=cmd_add_project)
+
+    sp = sub.add_parser("session-title"); sp.add_argument("--session", required=True)
+    sp.set_defaults(fn=cmd_session_title)
+
+    sp = sub.add_parser("whoami"); sp.add_argument("--session", required=True)
+    sp.set_defaults(fn=cmd_whoami)
+
+    sp = sub.add_parser("update"); sp.add_argument("--task", required=True)
+    sp.add_argument("--title", default=None); sp.add_argument("--summary", default=None)
+    sp.add_argument("--append-summary", dest="append_summary", default=None)
+    sp.add_argument("--color", default=None); sp.set_defaults(fn=cmd_update)
 
     sp = sub.add_parser("prompt-color"); sp.add_argument("--session", default=None)
     sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_color)

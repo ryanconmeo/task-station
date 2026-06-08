@@ -1,8 +1,13 @@
 # claude-todo
 
-Persistent, cross-session task tracking for Claude Code. Every session attaches
-to a single trackable task; tasks survive across sessions and are queryable any
-time with `/todo`.
+Persistent, cross-session task tracking for Claude Code **plus in-project worker
+delegation** — two halves designed to be used together. Every session attaches to
+a single trackable task; tasks survive across sessions and are queryable any time
+with `/todo`. When a task needs a specific repo's machinery (its `CLAUDE.md`,
+hooks, MCP, permissions), the bundled `delegate` helper spawns an in-project worker
+linked to that task — see [Delegate](#delegate--in-project-workers). You'll want
+both: the tracker knows *what* you're doing and *where*; delegate does the work
+*there* with full project context.
 
 ```
 Tasks (open first, then by recent activity):  •  /todo <n> = open detail & resume   ·   /done = close current task
@@ -74,6 +79,52 @@ There is no auto-close: tasks stay open until you run `/done`. (The Claude Code
 harness can't distinguish `/exit` from a crash or window-close, so closing is
 kept explicit and deliberate.)
 
+## Delegate — in-project workers
+
+`claude-todo` ships a second half in [`delegate/`](delegate/delegate.py): a helper
+that spawns an **in-project Claude worker** and links it to a task. The two are
+meant to be used **together** — don't run one without the other.
+
+**Why it exists.** A "hub" session launched from `~` (the way `/todo` is meant to
+be driven) does *not* load any project's `./CLAUDE.md`, hooks, project-scoped
+`.mcp.json`, project-local skills, or permissions/env — those load only in a
+`claude` process whose cwd is inside the repo. `delegate` spawns exactly that
+(`cd <repo> && claude -p …`), so the work runs with the project's full machinery,
+keeps **one persistent worker per (task, repo)**, resumes it across turns, and
+relays the result back to the hub.
+
+```bash
+# do work in a repo, linked to /todo task 38:
+python3 ~/.claude/todo/delegate/delegate.py run --project Volt --seq 38 \
+  --task "<self-contained instructions>"
+python3 ~/.claude/todo/delegate/delegate.py list        # known workers
+```
+
+**How the two synergize:**
+- Pass `--seq <n>` and the worker is named `todo-<seq>-<project>` (e.g.
+  `todo-38-Volt`), keyed `<seq>:<project>` in the registry, and the repo is recorded
+  on the task. `/todo <n>`'s detail then shows a **Workers** section with a
+  one-command resume per repo — so from a task you drop straight into the right
+  in-project worker. `--label <slug>` adds a second concurrent worker in the same
+  repo (`todo-38-Volt-rbac`).
+- Workers run with `CLAUDE_TODO_SUPPRESS=1`, so the `/todo` hooks stay silent inside
+  them — tracking is the hub's job, not the worker's.
+- The **hub** can't be renamed programmatically, but the `SessionStart` hook sets its
+  **title** to `todo-<seq> · <title>`, and `todo.py whoami --session <id>` maps any
+  session back to its task.
+
+The registry lives at `delegate/workers.json` (machine-local, git-ignored). Used
+without `--seq`, `delegate` still works standalone (one worker per repo, unnamed and
+unlinked).
+
+**Enabling *auto*-delegation.** `delegate.py` is the *how*; the *when* — the rule
+that makes Claude reach for it on its own — lives in your global `~/.claude/CLAUDE.md`
+(loaded every session). This repo ships a ready-to-adapt
+[`delegate/POLICY-TEMPLATE.md`](delegate/POLICY-TEMPLATE.md): copy it into your
+`~/.claude/CLAUDE.md` and swap the placeholder workspace paths/project names for your
+own. Without it, `delegate.py` still works when you invoke it by hand — Claude just
+won't know *when* to use it automatically.
+
 ### Storage
 
 One JSON file per task under `store/tasks/<uuid>.json`; session→task links under
@@ -142,6 +193,87 @@ the existing arrays rather than overwriting them.
 ```
 
 The `/todo` and `/done` commands live in `~/.claude/commands/todo.md` and
-`~/.claude/commands/done.md` — copy them there if cloning standalone.
+`~/.claude/commands/done.md`; the clone ships copies under `commands/` — copy them
+into `~/.claude/commands/` if cloning standalone.
 
-Requires `python3` (stdlib only) and `jq`.
+**For in-project worker delegation** (optional, but the two halves are meant to be
+used together): nothing extra to install — `delegate/delegate.py` ships with the
+clone. To get *auto*-delegation, copy [`delegate/POLICY-TEMPLATE.md`](delegate/POLICY-TEMPLATE.md)
+into your global `~/.claude/CLAUDE.md` and customize the workspace paths. See the
+[Delegate](#delegate--in-project-workers) section.
+
+## Install
+
+**Prerequisites:** [Claude Code](https://claude.ai/code), `git`, `jq`, `python3` (stdlib only).
+
+```bash
+git clone https://github.com/ryanconmeo/claude-todo "$HOME/.claude/todo"
+cp "$HOME/.claude/todo/commands/"{todo,done}.md "$HOME/.claude/commands/"
+```
+
+If `~/.claude/` is a git repo with a permissive `.gitignore`, append `todo/` to it:
+
+```bash
+if [ -d "$HOME/.claude/.git" ]; then
+  grep -qxF 'todo/' "$HOME/.claude/.gitignore" 2>/dev/null || echo 'todo/' >> "$HOME/.claude/.gitignore"
+fi
+```
+
+Merge the `settings.json` hooks snippet shown above, then restart Claude Code. For
+*auto*-delegation, also copy [`delegate/POLICY-TEMPLATE.md`](delegate/POLICY-TEMPLATE.md)
+into your global `~/.claude/CLAUDE.md` and customize the workspace paths.
+
+**No git?** Fetch the files with curl instead:
+
+```bash
+mkdir -p "$HOME/.claude/todo/delegate" "$HOME/.claude/commands" && cd "$HOME/.claude/todo"
+base=https://raw.githubusercontent.com/ryanconmeo/claude-todo/main
+for f in todo.py categories.py on_session_start.sh on_user_prompt.sh close-session-window.sh CATEGORIES.md; do
+  curl -fsSL "$base/$f" -o "$f"
+done
+curl -fsSL "$base/delegate/delegate.py"        -o delegate/delegate.py
+curl -fsSL "$base/delegate/POLICY-TEMPLATE.md" -o delegate/POLICY-TEMPLATE.md
+curl -fsSL "$base/commands/todo.md" -o "$HOME/.claude/commands/todo.md"
+curl -fsSL "$base/commands/done.md" -o "$HOME/.claude/commands/done.md"
+chmod +x on_session_start.sh on_user_prompt.sh close-session-window.sh
+```
+
+## Update
+
+```bash
+cd "$HOME/.claude/todo" && git pull
+```
+
+## Uninstall
+
+```bash
+rm -rf "$HOME/.claude/todo"        # repo + delegate + task data (store/) + worker registry
+rm -f  "$HOME/.claude/commands/todo.md" "$HOME/.claude/commands/done.md"
+```
+
+Then, in `~/.claude/settings.json`, remove **just** claude-todo's two hook entries —
+the `UserPromptSubmit` entry that runs `todo/on_user_prompt.sh` and the `SessionStart`
+entry that runs `todo/on_session_start.sh` — leaving any other modules' entries in
+those arrays intact. If you copied the delegation policy into your global
+`~/.claude/CLAUDE.md`, delete that block too. Restart Claude Code.
+
+> Removing the repo also deletes your task history (`store/`) and the worker registry
+> (`delegate/workers.json`). Back them up first if you want to keep them.
+
+## Files
+
+**`todo.py`** — the engine: task storage, `/todo` and `/done`, the hooks' logic, plus the `whoami` and `update` commands.
+
+**`categories.py`** — optional colour-taxonomy + terminal-tint plugin; `todo.py` runs fine without it. See [`CATEGORIES.md`](CATEGORIES.md).
+
+**`on_session_start.sh`** — `SessionStart` hook. Surfaces open tasks (or the attached one) and auto-sets the window title to `todo-<seq> · <title>`.
+
+**`on_user_prompt.sh`** — `UserPromptSubmit` hook. Attaches/nudges the session and tints the terminal for skill-mapped prompts.
+
+**`close-session-window.sh`** — closes the Terminal.app window hosting a session; invoked by `/done`.
+
+**`delegate/delegate.py`** — spawns/resumes in-project workers that carry the repo's full machinery (see [Delegate](#delegate--in-project-workers)).
+
+**`delegate/POLICY-TEMPLATE.md`** — copy into your global `~/.claude/CLAUDE.md` to enable *auto*-delegation.
+
+**`commands/todo.md`**, **`commands/done.md`** — the `/todo` and `/done` slash commands; copy into `~/.claude/commands/`.

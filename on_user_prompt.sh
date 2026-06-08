@@ -8,6 +8,8 @@
 # synchronously, before Claude responds — so the colour applies immediately
 # instead of waiting for Claude to read the guidance and run the alias itself.
 input=$(cat)
+# Suppressed inside delegate-spawned workers — task tracking + tinting is the hub's job.
+[ -n "$CLAUDE_TODO_SUPPRESS" ] && exit 0
 session_id=$(echo "$input" | jq -r '.session_id // "unknown"')
 prompt=$(echo "$input" | jq -r '.prompt // ""')
 
