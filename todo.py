@@ -974,14 +974,21 @@ def cmd_whoami(a):
     """Map any session id → its task. The backstop that identifies a session
     regardless of whether it was ever named."""
     task_id = get_link(a.session)
+    porcelain = getattr(a, "porcelain", False)
     if task_id == SKIP_SENTINEL:
-        print("session %s: intentionally untracked (skipped)" % a.session[:8])
+        if not porcelain:
+            print("session %s: intentionally untracked (skipped)" % a.session[:8])
         return
     task = load_task(task_id) if task_id else None
     if not task:
-        print("session %s: not attached to any task" % a.session[:8])
+        if not porcelain:
+            print("session %s: not attached to any task" % a.session[:8])
         return
     ensure_seqs()
+    if porcelain:
+        # Machine-readable: just the seq, for scripts (e.g. delegate auto-inherit).
+        print(task.get("seq", ""))
+        return
     print("session %s → todo %s · %s (%s)"
           % (a.session[:8], task.get("seq", "?"), task["title"], task["status"]))
 
@@ -1221,6 +1228,8 @@ def main():
     sp.set_defaults(fn=cmd_session_title)
 
     sp = sub.add_parser("whoami"); sp.add_argument("--session", required=True)
+    sp.add_argument("--porcelain", action="store_true",
+                    help="print only the attached task's seq (empty if none) for scripts")
     sp.set_defaults(fn=cmd_whoami)
 
     sp = sub.add_parser("update"); sp.add_argument("--task", required=True)
