@@ -1,11 +1,12 @@
 ---
-description: Close the task this session is working on and detach the session. Reopen later with /todo.
+description: Close a task and detach. No arg = close THIS session's task (and close its window). With an arg (e.g. /done 13) = close that task by number/id, leave this window open. Reopen later with /todo.
+argument-hint: "[task number or id — omit to close the current session's task]"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-!`python3 "$HOME/.claude/todo/todo.py" done --session "${CLAUDE_SESSION_ID}"; bash "$HOME/.claude/todo/close-session-window.sh" --detach --after 1 >/dev/null 2>&1`
+!`if [ -n "$ARGUMENTS" ]; then python3 "$HOME/.claude/todo/todo.py" done --task "$ARGUMENTS"; else python3 "$HOME/.claude/todo/todo.py" done --session "${CLAUDE_SESSION_ID}"; bash "$HOME/.claude/todo/close-session-window.sh" --detach --after 1 >/dev/null 2>&1; fi`
 
-Relay the result above to the user in one short line. If a task was closed, confirm it by name. If nothing was attached, let them know there was no active task to close.
+Relay the result above to the user in one short line. If a task was closed, confirm it by name. If nothing matched / nothing was attached, say so.
 
-(The terminal window for THIS session auto-closes ~1s after this runs, matched by tty.)
+(With NO argument this closes the current session's task and its terminal window auto-closes ~1s later. With an argument, it closes the named task by number/id and leaves THIS window open.)

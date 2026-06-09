@@ -687,6 +687,34 @@ def cmd_skip(a):
 
 
 def cmd_done(a):
+    # Two modes:
+    #   --task REF  → close any task by seq/id from anywhere (no session needed).
+    #   --session   → close the task attached to this session (the /done path).
+    ref = getattr(a, "task", None)
+    if ref:
+        task = resolve_ref(ref) or load_task(ref)
+        if not task:
+            print("No task matching '%s'.\n\n%s" % (ref, _format_list()))
+            return
+        if task.get("status") == "closed":
+            print("Task [%s] %s is already closed." % (task["id"][:8], task["title"]))
+            return
+        task["status"] = "closed"
+        touch(task, session=a.session or None, note="closed (by id)")
+        save_task(task)
+        # Detach EVERY session linked to this task so none can silently reopen it.
+        for sess in list(task.get("sessions", [])):
+            if get_link(sess) == task["id"]:
+                clear_link(sess)
+                clear_count(sess)
+        print("Closed task [%s] %s. Reopen later with /todo."
+              % (task["id"][:8], task["title"]))
+        return
+
+    if not a.session:
+        print("Pass --task <id-or-number> to close a specific task, "
+              "or --session <id> to close the session's attached task.")
+        return
     task_id = get_link(a.session)
     task = load_task(task_id) if task_id else None
     if not task:
@@ -708,7 +736,8 @@ def _format_list():
         return ("No tasks yet. One will be tracked automatically once the work "
                 "in a session becomes clear, or say so explicitly.")
     lines = []
-    attached_note = "  •  /todo <n> = open detail & resume   ·   /done = close current task"
+    attached_note = ("  •  /todo <n> = open detail & resume   ·   /done = close current task"
+                     "   ·   close any by id:  python3 %s/todo.py done --task <n|id>" % BASE)
     last_status = None
     for t in listing:
         if t["status"] != last_status:
@@ -1056,7 +1085,8 @@ def main():
     sp = sub.add_parser("skip"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_skip)
 
-    sp = sub.add_parser("done"); sp.add_argument("--session", required=True)
+    sp = sub.add_parser("done"); sp.add_argument("--session", default=None)
+    sp.add_argument("--task", default=None)   # close any task by seq/id from anywhere
     sp.set_defaults(fn=cmd_done)
 
     sp = sub.add_parser("render"); sp.add_argument("--session", required=True)
