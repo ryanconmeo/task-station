@@ -10,7 +10,7 @@ both: the tracker knows *what* you're doing and *where*; delegate does the work
 *there* with full project context.
 
 ```
-Tasks (open first, then by recent activity):  •  /todo <n> = open detail & resume   ·   /done = close current task
+Tasks (open first, then by recent activity):  •  /todo <n> = open detail & resume   ·   /done = close current task   ·   close any by id:  python3 …/todo.py done --task <n|id>
 
 OPEN
   1  Build cross-session task tracker       ⚪ [SKILLS]     ▆ L   2h ago
@@ -73,6 +73,12 @@ Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Vo
 - **`/done`** closes the task the current session is working on **and detaches
   the session** from it, so a follow-up message can't silently reopen it. To
   pick the task back up, use `/todo <n>`, which re-attaches and reopens it.
+- **`/done <n>`** (or a task-id prefix) closes **any** task by its stable number
+  or id — you don't have to be in that task's session. It detaches every session
+  linked to the task and **leaves the current window open** (bare `/done` closes
+  the current session's window; `/done <n>` does not, since you're still working
+  here). Handy straight from the `/todo` list: see the numbers, close any of them
+  in place. The underlying call is `todo.py done --task <n|id>`.
 - **Resume resolution.** `/todo <n>` resumes the task's **most-recent substantive
   session**, finding it by id across all project buckets and reading the launch
   directory from the transcript itself — so it self-corrects even if the recorded
