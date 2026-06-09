@@ -37,6 +37,20 @@ Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Vo
   bumps a per-session counter; after a few unattached messages the nudge
   escalates ("N messages in and still untracked — attach now, or `skip`"). This
   closes the feedback loop so a real task can't silently stay untracked.
+- **Enforcement gate (optional).** The nudges above are advisory — Claude can
+  ignore them. The gate makes tracking reliable by hooking the real signal,
+  *a file edit*. A `PostToolUse(Write|Edit|NotebookEdit)` hook fires a **one-shot**
+  reminder the first time an untracked session edits a file (gated by an
+  `.edited` marker, so it costs ~one injection per session, not one per edit).
+  A `Stop` hook then **refuses to end the turn** — returning
+  `{"decision":"block","reason":…}` — while the session has edited files but
+  tracked no task. So a session that did real work literally can't finish
+  without attaching/creating a task or running `skip`. It's **self-healing**
+  (attaching, creating, skipping, or `/done` clears the markers, silencing the
+  gate the instant work is tracked) and **anti-wedge** (capped at two blocks, so
+  a non-complying loop gives up rather than locking the session). Enable it by
+  adding the `PostToolUse` + `Stop` entries from [Install](#install); omit them
+  for advisory-only behaviour.
 - **Skip.** `todo.py skip --session <id>` marks a session intentionally
   untracked (e.g. a pure Q&A session); the nudge then stays silent for it.
   Attaching to or creating a task later resumes tracking.
@@ -208,9 +222,9 @@ Then merge the following into `~/.claude/settings.json`. Use the `update-config`
 skill if available — otherwise show the user this snippet and ask them to add it
 manually, then restart Claude Code.
 
-**The `hooks` arrays must be merged, not replaced.** If `UserPromptSubmit` or
-`SessionStart` hooks already exist from other modules, append these entries to
-the existing arrays rather than overwriting them.
+**The `hooks` arrays must be merged, not replaced.** If `UserPromptSubmit`,
+`SessionStart`, `PostToolUse`, or `Stop` hooks already exist from other modules,
+append these entries to the existing arrays rather than overwriting them.
 
 ```json
 "hooks": {
@@ -223,9 +237,21 @@ the existing arrays rather than overwriting them.
     { "matcher": "", "hooks": [
       { "type": "command", "command": "bash $HOME/.claude/todo/on_session_start.sh" }
     ]}
+  ],
+  "PostToolUse": [
+    { "matcher": "Write|Edit|NotebookEdit", "hooks": [
+      { "type": "command", "command": "bash $HOME/.claude/todo/on_post_tool.sh" }
+    ]}
+  ],
+  "Stop": [
+    { "matcher": "", "hooks": [
+      { "type": "command", "command": "bash $HOME/.claude/todo/on_stop.sh" }
+    ]}
   ]
 }
 ```
+
+The `PostToolUse` + `Stop` pair is the **enforcement gate** (see [How it works](#how-it-works)): a file edit in an untracked session triggers a one-shot reminder, and the `Stop` hook refuses to end the turn until a task is attached/created (or the session is skipped). They're optional — omit both if you only want the advisory nudges — but together they're what makes tracking reliable instead of best-effort.
 
 The `/todo` and `/done` commands live in `~/.claude/commands/todo.md` and
 `~/.claude/commands/done.md`; the clone ships copies under `commands/` — copy them
@@ -263,14 +289,14 @@ into your global `~/.claude/CLAUDE.md` and customize the workspace paths.
 ```bash
 mkdir -p "$HOME/.claude/todo/delegate" "$HOME/.claude/commands" && cd "$HOME/.claude/todo"
 base=https://raw.githubusercontent.com/ryanconmeo/claude-todo/main
-for f in todo.py categories.py on_session_start.sh on_user_prompt.sh close-session-window.sh CATEGORIES.md; do
+for f in todo.py categories.py on_session_start.sh on_user_prompt.sh on_post_tool.sh on_stop.sh close-session-window.sh CATEGORIES.md; do
   curl -fsSL "$base/$f" -o "$f"
 done
 curl -fsSL "$base/delegate/delegate.py"        -o delegate/delegate.py
 curl -fsSL "$base/delegate/POLICY-TEMPLATE.md" -o delegate/POLICY-TEMPLATE.md
 curl -fsSL "$base/commands/todo.md" -o "$HOME/.claude/commands/todo.md"
 curl -fsSL "$base/commands/done.md" -o "$HOME/.claude/commands/done.md"
-chmod +x on_session_start.sh on_user_prompt.sh close-session-window.sh
+chmod +x on_session_start.sh on_user_prompt.sh on_post_tool.sh on_stop.sh close-session-window.sh
 ```
 
 ## Update
@@ -286,10 +312,11 @@ rm -rf "$HOME/.claude/todo"        # repo + delegate + task data (store/) + work
 rm -f  "$HOME/.claude/commands/todo.md" "$HOME/.claude/commands/done.md"
 ```
 
-Then, in `~/.claude/settings.json`, remove **just** claude-todo's two hook entries —
-the `UserPromptSubmit` entry that runs `todo/on_user_prompt.sh` and the `SessionStart`
-entry that runs `todo/on_session_start.sh` — leaving any other modules' entries in
-those arrays intact. If you copied the delegation policy into your global
+Then, in `~/.claude/settings.json`, remove **just** claude-todo's four hook entries —
+the `UserPromptSubmit` entry (`todo/on_user_prompt.sh`), the `SessionStart` entry
+(`todo/on_session_start.sh`), and, if you enabled the enforcement gate, the
+`PostToolUse` entry (`todo/on_post_tool.sh`) and the `Stop` entry (`todo/on_stop.sh`) —
+leaving any other modules' entries in those arrays intact. If you copied the delegation policy into your global
 `~/.claude/CLAUDE.md`, delete that block too. Restart Claude Code.
 
 > Removing the repo also deletes your task history (`store/`) and the worker registry
@@ -304,6 +331,10 @@ those arrays intact. If you copied the delegation policy into your global
 **`on_session_start.sh`** — `SessionStart` hook. Surfaces open tasks (or the attached one) and auto-sets the window title to `todo-<seq> · <title>`.
 
 **`on_user_prompt.sh`** — `UserPromptSubmit` hook. Attaches/nudges the session and tints the terminal for skill-mapped prompts.
+
+**`on_post_tool.sh`** — `PostToolUse(Write|Edit|NotebookEdit)` hook. Fires a one-shot reminder the first time an untracked session edits a file. Half of the optional enforcement gate.
+
+**`on_stop.sh`** — `Stop` hook. Blocks the turn from ending while a session has edited files but tracked no task (self-healing, capped at two blocks so it can't wedge). The other half of the enforcement gate.
 
 **`close-session-window.sh`** — closes the Terminal.app window hosting a session; invoked by `/done`.
 

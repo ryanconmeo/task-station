@@ -266,6 +266,59 @@ def clear_count(session):
         pass
 
 
+# -- edited / blocked markers: the "real work happened" enforcement signal -----
+# A session that has EDITED a file but has no attached task is doing untracked
+# work. `.edited` records that an edit happened; `.blocked` counts how many times
+# the Stop gate has refused to let the turn end, so a non-complying loop can't
+# wedge the session (we give up after STOP_GATE_MAX_BLOCKS).
+STOP_GATE_MAX_BLOCKS = 2
+
+
+def _edited_path(session):
+    return _link_path(session) + ".edited"
+
+
+def _blocked_path(session):
+    return _link_path(session) + ".blocked"
+
+
+def mark_edited(session):
+    """Record that this session edited a file. Returns True only on the FIRST
+    call (so the PostToolUse reminder is one-shot, not per-edit)."""
+    _ensure_dirs()
+    p = _edited_path(session)
+    if os.path.exists(p):
+        return False
+    _atomic_write(p, "1")
+    return True
+
+
+def has_edited(session):
+    return os.path.exists(_edited_path(session))
+
+
+def get_blocked(session):
+    try:
+        with open(_blocked_path(session)) as f:
+            return int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def bump_blocked(session):
+    n = get_blocked(session) + 1
+    _atomic_write(_blocked_path(session), str(n))
+    return n
+
+
+def clear_edit_markers(session):
+    for p in (_edited_path(session), _blocked_path(session)):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
 # -------------------------------------------------------------- utilities ----
 
 def rel_time(ts):
@@ -682,8 +735,69 @@ def cmd_bump(a):
 def cmd_skip(a):
     set_link(a.session, SKIP_SENTINEL)
     clear_count(a.session)
+    clear_edit_markers(a.session)   # skip is a deliberate opt-out — stop the gate nagging
     print("This session is marked untracked — the [todo] nudge will stay silent. "
           "Attaching to or creating a task later resumes tracking.")
+
+
+def _open_tasks_brief(limit=8):
+    """A compact 'OPEN tasks you might attach to' list for hook reasons."""
+    rows = [t for t in sorted_tasks() if t.get("status") == "open"][:limit]
+    return "\n".join("  - [%s] %s" % (t["id"][:8], t["title"]) for t in rows)
+
+
+def cmd_mark_edited(a):
+    """PostToolUse(Write|Edit|NotebookEdit): if this session edited a file but is
+    NOT tracking a task, emit a one-shot reminder. Silent when already tracked,
+    skipped, or already reminded — so it costs ~one injection per session, max."""
+    link = get_link(a.session)
+    if link:                       # already attached to a task, or skipped — fine
+        return
+    if not mark_edited(a.session):  # one-shot: the reminder already fired
+        return
+    msg = (
+        "[todo] You just edited a file and this session is NOT tracking a task. "
+        "This is exactly the work that should be tracked. Attach to an existing "
+        "task or create one NOW (or `skip` if this is genuinely throwaway) — the "
+        "Stop gate will otherwise refuse to end the turn until you do.\n"
+        "Create:  python3 %s/todo.py create --session %s --color <color> "
+        "--effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'\n"
+        "Attach:  python3 %s/todo.py attach --session %s --task <id-or-number>\n"
+        "Open tasks:\n%s"
+        % (BASE, a.session, BASE, a.session, _open_tasks_brief() or "  (none)")
+    )
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PostToolUse", "additionalContext": msg}}))
+
+
+def cmd_stop_gate(a):
+    """Stop hook: refuse to end the turn if this session edited files but never
+    tracked a task. Self-healing — clears its markers the moment a task is
+    attached or the session is skipped — and capped at STOP_GATE_MAX_BLOCKS so a
+    non-complying loop can't wedge the session."""
+    if not has_edited(a.session):
+        return                              # no untracked edits → nothing to enforce
+    link = get_link(a.session)
+    if link:                                # real task attached, or skipped
+        clear_edit_markers(a.session)
+        return
+    if get_blocked(a.session) >= STOP_GATE_MAX_BLOCKS:
+        clear_edit_markers(a.session)       # gave it two tries — don't wedge the session
+        return
+    bump_blocked(a.session)
+    reason = (
+        "This session edited files but is not tracking a /todo task. Before you "
+        "finish, attach to an existing task or create one — or mark the session "
+        "skipped if this edit is genuinely throwaway. Pick exactly one:\n"
+        "  Create:  python3 %s/todo.py create --session %s --color <color> "
+        "--effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'\n"
+        "  Attach:  python3 %s/todo.py attach --session %s --task <id-or-number>\n"
+        "  Skip:    python3 %s/todo.py skip --session %s\n"
+        "Open tasks:\n%s"
+        % (BASE, a.session, BASE, a.session, BASE, a.session,
+           _open_tasks_brief() or "  (none)")
+    )
+    print(json.dumps({"decision": "block", "reason": reason}))
 
 
 def cmd_done(a):
@@ -707,6 +821,7 @@ def cmd_done(a):
             if get_link(sess) == task["id"]:
                 clear_link(sess)
                 clear_count(sess)
+                clear_edit_markers(sess)   # closing is a deliberate wrap-up — don't let the gate block
         print("Closed task [%s] %s. Reopen later with /todo."
               % (task["id"][:8], task["title"]))
         return
@@ -725,6 +840,7 @@ def cmd_done(a):
     save_task(task)
     clear_link(a.session)   # detach so a later message can't silently reopen it
     clear_count(a.session)
+    clear_edit_markers(a.session)   # deliberate wrap-up — don't let the Stop gate block
     print("Closed task [%s] %s and detached this session. Reopen later with /todo."
           % (task["id"][:8], task["title"]))
 
@@ -1088,6 +1204,12 @@ def main():
     sp = sub.add_parser("done"); sp.add_argument("--session", default=None)
     sp.add_argument("--task", default=None)   # close any task by seq/id from anywhere
     sp.set_defaults(fn=cmd_done)
+
+    sp = sub.add_parser("mark-edited"); sp.add_argument("--session", required=True)
+    sp.set_defaults(fn=cmd_mark_edited)   # PostToolUse(Write|Edit|NotebookEdit) one-shot reminder
+
+    sp = sub.add_parser("stop-gate"); sp.add_argument("--session", required=True)
+    sp.set_defaults(fn=cmd_stop_gate)     # Stop hook: block ending an untracked edit session
 
     sp = sub.add_parser("render"); sp.add_argument("--session", required=True)
     sp.add_argument("--arg", default=""); sp.set_defaults(fn=cmd_render)
