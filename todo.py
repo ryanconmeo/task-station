@@ -854,7 +854,7 @@ def _format_list():
                 "in a session becomes clear, or say so explicitly.")
     lines = []
     attached_note = ("  •  /todo <n> = open detail & resume   ·   /done = close current task"
-                     "   ·   close any by id:  python3 %s/todo.py done --task <n|id>" % BASE)
+                     "   ·   /done <n> = close any task by number/id")
     closed_total = sum(1 for t in listing if t["status"] != "open")
     if closed_total > MAX_CLOSED_IN_LIST:
         shown = 0
@@ -881,8 +881,8 @@ def _format_list():
             lines.append("%3d  %-40.40s  %s  %s"
                          % (t["seq"], t["title"], eff, rel_time(t.get("updated_ts"))))
     if closed_total > MAX_CLOSED_IN_LIST:
-        lines.append("     … %d older closed task(s) hidden  ·  close any by id as above"
-                     % (closed_total - MAX_CLOSED_IN_LIST))
+        lines.append("     … %d older closed task(s) hidden  ·  still reachable by number: "
+                     "/todo <n> or /done <n>" % (closed_total - MAX_CLOSED_IN_LIST))
     lines.append("")
     lines.append(effort_legend())
     if cats:
