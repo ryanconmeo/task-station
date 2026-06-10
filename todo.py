@@ -39,6 +39,7 @@ LOG_KEEP = 25          # max activity-log entries kept per task
 NUDGE_PROMPT_MAX = 120  # chars of the prompt stored in the activity log
 NUDGE_ESCALATE_AFTER = 4   # unattached prompts before the nudge escalates
 SKIP_SENTINEL = "__skip__"  # link value marking a session intentionally untracked
+MAX_CLOSED_IN_LIST = 5  # closed tasks shown in the /todo list (most recent first)
 
 # Categories / colours are an OPTIONAL plugin: all of that logic lives in
 # categories.py. If it's absent (or fails to import), `cats` is None and the
@@ -854,6 +855,17 @@ def _format_list():
     lines = []
     attached_note = ("  •  /todo <n> = open detail & resume   ·   /done = close current task"
                      "   ·   close any by id:  python3 %s/todo.py done --task <n|id>" % BASE)
+    closed_total = sum(1 for t in listing if t["status"] != "open")
+    if closed_total > MAX_CLOSED_IN_LIST:
+        shown = 0
+        trimmed = []
+        for t in listing:
+            if t["status"] != "open":
+                shown += 1
+                if shown > MAX_CLOSED_IN_LIST:
+                    continue
+            trimmed.append(t)
+        listing = trimmed
     last_status = None
     for t in listing:
         if t["status"] != last_status:
@@ -868,6 +880,9 @@ def _format_list():
         else:
             lines.append("%3d  %-40.40s  %s  %s"
                          % (t["seq"], t["title"], eff, rel_time(t.get("updated_ts"))))
+    if closed_total > MAX_CLOSED_IN_LIST:
+        lines.append("     … %d older closed task(s) hidden  ·  close any by id as above"
+                     % (closed_total - MAX_CLOSED_IN_LIST))
     lines.append("")
     lines.append(effort_legend())
     if cats:
