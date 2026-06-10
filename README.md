@@ -254,8 +254,10 @@ append these entries to the existing arrays rather than overwriting them.
 The `PostToolUse` + `Stop` pair is the **enforcement gate** (see [How it works](#how-it-works)): a file edit in an untracked session triggers a one-shot reminder, and the `Stop` hook refuses to end the turn until a task is attached/created (or the session is skipped). They're optional — omit both if you only want the advisory nudges — but together they're what makes tracking reliable instead of best-effort.
 
 The `/todo` and `/done` commands live in `~/.claude/commands/todo.md` and
-`~/.claude/commands/done.md`; the clone ships copies under `commands/` — copy them
-into `~/.claude/commands/` if cloning standalone.
+`~/.claude/commands/done.md`; the clone ships the source of truth under
+`commands/`. The `SessionStart` hook copies them into `~/.claude/commands/`
+automatically (and re-syncs them whenever the module versions change), so
+they're installed on first session start and can't drift afterwards.
 
 **For in-project worker delegation** (optional, but the two halves are meant to be
 used together): nothing extra to install — `delegate/delegate.py` ships with the
