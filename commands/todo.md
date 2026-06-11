@@ -1,6 +1,6 @@
 ---
-description: List tracked tasks (open first, then by recent activity); /todo <n> opens a task's detail and resumes it in this session.
-argument-hint: "[number or task-id; add -s to jump to the working session and skip the recap — omit to list all]"
+description: List tracked tasks; /todo <n> opens & resumes one.
+argument-hint: "[task # · add -s to jump to its window]"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -22,9 +22,8 @@ Each task is colour-coded by category (an `<emoji> [TAG]` after the title — th
   4. Ask what they'd like to do next, or just continue the work.
 
   Treat this task as the active context for the rest of the session.
-- If it is a **session-jump** (the block starts with `[SESSION-JUMP]` — produced by `/todo <n> -s`), the user wants to hop **straight back into this task's working session**, not read a recap. This session is now attached to the task (reopened if it was closed). Do only this, then stop:
-  1. Run the `zsh -ic '<color>'` tint line so this terminal matches the task's category.
-  2. Surface the `cd … && claude --resume …` resume command **verbatim in a copyable code block**, and note in one line that it drops them straight into the main connected session that holds this task's context.
-  3. **Do not** print a goal / summary / acceptance-criteria / activity-log recap — skipping that is the entire point of `-s`. A single short acknowledgement line is fine; nothing more.
+- If it is a **session-jump** (the block starts with `[SESSION-JUMP]` — produced by `/todo <n> -s`), the user wants to hop **straight into this task's working session in a fresh window**, not read a recap. This session is now attached to the task (reopened if it was closed). The tracker has *already* tried to open a new Terminal window running the resume command, leaving this window untouched. Do only this, then stop:
+  - If the block contains `[JUMP-WINDOW-OPENED]`: a new Terminal window is already up and running the resume command. Reply with **only the `↪ …` line from the block, copied verbatim, and nothing else** — no preamble, no recap, no extra words. Do **not** run the resume command yourself; it's already running in the new window.
+  - If the block does **not** contain `[JUMP-WINDOW-OPENED]` (auto-open failed, or there's no recorded session yet): surface the `cd … && claude --resume …` one-liner **verbatim in a copyable code block** so the user can run it themselves, note in one line what it does, and stop. Do not attempt to open a window yourself.
 
-  Treat this task as the active context for the rest of the session.
+  Either way, **skip the recap** — that's the whole point of `-s`. Treat this task as the active context for the rest of the session.

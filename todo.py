@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -59,6 +60,19 @@ def cat_color(color):
 def cat_tag(color, pad=False):
     """`<emoji> [TAG]` for the list, or "" when categories are off."""
     return cats.tag(color, pad=pad) if cats else ""
+
+
+def task_oneline(task):
+    """One-line task summary matching the /todo list row's content: number,
+    title, category tag, effort gauge. Used by the -s jump confirmation so it
+    reads the same as the list. No fixed-width padding (it stands alone, not in
+    a column) and no activity timestamp."""
+    parts = ["%s  %s" % (task.get("seq", task["id"][:8]), task["title"])]
+    tag = cat_tag(task.get("color"))
+    if tag:
+        parts.append(tag)
+    parts.append(effort_cell(task.get("effort")))
+    return "  ".join(parts)
 
 
 def cat_lines(color):
@@ -936,20 +950,52 @@ def _format_detail(task, session):
     return "\n".join(out)
 
 
-def _format_detail_session(task, session):
-    """Compact `/todo <n> -s` view: skip the recap, jump straight into the
-    task's main connected working session. Emits only the tint line and the
-    resume one-liner (the hub session that holds this task's context)."""
+def _open_jump_window(cmd):
+    """Open a NEW Terminal.app window running `cmd` (the resume one-liner) and
+    bring it to the front, via open-session-window.sh. The current window — the
+    one /todo was typed in — is left untouched.
+
+    Best-effort and macOS/Terminal.app-only: any failure (not darwin, osascript
+    missing, AppleScript error, script absent) returns False so the caller falls
+    back to just printing the command for the user to run by hand. Never raises."""
+    if sys.platform != "darwin":
+        return False
+    script = os.path.join(BASE, "open-session-window.sh")
+    if not os.path.exists(script):
+        return False
+    try:
+        r = subprocess.run(["bash", script, cmd],
+                           capture_output=True, text=True, timeout=15)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _format_detail_session(task, session, resume=None, opened=False):
+    """Compact `/todo <n> -s` view: skip the recap and jump straight into the
+    task's main connected working session.
+
+    When `opened` is True we've ALREADY launched a fresh Terminal window running
+    `resume` (the current window is left as-is), so we just confirm it. When it's
+    False — no recorded session yet, or the auto-open failed — we print the
+    one-liner for the user to run by hand. `resume` is the precomputed resume
+    command (recomputed here if not supplied)."""
     out = []
     out.append("[SESSION-JUMP] Task [%s] — %s — %s"
                % (task["id"][:8], task["status"].upper(), task["title"]))
     out.append("")
-    resume = resume_command(task, session)
-    if cats:
-        cmd = cats.tint_command(task.get("color"))
-        if cmd:
-            out.append("Tint this terminal to match the category — run:  " + cmd)
-    if resume:
+    if resume is None:
+        resume = resume_command(task, session)
+    if resume and opened:
+        out.append("Opened a NEW Terminal window resuming this task's working session "
+                   "(this window is left as-is). Resume command now running there:")
+        out.append("    %s" % resume)
+        out.append("")
+        out.append("[JUMP-WINDOW-OPENED] The jump window is already running the resume "
+                   "command. Reply with EXACTLY this one line and nothing else (no "
+                   "preamble, recap, or extra words); do not run the command yourself:")
+        out.append("    ↪ " + task_oneline(task))
+    elif resume:
         out.append("Resume the main connected session (cd + resume, one command):")
         out.append("    %s" % resume)
     else:
@@ -991,8 +1037,15 @@ def cmd_render(a):
     save_task(task)
     set_link(a.session, task["id"])
     clear_count(a.session)
-    print(_format_detail_session(task, a.session) if jump
-          else _format_detail(task, a.session))
+    if jump:
+        # -s: jump straight into the task's working session in a FRESH window
+        # (leaving this one untouched). Open it here so it happens immediately
+        # and deterministically; fall back to printing the one-liner if we can't.
+        resume = resume_command(task, a.session)
+        opened = _open_jump_window(resume) if resume else False
+        print(_format_detail_session(task, a.session, resume=resume, opened=opened))
+    else:
+        print(_format_detail(task, a.session))
 
 
 def cmd_add_project(a):

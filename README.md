@@ -84,11 +84,13 @@ Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Vo
   into the current session** — your next message continues it. `<n>` matches the
   stable number, not a position in the list. If the task was closed, opening it
   reopens it.
-  **`/todo <n> -s`** does the same attach/reopen but prints a compact
-  **session-jump** block instead of the full detail — just the tint line and the
-  `cd … && claude --resume …` one-liner — so you hop straight back into the
-  task's working session **without a recap**. The `-s` flag may sit on either
-  side of the number (`/todo -s <n>` works too).
+  **`/todo <n> -s`** does the same attach/reopen but **immediately opens a fresh
+  Terminal.app window** that runs the task's resume command (tint + `cd` +
+  `claude --resume`), dropping you straight into its working session — **no
+  recap**, and the window you typed `/todo` in is left untouched. The new window
+  is opened by `open-session-window.sh` (macOS/Terminal-only; if it can't, the
+  block falls back to printing the one-liner for you to run by hand). The `-s`
+  flag may sit on either side of the number (`/todo -s <n>` works too).
 - **`/done`** closes the task the current session is working on **and detaches
   the session** from it, so a follow-up message can't silently reopen it. To
   pick the task back up, use `/todo <n>`, which re-attaches and reopens it.
