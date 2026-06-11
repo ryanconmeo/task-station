@@ -936,8 +936,50 @@ def _format_detail(task, session):
     return "\n".join(out)
 
 
+def _format_detail_session(task, session):
+    """Compact `/todo <n> -s` view: skip the recap, jump straight into the
+    task's main connected working session. Emits only the tint line and the
+    resume one-liner (the hub session that holds this task's context)."""
+    out = []
+    out.append("[SESSION-JUMP] Task [%s] — %s — %s"
+               % (task["id"][:8], task["status"].upper(), task["title"]))
+    out.append("")
+    resume = resume_command(task, session)
+    if cats:
+        cmd = cats.tint_command(task.get("color"))
+        if cmd:
+            out.append("Tint this terminal to match the category — run:  " + cmd)
+    if resume:
+        out.append("Resume the main connected session (cd + resume, one command):")
+        out.append("    %s" % resume)
+    else:
+        out.append("No recorded working session to resume yet — start one in the "
+                   "task's directory, or run `/todo %s` for the full detail."
+                   % task.get("seq", task["id"][:8]))
+    return "\n".join(out)
+
+
+def _parse_session_flag(arg):
+    """Pull a `-s` / `--session` token out of a /todo arg (e.g. `1 -s` or `-s 1`).
+
+    `-s` means "jump straight into the task's connected working session" — emit
+    the resume one-liner and skip the recap. Returns (clean_arg, session) where
+    clean_arg has the flag removed so it still resolves to the task number/id.
+    The flag may sit on either side of the number; only a bare `-s`/`--session`
+    token counts, never a substring of an id."""
+    toks = (arg or "").split()
+    session = False
+    kept = []
+    for t in toks:
+        if t in ("-s", "--session"):
+            session = True
+        else:
+            kept.append(t)
+    return " ".join(kept), session
+
+
 def cmd_render(a):
-    arg = (a.arg or "").strip()
+    arg, jump = _parse_session_flag((a.arg or "").strip())
     if not arg:
         print(_format_list())
         return
@@ -949,7 +991,8 @@ def cmd_render(a):
     save_task(task)
     set_link(a.session, task["id"])
     clear_count(a.session)
-    print(_format_detail(task, a.session))
+    print(_format_detail_session(task, a.session) if jump
+          else _format_detail(task, a.session))
 
 
 def cmd_add_project(a):
