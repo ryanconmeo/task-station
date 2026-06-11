@@ -168,6 +168,12 @@ def legend():
     return "Legend: " + "  ·  ".join(parts)
 
 
+def compact_legend():
+    """Minimal key=dot+TAG legend for the per-prompt hook (token-lean)."""
+    return " ".join("%s=%s%s" % (c, m["dot"], m["tag"])
+                    for c, m in CATEGORIES.items() if m["label"] != "reserved")
+
+
 def picker_lines():
     """Guidance lines for the UserPromptSubmit hook: how to choose a colour."""
     lines = ["Pick a category COLOR for the task from its context (see CATEGORIES.md):",

@@ -14,6 +14,7 @@ Subcommands:
   render  --session ID --arg STR                /todo entrypoint (list | detail+attach)
   prompt-context --session ID                   UserPromptSubmit hook context
   session-start  --session ID --source SRC      SessionStart hook context
+  guidance                                      full attach/create how-to (on demand)
 
 REF is a 1-based index from the most recent `render` listing, or a task id /
 id-prefix. All writes are atomic (temp file + os.replace).
@@ -1239,37 +1240,61 @@ def cmd_prompt_context(a):
         lines.append("      python3 %s/todo.py skip --session %s" % (BASE, a.session))
         lines.append("")
 
-    lines.append("Track this session (attach or create) the moment ALL of these hold:")
-    lines.append("  - it is a concrete task, not a question / explanation / discussion")
-    lines.append("  - acting on it will edit files, run a multi-step process, or take more than ~2-3 tool calls")
-    lines.append("  - you understand it well enough to write a one-line title")
-    lines.append('TRACK examples:  "duplicate the review skills", "add dark mode", "fix the auth bug"')
-    lines.append('SKIP examples:   "what does this do?", "when is X true?", "reword this", a one-line typo fix')
-    lines.append("If you have already started editing files and still are not attached — attach now.")
+    # Compact form: full rules/examples live in `todo.py guidance` (and the
+    # SessionStart injection points there) — keep the per-prompt cost minimal.
+    lines.append("Attach/create the moment this is concrete work (edits files, multi-step, or >2-3 "
+                 "tool calls — not a question/discussion). Pure Q&A → stay silent.")
     if cats:
         skill_color = (cats.color_for_prompt(os.environ.get("TODO_PROMPT", ""))
                        if hasattr(cats, "color_for_prompt") else None)
         if skill_color:
-            lines.append("This prompt invokes a skill mapped to category '%s' (%s) — the terminal "
-                         "has ALREADY been tinted to it by the hook. Prefer --color %s when you "
-                         "create/attach this task, and DON'T re-run the tint alias."
+            lines.append("This prompt's skill maps to category '%s' (%s); terminal already tinted — "
+                         "use --color %s and DON'T re-run the tint alias."
                          % (skill_color, cats.label(skill_color), skill_color))
+        lines.append("  attach: python3 %s/todo.py attach --session %s --task <task-id> [--color <color>]" % (BASE, a.session))
+        lines.append("  create: python3 %s/todo.py create --session %s --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'"
+                     % (BASE, a.session))
+        legend = cats.compact_legend() if hasattr(cats, "compact_legend") else ""
+        if legend:
+            lines.append("Colors: " + legend)
+        tint = ("; RUN the `zsh -ic '<color>'` line the command prints"
+                if cats.TINT_TERMINAL and not skill_color else "")
+        lines.append("Tell the user in one short line (\"📋 Tracking: <title>\")%s. "
+                     "Full rules: python3 %s/todo.py guidance" % (tint, BASE))
+    else:
+        lines.append("  attach: python3 %s/todo.py attach --session %s --task <task-id>" % (BASE, a.session))
+        lines.append("  create: python3 %s/todo.py create --session %s --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'"
+                     % (BASE, a.session))
+        lines.append("Tell the user in one short line (\"📋 Tracking: <title>\"). "
+                     "Full rules: python3 %s/todo.py guidance" % BASE)
+    print("\n".join(lines))
+
+
+def cmd_guidance(a):
+    """Full attach/create how-to, fetched on demand (kept out of the per-prompt
+    injection for token economy — `prompt-context` points here)."""
+    lines = ["[todo] Track a session (attach or create) the moment ALL of these hold:",
+             "  - it is a concrete task, not a question / explanation / discussion",
+             "  - acting on it will edit files, run a multi-step process, or take more than ~2-3 tool calls",
+             "  - you understand it well enough to write a one-line title",
+             'TRACK examples:  "duplicate the review skills", "add dark mode", "fix the auth bug"',
+             'SKIP examples:   "what does this do?", "when is X true?", "reword this", a one-line typo fix',
+             "If you have already started editing files and still are not attached — attach now.",
+             "Q&A-only session → silence the nudge: python3 %s/todo.py skip --session <session-id>" % BASE]
+    if cats:
         lines.extend(cats.picker_lines())
-        lines.append("  • Matches an open task above → attach (pass --color to set OR recategorize it; accepts a key, emoji, or [TAG]):")
-        lines.append("      python3 %s/todo.py attach --session %s --task <task-id> [--color <color>]" % (BASE, a.session))
+        lines.append("  • Matches an open task → attach (pass --color to set OR recategorize; accepts a key, emoji, or [TAG]):")
+        lines.append("      python3 %s/todo.py attach --session <session-id> --task <task-id> [--color <color>]" % BASE)
         lines.append("  • Otherwise → create with its colour and an effort estimate "
                      "(xs/s/m/l/xl — your read of the task's complexity & scope):")
-        lines.append("      python3 %s/todo.py create --session %s --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'"
-                     % (BASE, a.session))
-        if cats.TINT_TERMINAL and not skill_color:
+        lines.append("      python3 %s/todo.py create --session <session-id> --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'"
+                     % BASE)
+        if cats.TINT_TERMINAL:
             lines.append("The command prints the category and a `zsh -ic '<color>'` line — RUN that "
                          "alias to tint this terminal to the task's colour.")
     else:
-        lines.append("  • Matches an open task above → attach:")
-        lines.append("      python3 %s/todo.py attach --session %s --task <task-id>" % (BASE, a.session))
-        lines.append("  • Otherwise → create (with an effort estimate — xs/s/m/l/xl — for the task's complexity & scope):")
-        lines.append("      python3 %s/todo.py create --session %s --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'"
-                     % (BASE, a.session))
+        lines.append("  • attach: python3 %s/todo.py attach --session <session-id> --task <task-id>" % BASE)
+        lines.append("  • create: python3 %s/todo.py create --session <session-id> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'" % BASE)
     lines.append("Do this as a side action, but DO tell the user in one short line when you "
                  "create or attach a task — e.g. \"📋 Tracking this as a new task: <title>\" or "
                  "\"📋 Attached to existing task: <title>\".")
@@ -1291,8 +1316,8 @@ def cmd_session_start(a):
     if not opens:
         return
     lines = ["[todo] You have %d open task(s). If the user's request matches one, attach to it "
-             "(see the per-message [todo] guidance); otherwise a new task will be tracked once "
-             "the work is clear:" % len(opens)]
+             "(full how-to: python3 %s/todo.py guidance); otherwise a new task will be tracked "
+             "once the work is clear:" % (len(opens), BASE)]
     for t in opens[:8]:
         lines.append("  - [%s] %s (%s)" % (t["id"][:8], t["title"], rel_time(t.get("updated_ts"))))
     print("\n".join(lines))
@@ -1360,6 +1385,9 @@ def main():
 
     sp = sub.add_parser("prompt-context"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_prompt_context)
+
+    sp = sub.add_parser("guidance")
+    sp.set_defaults(fn=cmd_guidance)
 
     sp = sub.add_parser("session-start"); sp.add_argument("--session", required=True)
     sp.add_argument("--source", default=""); sp.set_defaults(fn=cmd_session_start)
