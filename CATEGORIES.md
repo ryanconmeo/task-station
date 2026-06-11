@@ -105,9 +105,11 @@ so the tracker degrades gracefully for anyone who doesn't want your colours:
   full behaviour: tags, legend, and tint suggestions on create/attach/resume.
 
 `categories.py` exposes: `CATEGORIES` + `DEFAULT` (the taxonomy), `normalize`,
-`label`, `tag`, `summary`, `legend`, `tint_command` (returns `None` when tinting
-is off), and `picker_lines` (the colour-choosing guidance for the hook). To
-change the taxonomy, edit only that file — `todo.py` never names a colour.
+`label`, `tag`, `summary`, `legend`, `compact_legend` (one-line `key=dotTAG`
+form used by the token-lean per-prompt nudge), `tint_command` (returns `None`
+when tinting is off), and `picker_lines` (the colour-choosing guidance, served
+via `todo.py guidance`). To change the taxonomy, edit only that file —
+`todo.py` never names a colour.
 
 - `create` takes `--color`; `attach` takes an optional `--color` to set or
   backfill one. When categories are on they print the category and (if tinting
