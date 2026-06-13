@@ -63,6 +63,39 @@ def cat_tag(color, pad=False):
     return cats.tag(color, pad=pad) if cats else ""
 
 
+def statusline_segment(task, width=0):
+    """A ready-to-display, ANSI-colored one-line segment for a status bar:
+    '#<seq>  <dot> [TAG]  <title>'. Self-contained — it carries its own colors
+    and knows nothing about the bar that renders it. When width > 0 the title is
+    truncated (with an ellipsis) so the whole visible segment fits that many
+    columns; width 0 means no limit."""
+    RESET = "\033[0m"
+    C_SEQ   = "\033[38;2;235;215;120m"   # task number
+    C_TAG   = "\033[38;2;150;150;160m"   # [CATEGORY] tag text
+    C_TITLE = "\033[38;2;215;215;220m"   # title
+    seq = str(task.get("seq", "") or "")
+    title = task.get("title", "") or ""
+    tag = cat_tag(task.get("color"))     # '<emoji> [TAG]' — emoji is self-colored
+    # Color only the bracketed tag text, leaving the emoji dot untouched.
+    if tag and "[" in tag:
+        dot, _, rest = tag.partition("[")
+        tag_disp = "%s%s[%s%s" % (dot, C_TAG, rest, RESET)
+    else:
+        tag_disp = tag
+    prefix_plain = "#%s  %s%s" % (seq, (tag + "  ") if tag else "", "")
+    if width and width > 0:
+        avail = width - len(prefix_plain)
+        if avail < 1:
+            avail = 1
+        if len(title) > avail:
+            title = title[: max(1, avail - 1)] + "…"
+    parts = ["%s#%s%s" % (C_SEQ, seq, RESET)]
+    if tag:
+        parts.append(tag_disp)
+    parts.append("%s%s%s" % (C_TITLE, title, RESET))
+    return "  ".join(parts)
+
+
 def task_oneline(task):
     """One-line task summary matching the /todo list row's content: number,
     title, category tag, effort gauge. Used by the -s jump confirmation so it
@@ -1091,15 +1124,23 @@ def cmd_whoami(a):
         if not porcelain:
             print("session %s: intentionally untracked (skipped)" % a.session[:8])
         return
+    statusline = getattr(a, "statusline", False)
     task = load_task(task_id) if task_id else None
     if not task:
-        if not porcelain:
+        if not porcelain and not statusline:
             print("session %s: not attached to any task" % a.session[:8])
         return
     ensure_seqs()
     if porcelain:
         # Machine-readable: just the seq, for scripts (e.g. delegate auto-inherit).
         print(task.get("seq", ""))
+        return
+    if statusline:
+        # A ready-to-display, ANSI-colored segment for a status bar —
+        # '#<seq>  <dot> [TAG]  <title>'. Self-contained: knows nothing about who
+        # renders it. Honors --width (>0) by truncating the title so the whole
+        # segment fits that many columns; --width 0 means no limit.
+        print(statusline_segment(task, getattr(a, "width", 0)))
         return
     print("session %s → todo %s · %s (%s)"
           % (a.session[:8], task.get("seq", "?"), task["title"], task["status"]))
@@ -1366,6 +1407,10 @@ def main():
     sp = sub.add_parser("whoami"); sp.add_argument("--session", required=True)
     sp.add_argument("--porcelain", action="store_true",
                     help="print only the attached task's seq (empty if none) for scripts")
+    sp.add_argument("--statusline", action="store_true",
+                    help="print a colored '#seq <dot> [TAG] title' status-bar segment (empty if no task)")
+    sp.add_argument("--width", type=int, default=0,
+                    help="with --statusline, truncate the title so the segment fits N columns (0 = no limit)")
     sp.set_defaults(fn=cmd_whoami)
 
     sp = sub.add_parser("update"); sp.add_argument("--task", required=True)

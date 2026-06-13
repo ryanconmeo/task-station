@@ -17,7 +17,7 @@ OPEN
   2  Fix auth refresh bug                   🔴 [BUG]        ▃ S   yesterday
 
 CLOSED
-  3  Migrate costbar to v2                  🟤 [MIGRATION]  █ XL  3d ago
+  3  Migrate legacy billing to v2           🟤 [MIGRATION]  █ XL  3d ago
 
 Effort:  ▁ XS  ▃ S  ▅ M  ▆ L  █ XL
 Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Volt · 🔵 [DEVOPS] devops · 🩷 [DESIGN] design · ⚪ [SKILLS] skills and memories · 🟤 [MIGRATION] legacy data migration for Volt · …
@@ -183,6 +183,15 @@ that makes Claude reach for it on its own — lives in your global `~/.claude/CL
 own. Without it, `delegate.py` still works when you invoke it by hand — Claude just
 won't know *when* to use it automatically.
 
+### Status bar integration
+
+`todo.py whoami --session <id> --statusline` prints a ready-to-display, ANSI-colored one-line segment for the session's attached task — `#<seq>  <dot> [TAG]  <title>` — and nothing when the session has no task. Add `--width <N>` to truncate the title so the whole segment fits `N` columns (`0` = no limit). It's self-contained: it carries its own colors and knows nothing about the bar that renders it, so it drops into any status line (tmux, powerline, a custom prompt, or a Claude Code `statusLine` command).
+
+```bash
+$ todo.py whoami --session 5c8edf12 --statusline --width 0
+#42  🔵 [DEVOPS]  Wire up the deploy pipeline
+```
+
 ### Storage
 
 One JSON file per task under `store/tasks/<uuid>.json`; session→task links under
@@ -335,7 +344,7 @@ leaving any other modules' entries in those arrays intact. If you copied the del
 
 ## Files
 
-**`todo.py`** — the engine: task storage, `/todo` and `/done`, the hooks' logic, plus the `whoami` and `update` commands.
+**`todo.py`** — the engine: task storage, `/todo` and `/done`, the hooks' logic, plus the `whoami` (incl. the `--statusline` segment provider) and `update` commands.
 
 **`categories.py`** — optional colour-taxonomy + terminal-tint plugin; `todo.py` runs fine without it. See [`CATEGORIES.md`](CATEGORIES.md).
 
