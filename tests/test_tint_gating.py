@@ -1,7 +1,7 @@
 # tests/test_tint_gating.py
 import os, sys, unittest
 sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 import categories
 
 class TintGating(unittest.TestCase):

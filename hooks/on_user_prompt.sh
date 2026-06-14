@@ -13,7 +13,7 @@ input=$(cat)
 session_id=$(echo "$input" | jq -r '.session_id // "unknown"')
 prompt=$(echo "$input" | jq -r '.prompt // ""')
 
-color=$(TODO_PROMPT="$prompt" python3 "$HOME/.claude/todo/todo.py" prompt-color)
+color=$(TODO_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/todo.py" prompt-color)
 [ -n "$color" ] && zsh -ic "$color" >/dev/null 2>&1
 
-TODO_PROMPT="$prompt" python3 "$HOME/.claude/todo/todo.py" prompt-context --session "$session_id"
+TODO_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/todo.py" prompt-context --session "$session_id"

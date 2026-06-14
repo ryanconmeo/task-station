@@ -5,7 +5,7 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-!`python3 "$HOME/.claude/todo/todo.py" render --session "${CLAUDE_SESSION_ID}" --arg "$ARGUMENTS"`
+!`python3 "${CLAUDE_PLUGIN_ROOT}/lib/todo.py" render --session "${CLAUDE_SESSION_ID}" --arg "$ARGUMENTS"`
 
 The block above is the live output of the task tracker.
 

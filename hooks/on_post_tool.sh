@@ -7,5 +7,5 @@ input=$(cat)
 # Suppressed inside delegate-spawned workers — task tracking is the hub's job.
 [ -n "$CLAUDE_TODO_SUPPRESS" ] && exit 0
 session_id=$(echo "$input" | jq -r '.session_id // "unknown"')
-python3 "$HOME/.claude/todo/todo.py" mark-edited --session "$session_id"
+python3 "${CLAUDE_PLUGIN_ROOT}/lib/todo.py" mark-edited --session "$session_id"
 exit 0

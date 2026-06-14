@@ -1,6 +1,6 @@
 # tests/test_migrate.py
 import os, sys, json, tempfile, shutil, unittest
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 import todo
 
 class Migrate(unittest.TestCase):

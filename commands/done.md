@@ -5,7 +5,7 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-!`if [ -n "$ARGUMENTS" ]; then python3 "$HOME/.claude/todo/todo.py" done --task "$ARGUMENTS"; else python3 "$HOME/.claude/todo/todo.py" done --session "${CLAUDE_SESSION_ID}"; bash "$HOME/.claude/todo/close-session-window.sh" --detach --after 1 >/dev/null 2>&1; fi`
+!`if [ -n "$ARGUMENTS" ]; then python3 "${CLAUDE_PLUGIN_ROOT}/lib/todo.py" done --task "$ARGUMENTS"; else python3 "${CLAUDE_PLUGIN_ROOT}/lib/todo.py" done --session "${CLAUDE_SESSION_ID}"; bash "${CLAUDE_PLUGIN_ROOT}/lib/close-session-window.sh" --detach --after 1 >/dev/null 2>&1; fi`
 
 Relay the result above to the user in one short line. If a task was closed, confirm it by name. If nothing matched / nothing was attached, say so.
 

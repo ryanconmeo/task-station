@@ -1,0 +1,10 @@
+{
+  "name": "claude-todo",
+  "description": "Persistent cross-session task tracking (/todo, /done) with auto-attach, an optional enforcement gate, category colours, and in-project worker delegation.",
+  "version": "1.0.0",
+  "author": { "name": "Ryan Nguyen", "url": "https://github.com/ryanconmeo" },
+  "homepage": "https://github.com/ryanconmeo/claude-todo",
+  "repository": "https://github.com/ryanconmeo/claude-todo",
+  "license": "MIT",
+  "keywords": ["todo", "task-tracking", "hooks", "productivity", "delegation"]
+}
