@@ -36,10 +36,22 @@ Cross-workspace **write** work → one worker per affected repo, coordinated fro
 hub. If the target project is ambiguous, infer it from the active `/todo` task,
 otherwise ask.
 
+> **Set `DELEGATE` to the installed delegate path before copying this in.** When
+> Claude runs the command below in a normal session, `${CLAUDE_PLUGIN_ROOT}` is **not**
+> set (the harness only exports it inside this plugin's own hooks/commands), and the
+> install path is version-specific. So resolve it once and hard-code (or alias) it.
+> Find it with:
+> ```bash
+> ls ~/.claude/plugins/cache/*/claude-todo/*/lib/delegate/delegate.py
+> ```
+> Then replace `<DELEGATE>` below with that absolute path (re-point it after a
+> `/plugin update` bumps the version, or wrap it in a shell alias / `$DELEGATE` env var
+> so the policy text never changes).
+
 ### How (announce, then proceed — don't wait for approval)
 Emit one line first — e.g. `→ delegating this to a <project> worker` — then run:
 ```bash
-python3 ~/.claude/todo/delegate/delegate.py run --project <name> --task "<self-contained instructions>"
+python3 <DELEGATE> run --project <name> --task "<self-contained instructions>"
 ```
 - Workers run `--permission-mode acceptEdits` and **inherit each repo's allowlist**.
   An un-allowlisted tool *fails* (a headless worker can't prompt a human) — widen
