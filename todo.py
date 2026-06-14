@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import shutil
 import time
 import uuid
 from datetime import datetime, timezone
@@ -41,6 +42,36 @@ PENDING_BRIEFS = os.path.join(DATA, "pending-briefs")
 DELEGATE_REGISTRY = os.path.join(DATA, "workers.json")
 PROJECTS_ROOT = os.path.join(
     os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")), "projects")
+
+LEGACY_STORE = os.path.expanduser("~/.claude/todo/store")
+
+def _migrate(src_store, data, marker_name=".migrated"):
+    """One-time idempotent COPY of legacy state into the data dir. Returns True if it ran.
+    Copy (not move) leaves the old clone intact as a backup."""
+    marker = os.path.join(data, marker_name)
+    dst_store = os.path.join(data, "store")
+    if os.path.exists(marker) or os.path.isdir(dst_store):
+        return False
+    if not os.path.isdir(src_store):
+        return False
+    os.makedirs(data, exist_ok=True)
+    shutil.copytree(src_store, dst_store)
+    legacy_base = os.path.dirname(src_store)
+    reg = os.path.join(legacy_base, "delegate", "workers.json")
+    if os.path.isfile(reg):
+        shutil.copy2(reg, os.path.join(data, "workers.json"))
+    pb = os.path.join(legacy_base, "pending-briefs")
+    if os.path.isdir(pb):
+        shutil.copytree(pb, os.path.join(data, "pending-briefs"))
+    with open(marker, "w") as f:
+        f.write("migrated from %s\n" % src_store)
+    return True
+
+def _maybe_migrate():
+    try:
+        _migrate(LEGACY_STORE, DATA)
+    except Exception:
+        pass  # never let a migration hiccup block the tracker
 
 LOG_KEEP = 25          # max activity-log entries kept per task
 NUDGE_PROMPT_MAX = 120  # chars of the prompt stored in the activity log
@@ -1371,7 +1402,13 @@ def cmd_session_start(a):
 
 # ------------------------------------------------------------------- main ----
 
+def cmd_migrate(a):
+    ran = _migrate(a.src, DATA)
+    print("Migrated from %s" % a.src if ran else "Nothing to migrate (already done or no source).")
+
+
 def main():
+    _maybe_migrate()
     p = argparse.ArgumentParser(prog="todo")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -1441,6 +1478,9 @@ def main():
 
     sp = sub.add_parser("session-start"); sp.add_argument("--session", required=True)
     sp.add_argument("--source", default=""); sp.set_defaults(fn=cmd_session_start)
+
+    sp = sub.add_parser("migrate"); sp.add_argument("--from", dest="src", default=LEGACY_STORE)
+    sp.set_defaults(fn=cmd_migrate)
 
     a = p.parse_args()
     a.fn(a)
