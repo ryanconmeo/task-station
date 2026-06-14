@@ -1,11 +1,11 @@
 {
   "hooks": {
     "SessionStart": [
-      { "matcher": "", "hooks": [
+      { "hooks": [
         { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_session_start.sh\"" } ] }
     ],
     "UserPromptSubmit": [
-      { "matcher": "", "hooks": [
+      { "hooks": [
         { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_user_prompt.sh\"" } ] }
     ],
     "PostToolUse": [
@@ -13,7 +13,7 @@
         { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_post_tool.sh\"" } ] }
     ],
     "Stop": [
-      { "matcher": "", "hooks": [
+      { "hooks": [
         { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_stop.sh\"" } ] }
     ]
   }
