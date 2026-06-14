@@ -15,6 +15,9 @@ class Migrate(unittest.TestCase):
         os.makedirs(os.path.join(self.legacy, "delegate"))
         with open(os.path.join(self.legacy, "delegate", "workers.json"), "w") as f:
             json.dump({"w": 1}, f)
+        os.makedirs(os.path.join(self.legacy, "pending-briefs"))
+        with open(os.path.join(self.legacy, "pending-briefs", "b.md"), "w") as f:
+            f.write("brief")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -33,6 +36,11 @@ class Migrate(unittest.TestCase):
     def test_idempotent(self):
         self.assertTrue(todo._migrate(os.path.join(self.legacy, "store"), self.data))
         self.assertFalse(todo._migrate(os.path.join(self.legacy, "store"), self.data))
+
+    def test_copies_pending_briefs(self):
+        todo._migrate(os.path.join(self.legacy, "store"), self.data)
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.data, "pending-briefs", "b.md")))
 
     def test_skips_when_data_store_exists(self):
         os.makedirs(os.path.join(self.data, "store"))

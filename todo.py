@@ -24,9 +24,9 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
-import shutil
 import time
 import uuid
 from datetime import datetime, timezone
@@ -47,7 +47,8 @@ LEGACY_STORE = os.path.expanduser("~/.claude/todo/store")
 
 def _migrate(src_store, data, marker_name=".migrated"):
     """One-time idempotent COPY of legacy state into the data dir. Returns True if it ran.
-    Copy (not move) leaves the old clone intact as a backup."""
+    Copy (not move) leaves the old clone intact as a backup. On failure, any partial
+    copy is rolled back so a later run can retry cleanly."""
     marker = os.path.join(data, marker_name)
     dst_store = os.path.join(data, "store")
     if os.path.exists(marker) or os.path.isdir(dst_store):
@@ -55,23 +56,34 @@ def _migrate(src_store, data, marker_name=".migrated"):
     if not os.path.isdir(src_store):
         return False
     os.makedirs(data, exist_ok=True)
-    shutil.copytree(src_store, dst_store)
-    legacy_base = os.path.dirname(src_store)
-    reg = os.path.join(legacy_base, "delegate", "workers.json")
-    if os.path.isfile(reg):
-        shutil.copy2(reg, os.path.join(data, "workers.json"))
-    pb = os.path.join(legacy_base, "pending-briefs")
-    if os.path.isdir(pb):
-        shutil.copytree(pb, os.path.join(data, "pending-briefs"))
-    with open(marker, "w") as f:
-        f.write("migrated from %s\n" % src_store)
+    dst_workers = os.path.join(data, "workers.json")
+    dst_briefs = os.path.join(data, os.path.basename(PENDING_BRIEFS))
+    try:
+        shutil.copytree(src_store, dst_store)
+        legacy_base = os.path.dirname(src_store)
+        reg = os.path.join(legacy_base, "delegate", "workers.json")
+        if os.path.isfile(reg):
+            shutil.copy2(reg, dst_workers)
+        pb = os.path.join(legacy_base, os.path.basename(PENDING_BRIEFS))
+        if os.path.isdir(pb):
+            shutil.copytree(pb, dst_briefs)
+        with open(marker, "w") as f:
+            f.write("migrated from %s\n" % src_store)
+    except Exception:
+        # roll back partial state so the existence guard doesn't mask a future retry
+        shutil.rmtree(dst_store, ignore_errors=True)
+        shutil.rmtree(dst_briefs, ignore_errors=True)
+        if os.path.isfile(dst_workers):
+            os.remove(dst_workers)
+        raise
     return True
 
 def _maybe_migrate():
     try:
         _migrate(LEGACY_STORE, DATA)
     except Exception:
-        pass  # never let a migration hiccup block the tracker
+        import traceback
+        traceback.print_exc(file=sys.stderr)  # observable, but never block the tracker
 
 LOG_KEEP = 25          # max activity-log entries kept per task
 NUDGE_PROMPT_MAX = 120  # chars of the prompt stored in the activity log
@@ -1403,8 +1415,9 @@ def cmd_session_start(a):
 # ------------------------------------------------------------------- main ----
 
 def cmd_migrate(a):
+    # Explicit command surfaces errors (unlike _maybe_migrate, which swallows them).
     ran = _migrate(a.src, DATA)
-    print("Migrated from %s" % a.src if ran else "Nothing to migrate (already done or no source).")
+    print(("Migrated from %s" % a.src) if ran else "Nothing to migrate (already done or no source).")
 
 
 def main():
