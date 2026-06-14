@@ -1,0 +1,26 @@
+# tests/test_categories_overrides.py
+import os, sys, json, tempfile, importlib, unittest
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+class Overrides(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        os.environ["CLAUDE_TODO_HOME"] = self.tmp
+        with open(os.path.join(self.tmp, "categories.json"), "w") as f:
+            json.dump({"tint_terminal": False,
+                       "categories": {"teal": {"dot": "🟦", "tag": "TEAL", "label": "ops"}}},
+                      f)
+
+    def tearDown(self):
+        os.environ.pop("CLAUDE_TODO_HOME", None)
+
+    def test_user_override_merges_over_defaults(self):
+        import categories
+        importlib.reload(categories)            # re-run module-load merge
+        self.assertIn("teal", categories.CATEGORIES)
+        self.assertIn("red", categories.CATEGORIES)     # defaults still present
+        self.assertFalse(categories.TINT_TERMINAL)
+
+if __name__ == "__main__":
+    unittest.main()

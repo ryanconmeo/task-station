@@ -20,6 +20,7 @@ switch the Terminal.app profile (the author's aliases map e.g. `green` →
 valid alias names if you leave TINT_TERMINAL on.
 """
 
+import os
 import re
 
 # Turn OFF if you don't have <Color>-named Terminal profiles + matching zsh
@@ -58,6 +59,34 @@ SKILL_COLORS = [
     (r"update-config|keybindings|permission|schedule|statusline|"
      r"\binit\b|claude-api|\bloop\b|deep-research|simplify|verify", "white"),   # Claude tooling
 ]
+
+import json as _json
+import sys as _sys
+import paths as _paths
+
+
+def _apply_overrides():
+    """Merge user overrides from <data_dir>/categories.json over the shipped defaults,
+    so customizations survive `/plugin update`. Absent/invalid file → defaults unchanged."""
+    global TINT_TERMINAL, SKILL_COLORS, _TAG_WIDTH
+    cfg = os.path.join(_paths.data_dir(), "categories.json")
+    if not os.path.isfile(cfg):
+        return
+    try:
+        with open(cfg) as f:
+            data = _json.load(f)
+    except Exception:
+        return
+    if isinstance(data.get("categories"), dict):
+        CATEGORIES.update(data["categories"])
+    if "tint_terminal" in data:
+        TINT_TERMINAL = bool(data["tint_terminal"])
+    if isinstance(data.get("skill_colors"), list):
+        SKILL_COLORS = [tuple(x) for x in data["skill_colors"]] + SKILL_COLORS
+    _TAG_WIDTH = max(len(m["tag"]) for m in CATEGORIES.values()) + 2
+
+
+_apply_overrides()
 
 _CMD_RE = re.compile(r"<command-name>\s*/?\s*([^<\s]+)", re.I)
 
