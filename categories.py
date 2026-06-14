@@ -22,6 +22,9 @@ valid alias names if you leave TINT_TERMINAL on.
 
 import os
 import re
+import json as _json
+import sys as _sys
+import paths as _paths
 
 # Turn OFF if you don't have <Color>-named Terminal profiles + matching zsh
 # aliases. Tags/labels still render; only the `zsh -ic '<color>'` hints vanish.
@@ -60,30 +63,34 @@ SKILL_COLORS = [
      r"\binit\b|claude-api|\bloop\b|deep-research|simplify|verify", "white"),   # Claude tooling
 ]
 
-import json as _json
-import sys as _sys
-import paths as _paths
-
-
 def _apply_overrides():
     """Merge user overrides from <data_dir>/categories.json over the shipped defaults,
-    so customizations survive `/plugin update`. Absent/invalid file → defaults unchanged."""
+    so customizations survive `/plugin update`. Any absent/invalid/malformed config
+    leaves the shipped defaults entirely unchanged (never crashes module import)."""
     global TINT_TERMINAL, SKILL_COLORS, _TAG_WIDTH
     cfg = os.path.join(_paths.data_dir(), "categories.json")
     if not os.path.isfile(cfg):
         return
+    # snapshot so a malformed override can't corrupt the shipped defaults
+    cat_snapshot = dict(CATEGORIES)
+    tint_snapshot, skill_snapshot, width_snapshot = TINT_TERMINAL, list(SKILL_COLORS), _TAG_WIDTH
     try:
         with open(cfg) as f:
             data = _json.load(f)
+        if isinstance(data.get("categories"), dict):
+            for key, meta in data["categories"].items():
+                # only accept well-formed entries; silently skip the rest
+                if isinstance(meta, dict) and {"dot", "tag", "label"} <= set(meta):
+                    CATEGORIES[key] = meta
+        if "tint_terminal" in data:
+            TINT_TERMINAL = bool(data["tint_terminal"])
+        if isinstance(data.get("skill_colors"), list):
+            SKILL_COLORS = [tuple(x) for x in data["skill_colors"]] + SKILL_COLORS
+        _TAG_WIDTH = max(len(m["tag"]) for m in CATEGORIES.values()) + 2
     except Exception:
-        return
-    if isinstance(data.get("categories"), dict):
-        CATEGORIES.update(data["categories"])
-    if "tint_terminal" in data:
-        TINT_TERMINAL = bool(data["tint_terminal"])
-    if isinstance(data.get("skill_colors"), list):
-        SKILL_COLORS = [tuple(x) for x in data["skill_colors"]] + SKILL_COLORS
-    _TAG_WIDTH = max(len(m["tag"]) for m in CATEGORIES.values()) + 2
+        # any unexpected malformation → restore shipped defaults entirely
+        CATEGORIES.clear(); CATEGORIES.update(cat_snapshot)
+        TINT_TERMINAL, SKILL_COLORS, _TAG_WIDTH = tint_snapshot, skill_snapshot, width_snapshot
 
 
 _apply_overrides()
