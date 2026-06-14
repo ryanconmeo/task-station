@@ -42,9 +42,11 @@ import uuid
 
 HOME = os.path.expanduser("~")
 PARENTS = [os.path.join(HOME, "Workspace"), os.path.join(HOME, "Workspace-Other")]
-REG_DIR = os.path.dirname(os.path.abspath(__file__))           # ~/.claude/todo/delegate
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import paths
+REG_DIR = paths.data_dir()                                     # state dir (survives update)
 REG = os.path.join(REG_DIR, "workers.json")
-TODO_PY = os.path.join(os.path.dirname(REG_DIR), "todo.py")     # sibling tracker
+TODO_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "todo.py")     # sibling tracker
 
 
 def _now():

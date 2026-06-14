@@ -30,12 +30,17 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-STORE = os.path.join(BASE, "store")
+import paths
+
+BASE = os.path.dirname(os.path.abspath(__file__))  # code location only (self-invocation)
+DATA = paths.data_dir()                             # mutable state — survives /plugin update
+STORE = os.path.join(DATA, "store")
 TASKS_DIR = os.path.join(STORE, "tasks")
 LINKS_DIR = os.path.join(STORE, "links")
-DELEGATE_REGISTRY = os.path.join(BASE, "delegate", "workers.json")
-PROJECTS_ROOT = os.path.expanduser("~/.claude/projects")
+PENDING_BRIEFS = os.path.join(DATA, "pending-briefs")
+DELEGATE_REGISTRY = os.path.join(DATA, "workers.json")
+PROJECTS_ROOT = os.path.join(
+    os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")), "projects")
 
 LOG_KEEP = 25          # max activity-log entries kept per task
 NUDGE_PROMPT_MAX = 120  # chars of the prompt stored in the activity log
