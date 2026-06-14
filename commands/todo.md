@@ -9,7 +9,7 @@ disable-model-invocation: true
 
 The block above is the live output of the task tracker.
 
-Each task is colour-coded by category (an `<emoji> [TAG]` after the title — the emoji dot carries the colour, the tag names it). The categories map to zsh aliases that tint the Terminal.app profile — see `~/.claude/todo/CATEGORIES.md`.
+Each task is colour-coded by category (an `<emoji> [TAG]` after the title — the emoji dot carries the colour, the tag names it). The categories map to zsh aliases that tint the Terminal.app profile — see `$CLAUDE_PLUGIN_ROOT/CATEGORIES.md` for the full taxonomy; customize colours without touching that file via `todo-data/categories.json`.
 
 - If it is a **list**, present it to the user as a **clean Markdown table** — never a plain numbered list. Render **two separate tables**, an **Open** one first then a **Closed** one, each preserving the tracker's ordering (open first, then by most recent activity). The `#` column must show each task's **exact number from the tracker output, verbatim** — numbers are stable ids, never renumber or resequence them. Use exactly these columns: `#` (task number, right-aligned), `Task` (title), `Category` (the `<emoji> [TAG]` kept intact), `Effort` (the `▰▱` bar + size), `Activity` (the relative timestamp). If the tracker notes hidden older closed tasks, repeat that note after the Closed table. After the tables, remind them they can run `/todo <number>` to open and resume a task, `/done` to close the task this session is working on, and `/done <number>` to close any task by its number. Do not take any other action.
 - If it is a **task detail**, this session has just been attached to that task (reopened if it was closed). Do all of the following, in order:

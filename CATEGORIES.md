@@ -87,29 +87,65 @@ A prompt that invokes no skill, or a skill no pattern matches, tints nothing —
 Claude falls back to the normal pick-a-colour guidance. When a skill *does*
 match, the `prompt-context` guidance tells Claude the terminal is already tinted
 and to reuse that colour when it creates/attaches the task (no re-tint). To
-change the mapping, edit only `SKILL_COLORS`.
+change the mapping, add a `skill_colors` list to your `todo-data/categories.json`
+override — entries there are prepended and take priority over the shipped list.
 
 ## How it's wired — `categories.py` is an optional plugin
 
-All category/colour logic lives in **`categories.py`**, not in the core. `todo.py`
-imports it defensively (`try: import categories as cats / except: cats = None`),
+All category/colour logic lives in **`lib/categories.py`**, not in the core.
+`todo.py` imports it defensively (`try: import categories as cats / except: cats = None`),
 so the tracker degrades gracefully for anyone who doesn't want your colours:
 
-- **No `categories.py`** (deleted or never installed) → a plain, colourless
-  tracker: no `[TAG]` column, no legend, `--color` is accepted but ignored, no
-  tint hints. Nothing depends on your aliases.
-- **`categories.py` present, `TINT_TERMINAL = False`** → tasks still get the
-  `<emoji> [TAG]` decoration and labels, but no `zsh -ic '<color>'` suggestions
-  (for people without the `*Sands*` Terminal profiles / aliases).
-- **`categories.py` present, `TINT_TERMINAL = True`** (the author's setup) →
-  full behaviour: tags, legend, and tint suggestions on create/attach/resume.
+- **No `categories.py`** (deleted from the plugin's `lib/` dir) → a plain,
+  colourless tracker: no `[TAG]` column, no legend, `--color` is accepted but
+  ignored, no tint hints. Nothing depends on your aliases.
+- **`categories.py` present, `tint_terminal: false`** (via your `categories.json`
+  override) → tasks still get the `<emoji> [TAG]` decoration and labels, but no
+  `zsh -ic '<color>'` suggestions (for people without the `*Sands*` Terminal
+  profiles / aliases).
+- **`categories.py` present, `tint_terminal: true`** (the author's setup, and the
+  default) → full behaviour: tags, legend, and tint suggestions on
+  create/attach/resume. **macOS only** — tinting is a no-op on other platforms
+  regardless of the setting.
 
-`categories.py` exposes: `CATEGORIES` + `DEFAULT` (the taxonomy), `normalize`,
+`lib/categories.py` exposes: `CATEGORIES` + `DEFAULT` (the taxonomy), `normalize`,
 `label`, `tag`, `summary`, `legend`, `compact_legend` (one-line `key=dotTAG`
 form used by the token-lean per-prompt nudge), `tint_command` (returns `None`
-when tinting is off), and `picker_lines` (the colour-choosing guidance, served
-via `todo.py guidance`). To change the taxonomy, edit only that file —
-`todo.py` never names a colour.
+when tinting is off or the platform isn't macOS), and `picker_lines` (the
+colour-choosing guidance, served via `todo.py guidance`).
+
+**Do not edit `lib/categories.py` directly** — changes are overwritten on
+`/plugin update`. Customize via a JSON file instead:
+
+```
+${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/categories.json
+```
+
+JSON shape:
+
+```json
+{
+  "categories": { "teal": { "dot": "🟦", "tag": "TEAL", "label": "ops" } },
+  "tint_terminal": false,
+  "skill_colors": [ ["regexpattern", "color"] ]
+}
+```
+
+- **`categories`** merges over (and can override) the shipped defaults. Only
+  entries with all three of `dot`, `tag`, and `label` are accepted; malformed
+  entries are silently skipped. Any invalid JSON in the file leaves the shipped
+  defaults entirely intact.
+- **`tint_terminal`** toggles the `zsh -ic '<color>'` tint suggestions globally.
+  Set to `false` if you like the `<emoji> [TAG]` decoration but don't have the
+  `<Color> Sands` Terminal profiles + zsh aliases.
+- **`skill_colors`** entries are **prepended** to the shipped list, so your
+  patterns win over the defaults. Each entry is `["regex", "color"]`; first
+  match wins.
+
+To remove categories entirely, delete `lib/categories.py` from the installed
+plugin directory. `todo.py` will run as a plain, colourless tracker.
+
+`todo.py` never names a colour — it only calls into `categories.py`.
 
 - `create` takes `--color`; `attach` takes an optional `--color` to set or
   backfill one. When categories are on they print the category and (if tinting

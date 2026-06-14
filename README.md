@@ -50,16 +50,16 @@ Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Vo
   without attaching/creating a task or running `skip`. It's **self-healing**
   (attaching, creating, skipping, or `/done` clears the markers, silencing the
   gate the instant work is tracked) and **anti-wedge** (capped at two blocks, so
-  a non-complying loop gives up rather than locking the session). Enable it by
-  adding the `PostToolUse` + `Stop` entries from [Install](#install); omit them
-  for advisory-only behaviour.
+  a non-complying loop gives up rather than locking the session). Both hooks are
+  included in the plugin by default; remove them from `hooks/hooks.json` if you
+  only want the advisory nudges.
 - **Skip.** `todo.py skip --session <id>` marks a session intentionally
   untracked (e.g. a pure Q&A session); the nudge then stays silent for it.
   Attaching to or creating a task later resumes tracking.
 - **Create dedup.** `create` refuses to make a near-duplicate of an existing
   open task (title overlap by Jaccard or containment) and points at the match to
   `attach` instead; pass `--force` to override.
-- **One task per session.** `store/links/<session_id>` records the attachment.
+- **One task per session.** A session→task link is recorded in the data directory.
   A `SessionStart` hook surfaces open tasks (or the already-attached one) so a
   resumed session recognises its task.
 - **Activity tracking.** Every message bumps the attached task's `updated_at`,
@@ -118,20 +118,23 @@ Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Vo
   `TINT_TERMINAL = False`.)
 
 - **Categories & terminal colours (optional plugin).** If `categories.py` is
-  present, every task carries a `color` from a taxonomy (bug/red,
-  code-review/orange, devops/blue, design/pink, …); `/todo` appends a
-  `<emoji> [TAG]` after each task and prints a legend. Each colour name is also a
-  zsh alias that switches the Terminal.app profile, so on attach / create /
-  resume Claude runs `zsh -ic '<color>'` to tint the terminal to the task's
-  category. **Skills tint immediately:** when a prompt invokes a slash command
-  mapped in `SKILL_COLORS` (e.g. `/volt:review-pr-auto` → orange), the
+  present (it ships with the plugin), every task carries a `color` from a
+  taxonomy (bug/red, code-review/orange, devops/blue, design/pink, …); `/todo`
+  appends a `<emoji> [TAG]` after each task and prints a legend. Each colour
+  name is also a zsh alias that switches the Terminal.app profile, so on attach /
+  create / resume Claude runs `zsh -ic '<color>'` to tint the terminal to the
+  task's category. **Skills tint immediately:** when a prompt invokes a slash
+  command mapped in `SKILL_COLORS` (e.g. `/volt:review-pr-auto` → orange), the
   `UserPromptSubmit` hook tints the terminal synchronously *before Claude
   responds*, so the colour applies the instant the skill runs. **All of this is
-  isolated in `categories.py`** — `todo.py` imports it
-  defensively and runs as a plain, colourless tracker without it. If you like the
-  tags but lack the profile aliases, keep the file and set `TINT_TERMINAL = False`
-  to drop just the tint suggestions. Full taxonomy, wiring, and the three opt-out
-  levels are in [`CATEGORIES.md`](CATEGORIES.md).
+  isolated in `lib/categories.py`** — `todo.py` imports it defensively and runs
+  as a plain, colourless tracker without it. The taxonomy ships as defaults in
+  `lib/categories.py`; override or extend it without touching the shipped file
+  via `todo-data/categories.json` (survives `/plugin update`) — see
+  [`CATEGORIES.md`](CATEGORIES.md). If you like the tags but lack the profile
+  aliases, set `"tint_terminal": false` in your `categories.json` to drop just
+  the tint suggestions. Full taxonomy, wiring, and the three opt-out levels are
+  in [`CATEGORIES.md`](CATEGORIES.md).
 
 There is no auto-close: tasks stay open until you run `/done`. (The Claude Code
 harness can't distinguish `/exit` from a crash or window-close, so closing is
@@ -139,7 +142,7 @@ kept explicit and deliberate.)
 
 ## Delegate — in-project workers
 
-`claude-todo` ships a second half in [`delegate/`](delegate/delegate.py): a helper
+`claude-todo` ships a second half in [`lib/delegate/`](lib/delegate/delegate.py): a helper
 that spawns an **in-project Claude worker** and links it to a task. The two are
 meant to be used **together** — don't run one without the other.
 
@@ -153,9 +156,9 @@ relays the result back to the hub.
 
 ```bash
 # do work in a repo, linked to /todo task 38:
-python3 ~/.claude/todo/delegate/delegate.py run --project Volt --seq 38 \
+python3 "$CLAUDE_PLUGIN_ROOT/lib/delegate/delegate.py" run --project Volt --seq 38 \
   --task "<self-contained instructions>"
-python3 ~/.claude/todo/delegate/delegate.py list        # known workers
+python3 "$CLAUDE_PLUGIN_ROOT/lib/delegate/delegate.py" list        # known workers
 ```
 
 **How the two synergize:**
@@ -171,14 +174,14 @@ python3 ~/.claude/todo/delegate/delegate.py list        # known workers
   **title** to `todo-<seq> · <title>`, and `todo.py whoami --session <id>` maps any
   session back to its task.
 
-The registry lives at `delegate/workers.json` (machine-local, git-ignored). Used
-without `--seq`, `delegate` still works standalone (one worker per repo, unnamed and
-unlinked).
+The registry lives at `<data_dir>/workers.json` (machine-local, not tracked by the
+plugin). Used without `--seq`, `delegate` still works standalone (one worker per
+repo, unnamed and unlinked).
 
 **Enabling *auto*-delegation.** `delegate.py` is the *how*; the *when* — the rule
 that makes Claude reach for it on its own — lives in your global `~/.claude/CLAUDE.md`
 (loaded every session). This repo ships a ready-to-adapt
-[`delegate/POLICY-TEMPLATE.md`](delegate/POLICY-TEMPLATE.md): copy it into your
+[`lib/delegate/POLICY-TEMPLATE.md`](lib/delegate/POLICY-TEMPLATE.md): copy it into your
 `~/.claude/CLAUDE.md` and swap the placeholder workspace paths/project names for your
 own. Without it, `delegate.py` still works when you invoke it by hand — Claude just
 won't know *when* to use it automatically.
@@ -194,9 +197,11 @@ $ todo.py whoami --session 5c8edf12 --statusline --width 0
 
 ### Storage
 
-One JSON file per task under `store/tasks/<uuid>.json`; session→task links under
-`store/links/`. All writes are atomic. `store/` is git-ignored — task data is
-private and machine-local.
+One JSON file per task under `<data_dir>/tasks/<uuid>.json`; session→task links
+under `<data_dir>/links/`. All writes are atomic. The data directory defaults to
+`${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/`; set `$CLAUDE_TODO_HOME` to
+override. It is machine-local and not tracked by the plugin — task data persists
+across `/plugin update`.
 
 ### Limitations (Claude Code harness)
 
@@ -211,155 +216,109 @@ private and machine-local.
 Run these commands:
 
 ```bash
-git clone https://github.com/ryanconmeo/claude-todo "$HOME/.claude/todo"
+/plugin marketplace add ryanconmeo/claude-todo
+/plugin install claude-todo
 ```
 
-The clone ships `categories.py` with the author's colour taxonomy and terminal
-tinting **on**. It is an optional plugin — adjust it to taste:
+That wires the `/todo` + `/done` commands and all four hooks automatically — no
+`settings.json` edit required. Task data lands in
+`${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/` and **survives `/plugin update`**.
 
-```bash
-# Don't want categories/colours at all → plain tracker:
-rm "$HOME/.claude/todo/categories.py"
-# Want the tags but you don't have <Color> Sands Terminal profiles + aliases →
-# keep the file and turn off tinting:
-#   edit categories.py and set  TINT_TERMINAL = False
-# Want your own categories → edit the CATEGORIES dict in categories.py.
-```
-
-If `~/.claude/` is a git repo with an allowlist-style `.gitignore` (`*` plus
-`!file` entries), the `todo/` subdirectory is already ignored — for parity with
-the other modules you may still add it under the "their own git repos" section:
-
-```bash
-if [ -d "$HOME/.claude/.git" ]; then
-  grep -qxF 'todo/' "$HOME/.claude/.gitignore" 2>/dev/null || echo 'todo/' >> "$HOME/.claude/.gitignore"
-fi
-```
-
-Then merge the following into `~/.claude/settings.json`. Use the `update-config`
-skill if available — otherwise show the user this snippet and ask them to add it
-manually, then restart Claude Code.
-
-**The `hooks` arrays must be merged, not replaced.** If `UserPromptSubmit`,
-`SessionStart`, `PostToolUse`, or `Stop` hooks already exist from other modules,
-append these entries to the existing arrays rather than overwriting them.
-
-```json
-"hooks": {
-  "UserPromptSubmit": [
-    { "matcher": "", "hooks": [
-      { "type": "command", "command": "bash $HOME/.claude/todo/on_user_prompt.sh" }
-    ]}
-  ],
-  "SessionStart": [
-    { "matcher": "", "hooks": [
-      { "type": "command", "command": "bash $HOME/.claude/todo/on_session_start.sh" }
-    ]}
-  ],
-  "PostToolUse": [
-    { "matcher": "Write|Edit|NotebookEdit", "hooks": [
-      { "type": "command", "command": "bash $HOME/.claude/todo/on_post_tool.sh" }
-    ]}
-  ],
-  "Stop": [
-    { "matcher": "", "hooks": [
-      { "type": "command", "command": "bash $HOME/.claude/todo/on_stop.sh" }
-    ]}
-  ]
-}
-```
-
-The `PostToolUse` + `Stop` pair is the **enforcement gate** (see [How it works](#how-it-works)): a file edit in an untracked session triggers a one-shot reminder, and the `Stop` hook refuses to end the turn until a task is attached/created (or the session is skipped). They're optional — omit both if you only want the advisory nudges — but together they're what makes tracking reliable instead of best-effort.
-
-The `/todo` and `/done` commands live in `~/.claude/commands/todo.md` and
-`~/.claude/commands/done.md`; the clone ships the source of truth under
-`commands/`. The `SessionStart` hook copies them into `~/.claude/commands/`
-automatically (and re-syncs them whenever the module versions change), so
-they're installed on first session start and can't drift afterwards.
+`categories.py` ships with the author's colour taxonomy and terminal tinting
+**on** by default (macOS only). To adjust without editing the shipped file, drop
+a `categories.json` in the data directory — see [CATEGORIES.md](CATEGORIES.md)
+for the JSON shape and opt-out levels.
 
 **For in-project worker delegation** (optional, but the two halves are meant to be
-used together): nothing extra to install — `delegate/delegate.py` ships with the
-clone. To get *auto*-delegation, copy [`delegate/POLICY-TEMPLATE.md`](delegate/POLICY-TEMPLATE.md)
+used together): nothing extra to install — `lib/delegate/delegate.py` ships with
+the plugin. To get *auto*-delegation, copy
+[`lib/delegate/POLICY-TEMPLATE.md`](lib/delegate/POLICY-TEMPLATE.md)
 into your global `~/.claude/CLAUDE.md` and customize the workspace paths. See the
 [Delegate](#delegate--in-project-workers) section.
 
 ## Install
 
-**Prerequisites:** [Claude Code](https://claude.ai/code), `git`, `jq`, `python3` (stdlib only).
+**Prerequisites:** [Claude Code](https://claude.ai/code), `jq`, `python3` (stdlib only).
 
-```bash
-git clone https://github.com/ryanconmeo/claude-todo "$HOME/.claude/todo"
-cp "$HOME/.claude/todo/commands/"{todo,done}.md "$HOME/.claude/commands/"
-```
+    /plugin marketplace add ryanconmeo/claude-todo
+    /plugin install claude-todo
 
-If `~/.claude/` is a git repo with a permissive `.gitignore`, append `todo/` to it:
+That wires the `/todo` + `/done` commands and all four hooks automatically — no
+`settings.json` edit, no command copy. Task data lives in
+`${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/` (override with `$CLAUDE_TODO_HOME`)
+and **survives `/plugin update`**.
 
-```bash
-if [ -d "$HOME/.claude/.git" ]; then
-  grep -qxF 'todo/' "$HOME/.claude/.gitignore" 2>/dev/null || echo 'todo/' >> "$HOME/.claude/.gitignore"
-fi
-```
+The `PostToolUse` + `Stop` pair is the **enforcement gate** (see [How it works](#how-it-works)): a file edit in an untracked session triggers a one-shot reminder, and the `Stop` hook refuses to end the turn until a task is attached/created (or the session is skipped). Both are included in the plugin by default — remove them from `hooks/hooks.json` if you only want the advisory nudges — but together they're what makes tracking reliable instead of best-effort.
 
-Merge the `settings.json` hooks snippet shown above, then restart Claude Code. For
-*auto*-delegation, also copy [`delegate/POLICY-TEMPLATE.md`](delegate/POLICY-TEMPLATE.md)
+For *auto*-delegation, copy [`lib/delegate/POLICY-TEMPLATE.md`](lib/delegate/POLICY-TEMPLATE.md)
 into your global `~/.claude/CLAUDE.md` and customize the workspace paths.
 
-**No git?** Fetch the files with curl instead:
+### Upgrading from the legacy clone
 
-```bash
-mkdir -p "$HOME/.claude/todo/delegate" "$HOME/.claude/commands" && cd "$HOME/.claude/todo"
-base=https://raw.githubusercontent.com/ryanconmeo/claude-todo/main
-for f in todo.py categories.py on_session_start.sh on_user_prompt.sh on_post_tool.sh on_stop.sh close-session-window.sh CATEGORIES.md; do
-  curl -fsSL "$base/$f" -o "$f"
-done
-curl -fsSL "$base/delegate/delegate.py"        -o delegate/delegate.py
-curl -fsSL "$base/delegate/POLICY-TEMPLATE.md" -o delegate/POLICY-TEMPLATE.md
-curl -fsSL "$base/commands/todo.md" -o "$HOME/.claude/commands/todo.md"
-curl -fsSL "$base/commands/done.md" -o "$HOME/.claude/commands/done.md"
-chmod +x on_session_start.sh on_user_prompt.sh on_post_tool.sh on_stop.sh close-session-window.sh
-```
+Existing tasks migrate automatically on first run (copied, not moved, so the old
+`~/.claude/todo/` stays as a backup). Then remove the old wiring:
+- delete the four `~/.claude/todo/*.sh` hook entries from `~/.claude/settings.json`
+- delete `~/.claude/commands/{todo,done}.md` (the plugin ships its own)
+- optionally `rm -rf ~/.claude/todo` once you've confirmed the migration
+
+Re-run or inspect migration manually with `migrate`:
+`python3 "$CLAUDE_PLUGIN_ROOT/lib/todo.py" migrate` (or `migrate --from <path>`).
 
 ## Update
 
 ```bash
-cd "$HOME/.claude/todo" && git pull
+/plugin update claude-todo
 ```
+
+Task data in `todo-data/` is untouched.
 
 ## Uninstall
 
 ```bash
-rm -rf "$HOME/.claude/todo"        # repo + delegate + task data (store/) + worker registry
-rm -f  "$HOME/.claude/commands/todo.md" "$HOME/.claude/commands/done.md"
+/plugin uninstall claude-todo
 ```
 
-Then, in `~/.claude/settings.json`, remove **just** claude-todo's four hook entries —
-the `UserPromptSubmit` entry (`todo/on_user_prompt.sh`), the `SessionStart` entry
-(`todo/on_session_start.sh`), and, if you enabled the enforcement gate, the
-`PostToolUse` entry (`todo/on_post_tool.sh`) and the `Stop` entry (`todo/on_stop.sh`) —
-leaving any other modules' entries in those arrays intact. If you copied the delegation policy into your global
-`~/.claude/CLAUDE.md`, delete that block too. Restart Claude Code.
+Task data persists in `${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/` — delete that
+directory manually if you want to remove your task history. The worker registry
+(`todo-data/workers.json`) also lives there; back it up first if you want to keep it.
 
-> Removing the repo also deletes your task history (`store/`) and the worker registry
-> (`delegate/workers.json`). Back them up first if you want to keep them.
+If you are upgrading from the legacy clone (rather than uninstalling entirely),
+also remove the old wiring:
+- delete the four `~/.claude/todo/*.sh` hook entries from `~/.claude/settings.json`
+- delete `~/.claude/commands/{todo,done}.md`
+- optionally `rm -rf ~/.claude/todo`
+
+If you copied the delegation policy into your global `~/.claude/CLAUDE.md`,
+delete that block too. Restart Claude Code.
 
 ## Files
 
-**`todo.py`** — the engine: task storage, `/todo` and `/done`, the hooks' logic, plus the `whoami` (incl. the `--statusline` segment provider) and `update` commands.
+**`lib/todo.py`** — the engine: task storage, `/todo` and `/done`, the hooks' logic, plus the `whoami` (incl. the `--statusline` segment provider) and `update` commands.
 
-**`categories.py`** — optional colour-taxonomy + terminal-tint plugin; `todo.py` runs fine without it. See [`CATEGORIES.md`](CATEGORIES.md).
+**`lib/categories.py`** — optional colour-taxonomy + terminal-tint plugin; `todo.py` runs fine without it. Ships with defaults; users customize via `todo-data/categories.json` without editing this file. See [`CATEGORIES.md`](CATEGORIES.md).
 
-**`on_session_start.sh`** — `SessionStart` hook. Surfaces open tasks (or the attached one) and auto-sets the window title to `todo-<seq> · <title>`.
+**`lib/paths.py`** — resolves the mutable data directory (`${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/`, overridable with `$CLAUDE_TODO_HOME`) and handles legacy migration detection.
 
-**`on_user_prompt.sh`** — `UserPromptSubmit` hook. Attaches/nudges the session and tints the terminal for skill-mapped prompts.
+**`hooks/on_session_start.sh`** — `SessionStart` hook. Surfaces open tasks (or the attached one) and auto-sets the window title to `todo-<seq> · <title>`.
 
-**`on_post_tool.sh`** — `PostToolUse(Write|Edit|NotebookEdit)` hook. Fires a one-shot reminder the first time an untracked session edits a file. Half of the optional enforcement gate.
+**`hooks/on_user_prompt.sh`** — `UserPromptSubmit` hook. Attaches/nudges the session and tints the terminal for skill-mapped prompts.
 
-**`on_stop.sh`** — `Stop` hook. Blocks the turn from ending while a session has edited files but tracked no task (self-healing, capped at two blocks so it can't wedge). The other half of the enforcement gate.
+**`hooks/on_post_tool.sh`** — `PostToolUse(Write|Edit|NotebookEdit)` hook. Fires a one-shot reminder the first time an untracked session edits a file. Half of the optional enforcement gate.
 
-**`close-session-window.sh`** — closes the Terminal.app window hosting a session; invoked by `/done`.
+**`hooks/on_stop.sh`** — `Stop` hook. Blocks the turn from ending while a session has edited files but tracked no task (self-healing, capped at two blocks so it can't wedge). The other half of the enforcement gate.
 
-**`delegate/delegate.py`** — spawns/resumes in-project workers that carry the repo's full machinery (see [Delegate](#delegate--in-project-workers)).
+**`hooks/hooks.json`** — plugin hook manifest; declares all four hooks for the plugin system.
 
-**`delegate/POLICY-TEMPLATE.md`** — copy into your global `~/.claude/CLAUDE.md` to enable *auto*-delegation.
+**`lib/close-session-window.sh`** — closes the Terminal.app window hosting a session; invoked by `/done`.
 
-**`commands/todo.md`**, **`commands/done.md`** — the `/todo` and `/done` slash commands; copy into `~/.claude/commands/`.
+**`lib/open-session-window.sh`** — opens a fresh Terminal.app window running the task's resume command; invoked by `/todo <n> -s`.
+
+**`lib/delegate/delegate.py`** — spawns/resumes in-project workers that carry the repo's full machinery (see [Delegate](#delegate--in-project-workers)).
+
+**`lib/delegate/POLICY-TEMPLATE.md`** — copy into your global `~/.claude/CLAUDE.md` to enable *auto*-delegation.
+
+**`.claude-plugin/plugin.json`** — plugin metadata (name, version, author, license).
+
+**`.claude-plugin/marketplace.json`** — marketplace listing metadata.
+
+**`commands/todo.md`**, **`commands/done.md`** — the `/todo` and `/done` slash commands; registered automatically by the plugin.
