@@ -115,7 +115,7 @@ Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [VOLT] coding for Vo
   pasting it into a fresh window restores the colour. The prefix is joined with `;`
   and swallows stderr, so it's a silent no-op for anyone who hasn't installed the
   colour aliases — the `cd` + resume always runs. (Omitted entirely when
-  `TINT_TERMINAL = False`.)
+  tinting is off — `"tint_terminal": false` in `categories.json`.)
 
 - **Categories & terminal colours (optional plugin).** If `categories.py` is
   present (it ships with the plugin), every task carries a `color` from a

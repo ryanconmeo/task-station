@@ -16,7 +16,7 @@ Every task carries a `color` — one of the keys below. The colour does two jobs
    fresh window — e.g. `green 2>/dev/null; cd <dir> && claude --resume <id>`. The
    prefix is joined with `;` (not `&&`) and redirects stderr to `/dev/null`, so for
    anyone without the colour aliases installed it's a silent no-op and the `cd` +
-   resume still runs. The prefix is dropped entirely when `TINT_TERMINAL = False`.
+   resume still runs. The prefix is dropped entirely when tinting is off — `"tint_terminal": false` in `categories.json`.
 3. **Immediate skill tinting.** When a prompt *invokes a skill* (a slash
    command like `/volt:review-pr-auto`), the `UserPromptSubmit` hook tints the
    terminal to the skill's category **synchronously, before Claude responds** —
@@ -63,7 +63,7 @@ Pick from the *nature of the work*, not the surface keywords:
 
 ## Skill → colour (immediate tinting)
 
-`SKILL_COLORS` in `categories.py` is an ordered list of `(regex, colour)`. On
+The `skill_colors` array in `categories.json` is an ordered list of `["regex", "color"]` entries, prepended to the shipped defaults (which live in `lib/categories.py`). On
 every prompt the hook runs `todo.py prompt-color`, which pulls the invoked
 command name out of the prompt (`<command-name>/volt:review-pr-auto</command-name>`,
 or a hand-typed `/foo …`) and returns the colour of the **first** regex that
