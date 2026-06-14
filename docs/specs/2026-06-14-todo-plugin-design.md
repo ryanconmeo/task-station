@@ -185,3 +185,31 @@ settings.json merge (4) · A3 polish the clone, no plugin (3) · A4 MCP/CLI rewr
 - A simulated `/plugin update` preserves all task data and worker registry.
 - No `$HOME/.claude/todo` literal remains in shipped code paths.
 - Off-mac, hooks and commands run without erroring on Terminal.app-only commands.
+
+## Verification — 2026-06-14
+
+Implemented via subagent-driven development (TDD, stdlib `unittest`); 15 unit tests pass across
+`paths`, `migrate`, `categories` overrides, and macOS tint gating. Scriptable end-to-end checks
+run from the new `lib/` layout:
+
+- **Step 1 — clean-room SessionStart smoke:** PASS. A fresh `CLAUDE_TODO_HOME` data dir, on first
+  `session-start`, auto-migrated the real legacy store (86 task files, 8 open) and produced
+  `store/`, `workers.json`, `pending-briefs/`, and the `.migrated` marker — demonstrating the
+  auto-migration path against real data.
+- **Step 2 — migration idempotency + non-destruction:** PASS. Re-running `migrate` is a no-op
+  ("Nothing to migrate"); the migrated list renders correctly (colours, effort bars, stable
+  numbers); the source `~/.claude/todo/store` is left intact (copy, not move). Note: because
+  `_maybe_migrate()` always targets the real `LEGACY_STORE` first, an isolated `--from` test is
+  masked on this host by auto-migration — the `--from` path is instead covered by the isolated
+  `tests/test_migrate.py` unit tests.
+- **Code-side checks:** PASS. `hooks/hooks.json`, `.claude-plugin/plugin.json`,
+  `.claude-plugin/marketplace.json` are valid JSON; all four hook scripts pass `bash -n`; no
+  `$HOME/.claude/todo` paths remain in `hooks/`, `commands/`, or shipped `lib/` code (the
+  `LEGACY_STORE` migration source is the sole, intentional exception); off-mac `tint_command`
+  returns `None`.
+
+**Pending (interactive — require a live Claude Code session):**
+- **Step 3:** `/plugin marketplace add <worktree>` → `/plugin install claude-todo`; confirm hooks
+  fire, `/todo` lists the (auto-migrated) tasks, `/todo <n>`/`/done` work, the edit-gate triggers.
+- **Step 4:** bump `version` in both manifests, `/plugin update`, confirm task data in `todo-data/`
+  survives the cache-dir replacement.
