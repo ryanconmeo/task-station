@@ -18,5 +18,5 @@ def data_dir():
         return os.path.join(os.path.expanduser(cfg), "todo-data")
     xdg = os.environ.get("XDG_STATE_HOME")
     if xdg:
-        return os.path.join(xdg, "claude-todo")
+        return os.path.join(os.path.expanduser(xdg), "claude-todo")
     return os.path.expanduser("~/.claude/todo-data")

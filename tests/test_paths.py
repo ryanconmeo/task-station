@@ -28,6 +28,11 @@ class DataDirResolution(unittest.TestCase):
         os.environ["XDG_STATE_HOME"] = "/tmp/xdg"
         self.assertEqual(paths.data_dir(), "/tmp/xdg/claude-todo")
 
+    def test_xdg_expanduser(self):
+        os.environ["XDG_STATE_HOME"] = "~/xdgstate"
+        self.assertEqual(paths.data_dir(),
+                         os.path.join(os.path.expanduser("~/xdgstate"), "claude-todo"))
+
     def test_default(self):
         self.assertEqual(paths.data_dir(),
                          os.path.expanduser("~/.claude/todo-data"))
