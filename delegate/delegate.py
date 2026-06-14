@@ -42,11 +42,14 @@ import uuid
 
 HOME = os.path.expanduser("~")
 PARENTS = [os.path.join(HOME, "Workspace"), os.path.join(HOME, "Workspace-Other")]
+
+# delegate.py lives one dir deeper than paths.py, so add the plugin root to sys.path before importing it
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths
-REG_DIR = paths.data_dir()                                     # state dir (survives update)
+
+REG_DIR = paths.data_dir()                                     # data dir (e.g. ~/.claude/todo-data) — survives /plugin update
 REG = os.path.join(REG_DIR, "workers.json")
-TODO_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "todo.py")     # sibling tracker
+TODO_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "todo.py")     # plugin root → sibling todo.py (delegate.py is one dir deeper)
 
 
 def _now():
