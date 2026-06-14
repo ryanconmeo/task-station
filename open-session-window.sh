@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+[[ "$OSTYPE" == darwin* ]] || exit 0
 # Open a NEW Terminal.app window running the given command, and bring Terminal
 # to the front. Used by `/todo <n> -s` to jump straight into a task's working
 # session in a fresh window — the current window (where you typed /todo) is left

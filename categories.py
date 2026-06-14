@@ -193,8 +193,10 @@ def summary(color):
 
 def tint_command(color):
     """The shell command that tints the terminal to `color`, or None when
-    terminal tinting is disabled."""
-    return "zsh -ic '%s'" % normalize(color) if TINT_TERMINAL else None
+    terminal tinting is disabled or the platform isn't macOS."""
+    if not (TINT_TERMINAL and _sys.platform == "darwin"):
+        return None
+    return "zsh -ic '%s'" % normalize(color)
 
 
 def legend():

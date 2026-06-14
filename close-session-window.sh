@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+[[ "$OSTYPE" == darwin* ]] || exit 0
 # Close the Terminal.app window that hosts THIS session, matched by tty.
 #
 # Why the ancestor walk: Claude Code runs commands without a controlling tty
