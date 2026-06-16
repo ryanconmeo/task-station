@@ -1,0 +1,13 @@
+{
+  "name": "ryanconmeo",
+  "owner": { "name": "Ryan Nguyen", "url": "https://github.com/ryanconmeo" },
+  "plugins": [
+    {
+      "name": "claude-todo",
+      "source": "./",
+      "description": "Persistent cross-session task tracking with auto-attach, enforcement gate, category colours, and in-project worker delegation.",
+      "version": "1.0.0",
+      "license": "MIT"
+    }
+  ]
+}

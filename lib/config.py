@@ -1,0 +1,70 @@
+"""Single JSON config store under the data dir, plus the `todo config` board."""
+import json, os
+import paths
+
+def _path():
+    return os.path.join(paths.data_dir(), "config.json")
+
+def _load():
+    try:
+        with open(_path()) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save(d):
+    data = paths.data_dir()
+    os.makedirs(data, exist_ok=True)
+    tmp = _path() + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, _path())
+
+def get(key, default=None):
+    return _load().get(key, default)
+
+def set(key, value):
+    d = _load(); d[key] = value; _save(d)
+
+def unset(key):
+    d = _load()
+    if key in d:
+        del d[key]; _save(d)
+
+def workspace_dirs():
+    raw = get("workspace_dirs")
+    if raw is None:
+        env = os.environ.get("CLAUDE_TODO_WORKSPACE_DIRS", "")
+        raw = [p for p in env.split(os.pathsep) if p] if env else []
+    return [os.path.expanduser(p) for p in raw]
+
+def tint_mode():
+    return get("tint_mode", "auto")
+
+def render_board():
+    import term
+    ws = ":".join(get("workspace_dirs") or []) or "(unset — use --repo)"
+    cats = get("categories"); n_cat = len(cats) if isinstance(cats, dict) else 0
+    lines = [
+        "claude-todo config        store: %s" % _path(),
+        "                          set: todo config --<flag> <value>   ·   reset: <flag> default",
+        "",
+        "  --workspace-dirs  %-34s repo roots for delegate --project" % ws,
+        "  --categories      %-34s custom tags/labels + skill auto-tint  (todo config --categories edit)"
+        % ("%d override(s)" % n_cat if n_cat else "defaults"),
+        "",
+        "  read-only",
+        "  --data-dir        %-34s (set via $CLAUDE_TODO_HOME)" % paths.data_dir(),
+        "  tint mode: %s · terminal: %s" % (tint_mode(), term.detect()),
+    ]
+    return "\n".join(lines)
+
+def cmd_config(a):
+    if getattr(a, "workspace_dirs_get", False):
+        print(":".join(get("workspace_dirs") or "")); return
+    if a.workspace_dirs is not None:
+        set("workspace_dirs", [p for p in a.workspace_dirs.split(os.pathsep) if p])
+        print("workspace_dirs = %s" % ":".join(get("workspace_dirs"))); return
+    if a.categories == "edit":
+        print(_path()); return
+    print(render_board())

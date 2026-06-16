@@ -1,0 +1,5 @@
+# User task data is private and machine-local — never commit it.
+store/
+
+# delegate runtime registry (live worker session ids) — machine-local, not committed.
+delegate/workers.json
