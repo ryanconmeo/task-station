@@ -1,4 +1,4 @@
-"""Optional category / colour plugin for claude-todo.
+"""Optional category / colour plugin for Task Station.
 
 If this module is importable, `todo.py` tags each task with a category — an
 emoji dot + `[TAG]` after the title, a legend under the list — and, when

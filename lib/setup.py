@@ -4,8 +4,8 @@ import hashlib, json, os
 import paths
 import term, config
 
-BEGIN = "<!-- BEGIN claude-todo:delegation-policy (managed — todo setup --policy) -->"
-END = "<!-- END claude-todo:delegation-policy -->"
+BEGIN = "<!-- BEGIN task-station:delegation-policy (managed — todo setup --policy) -->"
+END = "<!-- END task-station:delegation-policy -->"
 
 
 def _manifest_path():
@@ -144,7 +144,7 @@ def status():
     t = term.detect()
     ws = config.workspace_dirs()
     has_policy = ("policy" in _manifest())
-    lines = ["claude-todo setup — status", ""]
+    lines = ["task-station setup — status", ""]
     lines.append("  tint        baked on · mode %s · terminal %s%s" % (
         config.tint_mode(), t, "" if t != "none" else "  (no supported terminal detected → no-op)"))
     lines.append("  tint-profiles  %s" % ("installed (profile mode)" if config.tint_mode() == "profile"

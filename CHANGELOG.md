@@ -1,15 +1,15 @@
 # Changelog
 
-All notable changes to claude-todo are documented here. This project adheres to
+All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
 ## [1.0.0] — 2026-06-17
 
-Initial release.
+Initial public release as Task Station.
 
 ### Added
 - `/todo` and `/done` slash commands (list, open+resume, close), plus the
-  namespaced `/claude-todo:todo` / `:done` and `/claude-todo:config` / `:setup`.
+  namespaced `/task-station:todo` / `:done` and `/task-station:config` / `:setup`.
 - Persistent, cross-session task tracking with one JSON file per task under
   `${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/`. All state is local.
 - Auto-attach nudging + an optional enforcement gate (PostToolUse + Stop hooks)
@@ -21,3 +21,5 @@ Initial release.
   delegation-policy block for your `CLAUDE.md`, and a Terminal.app tint-profile helper.
 - In-project worker delegation (`lib/delegate/`) + a `delegating-work` skill.
 - Opt-in bare `/todo` + `/done` aliases (`todo config --bare-cmds on`).
+- Session pinning (`todo.py pin`/`unpin`) to re-pin a task to a fresh session and
+  save tokens when a context window grows stale.

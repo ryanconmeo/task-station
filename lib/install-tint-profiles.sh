@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# claude-todo: install tint aliases into ~/.zshrc
+# task-station: install tint aliases into ~/.zshrc
 # Appends per-category shell functions/aliases inside a fenced block so the
 # block is removable and idempotent (skipped if the fence already present).
 # Each function switches the ORIGINATING window (not the front/focused window)
@@ -11,11 +11,11 @@
 
 set -euo pipefail
 
-FENCE_OPEN="# >>> claude-todo tint >>>"
-FENCE_CLOSE="# <<< claude-todo tint <<<"
+FENCE_OPEN="# >>> task-station tint >>>"
+FENCE_CLOSE="# <<< task-station tint <<<"
 ZSHRC="$HOME/.zshrc"
 
-# Colours used by claude-todo categories — derived from categories.py so the
+# Colours used by task-station categories — derived from categories.py so the
 # alias names always match the real category keys (no drift); falls back to the
 # shipped 12 keys if python is unavailable.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,7 +25,7 @@ COLORS=($(python3 -c "import sys; sys.path.insert(0, '$SCRIPT_DIR'); import cate
 
 # ----------------------------------------------------------------- idempotent --
 if grep -qF "$FENCE_OPEN" "$ZSHRC" 2>/dev/null; then
-    echo "claude-todo tint: fence already present in $ZSHRC — nothing to do."
+    echo "task-station tint: fence already present in $ZSHRC — nothing to do."
     echo "To reinstall, remove the block between '$FENCE_OPEN' and '$FENCE_CLOSE' and re-run."
     exit 0
 fi
@@ -33,7 +33,7 @@ fi
 # --------------------------------------------------- build alias block content --
 BLOCK=""
 BLOCK+="$FENCE_OPEN"$'\n'
-BLOCK+="# claude-todo Terminal.app tint aliases — managed block, do not edit by hand."$'\n'
+BLOCK+="# task-station Terminal.app tint aliases — managed block, do not edit by hand."$'\n'
 BLOCK+="# Each function switches the current Terminal.app tab to the matching profile."$'\n'
 for color in "${COLORS[@]}"; do
     # Capitalise first letter for the profile name (e.g. "green" → "Green")
@@ -44,7 +44,7 @@ BLOCK+="$FENCE_CLOSE"
 
 # ----------------------------------------------------- append to ~/.zshrc ------
 printf '\n%s\n' "$BLOCK" >> "$ZSHRC"
-echo "claude-todo tint: aliases appended to $ZSHRC."
+echo "task-station tint: aliases appended to $ZSHRC."
 echo "Run 'source $ZSHRC' (or open a new terminal) to activate them."
 echo ""
 

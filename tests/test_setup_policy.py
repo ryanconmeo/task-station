@@ -15,7 +15,7 @@ class PolicyBlock(unittest.TestCase):
     def test_apply_then_remove_is_byte_identical(self):
         todo_setup._apply_block(self.md, "POLICY TEXT")
         self.assertIn("POLICY TEXT", open(self.md).read())
-        self.assertIn("BEGIN claude-todo:delegation-policy", open(self.md).read())
+        self.assertIn("BEGIN task-station:delegation-policy", open(self.md).read())
         todo_setup._remove_block(self.md)
         self.assertEqual(open(self.md).read(), self.before)   # exact restore
 
@@ -23,7 +23,7 @@ class PolicyBlock(unittest.TestCase):
         todo_setup._apply_block(self.md, "A")
         todo_setup._apply_block(self.md, "B")          # replace, not duplicate
         body = open(self.md).read()
-        self.assertEqual(body.count("BEGIN claude-todo:delegation-policy"), 1)
+        self.assertEqual(body.count("BEGIN task-station:delegation-policy"), 1)
         self.assertIn("B", body); self.assertNotIn("A", body)
 
     def test_backup_written(self):

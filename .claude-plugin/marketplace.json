@@ -1,12 +1,12 @@
 {
   "name": "ryanconmeo",
-  "description": "Claude Code plugins by Ryan Nguyen — starting with claude-todo, persistent cross-session task tracking.",
+  "description": "Claude Code plugins by Ryan Nguyen — Task Station: a persistent task hub where every task is a resumable, re-pinnable session, auto-categorised and colour-tinted, with in-project worker delegation.",
   "owner": { "name": "Ryan Nguyen", "url": "https://github.com/ryanconmeo" },
   "plugins": [
     {
-      "name": "claude-todo",
+      "name": "task-station",
       "source": "./",
-      "description": "Persistent cross-session task tracking with auto-attach, enforcement gate, category colours, and in-project worker delegation.",
+      "description": "A persistent task hub for Claude Code — every task is a resumable, re-pinnable session, auto-categorised and colour-tinted, with in-project worker delegation.",
       "version": "1.0.0",
       "license": "MIT"
     }
