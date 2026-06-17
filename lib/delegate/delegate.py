@@ -35,7 +35,7 @@ Usage:
   delegate.py dir  --project <name> [--worktree NAME]   # resolve & print the repo (or worktree) path
   delegate.py dir  --repo <path>    [--worktree NAME]
 
-Lives inside the claude-todo repo; the registry sits beside this script and it
+Lives inside the task-station repo; the registry sits beside this script and it
 links back to the tracker via the sibling todo.py.
 """
 import argparse

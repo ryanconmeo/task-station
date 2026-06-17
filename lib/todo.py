@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""claude-todo — persistent, cross-session task tracking for Claude Code.
+"""Task Station — persistent, cross-session task tracking for Claude Code.
 
 Engine for the /todo and /done commands and the SessionStart / UserPromptSubmit
 hooks. Tasks live as one JSON file per task under store/tasks/. A session is

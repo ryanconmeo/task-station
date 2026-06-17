@@ -1,11 +1,11 @@
 {
-  "name": "claude-todo",
-  "displayName": "Claude Todo",
-  "description": "Persistent cross-session task tracking (/todo, /done) with auto-attach, an optional enforcement gate, category colours, and in-project worker delegation.",
+  "name": "task-station",
+  "displayName": "Task Station",
+  "description": "An automatic, persistent task hub for Claude Code: every task is a resumable, re-pinnable Claude session — auto-categorised, colour-tinted, with parallel in-project worker delegation. The human-facing console alongside Claude's native Tasks.",
   "version": "1.0.0",
   "author": { "name": "Ryan Nguyen", "url": "https://github.com/ryanconmeo" },
-  "homepage": "https://github.com/ryanconmeo/claude-todo",
-  "repository": "https://github.com/ryanconmeo/claude-todo",
+  "homepage": "https://github.com/ryanconmeo/task-station",
+  "repository": "https://github.com/ryanconmeo/task-station",
   "license": "MIT",
-  "keywords": ["todo", "task-tracking", "hooks", "productivity", "delegation"]
+  "keywords": ["tasks","todo","resume","session","pin","delegation","productivity"]
 }

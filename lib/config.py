@@ -52,13 +52,13 @@ def render_board():
     ws = ":".join(get("workspace_dirs") or []) or "(unset — use --repo)"
     cats = get("categories"); n_cat = len(cats) if isinstance(cats, dict) else 0
     lines = [
-        "claude-todo config        store: %s" % _path(),
+        "task-station config       store: %s" % _path(),
         "                          set: todo config --<flag> <value>   ·   reset: <flag> default",
         "",
         "  --workspace-dirs  %-34s repo roots for delegate --project" % ws,
         "  --categories      %-34s custom tags/labels + skill auto-tint  (todo config --categories edit)"
         % ("%d override(s)" % n_cat if n_cat else "defaults"),
-        "  --bare-cmds        %-33s install bare /todo + /done (else /claude-todo:todo)  on · off"
+        "  --bare-cmds        %-33s install bare /todo + /done (else /task-station:todo)  on · off"
         % ("on" if bare_commands() else "off"),
         "",
         "  read-only",

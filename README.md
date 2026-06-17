@@ -1,13 +1,6 @@
-# claude-todo
+# Task Station
 
-Persistent, cross-session task tracking for Claude Code **plus in-project worker
-delegation** — two halves designed to be used together. Every session attaches to
-a single trackable task; tasks survive across sessions and are queryable any time
-with `/todo`. When a task needs a specific repo's machinery (its `CLAUDE.md`,
-hooks, MCP, permissions), the bundled `delegate` helper spawns an in-project worker
-linked to that task — see [Delegate](#delegate--in-project-workers). You'll want
-both: the tracker knows *what* you're doing and *where*; delegate does the work
-*there* with full project context.
+**Task Station** is an automatic, persistent task hub for Claude Code. Every session can attach to a task; tasks survive across sessions and are listed/resumed with `/todo`. Each task **pins to a resumable Claude session** — reopen the exact session behind it (or **re-pin a fresh session to save tokens**). Tasks are **auto-categorised and colour-tinted**, and Task Station is the **hub that launches parallel in-project workers**.
 
 ```
 Tasks (open first, then by recent activity):  •  /todo <n> = open detail & resume   ·   /done = close current task   ·   close any by id:  python3 …/todo.py done --task <n|id>
@@ -22,6 +15,10 @@ CLOSED
 Effort:  ▁ XS  ▃ S  ▅ M  ▆ L  █ XL
 Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [FEATURE] feature work · 🔵 [DEVOPS] devops · 🩷 [DESIGN] design · ⚪ [SKILLS] skills and memories · 🟤 [MIGRATION] data migration · …
 ```
+
+## Why Task Station (vs native Tasks)
+
+Claude Code's native **Tasks** are the agent's *internal* scratchpad (stored in `~/.claude/tasks/`, no user-facing list). **Task Station is the human-facing console on top**: a persistent `/todo` dashboard you control, where each task pins to a resumable session you can reopen, auto-categorised + colour-tinted, with parallel worker delegation. They're complementary — native Tasks tracks the agent's steps; Task Station tracks *your* work across sessions.
 
 ## Data & privacy
 
@@ -53,7 +50,7 @@ All paths are under your config dir (`${CLAUDE_CONFIG_DIR:-~/.claude}`) unless n
 | `~/.zshrc` (tint aliases) | **Only via the explicit `todo setup --tint-profiles` command you run** |
 | `~/.claude/CLAUDE.md` (delegation policy block) | **Only via the explicit `todo setup --policy on` command you run** (fenced, 100% reversible with `--policy off`) |
 
-The namespaced `/claude-todo:todo` and `/claude-todo:done` commands are registered by the plugin system automatically and always work out of the box. The bare `/todo` and `/done` aliases are **opt-in** — run `todo config --bare-cmds on` to install them.
+The namespaced `/task-station:todo` and `/task-station:done` commands are registered by the plugin system automatically and always work out of the box. The bare `/todo` and `/done` aliases are **opt-in** — run `todo config --bare-cmds on` to install them.
 
 ## How it works
 
@@ -170,9 +167,31 @@ There is no auto-close: tasks stay open until you run `/done`. (The Claude Code
 harness can't distinguish `/exit` from a crash or window-close, so closing is
 kept explicit and deliberate.)
 
+### Resume & re-pin (save tokens)
+
+`/todo <n>` opens a task and resumes its pinned session (the most-recent substantive
+one by default). `/todo <n> -s` does the same but jumps into it in a fresh Terminal.app
+window rather than continuing in the current one.
+
+The engine pins the most-recent substantive session to each task automatically. You can
+**re-pin a new or fresh session to an existing task** using:
+
+```bash
+python3 "$HOME/.claude/todo-engine/todo.py" pin --task <n> --session <id>
+# revert:
+python3 "$HOME/.claude/todo-engine/todo.py" unpin --task <n>
+```
+
+This is the **token-saving move**: when a task's session has accumulated a bloated
+context window (hundreds of messages, large file loads), re-pin a fresh session to it
+instead of resuming the old one. The task stays linked to the same work — same number,
+same history, same category — but resumes into a clean slate that doesn't reload the
+stale context. Use `claude --resume <id>` from your shell to reopen the literal original
+chat when you need it; Task Station's `/todo <n>` will follow the pin.
+
 ## Delegate — in-project workers
 
-`claude-todo` ships a second half in [`lib/delegate/`](lib/delegate/delegate.py): a helper
+Task Station ships a second half in [`lib/delegate/`](lib/delegate/delegate.py): a helper
 that spawns an **in-project Claude worker** and links it to a task. The two are
 meant to be used **together** — don't run one without the other.
 
@@ -319,11 +338,11 @@ across `/plugin update`.
 Run these commands:
 
 ```bash
-/plugin marketplace add ryanconmeo/claude-todo
-/plugin install claude-todo
+/plugin marketplace add ryanconmeo/task-station
+/plugin install task-station
 ```
 
-That wires the namespaced `/claude-todo:todo` + `/claude-todo:done` commands and all four hooks automatically — no
+That wires the namespaced `/task-station:todo` + `/task-station:done` commands and all four hooks automatically — no
 `settings.json` edit required. Task data lands in
 `${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/` and **survives `/plugin update`**. To also install the bare `/todo` + `/done` aliases, run `todo config --bare-cmds on`.
 
@@ -343,10 +362,10 @@ into your global `~/.claude/CLAUDE.md` and customize the workspace paths. See th
 
 **Prerequisites:** [Claude Code](https://claude.ai/code), `jq`, `python3` (stdlib only).
 
-    /plugin marketplace add ryanconmeo/claude-todo
-    /plugin install claude-todo
+    /plugin marketplace add ryanconmeo/task-station
+    /plugin install task-station
 
-That wires the namespaced `/claude-todo:todo` + `/claude-todo:done` commands and all four hooks automatically — no
+That wires the namespaced `/task-station:todo` + `/task-station:done` commands and all four hooks automatically — no
 `settings.json` edit, no command copy. Task data lives in
 `${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/` (override with `$CLAUDE_TODO_HOME`)
 and **survives `/plugin update`**. To also install the bare `/todo` + `/done` aliases, run `todo config --bare-cmds on`.
@@ -362,14 +381,14 @@ All config lives in one file: `${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/config.
 
 Two slash commands (run from a Claude Code session):
 
-- **`/claude-todo:config`** — your *settings* (values the plugin owns in `config.json`).
-- **`/claude-todo:setup`** — a *doctor + installers* for things outside the plugin (your `CLAUDE.md` policy, Terminal tint profiles), and a status report of what's still unconfigured.
+- **`/task-station:config`** — your *settings* (values the plugin owns in `config.json`).
+- **`/task-station:setup`** — a *doctor + installers* for things outside the plugin (your `CLAUDE.md` policy, Terminal tint profiles), and a status report of what's still unconfigured.
 
 Both accept the same flags shown below. To run from a plain shell instead, the stable engine path is `~/.claude/todo-engine/todo.py` (a symlink the `SessionStart` hook keeps current; `$CLAUDE_PLUGIN_ROOT` isn't set in a shell, so use this path):
 
 ```bash
-python3 "$HOME/.claude/todo-engine/todo.py" config     # same as /claude-todo:config
-python3 "$HOME/.claude/todo-engine/todo.py" setup      # same as /claude-todo:setup
+python3 "$HOME/.claude/todo-engine/todo.py" config     # same as /task-station:config
+python3 "$HOME/.claude/todo-engine/todo.py" setup      # same as /task-station:setup
 ```
 
 ### `todo config`
@@ -405,12 +424,12 @@ These are on by default. Each has a hidden env escape to turn it off — no conf
 
 Tinting is auto-detected: the engine reads `$TERM_PROGRAM` / `$ITERM_SESSION_ID` to pick iTerm2 vs Terminal.app vs none. The window title `todo-<seq> · <title>` and `/todo <n> -s` new-window jump are on by default on macOS (auto-detected).
 
-**Bare commands:** `/todo` and `/done` are marker-guarded user-level commands that forward to the engine. They are **not installed by default** — run `todo config --bare-cmds on` (or set `CLAUDE_TODO_BARE_CMDS=on`) to opt in. The namespaced form `/claude-todo:todo` and `/claude-todo:done` always exist regardless and work out of the box.
+**Bare commands:** `/todo` and `/done` are marker-guarded user-level commands that forward to the engine. They are **not installed by default** — run `todo config --bare-cmds on` (or set `CLAUDE_TODO_BARE_CMDS=on`) to opt in. The namespaced form `/task-station:todo` and `/task-station:done` always exist regardless and work out of the box.
 
 ## Update
 
 ```bash
-/plugin update claude-todo
+/plugin update task-station
 ```
 
 Task data in `todo-data/` is untouched.
@@ -418,7 +437,7 @@ Task data in `todo-data/` is untouched.
 ## Uninstall
 
 ```bash
-/plugin uninstall claude-todo
+/plugin uninstall task-station
 ```
 
 Task data persists in `${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/` — delete that
