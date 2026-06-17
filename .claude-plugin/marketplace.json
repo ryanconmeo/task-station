@@ -1,5 +1,6 @@
 {
   "name": "ryanconmeo",
+  "description": "Claude Code plugins by Ryan Nguyen — starting with claude-todo, persistent cross-session task tracking.",
   "owner": { "name": "Ryan Nguyen", "url": "https://github.com/ryanconmeo" },
   "plugins": [
     {

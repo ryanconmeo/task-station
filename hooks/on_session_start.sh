@@ -27,7 +27,7 @@ SEG
   chmod +x "$_cfg/statusline.d/50-todo.sh" 2>/dev/null
 fi
 
-if [ "${CLAUDE_TODO_BARE_CMDS:-on}" != "off" ] && [ -n "$CLAUDE_PLUGIN_ROOT" ]; then
+if [ -n "$CLAUDE_PLUGIN_ROOT" ] && [ "$(python3 "$CLAUDE_PLUGIN_ROOT/lib/todo.py" config --bare-cmds-get 2>/dev/null)" = "on" ]; then
   _cmds="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/commands"; mkdir -p "$_cmds" 2>/dev/null
   for c in todo done; do
     _dst="$_cmds/$c.md"; _src="$CLAUDE_PLUGIN_ROOT/commands/$c.md"

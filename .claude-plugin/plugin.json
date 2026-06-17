@@ -1,5 +1,6 @@
 {
   "name": "claude-todo",
+  "displayName": "Claude Todo",
   "description": "Persistent cross-session task tracking (/todo, /done) with auto-attach, an optional enforcement gate, category colours, and in-project worker delegation.",
   "version": "1.0.0",
   "author": { "name": "Ryan Nguyen", "url": "https://github.com/ryanconmeo" },

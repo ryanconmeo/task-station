@@ -38,6 +38,12 @@ def workspace_dirs():
         raw = [p for p in env.split(os.pathsep) if p] if env else []
     return [os.path.expanduser(p) for p in raw]
 
+def bare_commands():
+    """True only if the user opted in (config flag or env). Default off."""
+    if os.environ.get("CLAUDE_TODO_BARE_CMDS") == "on":
+        return True
+    return bool(get("bare_commands", False))
+
 def tint_mode():
     return get("tint_mode", "auto")
 
@@ -52,6 +58,8 @@ def render_board():
         "  --workspace-dirs  %-34s repo roots for delegate --project" % ws,
         "  --categories      %-34s custom tags/labels + skill auto-tint  (todo config --categories edit)"
         % ("%d override(s)" % n_cat if n_cat else "defaults"),
+        "  --bare-cmds        %-33s install bare /todo + /done (else /claude-todo:todo)  on · off"
+        % ("on" if bare_commands() else "off"),
         "",
         "  read-only",
         "  --data-dir        %-34s (set via $CLAUDE_TODO_HOME)" % paths.data_dir(),
@@ -65,6 +73,11 @@ def cmd_config(a):
     if a.workspace_dirs is not None:
         set("workspace_dirs", [p for p in a.workspace_dirs.split(os.pathsep) if p])
         print("workspace_dirs = %s" % ":".join(get("workspace_dirs"))); return
+    if getattr(a, "bare_cmds", None) is not None:
+        set("bare_commands", a.bare_cmds == "on")
+        print("bare_commands = %s" % ("on" if get("bare_commands") else "off")); return
+    if getattr(a, "bare_cmds_get", False):
+        print("on" if bare_commands() else "off"); return
     if a.categories == "edit":
         print(_path()); return
     print(render_board())
