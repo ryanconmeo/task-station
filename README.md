@@ -23,6 +23,38 @@ Effort:  ▁ XS  ▃ S  ▅ M  ▆ L  █ XL
 Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [FEATURE] feature work · 🔵 [DEVOPS] devops · 🩷 [DESIGN] design · ⚪ [SKILLS] skills and memories · 🟤 [MIGRATION] data migration · …
 ```
 
+## Data & privacy
+
+- All task data is stored **locally** under `${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/` (one JSON file per task, plus `config.json`).
+- **No telemetry, no network calls, nothing is transmitted off your machine.**
+- The delegate feature spawns local `claude -p` workers — that's your own Claude usage, no third party.
+
+## What this plugin does / files it touches
+
+### Hooks
+
+Declared in `hooks/hooks.json`, run at your trust level:
+
+- **`SessionStart`** (`hooks/on_session_start.sh`) — maintains the `~/.claude/todo-engine` symlink; self-registers a status-line segment at `~/.claude/statusline.d/50-todo.sh`; sets the window title for attached sessions; shows a one-time setup nudge on first run; and — **only if you have opted in** — installs bare command aliases under `~/.claude/commands/`.
+- **`UserPromptSubmit`** (`hooks/on_user_prompt.sh`) — per-category terminal tint (when enabled) and injects compact task-tracking guidance into each prompt so Claude knows to attach or create a task.
+- **`PostToolUse`** on `Write|Edit|NotebookEdit` (`hooks/on_post_tool.sh`) — fires a one-shot reminder the first time an untracked session edits a file. Part of the optional enforcement gate.
+- **`Stop`** (`hooks/on_stop.sh`) — refuses to end the turn while a session has edited files but tracked no task (self-healing, capped at two blocks). The other half of the optional enforcement gate.
+
+### Files and directories created or used
+
+All paths are under your config dir (`${CLAUDE_CONFIG_DIR:-~/.claude}`) unless noted:
+
+| Path | What it is |
+|---|---|
+| `~/.claude/todo-data/` | Local task storage: one JSON per task, plus `config.json`, `workers.json`, and `pending-briefs/` |
+| `~/.claude/todo-engine` | Symlink to the plugin's `lib/` — a stable, version-independent handle refreshed every session |
+| `~/.claude/statusline.d/50-todo.sh` | Self-registered status-line segment (harmless if unused) |
+| `~/.claude/commands/{todo,done}.md` | **Only if you run `todo config --bare-cmds on`** (opt-in; marker-guarded, never clobbers a pre-existing command) |
+| `~/.zshrc` (tint aliases) | **Only via the explicit `todo setup --tint-profiles` command you run** |
+| `~/.claude/CLAUDE.md` (delegation policy block) | **Only via the explicit `todo setup --policy on` command you run** (fenced, 100% reversible with `--policy off`) |
+
+The namespaced `/claude-todo:todo` and `/claude-todo:done` commands are registered by the plugin system automatically and always work out of the box. The bare `/todo` and `/done` aliases are **opt-in** — run `todo config --bare-cmds on` to install them.
+
 ## How it works
 
 - **Auto-attach.** On each user message, a `UserPromptSubmit` hook injects
@@ -291,9 +323,9 @@ Run these commands:
 /plugin install claude-todo
 ```
 
-That wires the `/todo` + `/done` commands and all four hooks automatically — no
+That wires the namespaced `/claude-todo:todo` + `/claude-todo:done` commands and all four hooks automatically — no
 `settings.json` edit required. Task data lands in
-`${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/` and **survives `/plugin update`**.
+`${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/` and **survives `/plugin update`**. To also install the bare `/todo` + `/done` aliases, run `todo config --bare-cmds on`.
 
 `categories.py` ships with the author's colour taxonomy and terminal tinting
 **on** by default (macOS only). To adjust without editing the shipped file, drop
@@ -314,10 +346,10 @@ into your global `~/.claude/CLAUDE.md` and customize the workspace paths. See th
     /plugin marketplace add ryanconmeo/claude-todo
     /plugin install claude-todo
 
-That wires the `/todo` + `/done` commands and all four hooks automatically — no
+That wires the namespaced `/claude-todo:todo` + `/claude-todo:done` commands and all four hooks automatically — no
 `settings.json` edit, no command copy. Task data lives in
 `${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/` (override with `$CLAUDE_TODO_HOME`)
-and **survives `/plugin update`**.
+and **survives `/plugin update`**. To also install the bare `/todo` + `/done` aliases, run `todo config --bare-cmds on`.
 
 The `PostToolUse` + `Stop` pair is the **enforcement gate** (see [How it works](#how-it-works)): a file edit in an untracked session triggers a one-shot reminder, and the `Stop` hook refuses to end the turn until a task is attached/created (or the session is skipped). Both are included in the plugin by default — remove them from `hooks/hooks.json` if you only want the advisory nudges — but together they're what makes tracking reliable instead of best-effort.
 
@@ -364,7 +396,7 @@ These are on by default. Each has a hidden env escape to turn it off — no conf
 |---|---|---|
 | Enforcement gate (file-edit → track-or-block) | on | `CLAUDE_TODO_GATE=off` |
 | Per-category terminal tint | on | `CLAUDE_TODO_TINT=off` |
-| Bare `/todo` + `/done` auto-install | on | `CLAUDE_TODO_BARE_CMDS=off` |
+| Bare `/todo` + `/done` install | **off** (opt-in) | `CLAUDE_TODO_BARE_CMDS=on` to enable |
 
 **Terminal tint — two modes:**
 
@@ -373,7 +405,7 @@ These are on by default. Each has a hidden env escape to turn it off — no conf
 
 Tinting is auto-detected: the engine reads `$TERM_PROGRAM` / `$ITERM_SESSION_ID` to pick iTerm2 vs Terminal.app vs none. The window title `todo-<seq> · <title>` and `/todo <n> -s` new-window jump are on by default on macOS (auto-detected).
 
-**Bare commands:** `/todo` and `/done` are marker-guarded user-level commands installed automatically on first session start — they forward to the engine. The namespaced form `/claude-todo:todo` always exists regardless. Set `CLAUDE_TODO_BARE_CMDS=off` to suppress the auto-install.
+**Bare commands:** `/todo` and `/done` are marker-guarded user-level commands that forward to the engine. They are **not installed by default** — run `todo config --bare-cmds on` (or set `CLAUDE_TODO_BARE_CMDS=on`) to opt in. The namespaced form `/claude-todo:todo` and `/claude-todo:done` always exist regardless and work out of the box.
 
 ## Update
 

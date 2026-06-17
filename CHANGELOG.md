@@ -1,0 +1,23 @@
+# Changelog
+
+All notable changes to claude-todo are documented here. This project adheres to
+[Semantic Versioning](https://semver.org).
+
+## [1.0.0] — 2026-06-17
+
+Initial release.
+
+### Added
+- `/todo` and `/done` slash commands (list, open+resume, close), plus the
+  namespaced `/claude-todo:todo` / `:done` and `/claude-todo:config` / `:setup`.
+- Persistent, cross-session task tracking with one JSON file per task under
+  `${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/`. All state is local.
+- Auto-attach nudging + an optional enforcement gate (PostToolUse + Stop hooks)
+  that keeps real work from going untracked.
+- Category colours with per-category terminal tinting: zero-setup **auto** mode
+  (iTerm2 `SetColors` / Terminal.app OSC 11) or **profile** mode (named profiles).
+  Tinting targets the originating window, focus-independently.
+- `todo config` (settings) and `todo setup` (doctor + installers): a 100%-reversible
+  delegation-policy block for your `CLAUDE.md`, and a Terminal.app tint-profile helper.
+- In-project worker delegation (`lib/delegate/`) + a `delegating-work` skill.
+- Opt-in bare `/todo` + `/done` aliases (`todo config --bare-cmds on`).
