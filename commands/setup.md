@@ -5,7 +5,7 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-!`python3 "${CLAUDE_PLUGIN_ROOT}/lib/todo.py" setup $ARGUMENTS`
+!`python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" setup $ARGUMENTS`
 
 The block above is the live output of `task-station setup` — either the status report (no arguments) or the result of an installer flag. Present it to the user verbatim; do not editorialize.
 

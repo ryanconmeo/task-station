@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 [[ "$OSTYPE" == darwin* ]] || exit 0
-# Close the Terminal.app window that hosts THIS session, matched by tty.
+# Close the terminal window (Terminal.app OR iTerm2) that hosts THIS session,
+# matched by tty. The host app is detected the same way open-session-window.sh
+# detects it (LC_TERMINAL / TERM_PROGRAM), so /done closes iTerm2 windows too.
 #
 # Why the ancestor walk: Claude Code runs commands without a controlling tty
 # ($$ -> /dev/??), and the session may be wrapped by `script` (logging) on its
@@ -17,9 +19,10 @@
 # is reparented to launchd and survives the teardown. The detached child is
 # handed the tty via --tty, so it needs no controlling terminal of its own.
 #
-# NOTE: For the window to actually close WITHOUT a confirmation dialog, the
-# Terminal profile's "Prompt before closing" must be set to "Never"
-# (Settings -> Profiles -> <profile> -> Shell). Otherwise `close` pops a
+# NOTE: For the window to actually close WITHOUT a confirmation dialog, set the
+# terminal's close prompt to "Never" — Terminal.app: Settings -> Profiles ->
+# <profile> -> Shell -> "Prompt before closing"; iTerm2: Settings -> Profiles ->
+# <profile> -> Session -> "Prompt before closing". Otherwise `close` pops a
 # "terminate running processes?" dialog and the window stays open.
 #
 # Usage:
@@ -67,12 +70,30 @@ if [ -z "$win_tty" ]; then
   exit 1
 fi
 
+# Detect the host terminal app the same way open-session-window.sh does. iTerm2
+# sets LC_TERMINAL=iTerm2 and TERM_PROGRAM=iTerm.app; both are inherited down to
+# here AND across the detached --tty re-exec (the child inherits this env), so
+# the close targets the right app whether run directly or detached. Anything we
+# don't recognise as iTerm2 falls back to Terminal.app.
+is_iterm=0
+if [ "${LC_TERMINAL:-}" = "iTerm2" ] || [ "${TERM_PROGRAM:-}" = "iTerm.app" ]; then
+  is_iterm=1
+fi
+
 if [ "$dry" = 1 ]; then
-  echo "would close Terminal window with tty /dev/$win_tty"
-  osascript -e 'tell application "Terminal" to get tty of tabs of windows' 2>/dev/null \
-    | tr ',' '\n' | grep -q "/dev/$win_tty" \
-    && echo "match: a Terminal tab reports /dev/$win_tty" \
-    || echo "no match among open Terminal tabs"
+  if [ "$is_iterm" = 1 ]; then
+    echo "would close iTerm window with tty /dev/$win_tty"
+    osascript -e 'tell application "iTerm" to get tty of sessions of tabs of windows' 2>/dev/null \
+      | tr ',' '\n' | grep -q "/dev/$win_tty" \
+      && echo "match: an iTerm session reports /dev/$win_tty" \
+      || echo "no match among open iTerm sessions"
+  else
+    echo "would close Terminal window with tty /dev/$win_tty"
+    osascript -e 'tell application "Terminal" to get tty of tabs of windows' 2>/dev/null \
+      | tr ',' '\n' | grep -q "/dev/$win_tty" \
+      && echo "match: a Terminal tab reports /dev/$win_tty" \
+      || echo "no match among open Terminal tabs"
+  fi
   exit 0
 fi
 
@@ -100,15 +121,34 @@ if [ "$after" != 0 ]; then
   sleep "$after"
 fi
 
-osascript \
-  -e 'tell application "Terminal"' \
-  -e 'repeat with w in windows' \
-  -e 'repeat with t in tabs of w' \
-  -e "if tty of t is \"/dev/$win_tty\" then" \
-  -e 'close w saving no' \
-  -e 'return "closed"' \
-  -e 'end if' \
-  -e 'end repeat' \
-  -e 'end repeat' \
-  -e 'return "no-match"' \
-  -e 'end tell'
+if [ "$is_iterm" = 1 ]; then
+  # iTerm2: a window owns tabs, each tab owns sessions, and the tty lives on the
+  # session. Walk all three and close the window whose session has our tty.
+  osascript \
+    -e 'tell application "iTerm"' \
+    -e 'repeat with w in windows' \
+    -e 'repeat with t in tabs of w' \
+    -e 'repeat with s in sessions of t' \
+    -e "if tty of s is \"/dev/$win_tty\" then" \
+    -e 'close w' \
+    -e 'return "closed"' \
+    -e 'end if' \
+    -e 'end repeat' \
+    -e 'end repeat' \
+    -e 'end repeat' \
+    -e 'return "no-match"' \
+    -e 'end tell'
+else
+  osascript \
+    -e 'tell application "Terminal"' \
+    -e 'repeat with w in windows' \
+    -e 'repeat with t in tabs of w' \
+    -e "if tty of t is \"/dev/$win_tty\" then" \
+    -e 'close w saving no' \
+    -e 'return "closed"' \
+    -e 'end if' \
+    -e 'end repeat' \
+    -e 'end repeat' \
+    -e 'return "no-match"' \
+    -e 'end tell'
+fi

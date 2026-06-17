@@ -9,14 +9,14 @@
 # instead of waiting for Claude to read the guidance and run the alias itself.
 input=$(cat)
 # Suppressed inside delegate-spawned workers — task tracking + tinting is the hub's job.
-[ -n "$CLAUDE_TODO_SUPPRESS" ] && exit 0
+[ -n "$TASK_STATION_SUPPRESS" ] && exit 0
 # No-op outside plugin context (CLAUDE_PLUGIN_ROOT is set only when the plugin runs us);
-# guards against a stray registration resolving to /lib/todo.py and exiting non-zero.
+# guards against a stray registration resolving to /lib/task-station.py and exiting non-zero.
 [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || exit 0
 session_id=$(echo "$input" | jq -r '.session_id // "unknown"')
 prompt=$(echo "$input" | jq -r '.prompt // ""')
 
-tint=$(TODO_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/todo.py" prompt-tint 2>/dev/null)
+tint=$(TASK_STATION_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" prompt-tint 2>/dev/null)
 if [ -n "$tint" ]; then
   case "$tint" in
     "zsh -ic "*) eval "$tint" >/dev/null 2>&1 ;;          # profile mode: run the user's alias
@@ -25,4 +25,4 @@ if [ -n "$tint" ]; then
   esac
 fi
 
-TODO_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/todo.py" prompt-context --session "$session_id"
+TASK_STATION_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" prompt-context --session "$session_id"

@@ -718,7 +718,7 @@ def cmd_create(a):
         dup = similar_open_task(a.title)
         if dup:
             print("Not created — likely a duplicate of open task [%s] %s.\n"
-                  "Attach instead:  python3 %s/todo.py attach --session %s --task %s\n"
+                  "Attach instead:  python3 %s/task-station.py attach --session %s --task %s\n"
                   "Or re-run create with --force to make a separate task."
                   % (dup["id"][:8], dup["title"], BASE, a.session, dup["id"][:8]))
             return
@@ -759,7 +759,7 @@ def cmd_attach(a):
             task["color"] = cats.normalize(requested)
         elif requested:
             print("⚠ Ignoring --color '%s': not a known category. Use a key, "
-                  "emoji, or [TAG] — e.g. brown, 🟤, or MIGRATION. (Keeping %s.)"
+                  "emoji, or [TAG] — e.g. brown, 🟤, or DATABASE. (Keeping %s.)"
                   % (requested, task.get("color") or cats.DEFAULT))
             if not task.get("color"):
                 task["color"] = cats.DEFAULT
@@ -782,7 +782,7 @@ def cmd_bump(a):
     task = load_task(task_id)
     if not task:
         return
-    touch(task, session=a.session, note=os.environ.get("TODO_PROMPT", ""), reopen=True)
+    touch(task, session=a.session, note=os.environ.get("TASK_STATION_PROMPT", ""), reopen=True)
     save_task(task)
 
 
@@ -790,7 +790,7 @@ def cmd_skip(a):
     set_link(a.session, SKIP_SENTINEL)
     clear_count(a.session)
     clear_edit_markers(a.session)   # skip is a deliberate opt-out — stop the gate nagging
-    print("This session is marked untracked — the [todo] nudge will stay silent. "
+    print("This session is marked untracked — the [task-station] nudge will stay silent. "
           "Attaching to or creating a task later resumes tracking.")
 
 
@@ -804,7 +804,7 @@ def cmd_mark_edited(a):
     """PostToolUse(Write|Edit|NotebookEdit): if this session edited a file but is
     NOT tracking a task, emit a one-shot reminder. Silent when already tracked,
     skipped, or already reminded — so it costs ~one injection per session, max."""
-    if os.environ.get("CLAUDE_TODO_GATE") == "off":
+    if os.environ.get("TASK_STATION_GATE") == "off":
         return
     link = get_link(a.session)
     if link:                       # already attached to a task, or skipped — fine
@@ -812,13 +812,13 @@ def cmd_mark_edited(a):
     if not mark_edited(a.session):  # one-shot: the reminder already fired
         return
     msg = (
-        "[todo] You just edited a file and this session is NOT tracking a task. "
+        "[task-station] You just edited a file and this session is NOT tracking a task. "
         "This is exactly the work that should be tracked. Attach to an existing "
         "task or create one NOW (or `skip` if this is genuinely throwaway) — the "
         "Stop gate will otherwise refuse to end the turn until you do.\n"
-        "Create:  python3 %s/todo.py create --session %s --color <color> "
+        "Create:  python3 %s/task-station.py create --session %s --color <color> "
         "--effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'\n"
-        "Attach:  python3 %s/todo.py attach --session %s --task <id-or-number>\n"
+        "Attach:  python3 %s/task-station.py attach --session %s --task <id-or-number>\n"
         "Open tasks:\n%s"
         % (BASE, a.session, BASE, a.session, _open_tasks_brief() or "  (none)")
     )
@@ -831,7 +831,7 @@ def cmd_stop_gate(a):
     tracked a task. Self-healing — clears its markers the moment a task is
     attached or the session is skipped — and capped at STOP_GATE_MAX_BLOCKS so a
     non-complying loop can't wedge the session."""
-    if os.environ.get("CLAUDE_TODO_GATE") == "off":
+    if os.environ.get("TASK_STATION_GATE") == "off":
         return
     if not has_edited(a.session):
         return                              # no untracked edits → nothing to enforce
@@ -847,10 +847,10 @@ def cmd_stop_gate(a):
         "This session edited files but is not tracking a /todo task. Before you "
         "finish, attach to an existing task or create one — or mark the session "
         "skipped if this edit is genuinely throwaway. Pick exactly one:\n"
-        "  Create:  python3 %s/todo.py create --session %s --color <color> "
+        "  Create:  python3 %s/task-station.py create --session %s --color <color> "
         "--effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'\n"
-        "  Attach:  python3 %s/todo.py attach --session %s --task <id-or-number>\n"
-        "  Skip:    python3 %s/todo.py skip --session %s\n"
+        "  Attach:  python3 %s/task-station.py attach --session %s --task <id-or-number>\n"
+        "  Skip:    python3 %s/task-station.py skip --session %s\n"
         "Open tasks:\n%s"
         % (BASE, a.session, BASE, a.session, BASE, a.session,
            _open_tasks_brief() or "  (none)")
@@ -1112,7 +1112,7 @@ def cmd_session_title(a):
     """Print the window/title-bar label for an attached session (or nothing).
 
     The SessionStart hook puts this in hookSpecificOutput.sessionTitle so the
-    terminal reads `todo-<seq> · <title>` — the closest we get to auto-labelling
+    terminal reads `task-station-<seq> · <title>` — the closest we get to auto-labelling
     the hub (the resume-NAME can't be set programmatically on a running session)."""
     task_id = get_link(a.session)
     if not task_id or task_id == SKIP_SENTINEL:
@@ -1121,7 +1121,7 @@ def cmd_session_title(a):
     if not task:
         return
     ensure_seqs()
-    print("todo-%s · %s" % (task.get("seq", "?"), task["title"]))
+    print("task-station-%s · %s" % (task.get("seq", "?"), task["title"]))
 
 
 def cmd_whoami(a):
@@ -1151,7 +1151,7 @@ def cmd_whoami(a):
         # segment fits that many columns; --width 0 means no limit.
         print(statusline_segment(task, getattr(a, "width", 0)))
         return
-    print("session %s → todo %s · %s (%s)"
+    print("session %s → task-station %s · %s (%s)"
           % (a.session[:8], task.get("seq", "?"), task["title"], task["status"]))
 
 
@@ -1195,7 +1195,7 @@ def cmd_update(a):
         cur = task.get("effort")
         shown = ("currently %s %s" % (EFFORT_GAUGE[cur], cur)) if cur in EFFORT_GAUGE else "currently unset"
         print("  ↳ scope changed (%s). If the work now looks bigger or smaller, re-rate:\n"
-              "      python3 %s/todo.py update --task %s --effort <xs|s|m|l|xl>"
+              "      python3 %s/task-station.py update --task %s --effort <xs|s|m|l|xl>"
               % (shown, BASE, task.get("seq", task["id"][:8])))
 
 
@@ -1252,7 +1252,7 @@ def cmd_prompt_color(a):
     skill has no mapping."""
     if not cats or not hasattr(cats, "color_for_prompt"):
         return
-    prompt = a.prompt if getattr(a, "prompt", None) is not None else os.environ.get("TODO_PROMPT", "")
+    prompt = a.prompt if getattr(a, "prompt", None) is not None else os.environ.get("TASK_STATION_PROMPT", "")
     color = cats.color_for_prompt(prompt)
     if color:
         print(color)
@@ -1262,11 +1262,11 @@ def cmd_prompt_tint(a):
     """Like prompt-color, but emit the actual tint for the current mode + terminal:
     auto -> an OSC/iTerm background escape (zero-setup); profile -> `zsh -ic '<color>'`.
     The UserPromptSubmit hook executes whatever this prints."""
-    if os.environ.get("CLAUDE_TODO_TINT") == "off":
+    if os.environ.get("TASK_STATION_TINT") == "off":
         return
     if not cats or not hasattr(cats, "color_for_prompt") or not cats.TINT_TERMINAL:
         return
-    prompt = a.prompt if getattr(a, "prompt", None) is not None else os.environ.get("TODO_PROMPT", "")
+    prompt = a.prompt if getattr(a, "prompt", None) is not None else os.environ.get("TASK_STATION_PROMPT", "")
     color = cats.color_for_prompt(prompt)
     if not color:
         return
@@ -1285,17 +1285,17 @@ def cmd_prompt_context(a):
     task = load_task(task_id) if task_id else None
     if task:
         was_closed = task.get("status") == "closed"
-        touch(task, session=a.session, note=os.environ.get("TODO_PROMPT", ""), reopen=True)
+        touch(task, session=a.session, note=os.environ.get("TASK_STATION_PROMPT", ""), reopen=True)
         save_task(task)
         if was_closed:
-            print("[todo] Reopened task [%s] %s — this session is working on it again."
+            print("[task-station] Reopened task [%s] %s — this session is working on it again."
                   % (task["id"][:8], task["title"]))
         return  # attached & open: stay silent to avoid clutter
 
     # Not attached: count the miss, surface open tasks, and nudge Claude.
     n = bump_count(a.session)
     opens = [t for t in sorted_tasks() if t["status"] == "open"]
-    lines = ["[todo] This session is not attached to a tracked task yet."]
+    lines = ["[task-station] This session is not attached to a tracked task yet."]
     if opens:
         lines.append("Open tasks that may match what the user wants:")
         for t in opens[:8]:
@@ -1305,22 +1305,22 @@ def cmd_prompt_context(a):
     if n >= NUDGE_ESCALATE_AFTER:
         lines.append("⚠ %d messages in and still untracked. If this session is doing real "
                      "work, attach or create a task NOW. If it is just Q&A, silence this with:" % n)
-        lines.append("      python3 %s/todo.py skip --session %s" % (BASE, a.session))
+        lines.append("      python3 %s/task-station.py skip --session %s" % (BASE, a.session))
         lines.append("")
 
-    # Compact form: full rules/examples live in `todo.py guidance` (and the
+    # Compact form: full rules/examples live in `task-station.py guidance` (and the
     # SessionStart injection points there) — keep the per-prompt cost minimal.
     lines.append("Attach/create the moment this is concrete work (edits files, multi-step, or >2-3 "
                  "tool calls — not a question/discussion). Pure Q&A → stay silent.")
     if cats:
-        skill_color = (cats.color_for_prompt(os.environ.get("TODO_PROMPT", ""))
+        skill_color = (cats.color_for_prompt(os.environ.get("TASK_STATION_PROMPT", ""))
                        if hasattr(cats, "color_for_prompt") else None)
         if skill_color:
             lines.append("This prompt's skill maps to category '%s' (%s); terminal already tinted — "
                          "use --color %s and DON'T re-run the tint alias."
                          % (skill_color, cats.label(skill_color), skill_color))
-        lines.append("  attach: python3 %s/todo.py attach --session %s --task <task-id> [--color <color>]" % (BASE, a.session))
-        lines.append("  create: python3 %s/todo.py create --session %s --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'"
+        lines.append("  attach: python3 %s/task-station.py attach --session %s --task <task-id> [--color <color>]" % (BASE, a.session))
+        lines.append("  create: python3 %s/task-station.py create --session %s --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'"
                      % (BASE, a.session))
         legend = cats.compact_legend() if hasattr(cats, "compact_legend") else ""
         if legend:
@@ -1328,41 +1328,41 @@ def cmd_prompt_context(a):
         tint = ("; RUN the `zsh -ic '<color>'` line the command prints"
                 if cats.TINT_TERMINAL and not skill_color else "")
         lines.append("Tell the user in one short line (\"📋 Tracking: <title>\")%s. "
-                     "Full rules: python3 %s/todo.py guidance" % (tint, BASE))
+                     "Full rules: python3 %s/task-station.py guidance" % (tint, BASE))
     else:
-        lines.append("  attach: python3 %s/todo.py attach --session %s --task <task-id>" % (BASE, a.session))
-        lines.append("  create: python3 %s/todo.py create --session %s --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'"
+        lines.append("  attach: python3 %s/task-station.py attach --session %s --task <task-id>" % (BASE, a.session))
+        lines.append("  create: python3 %s/task-station.py create --session %s --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'"
                      % (BASE, a.session))
         lines.append("Tell the user in one short line (\"📋 Tracking: <title>\"). "
-                     "Full rules: python3 %s/todo.py guidance" % BASE)
+                     "Full rules: python3 %s/task-station.py guidance" % BASE)
     print("\n".join(lines))
 
 
 def cmd_guidance(a):
     """Full attach/create how-to, fetched on demand (kept out of the per-prompt
     injection for token economy — `prompt-context` points here)."""
-    lines = ["[todo] Track a session (attach or create) the moment ALL of these hold:",
+    lines = ["[task-station] Track a session (attach or create) the moment ALL of these hold:",
              "  - it is a concrete task, not a question / explanation / discussion",
              "  - acting on it will edit files, run a multi-step process, or take more than ~2-3 tool calls",
              "  - you understand it well enough to write a one-line title",
              'TRACK examples:  "duplicate the review skills", "add dark mode", "fix the auth bug"',
              'SKIP examples:   "what does this do?", "when is X true?", "reword this", a one-line typo fix',
              "If you have already started editing files and still are not attached — attach now.",
-             "Q&A-only session → silence the nudge: python3 %s/todo.py skip --session <session-id>" % BASE]
+             "Q&A-only session → silence the nudge: python3 %s/task-station.py skip --session <session-id>" % BASE]
     if cats:
         lines.extend(cats.picker_lines())
         lines.append("  • Matches an open task → attach (pass --color to set OR recategorize; accepts a key, emoji, or [TAG]):")
-        lines.append("      python3 %s/todo.py attach --session <session-id> --task <task-id> [--color <color>]" % BASE)
+        lines.append("      python3 %s/task-station.py attach --session <session-id> --task <task-id> [--color <color>]" % BASE)
         lines.append("  • Otherwise → create with its colour and an effort estimate "
                      "(xs/s/m/l/xl — your read of the task's complexity & scope):")
-        lines.append("      python3 %s/todo.py create --session <session-id> --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'"
+        lines.append("      python3 %s/task-station.py create --session <session-id> --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'"
                      % BASE)
         if cats.TINT_TERMINAL:
             lines.append("The command prints the category and a `zsh -ic '<color>'` line — RUN that "
                          "alias to tint this terminal to the task's colour.")
     else:
-        lines.append("  • attach: python3 %s/todo.py attach --session <session-id> --task <task-id>" % BASE)
-        lines.append("  • create: python3 %s/todo.py create --session <session-id> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'" % BASE)
+        lines.append("  • attach: python3 %s/task-station.py attach --session <session-id> --task <task-id>" % BASE)
+        lines.append("  • create: python3 %s/task-station.py create --session <session-id> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'" % BASE)
     lines.append("Do this as a side action, but DO tell the user in one short line when you "
                  "create or attach a task — e.g. \"📋 Tracking this as a new task: <title>\" or "
                  "\"📋 Attached to existing task: <title>\".")
@@ -1375,7 +1375,7 @@ def cmd_session_start(a):
         return  # session intentionally untracked: stay silent
     task = load_task(task_id) if task_id else None
     if task:
-        msg = ["[todo] This session is attached to task [%s] %s (%s). Continue it; /done to close."
+        msg = ["[task-station] This session is attached to task [%s] %s (%s). Continue it; /done to close."
                % (task["id"][:8], task["title"], task["status"])]
         msg.extend(cat_lines(task.get("color")))
         print("\n".join(msg))
@@ -1383,8 +1383,8 @@ def cmd_session_start(a):
     opens = [t for t in sorted_tasks() if t["status"] == "open"]
     if not opens:
         return
-    lines = ["[todo] You have %d open task(s). If the user's request matches one, attach to it "
-             "(full how-to: python3 %s/todo.py guidance); otherwise a new task will be tracked "
+    lines = ["[task-station] You have %d open task(s). If the user's request matches one, attach to it "
+             "(full how-to: python3 %s/task-station.py guidance); otherwise a new task will be tracked "
              "once the work is clear:" % (len(opens), BASE)]
     for t in opens[:8]:
         lines.append("  - [%s] %s (%s)" % (t["id"][:8], t["title"], rel_time(t.get("updated_ts"))))
@@ -1394,7 +1394,7 @@ def cmd_session_start(a):
 # ------------------------------------------------------------------- main ----
 
 def main():
-    p = argparse.ArgumentParser(prog="todo")
+    p = argparse.ArgumentParser(prog="task-station")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("create"); sp.add_argument("--session", required=True)

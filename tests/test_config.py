@@ -4,9 +4,9 @@ import config
 
 class Config(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(); os.environ["CLAUDE_TODO_HOME"] = self.tmp
+        self.tmp = tempfile.mkdtemp(); os.environ["TASK_STATION_HOME"] = self.tmp
     def tearDown(self):
-        os.environ.pop("CLAUDE_TODO_HOME", None); shutil.rmtree(self.tmp, ignore_errors=True)
+        os.environ.pop("TASK_STATION_HOME", None); shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_set_get_roundtrip(self):
         config.set("tint_mode", "profile")

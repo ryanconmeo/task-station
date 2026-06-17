@@ -6,14 +6,14 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 class Overrides(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        os.environ["CLAUDE_TODO_HOME"] = self.tmp
+        os.environ["TASK_STATION_HOME"] = self.tmp
         with open(os.path.join(self.tmp, "config.json"), "w") as f:
             json.dump({"tint_terminal": False,
                        "categories": {"teal": {"dot": "🟦", "tag": "TEAL", "label": "ops"}}},
                       f)
 
     def tearDown(self):
-        os.environ.pop("CLAUDE_TODO_HOME", None)
+        os.environ.pop("TASK_STATION_HOME", None)
 
     def test_user_override_merges_over_defaults(self):
         import categories

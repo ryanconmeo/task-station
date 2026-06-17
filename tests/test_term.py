@@ -4,14 +4,14 @@ import term
 
 class Detect(unittest.TestCase):
     def setUp(self):
-        self._env = {k: os.environ.get(k) for k in ("CLAUDE_TODO_TERM","TERM_PROGRAM","LC_TERMINAL")}
+        self._env = {k: os.environ.get(k) for k in ("TASK_STATION_TERM","TERM_PROGRAM","LC_TERMINAL")}
         for k in self._env: os.environ.pop(k, None)
     def tearDown(self):
         for k,v in self._env.items():
             if v is None: os.environ.pop(k, None)
             else: os.environ[k]=v
     def test_override_wins(self):
-        os.environ["CLAUDE_TODO_TERM"]="none"; os.environ["TERM_PROGRAM"]="iTerm.app"
+        os.environ["TASK_STATION_TERM"]="none"; os.environ["TERM_PROGRAM"]="iTerm.app"
         self.assertEqual(term.detect(), "none")
     def test_iterm_by_lc_terminal(self):
         os.environ["LC_TERMINAL"]="iTerm2"
