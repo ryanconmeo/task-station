@@ -2,29 +2,37 @@
 
 **Task Station** is an automatic, persistent task hub for Claude Code. Every session can attach to a task; tasks survive across sessions and are listed/resumed with `/todo`. Each task **pins to a resumable Claude session** — reopen the exact session behind it (or **re-pin a fresh session to save tokens**). Tasks are **auto-categorised and colour-tinted**, and Task Station is the **hub that launches parallel in-project workers**.
 
-Run `/todo` and Claude renders your board as two tables — **open** first, then recently **closed**:
+Run `/todo` and Claude renders your board as two tables — **open** first, then recently **closed**. Task numbers are stable ids assigned in creation order, so they look scattered: an old long-running task keeps its low number while newer tasks get higher ones.
 
 **Open**
 
 |   # | Task | Category | Effort | Activity |
 | --: | --- | --- | --- | --- |
-|   3 | Add dark mode toggle to the settings page | 🩷 [DESIGN] | ▰▰▰▱▱ M | 2h ago |
-|   2 | Fix auth token refresh on expired sessions | 🔴 [BUG] | ▰▰▱▱▱ S | yesterday |
-|   1 | Build cross-session task tracker | ⚪ [SKILLS] | ▰▰▰▰▱ L | 3d ago |
+|  38 | Add dark mode toggle to the settings page | 🩷 [DESIGN] | ▰▰▰▱▱ M | 2h ago |
+|  12 | Fix auth token refresh on expired sessions | 🔴 [BUG] | ▰▰▱▱▱ S | yesterday |
+|   5 | Build cross-session task tracker | ⚪ [SKILLS] | ▰▰▰▰▱ L | 3d ago |
 
 **Closed**
 
 |   # | Task | Category | Effort | Activity |
 | --: | --- | --- | --- | --- |
-|  10 | Handle null avatar URLs in the header | 🔴 [BUG] | ▰▰▱▱▱ S | 4h ago |
-|   9 | Paginate the activity feed endpoint | 🟢 [FEATURE] | ▰▰▰▱▱ M | 8h ago |
-|   8 | Tidy up stale feature flags | ⚫ [GENERAL] | ▰▱▱▱▱ XS | yesterday |
-|   7 | Add CSV export to the reports dashboard | 🟢 [FEATURE] | ▰▰▰▰▱ L | 2d ago |
-|   6 | Pin CI node version and cache dependencies | 🔵 [DEVOPS] | ▰▰▰▱▱ M | 3d ago |
+|  40 | Handle null avatar URLs in the header | 🔴 [BUG] | ▰▰▱▱▱ S | 4h ago |
+|  37 | Paginate the activity feed endpoint | 🟢 [FEATURE] | ▰▰▰▱▱ M | 8h ago |
+|  33 | Add CSV export to the reports dashboard | 🟢 [FEATURE] | ▰▰▰▰▱ L | yesterday |
+|  28 | Pin CI node version and cache dependencies | 🔵 [DEVOPS] | ▰▰▰▱▱ M | 2d ago |
+|   9 | Tidy up stale feature flags | ⚫ [GENERAL] | ▰▱▱▱▱ XS | 3d ago |
 
-> … 2 older closed task(s) hidden · show more with `/todo closed N` or `/todo all` · reachable by number: `/todo <n>` or `/done <n>`
+> … 16 older closed task(s) hidden · show more with `/todo closed N` or `/todo all` · reachable by number: `/todo <n>` or `/done <n>`
 
-`/todo <n>` opens & resumes a task · `/done` closes the current one · effort runs `▰▱▱▱▱` XS → `▰▰▰▰▰` XL · each task is colour-tinted by category ([see the taxonomy](CATEGORIES.md)).
+**Commands**
+
+- `/todo <number>` — open and resume a task
+- `/todo <number> -s` — jump straight into that task's pinned session, in a new window
+- `/todo closed [N]` or `/todo all` — see more closed tasks
+- `/done` — close the task this session is working on
+- `/done <number>` — close any task by its number
+
+Effort runs `▰▱▱▱▱` XS → `▰▰▰▰▰` XL, and each task is colour-tinted by category ([see the taxonomy](CATEGORIES.md)).
 
 ## Why Task Station (vs native Tasks)
 
