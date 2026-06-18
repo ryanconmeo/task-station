@@ -3,6 +3,17 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.0.2] — 2026-06-18
+
+### Added
+- Opt-in `/todo` update check (default **off**). Enable with
+  `task-station config --update-check on`: the `/todo` list view shows a one-line
+  footer when a newer Task Station version is published. When off there are zero
+  network calls; when on it makes at most one `git ls-remote` version check to
+  GitHub per day (cached locally under `task-station-data/update-check.json`),
+  with a hard timeout. Offline or any failure is silent, and no task data is ever
+  sent.
+
 ## [1.0.1] — 2026-06-18
 
 ### Added

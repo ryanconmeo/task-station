@@ -44,6 +44,10 @@ def bare_commands():
         return True
     return bool(get("bare_commands", False))
 
+def update_check_enabled():
+    """True only if the user opted in (config flag). Default off — no network."""
+    return bool(get("update_check", False))
+
 def tint_mode():
     return get("tint_mode", "auto")
 
@@ -60,6 +64,8 @@ def render_board():
         % ("%d override(s)" % n_cat if n_cat else "defaults"),
         "  --bare-cmds        %-33s install bare /todo + /done (else /task-station:todo)  on · off"
         % ("on" if bare_commands() else "off"),
+        "  --update-check     %-33s opt-in /todo footer when a newer version ships  on · off"
+        % ("on" if update_check_enabled() else "off"),
         "",
         "  read-only",
         "  --data-dir        %-34s (set via $TASK_STATION_HOME)" % paths.data_dir(),
@@ -78,6 +84,11 @@ def cmd_config(a):
         print("bare_commands = %s" % ("on" if get("bare_commands") else "off")); return
     if getattr(a, "bare_cmds_get", False):
         print("on" if bare_commands() else "off"); return
+    if getattr(a, "update_check", None) is not None:
+        set("update_check", a.update_check == "on")
+        print("update_check = %s" % ("on" if get("update_check") else "off")); return
+    if getattr(a, "update_check_get", False):
+        print("on" if update_check_enabled() else "off"); return
     if a.categories == "edit":
         print(_path()); return
     import setup
