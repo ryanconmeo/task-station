@@ -9,7 +9,7 @@ Every task carries a `color` — one of the keys below. The colour does two jobs
    leaving raw `\033[…m` codes on screen, so the emoji conveys colour instead.
 2. **Terminal tinting.** When a session attaches to, creates, or resumes a task,
    the engine tints the terminal to the task's category. Two modes (set via
-   `task-station setup --tint-profiles`):
+   `task-station config --tint-profiles`):
    - **auto** *(default, zero-setup)* — writes a direct escape to set the background
      colour (`hex` field per category): iTerm2 uses `SetColors`, Terminal.app uses
      OSC 11. No profiles or aliases required.
@@ -146,7 +146,7 @@ JSON shape (all keys optional — only what you set is stored):
 - **`tint_terminal`** toggles tinting globally. Set to `false` if you like the
   `<emoji> [TAG]` decoration but don't want any terminal tinting.
 - **`tint_mode`** — `"auto"` (default, zero-setup direct escapes) or `"profile"`
-  (named zsh aliases, set by `task-station setup --tint-profiles`).
+  (named zsh aliases, set by `task-station config --tint-profiles`).
 - **`skill_colors`** entries are **prepended** to the shipped list, so your
   patterns win over the defaults. Each entry is `["regex", "color"]`; first
   match wins.

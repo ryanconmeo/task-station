@@ -80,4 +80,12 @@ def cmd_config(a):
         print("on" if bare_commands() else "off"); return
     if a.categories == "edit":
         print(_path()); return
+    import setup
+    if getattr(a, "policy", None) is not None:
+        print(setup.set_policy(a.policy == "on")); return
+    if getattr(a, "tint_profiles", False):
+        print(setup.install_tint_profiles()); return
+    # No flags: the unified settings + doctor/status view.
     print(render_board())
+    print("")
+    print(setup.status())
