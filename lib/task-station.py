@@ -1506,13 +1506,9 @@ def main():
     sp.add_argument("--categories", dest="categories", nargs="?", const="edit", default=None)
     sp.add_argument("--bare-cmds", dest="bare_cmds", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--bare-cmds-get", dest="bare_cmds_get", action="store_true")
-    sp.set_defaults(fn=lambda a: __import__("config").cmd_config(a))
-
-    sp = sub.add_parser("setup")
     sp.add_argument("--policy", nargs="?", choices=["on", "off"], const="on", default=None)
     sp.add_argument("--tint-profiles", dest="tint_profiles", action="store_true")
-    sp.add_argument("--workspace-dirs", dest="workspace_dirs", default=None)
-    sp.set_defaults(fn=lambda a: __import__("setup").cmd_setup(a))
+    sp.set_defaults(fn=lambda a: __import__("config").cmd_config(a))
 
     a = p.parse_args()
     a.fn(a)

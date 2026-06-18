@@ -1,10 +1,11 @@
-"""task-station setup: doctor + consented installers. This module owns the
-100%-reversible CLAUDE.md managed-block engine."""
+"""task-station config: doctor + consented installers. This module owns the
+100%-reversible CLAUDE.md managed-block engine. Kept as an internal module
+(imported by config.py); its flags are surfaced under `task-station config`."""
 import hashlib, json, os
 import paths
 import term, config
 
-BEGIN = "<!-- BEGIN task-station:delegation-policy (managed — task-station setup --policy) -->"
+BEGIN = "<!-- BEGIN task-station:delegation-policy (managed — task-station config --policy) -->"
 END = "<!-- END task-station:delegation-policy -->"
 
 
@@ -144,14 +145,14 @@ def status():
     t = term.detect()
     ws = config.workspace_dirs()
     has_policy = ("policy" in _manifest())
-    lines = ["task-station setup — status", ""]
+    lines = ["task-station config — status", ""]
     lines.append("  tint        baked on · mode %s · terminal %s%s" % (
         config.tint_mode(), t, "" if t != "none" else "  (no supported terminal detected → no-op)"))
     lines.append("  tint-profiles  %s" % ("installed (profile mode)" if config.tint_mode() == "profile"
-                 else "not installed — richer tint: task-station setup --tint-profiles"))
+                 else "not installed — richer tint: task-station config --tint-profiles"))
     lines.append("  workspace   %s" % (":".join(ws) if ws else "unset — task-station config --workspace-dirs <dirs>"))
-    lines.append("  policy      %s" % ("installed in CLAUDE.md — remove: task-station setup --policy off"
-                 if has_policy else "not installed — task-station setup --policy on"))
+    lines.append("  policy      %s" % ("installed in CLAUDE.md — remove: task-station config --policy off"
+                 if has_policy else "not installed — task-station config --policy on"))
     return "\n".join(lines)
 
 
@@ -159,7 +160,7 @@ def set_policy(on):
     md = _claude_md()
     if on:
         _apply_block(md, _policy_text())
-        return "Added delegation policy to %s (reverse: task-station setup --policy off)." % md
+        return "Added delegation policy to %s (reverse: task-station config --policy off)." % md
     ok = _remove_block(md)
     return ("Removed delegation policy from %s." % md) if ok else \
            ("Left %s unchanged — the managed block was hand-edited; remove it manually." % md)

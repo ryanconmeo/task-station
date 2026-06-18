@@ -31,6 +31,7 @@ Run `/todo` and Claude renders your board as two tables — **open** first, then
 - `/todo closed [N]` or `/todo all` — see more closed tasks
 - `/done` — close the task this session is working on
 - `/done <number>` — close any task by its number
+- `/task-station:config` — view or change settings; run one-time setup (tint profiles, delegation policy)
 
 Effort runs `▰▱▱▱▱` XS → `▰▰▰▰▰` XL, and each task is colour-tinted by category ([see the taxonomy](CATEGORIES.md)).
 
@@ -65,8 +66,8 @@ All paths are under your config dir (`${CLAUDE_CONFIG_DIR:-~/.claude}`) unless n
 | `~/.claude/task-station-engine` | Symlink to the plugin's `lib/` — a stable, version-independent handle refreshed every session |
 | `~/.claude/statusline.d/50-task-station.sh` | Self-registered status-line segment (harmless if unused) |
 | `~/.claude/commands/{todo,done}.md` | **Only if you run `task-station config --bare-cmds on`** (opt-in; marker-guarded, never clobbers a pre-existing command) |
-| `~/.zshrc` (tint aliases) | **Only via the explicit `task-station setup --tint-profiles` command you run** |
-| `~/.claude/CLAUDE.md` (delegation policy block) | **Only via the explicit `task-station setup --policy on` command you run** (fenced, 100% reversible with `--policy off`) |
+| `~/.zshrc` (tint aliases) | **Only via the explicit `task-station config --tint-profiles` command you run** |
+| `~/.claude/CLAUDE.md` (delegation policy block) | **Only via the explicit `task-station config --policy on` command you run** (fenced, 100% reversible with `--policy off`) |
 
 The namespaced `/task-station:todo` and `/task-station:done` commands are registered by the plugin system automatically and always work out of the box. The bare `/todo` and `/done` aliases are **opt-in** — run `task-station config --bare-cmds on` to install them.
 
@@ -397,33 +398,26 @@ into your global `~/.claude/CLAUDE.md` and customize the workspace paths.
 
 All config lives in one file: `${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/config.json`. Use the commands below to read and write it — never edit the file directly.
 
-Two slash commands (run from a Claude Code session):
+One slash command (run from a Claude Code session):
 
-- **`/task-station:config`** — your *settings* (values the plugin owns in `config.json`).
-- **`/task-station:setup`** — a *doctor + installers* for things outside the plugin (your `CLAUDE.md` policy, Terminal tint profiles), and a status report of what's still unconfigured.
+- **`/task-station:config`** — your *settings* (values the plugin owns in `config.json`) **and** the *doctor + installers* for things outside the plugin (your `CLAUDE.md` policy, Terminal tint profiles), with a status report of what's still unconfigured.
 
-Both accept the same flags shown below. To run from a plain shell instead, the stable engine path is `~/.claude/task-station-engine/task-station.py` (a symlink the `SessionStart` hook keeps current; `$CLAUDE_PLUGIN_ROOT` isn't set in a shell, so use this path):
+To run from a plain shell instead, the stable engine path is `~/.claude/task-station-engine/task-station.py` (a symlink the `SessionStart` hook keeps current; `$CLAUDE_PLUGIN_ROOT` isn't set in a shell, so use this path):
 
 ```bash
 python3 "$HOME/.claude/task-station-engine/task-station.py" config     # same as /task-station:config
-python3 "$HOME/.claude/task-station-engine/task-station.py" setup      # same as /task-station:setup
 ```
 
 ### `task-station config`
 
-Prints the config board showing current values. Flags:
+With no arguments, prints the unified board: current settings plus a status/doctor report (tint mode + detected terminal, tint-profiles, workspace dirs, whether the delegation policy is installed). Flags:
 
 - `--workspace-dirs <a:b>` — set repo-root directories (`:` separated) for delegate's `--project` shorthand.
 - `--categories edit` — prints the `config.json` path so you can open it and customize categories, `skill_colors`, etc.
-- `--data-dir` *(read-only)* — shows the data directory (set via `$TASK_STATION_HOME`).
-
-### `task-station setup`
-
-Prints a status/doctor report. Flags:
-
+- `--bare-cmds on|off` — install or remove the bare `/todo` + `/done` aliases.
 - `--policy on|off` — adds or removes a 100%-reversible delegation-policy block in your `~/.claude/CLAUDE.md` (fenced, idempotent, hash-checked; `off` refuses if the block was hand-edited).
 - `--tint-profiles` — **Terminal.app:** sets profile mode, appends per-category zsh aliases to `~/.zshrc`, and prints the manual steps to create matching Terminal.app profiles. **iTerm2:** no-op (prints "already zero-setup").
-- `--workspace-dirs <a:b>` — same setter as `task-station config --workspace-dirs`.
+- `--data-dir` *(read-only)* — shows the data directory (set via `$TASK_STATION_HOME`).
 
 ### Baked defaults and env escapes
 
@@ -438,7 +432,7 @@ These are on by default. Each has a hidden env escape to turn it off — no conf
 **Terminal tint — two modes:**
 
 - **auto** *(default, zero-setup)* — writes a direct escape sequence to set the background colour: iTerm2 uses `SetColors`, Terminal.app uses OSC 11. Works out of the box; no profiles or aliases needed.
-- **profile** — runs `zsh -ic '<color>'` to switch Terminal.app profiles via named aliases. Enable with `task-station setup --tint-profiles` (iTerm2: no-op, already zero-setup).
+- **profile** — runs `zsh -ic '<color>'` to switch Terminal.app profiles via named aliases. Enable with `task-station config --tint-profiles` (iTerm2: no-op, already zero-setup).
 
 Tinting is auto-detected: the engine reads `$TERM_PROGRAM` / `$ITERM_SESSION_ID` to pick iTerm2 vs Terminal.app vs none. The window title `task-station-<seq> · <title>` and `/todo <n> -s` new-window jump are on by default on macOS (auto-detected).
 

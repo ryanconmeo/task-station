@@ -43,7 +43,7 @@ _seen="${TASK_STATION_HOME:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/task-station-dat
 nudge=""
 if [ ! -e "$_seen" ] && [ -n "$CLAUDE_PLUGIN_ROOT" ]; then
   if [ -z "$(python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" config --workspace-dirs-get 2>/dev/null)" ]; then
-    nudge='task-station installed. Finish optional setup any time with `task-station setup`.'
+    nudge='task-station installed. Finish optional setup any time with `task-station config`.'
   fi
   mkdir -p "$(dirname "$_seen")" 2>/dev/null; : > "$_seen"
 fi
