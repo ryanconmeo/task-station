@@ -1096,14 +1096,24 @@ def _parse_list_arg(arg):
     return False
 
 
+def _print_list_footer():
+    """Opt-in (default off) update nudge, list view only. Silent when off/up-to-date."""
+    import update_check
+    line = update_check.nudge_line()
+    if line:
+        print(line)
+
+
 def cmd_render(a):
     arg, jump = _parse_session_flag((a.arg or "").strip())
     if not arg:
         print(_format_list())
+        _print_list_footer()
         return
     closed_limit = _parse_list_arg(arg)
     if closed_limit is not False:
         print(_format_list(closed_limit=closed_limit))
+        _print_list_footer()
         return
     task = resolve_ref(arg)
     if not task:
@@ -1506,6 +1516,8 @@ def main():
     sp.add_argument("--categories", dest="categories", nargs="?", const="edit", default=None)
     sp.add_argument("--bare-cmds", dest="bare_cmds", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--bare-cmds-get", dest="bare_cmds_get", action="store_true")
+    sp.add_argument("--update-check", dest="update_check", nargs="?", choices=["on","off"], const="on", default=None)
+    sp.add_argument("--update-check-get", dest="update_check_get", action="store_true")
     sp.add_argument("--policy", nargs="?", choices=["on", "off"], const="on", default=None)
     sp.add_argument("--tint-profiles", dest="tint_profiles", action="store_true")
     sp.set_defaults(fn=lambda a: __import__("config").cmd_config(a))
