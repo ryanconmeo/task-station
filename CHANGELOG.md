@@ -3,13 +3,27 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [1.0.1] — 2026-06-18
 
 ### Added
 - `/todo closed [N]` and `/todo all` listing modes. `/todo closed` shows the 20
   most recent closed tasks, `/todo closed N` shows N, and `/todo all` shows every
   task. The bare `/todo` list still shows only the most recent few closed; the
   "older closed hidden" footer now points at these commands.
+
+### Changed
+- Collapsed `/task-station:setup` into `/task-station:config` — `config` now owns
+  `--policy` and `--tint-profiles` and shows a status view with no args; the
+  `setup` command is removed.
+- Default `brown` category is now `[DATABASE]` ("database"); data-migration tasks
+  still auto-classify there.
+- The "fixing PR review feedback" category moved from gold to **yellow**
+  (`[FIX PR]`); gold is now a reserved slot.
+
+### Fixed
+- `/done` now closes **iTerm2** windows, not just Terminal.app.
+- Command bodies fall back to `CLAUDE_CODE_SESSION_ID` when `CLAUDE_SESSION_ID` is
+  unset.
 
 ## [1.0.0] — 2026-06-17
 
