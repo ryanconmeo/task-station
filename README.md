@@ -3,17 +3,19 @@
 **Task Station** is an automatic, persistent task hub for Claude Code. Every session can attach to a task; tasks survive across sessions and are listed/resumed with `/todo`. Each task **pins to a resumable Claude session** — reopen the exact session behind it (or **re-pin a fresh session to save tokens**). Tasks are **auto-categorised and colour-tinted**, and Task Station is the **hub that launches parallel in-project workers**.
 
 ```
-Tasks (open first, then by recent activity):  •  /todo <n> = open detail & resume   ·   /done = close current task   ·   close any by id:  python3 …/task-station.py done --task <n|id>
+Tasks (open first, then by recent activity):  •  /todo <n> = open detail & resume   ·   /done = close current task   ·   /done <n> = close any task by number/id
 
 OPEN
-  1  Build cross-session task tracker       ⚪ [SKILLS]     ▆ L   2h ago
-  2  Fix auth refresh bug                   🔴 [BUG]        ▃ S   yesterday
+  3  Add dark mode to settings page            🩷 [DESIGN]    ▰▰▰▱▱ M   2h ago
+  2  Fix auth token refresh bug                🔴 [BUG]       ▰▰▱▱▱ S   yesterday
+  1  Build cross-session task tracker          ⚪ [SKILLS]    ▰▰▰▰▱ L   3d ago
 
 CLOSED
-  3  Migrate legacy billing to v2           🟤 [DATABASE]   █ XL  3d ago
+  5  Review payment webhook PR                 🟠 [REVIEW]    ▰▰▱▱▱ S   4h ago
+  4  Migrate billing tables to v2 schema       🟤 [DATABASE]  ▰▰▰▰▰ XL  3d ago
 
-Effort:  ▁ XS  ▃ S  ▅ M  ▆ L  █ XL
-Legend: 🔴 [BUG] bug · 🟠 [REVIEW] code review · 🟢 [FEATURE] feature work · 🔵 [DEVOPS] devops · 🩷 [DESIGN] design · ⚪ [SKILLS] skills and memories · 🟤 [DATABASE] database · …
+Effort:  ▰▱▱▱▱ XS  ▰▰▱▱▱ S  ▰▰▰▱▱ M  ▰▰▰▰▱ L  ▰▰▰▰▰ XL
+Legend: 🔴 [BUG] bug  ·  🟠 [REVIEW] code review  ·  🟡 [FIX PR] fixing PR review feedback  ·  🟢 [FEATURE] feature work  ·  🔵 [DEVOPS] devops  ·  🟣 [SPECIAL] special  ·  ⚫ [GENERAL] general  ·  🩷 [DESIGN] design  ·  ⚪ [SKILLS] skills and memories  ·  🩶 [PERSONAL] personal projects  ·  🟤 [DATABASE] database
 ```
 
 ## Why Task Station (vs native Tasks)
@@ -95,7 +97,7 @@ The namespaced `/task-station:todo` and `/task-station:done` commands are regist
   which drives the "recent activity" sort.
 - **Effort estimate.** Each task carries an optional t-shirt size
   (`XS`/`S`/`M`/`L`/`XL`) capturing its complexity & scope, shown as a gauged
-  column (`▃ S`) in the list and spelled out in the detail view. Claude sets it
+  column (`▰▰▱▱▱ S`) in the list and spelled out in the detail view. Claude sets it
   at `create` time (the auto-attach nudge asks for it); adjust later with
   `task-station.py update --task <n> --effort <xs|s|m|l|xl>`. `--effort` also accepts the
   numeric 1–5 scale and words (`small`/`large`/…); unknown values are ignored
