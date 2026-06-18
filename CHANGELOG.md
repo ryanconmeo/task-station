@@ -13,6 +13,8 @@ All notable changes to Task Station are documented here. This project adheres to
   GitHub per day (cached locally under `task-station-data/update-check.json`),
   with a hard timeout. Offline or any failure is silent, and no task data is ever
   sent.
+- The `/todo` list now also surfaces `/todo <n> -s` (jump to a task's pinned
+  session) and `/task-station:config` in its command reminder, matching the README.
 
 ## [1.0.1] — 2026-06-18
 
