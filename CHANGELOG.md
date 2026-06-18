@@ -3,6 +3,13 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.0.3] — 2026-06-18
+
+### Changed
+- The `/todo` block now prints an authoritative `Commands:` footer (single source
+  of truth) listing every command, and the command reminder is relayed from it
+  rather than hardcoded in the command instructions.
+
 ## [1.0.2] — 2026-06-18
 
 ### Added

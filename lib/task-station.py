@@ -175,6 +175,16 @@ def effort_legend():
     return "Effort:  " + "  ".join("%s %s" % (EFFORT_GAUGE[s], s) for s in EFFORT_ORDER)
 
 
+def commands_footer():
+    """The authoritative one-line `/todo` command list — the single source of
+    truth that commands/todo.md relays. Dense `·`-separated style matching the
+    Effort:/Legend: lines; lists every command with a short label."""
+    return ("Commands:  /todo <n> (open & resume)  ·  /todo <n> -s (jump to pinned "
+            "session, new window)  ·  /todo closed [N] · /todo all (more closed)  ·  "
+            "/done (close current)  ·  /done <n> (close by number)  ·  "
+            "/task-station:config (settings)")
+
+
 # ---------------------------------------------------------------- storage ----
 
 def _ensure_dirs():
@@ -914,8 +924,6 @@ def _format_list(closed_limit=MAX_CLOSED_IN_LIST):
         return ("No tasks yet. One will be tracked automatically once the work "
                 "in a session becomes clear, or say so explicitly.")
     lines = []
-    attached_note = ("  •  /todo <n> = open detail & resume   ·   /done = close current task"
-                     "   ·   /done <n> = close any task by number/id")
     closed_total = sum(1 for t in listing if t["status"] != "open")
     capped = closed_limit is not None and closed_total > closed_limit
     if capped:
@@ -950,7 +958,8 @@ def _format_list(closed_limit=MAX_CLOSED_IN_LIST):
     lines.append(effort_legend())
     if cats:
         lines.append(cats.legend())
-    return ("Tasks (open first, then by recent activity):" + attached_note + "\n"
+    lines.append(commands_footer())
+    return ("Tasks (open first, then by recent activity):\n"
             + "\n".join(lines))
 
 
