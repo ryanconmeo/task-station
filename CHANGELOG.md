@@ -3,6 +3,14 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+- `/todo closed [N]` and `/todo all` listing modes. `/todo closed` shows the 20
+  most recent closed tasks, `/todo closed N` shows N, and `/todo all` shows every
+  task. The bare `/todo` list still shows only the most recent few closed; the
+  "older closed hidden" footer now points at these commands.
+
 ## [1.0.0] — 2026-06-17
 
 Initial public release as Task Station.

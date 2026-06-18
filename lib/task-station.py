@@ -903,7 +903,11 @@ def cmd_done(a):
           % (task["id"][:8], task["title"]))
 
 
-def _format_list():
+def _format_list(closed_limit=MAX_CLOSED_IN_LIST):
+    # closed_limit caps how many closed tasks are shown (most recent first).
+    # None means "show every closed task" (`/todo all`); an int shows that many
+    # (`/todo closed` / `/todo closed N`). The default keeps the bare `/todo`
+    # list short.
     ensure_seqs()                      # guarantee every task has its stable number
     listing = sorted_tasks()
     if not listing:
@@ -913,13 +917,14 @@ def _format_list():
     attached_note = ("  •  /todo <n> = open detail & resume   ·   /done = close current task"
                      "   ·   /done <n> = close any task by number/id")
     closed_total = sum(1 for t in listing if t["status"] != "open")
-    if closed_total > MAX_CLOSED_IN_LIST:
+    capped = closed_limit is not None and closed_total > closed_limit
+    if capped:
         shown = 0
         trimmed = []
         for t in listing:
             if t["status"] != "open":
                 shown += 1
-                if shown > MAX_CLOSED_IN_LIST:
+                if shown > closed_limit:
                     continue
             trimmed.append(t)
         listing = trimmed
@@ -937,9 +942,10 @@ def _format_list():
         else:
             lines.append("%3d  %-40.40s  %s  %s"
                          % (t["seq"], t["title"], eff, rel_time(t.get("updated_ts"))))
-    if closed_total > MAX_CLOSED_IN_LIST:
-        lines.append("     … %d older closed task(s) hidden  ·  still reachable by number: "
-                     "/todo <n> or /done <n>" % (closed_total - MAX_CLOSED_IN_LIST))
+    if capped:
+        lines.append("     … %d older closed task(s) hidden  ·  show more with /todo closed N "
+                     "or /todo all  ·  reachable by number: /todo <n> or /done <n>"
+                     % (closed_total - closed_limit))
     lines.append("")
     lines.append(effort_legend())
     if cats:
@@ -1067,10 +1073,37 @@ def _parse_session_flag(arg):
     return " ".join(kept), session
 
 
+DEFAULT_CLOSED_LIST = 20  # how many closed tasks `/todo closed` (no count) shows
+
+
+def _parse_list_arg(arg):
+    """Recognize the listing keywords `closed [N]` and `all`.
+
+    Returns the closed-task limit to pass to _format_list (None = show every
+    closed task) when `arg` is a listing request, or False when it isn't (so
+    the caller falls through to treating `arg` as a task ref). `closed` with no
+    count uses DEFAULT_CLOSED_LIST; `closed N` uses N; `all` shows everything.
+    """
+    toks = arg.lower().split()
+    if not toks:
+        return False
+    if toks[0] == "all":
+        return None
+    if toks[0] in ("closed", "recent"):
+        if len(toks) > 1 and toks[1].isdigit():
+            return max(1, int(toks[1]))
+        return DEFAULT_CLOSED_LIST
+    return False
+
+
 def cmd_render(a):
     arg, jump = _parse_session_flag((a.arg or "").strip())
     if not arg:
         print(_format_list())
+        return
+    closed_limit = _parse_list_arg(arg)
+    if closed_limit is not False:
+        print(_format_list(closed_limit=closed_limit))
         return
     task = resolve_ref(arg)
     if not task:
