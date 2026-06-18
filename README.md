@@ -24,7 +24,15 @@ Run `/todo` and Claude renders your board as two tables — **open** first, then
 
 > … 16 older closed task(s) hidden · show more with `/todo closed N` or `/todo all` · reachable by number: `/todo <n>` or `/done <n>`
 
-`/todo <n>` opens & resumes a task · `/done` closes the current one · effort runs `▰▱▱▱▱` XS → `▰▰▰▰▰` XL · each task is colour-tinted by category ([see the taxonomy](CATEGORIES.md)).
+**Commands**
+
+- `/todo <number>` — open and resume a task
+- `/todo <number> -s` — jump straight into that task's pinned session, in a new window
+- `/todo closed [N]` or `/todo all` — see more closed tasks
+- `/done` — close the task this session is working on
+- `/done <number>` — close any task by its number
+
+Effort runs `▰▱▱▱▱` XS → `▰▰▰▰▰` XL, and each task is colour-tinted by category ([see the taxonomy](CATEGORIES.md)).
 
 ## Why Task Station (vs native Tasks)
 
