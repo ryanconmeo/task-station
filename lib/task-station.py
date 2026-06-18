@@ -179,10 +179,10 @@ def commands_footer():
     """The authoritative one-line `/todo` command list — the single source of
     truth that commands/todo.md relays. Dense `·`-separated style matching the
     Effort:/Legend: lines; lists every command with a short label."""
-    return ("Commands:  /todo <n> (open & resume)  ·  /todo <n> -s (jump to pinned "
-            "session, new window)  ·  /todo closed [N] · /todo all (more closed)  ·  "
-            "/done (close current)  ·  /done <n> (close by number)  ·  "
-            "/task-station:config (settings)")
+    return ("Commands:  /todo <n> (open & resume)  ·  /todo <n[,n…]> -s (jump to pinned "
+            "session, new window — comma list jumps several)  ·  /todo closed [N] · /todo all "
+            "(more closed)  ·  /done (close current)  ·  /done <n[,n…]> (close by number; "
+            "comma list closes several)  ·  /task-station:config (settings)")
 
 
 # ---------------------------------------------------------------- storage ----
@@ -868,30 +868,45 @@ def cmd_stop_gate(a):
     print(json.dumps({"decision": "block", "reason": reason}))
 
 
+def _close_one(ref, session):
+    """Close a single task by seq/id ref and return one human result line.
+
+    Detaches every session linked to the task so none can silently reopen it.
+    Returns a no-match / already-closed / closed line — never raises — so a
+    caller closing a comma list can keep going past a bad ref."""
+    task = resolve_ref(ref) or load_task(ref)
+    if not task:
+        return "No task matching '%s'." % ref
+    if task.get("status") == "closed":
+        return "Task [%s] %s is already closed." % (task["id"][:8], task["title"])
+    task["status"] = "closed"
+    touch(task, session=session, note="closed (by id)")
+    save_task(task)
+    # Detach EVERY session linked to this task so none can silently reopen it.
+    for sess in list(task.get("sessions", [])):
+        if get_link(sess) == task["id"]:
+            clear_link(sess)
+            clear_count(sess)
+            clear_edit_markers(sess)   # closing is a deliberate wrap-up — don't let the gate block
+    return "Closed task [%s] %s. Reopen later with /todo." % (task["id"][:8], task["title"])
+
+
 def cmd_done(a):
     # Two modes:
     #   --task REF  → close any task by seq/id from anywhere (no session needed).
     #   --session   → close the task attached to this session (the /done path).
     ref = getattr(a, "task", None)
     if ref:
-        task = resolve_ref(ref) or load_task(ref)
-        if not task:
+        # --task accepts a comma-separated list (e.g. "1,2,5"): close each ref,
+        # print one result line per task, and tolerate a mix of valid/invalid —
+        # a bad ref is reported but doesn't abort the rest. A single number is
+        # just a list of one.
+        refs = [r.strip() for r in ref.split(",") if r.strip()]
+        if not refs:
             print("No task matching '%s'.\n\n%s" % (ref, _format_list()))
             return
-        if task.get("status") == "closed":
-            print("Task [%s] %s is already closed." % (task["id"][:8], task["title"]))
-            return
-        task["status"] = "closed"
-        touch(task, session=a.session or None, note="closed (by id)")
-        save_task(task)
-        # Detach EVERY session linked to this task so none can silently reopen it.
-        for sess in list(task.get("sessions", [])):
-            if get_link(sess) == task["id"]:
-                clear_link(sess)
-                clear_count(sess)
-                clear_edit_markers(sess)   # closing is a deliberate wrap-up — don't let the gate block
-        print("Closed task [%s] %s. Reopen later with /todo."
-              % (task["id"][:8], task["title"]))
+        for r in refs:
+            print(_close_one(r, a.session or None))
         return
 
     if not a.session:
@@ -1063,6 +1078,25 @@ def _format_detail_session(task, session, resume=None, opened=False):
     return "\n".join(out)
 
 
+def _jump_one(ref, session):
+    """Attach `session` to the task named by `ref`, open a fresh jump window for
+    it, and return its `[SESSION-JUMP]` block. Used per-ref so `/todo <n,n…> -s`
+    can jump into several tasks at once (one window + one block per task).
+
+    Returns a no-match line (never raises) so a bad ref in a comma list is
+    reported without aborting the others."""
+    task = resolve_ref(ref)
+    if not task:
+        return "No task matching '%s'." % ref
+    touch(task, session=session, note="resumed", reopen=True)
+    save_task(task)
+    set_link(session, task["id"])
+    clear_count(session)
+    resume = resume_command(task, session)
+    opened = _open_jump_window(resume) if resume else False
+    return _format_detail_session(task, session, resume=resume, opened=opened)
+
+
 def _parse_session_flag(arg):
     """Pull a `-s` / `--session` token out of a /todo arg (e.g. `1 -s` or `-s 1`).
 
@@ -1124,6 +1158,19 @@ def cmd_render(a):
         print(_format_list(closed_limit=closed_limit))
         _print_list_footer()
         return
+    if jump:
+        # -s: jump straight into the task's working session in a FRESH window
+        # (leaving this one untouched). The ref before -s may be a comma list
+        # (`/todo 1,2,5 -s`): attach + open one window and emit one
+        # [SESSION-JUMP] block PER task. A single number is just a list of one.
+        # Opening happens here so it's immediate and deterministic; each block
+        # falls back to printing its one-liner if its window can't open.
+        refs = [r.strip() for r in arg.split(",") if r.strip()]
+        if not refs:
+            print("No task matching '%s'.\n\n%s" % (arg, _format_list()))
+            return
+        print("\n\n".join(_jump_one(r, a.session) for r in refs))
+        return
     task = resolve_ref(arg)
     if not task:
         print("No task matching '%s'.\n\n%s" % (arg, _format_list()))
@@ -1132,15 +1179,7 @@ def cmd_render(a):
     save_task(task)
     set_link(a.session, task["id"])
     clear_count(a.session)
-    if jump:
-        # -s: jump straight into the task's working session in a FRESH window
-        # (leaving this one untouched). Open it here so it happens immediately
-        # and deterministically; fall back to printing the one-liner if we can't.
-        resume = resume_command(task, a.session)
-        opened = _open_jump_window(resume) if resume else False
-        print(_format_detail_session(task, a.session, resume=resume, opened=opened))
-    else:
-        print(_format_detail(task, a.session))
+    print(_format_detail(task, a.session))
 
 
 def cmd_add_project(a):

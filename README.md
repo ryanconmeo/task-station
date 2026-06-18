@@ -27,186 +27,82 @@ Run `/todo` and Claude renders your board as two tables — **open** first, then
 **Commands**
 
 - `/todo <number>` — open and resume a task
-- `/todo <number> -s` — jump straight into that task's pinned session, in a new window
+- `/todo <number[,…]> -s` — jump straight into a task's pinned session in a new window (a comma list jumps several)
 - `/todo closed [N]` or `/todo all` — see more closed tasks
 - `/done` — close the task this session is working on
-- `/done <number>` — close any task by its number
+- `/done <number[,…]>` — close any task by its number (a comma list closes several)
 - `/task-station:config` — view or change settings; run one-time setup (tint profiles, delegation policy)
 
 Effort runs `▰▱▱▱▱` XS → `▰▰▰▰▰` XL, and each task is colour-tinted by category ([see the taxonomy](CATEGORIES.md)).
+
+## Key Features
+
+- **Persistent, cross-session tasks** — a `/todo` board that survives restarts; each task carries a stable number, summary, activity log, and effort estimate.
+- **Resumable, re-pinnable sessions** — every task pins to a Claude session you can reopen, or **re-pin a fresh session to save tokens** when context grows bloated.
+- **Auto-categorised + colour-tinted** — tasks are tagged by category (bug/red, devops/blue, design/pink, …) and the terminal tints to match.
+- **Closed-task listing** — `/todo closed [N]` and `/todo all` page through your history.
+- **Multi-task `/done` and `/todo -s`** — close or jump into several tasks at once with a comma-separated list (`/done 1,2,5`, `/todo 1,2,5 -s`).
+- **Optional enforcement gate** — a file edit in an untracked session can be made to block the turn from ending until work is tracked (self-healing, opt-out).
+- **Parallel in-project worker delegation** — spawn `claude` workers inside a repo (with its CLAUDE.md, hooks, MCP, skills), one per task, resumable across turns.
+- **Opt-in update check** — off by default; when on, at most one version check to GitHub per day, sending no task data.
+- **Local-only, no telemetry** — all data lives under your config dir; by default there are zero network calls.
+
+## Table of Contents
+
+- [Why Task Station (vs native Tasks)](#why-task-station-vs-native-tasks)
+- [Install](#install)
+- [Commands](#commands)
+- [Categories & terminal tint](#categories--terminal-tint)
+- [Delegate — in-project workers](#delegate--in-project-workers)
+- [Configure](#configure)
+- [Data & privacy](#data--privacy)
+- [How it works](#how-it-works)
+- [Update](#update)
+- [Uninstall](#uninstall)
+- [If you're Claude and someone asked you to install this](#if-youre-claude-and-someone-asked-you-to-install-this)
 
 ## Why Task Station (vs native Tasks)
 
 Claude Code's native **Tasks** are the agent's *internal* scratchpad (stored in `~/.claude/tasks/`, no user-facing list). **Task Station is the human-facing console on top**: a persistent `/todo` dashboard you control, where each task pins to a resumable session you can reopen, auto-categorised + colour-tinted, with parallel worker delegation. They're complementary — native Tasks tracks the agent's steps; Task Station tracks *your* work across sessions.
 
-## Data & privacy
+## Install
 
-- All task data is stored **locally** under `${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/` (one JSON file per task, plus `config.json`).
-- **No telemetry. By default there are no network calls.** An optional update check (off by default; enable with `task-station config --update-check on`) makes at most one version request to GitHub per day — it sends no task data.
-- The delegate feature spawns local `claude -p` workers — that's your own Claude usage, no third party.
+**Prerequisites:** [Claude Code](https://claude.ai/code), `jq`, `python3` (stdlib only).
 
-## What this plugin does / files it touches
+    /plugin marketplace add ryanconmeo/task-station
+    /plugin install task-station
 
-### Hooks
+That wires the namespaced `/task-station:todo` + `/task-station:done` commands and all four hooks automatically — no
+`settings.json` edit, no command copy. Task data lives in
+`${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/` (override with `$TASK_STATION_HOME`)
+and **survives `/plugin update`**. To also install the bare `/todo` + `/done` aliases, run `task-station config --bare-cmds on`.
 
-Declared in `hooks/hooks.json`, run at your trust level:
+The `PostToolUse` + `Stop` pair is the **enforcement gate** (see [How it works](#how-it-works)): a file edit in an untracked session triggers a one-shot reminder, and the `Stop` hook refuses to end the turn until a task is attached/created (or the session is skipped). Both are included in the plugin by default — remove them from `hooks/hooks.json` if you only want the advisory nudges — but together they're what makes tracking reliable instead of best-effort.
 
-- **`SessionStart`** (`hooks/on_session_start.sh`) — maintains the `~/.claude/task-station-engine` symlink; self-registers a status-line segment at `~/.claude/statusline.d/50-task-station.sh`; sets the window title for attached sessions; shows a one-time setup nudge on first run; and — **only if you have opted in** — installs bare command aliases under `~/.claude/commands/`.
-- **`UserPromptSubmit`** (`hooks/on_user_prompt.sh`) — per-category terminal tint (when enabled) and injects compact task-tracking guidance into each prompt so Claude knows to attach or create a task.
-- **`PostToolUse`** on `Write|Edit|NotebookEdit` (`hooks/on_post_tool.sh`) — fires a one-shot reminder the first time an untracked session edits a file. Part of the optional enforcement gate.
-- **`Stop`** (`hooks/on_stop.sh`) — refuses to end the turn while a session has edited files but tracked no task (self-healing, capped at two blocks). The other half of the optional enforcement gate.
+For *auto*-delegation, copy [`lib/delegate/POLICY-TEMPLATE.md`](lib/delegate/POLICY-TEMPLATE.md)
+into your global `~/.claude/CLAUDE.md` and customize the workspace paths.
 
-### Files and directories created or used
+## Commands
 
-All paths are under your config dir (`${CLAUDE_CONFIG_DIR:-~/.claude}`) unless noted:
+Every command works in two forms: the namespaced `/task-station:todo` / `/task-station:done` (registered automatically, always available) and the bare `/todo` / `/done` aliases (**opt-in** — `task-station config --bare-cmds on`).
 
-| Path | What it is |
-|---|---|
-| `~/.claude/task-station-data/` | Local task storage: one JSON per task, plus `config.json`, `workers.json`, and `pending-briefs/` |
-| `~/.claude/task-station-engine` | Symlink to the plugin's `lib/` — a stable, version-independent handle refreshed every session |
-| `~/.claude/statusline.d/50-task-station.sh` | Self-registered status-line segment (harmless if unused) |
-| `~/.claude/commands/{todo,done}.md` | **Only if you run `task-station config --bare-cmds on`** (opt-in; marker-guarded, never clobbers a pre-existing command) |
-| `~/.zshrc` (tint aliases) | **Only via the explicit `task-station config --tint-profiles` command you run** |
-| `~/.claude/CLAUDE.md` (delegation policy block) | **Only via the explicit `task-station config --policy on` command you run** (fenced, 100% reversible with `--policy off`) |
+- **`/todo`** — list all tasks (open first, then by recent activity) as two Markdown tables. Each row shows the task's stable number, category `<emoji> [TAG]`, effort gauge, and last activity.
+- **`/todo <n>`** — open a task by its stable number (or an id prefix) and **resume it into the current session**; your next message continues it. Reopens the task if it was closed.
+- **`/todo <n> -s`** — same attach/reopen, but jump **straight into the task's pinned session in a fresh Terminal window** (no recap; the window you typed in is left untouched). The `-s` may sit on either side of the number (`/todo -s <n>` works too).
+- **`/todo 1,2,5 -s`** — **multi-jump**: a comma-separated list jumps into several tasks at once, opening **one window per task**. A bad ref in the list is reported but doesn't abort the others.
+- **`/todo closed [N]`** / **`/todo all`** — page through closed tasks: `closed` shows the 20 most recent, `closed N` shows N, `all` shows every closed task.
+- **`/done`** — close the task **this session** is working on and detach it; the session's terminal window auto-closes ~1s later.
+- **`/done <n>`** — close **any** task by its stable number or id from anywhere — you don't have to be in that task's session. Leaves this window open.
+- **`/done 1,2,5`** — **multi-close**: a comma-separated list closes several tasks at once, printing **one result line per task**. A bad ref is reported but doesn't abort the others.
+- **`/task-station:config`** — view or change settings; run one-time setup (tint profiles, delegation policy, bare-command install). See [Configure](#configure).
 
-The namespaced `/task-station:todo` and `/task-station:done` commands are registered by the plugin system automatically and always work out of the box. The bare `/todo` and `/done` aliases are **opt-in** — run `task-station config --bare-cmds on` to install them.
+## Categories & terminal tint
 
-## How it works
+If `categories.py` is present (it ships with the plugin), every task carries a `color` from a taxonomy (bug/red, code-review/orange, devops/blue, design/pink, …); `/todo` appends a `<emoji> [TAG]` after each task and prints a legend. Each colour name is also a zsh alias that switches the Terminal.app profile, so on attach / create / resume Claude runs `zsh -ic '<color>'` to tint the terminal to the task's category.
 
-- **Auto-attach.** On each user message, a `UserPromptSubmit` hook injects
-  guidance telling Claude to either **attach** the session to a matching open
-  task or **create** a new one. The per-prompt nudge is deliberately **compact**
-  (open-task list, a one-line trackability test — concrete work that edits files /
-  spans multiple steps, not a question or one-line fix — the attach/create
-  commands, and a one-line colour legend); the full rules, TRACK/SKIP examples,
-  and colour-picker guidance live in `task-station.py guidance`, fetched on demand, to
-  keep the recurring token cost low. When Claude attaches or creates a task it
-  announces it in one short line (e.g. "📋 Tracking this as a new task: …");
-  after that the nudge goes silent.
-- **Miss escalation.** Each message that goes by without the session attaching
-  bumps a per-session counter; after a few unattached messages the nudge
-  escalates ("N messages in and still untracked — attach now, or `skip`"). This
-  closes the feedback loop so a real task can't silently stay untracked.
-- **Enforcement gate (optional).** The nudges above are advisory — Claude can
-  ignore them. The gate makes tracking reliable by hooking the real signal,
-  *a file edit*. A `PostToolUse(Write|Edit|NotebookEdit)` hook fires a **one-shot**
-  reminder the first time an untracked session edits a file (gated by an
-  `.edited` marker, so it costs ~one injection per session, not one per edit).
-  A `Stop` hook then **refuses to end the turn** — returning
-  `{"decision":"block","reason":…}` — while the session has edited files but
-  tracked no task. So a session that did real work literally can't finish
-  without attaching/creating a task or running `skip`. It's **self-healing**
-  (attaching, creating, skipping, or `/done` clears the markers, silencing the
-  gate the instant work is tracked) and **anti-wedge** (capped at two blocks, so
-  a non-complying loop gives up rather than locking the session). Both hooks are
-  included in the plugin by default; remove them from `hooks/hooks.json` if you
-  only want the advisory nudges.
-- **Skip.** `task-station.py skip --session <id>` marks a session intentionally
-  untracked (e.g. a pure Q&A session); the nudge then stays silent for it.
-  Attaching to or creating a task later resumes tracking.
-- **Create dedup.** `create` refuses to make a near-duplicate of an existing
-  open task (title overlap by Jaccard or containment) and points at the match to
-  `attach` instead; pass `--force` to override.
-- **One task per session.** A session→task link is recorded in the data directory.
-  A `SessionStart` hook surfaces open tasks (or the already-attached one) so a
-  resumed session recognises its task.
-- **Activity tracking.** Every message bumps the attached task's `updated_at`,
-  which drives the "recent activity" sort.
-- **Effort estimate.** Each task carries an optional t-shirt size
-  (`XS`/`S`/`M`/`L`/`XL`) capturing its complexity & scope, shown as a gauged
-  column (`▰▰▱▱▱ S`) in the list and spelled out in the detail view. Claude sets it
-  at `create` time (the auto-attach nudge asks for it); adjust later with
-  `task-station.py update --task <n> --effort <xs|s|m|l|xl>`. `--effort` also accepts the
-  numeric 1–5 scale and words (`small`/`large`/…); unknown values are ignored
-  rather than guessed, so a task simply shows `· --` until one is set.
-- **Effort re-rates on scope change.** It isn't auto-derived from churn (that
-  would measure activity, not size) — instead, whenever an `update` amends a
-  task's title/summary/scope *without* also re-rating, it prints a one-line
-  prompt to reconsider the effort (showing the current size). So as scope grows
-  or shrinks, Claude bumps the size up or down to match — the estimate tracks
-  reality at exactly the moments scope actually moves, with no nudge noise on
-  otherwise-silent attached sessions.
-- **`/todo`** lists all tasks (open first, then by recent activity). Each task
-  shows its **stable number** (`seq`), assigned in creation order the first time
-  it's seen and never reused — so a task keeps the same number even as others
-  are added, closed, or reorder by recent activity.
-  **`/todo <n>`** (or a task-id prefix) prints the task's detail and **adopts it
-  into the current session** — your next message continues it. `<n>` matches the
-  stable number, not a position in the list. If the task was closed, opening it
-  reopens it.
-  **`/todo <n> -s`** does the same attach/reopen but **immediately opens a fresh
-  Terminal.app window** that runs the task's resume command (tint + `cd` +
-  `claude --resume`), dropping you straight into its working session — **no
-  recap**, and the window you typed `/todo` in is left untouched. The new window
-  is opened by `open-session-window.sh` (macOS/Terminal-only; if it can't, the
-  block falls back to printing the one-liner for you to run by hand). The `-s`
-  flag may sit on either side of the number (`/todo -s <n>` works too).
-- **`/done`** closes the task the current session is working on **and detaches
-  the session** from it, so a follow-up message can't silently reopen it. To
-  pick the task back up, use `/todo <n>`, which re-attaches and reopens it.
-- **`/done <n>`** (or a task-id prefix) closes **any** task by its stable number
-  or id — you don't have to be in that task's session. It detaches every session
-  linked to the task and **leaves the current window open** (bare `/done` closes
-  the current session's window; `/done <n>` does not, since you're still working
-  here). Handy straight from the `/todo` list: see the numbers, close any of them
-  in place. The underlying call is `task-station.py done --task <n|id>`.
-- **Resume resolution.** `/todo <n>` resumes the task's **most-recent substantive
-  session**, finding it by id across all project buckets and reading the launch
-  directory from the transcript itself — so it self-corrects even if the recorded
-  cwd was wrong (e.g. you launched from `~` but `cd`'d into a worktree), and a 1-2
-  message "just looking" session never displaces real work. It only ever resumes
-  one of the task's *own* sessions, and starts fresh rather than risk a different
-  task's session. To override the heuristic, **`task-station.py pin --task <n> --session
-  <id>`** locks a specific session (PK-style; `unpin` reverts). The printed resume
-  one-liner also **re-tints the terminal to the task's colour** — it's prefixed with
-  the category's zsh alias (e.g. `green 2>/dev/null; cd … && claude --resume …`), so
-  pasting it into a fresh window restores the colour. The prefix is joined with `;`
-  and swallows stderr, so it's a silent no-op for anyone who hasn't installed the
-  colour aliases — the `cd` + resume always runs. (Omitted entirely when
-  tinting is off — `"tint_terminal": false` in `config.json`.)
+**Skills tint immediately:** when a prompt invokes a slash command mapped in `SKILL_COLORS` (e.g. `/review` or `/security-review` → orange), the `UserPromptSubmit` hook tints the terminal synchronously *before Claude responds*, so the colour applies the instant the skill runs.
 
-- **Categories & terminal colours (optional plugin).** If `categories.py` is
-  present (it ships with the plugin), every task carries a `color` from a
-  taxonomy (bug/red, code-review/orange, devops/blue, design/pink, …); `/todo`
-  appends a `<emoji> [TAG]` after each task and prints a legend. Each colour
-  name is also a zsh alias that switches the Terminal.app profile, so on attach /
-  create / resume Claude runs `zsh -ic '<color>'` to tint the terminal to the
-  task's category. **Skills tint immediately:** when a prompt invokes a slash
-  command mapped in `SKILL_COLORS` (e.g. `/review` or `/security-review` → orange), the
-  `UserPromptSubmit` hook tints the terminal synchronously *before Claude
-  responds*, so the colour applies the instant the skill runs. **All of this is
-  isolated in `lib/categories.py`** — `task-station.py` imports it defensively and runs
-  as a plain, colourless tracker without it. The taxonomy ships as defaults in
-  `lib/categories.py`; override or extend it without touching the shipped file
-  via `task-station-data/config.json` (survives `/plugin update`) — see
-  [`CATEGORIES.md`](CATEGORIES.md). Full taxonomy, wiring, tint modes, and the
-  opt-out levels are in [`CATEGORIES.md`](CATEGORIES.md).
-
-There is no auto-close: tasks stay open until you run `/done`. (The Claude Code
-harness can't distinguish `/exit` from a crash or window-close, so closing is
-kept explicit and deliberate.)
-
-### Resume & re-pin (save tokens)
-
-`/todo <n>` opens a task and resumes its pinned session (the most-recent substantive
-one by default). `/todo <n> -s` does the same but jumps into it in a fresh Terminal.app
-window rather than continuing in the current one.
-
-The engine pins the most-recent substantive session to each task automatically. You can
-**re-pin a new or fresh session to an existing task** using:
-
-```bash
-python3 "$HOME/.claude/task-station-engine/task-station.py" pin --task <n> --session <id>
-# revert:
-python3 "$HOME/.claude/task-station-engine/task-station.py" unpin --task <n>
-```
-
-This is the **token-saving move**: when a task's session has accumulated a bloated
-context window (hundreds of messages, large file loads), re-pin a fresh session to it
-instead of resuming the old one. The task stays linked to the same work — same number,
-same history, same category — but resumes into a clean slate that doesn't reload the
-stale context. Use `claude --resume <id>` from your shell to reopen the literal original
-chat when you need it; Task Station's `/todo <n>` will follow the pin.
+**All of this is isolated in `lib/categories.py`** — `task-station.py` imports it defensively and runs as a plain, colourless tracker without it. The taxonomy ships as defaults in `lib/categories.py`; override or extend it without touching the shipped file via `task-station-data/config.json` (survives `/plugin update`) — see [`CATEGORIES.md`](CATEGORIES.md). Full taxonomy, wiring, tint modes, and the opt-out levels are in [`CATEGORIES.md`](CATEGORIES.md).
 
 ## Delegate — in-project workers
 
@@ -313,87 +209,6 @@ Copy it, fill in your specifics, and paste it into your global `CLAUDE.md`. With
 `delegate.py` still works when invoked by hand — Claude just won't apply stricter rules
 automatically.
 
-### Status bar integration
-
-`task-station.py whoami --session <id> --statusline` prints a ready-to-display, ANSI-colored one-line segment for the session's attached task — `#<seq>  <dot> [TAG]  <title>` — and nothing when the session has no task. Add `--width <N>` to truncate the title so the whole segment fits `N` columns (`0` = no limit). It's self-contained: it carries its own colors and knows nothing about the bar that renders it, so it drops into any status line (tmux, powerline, a custom prompt, or a Claude Code `statusLine` command).
-
-```bash
-$ task-station.py whoami --session 5c8edf12 --statusline --width 0
-#42  🔵 [DEVOPS]  Wire up the deploy pipeline
-```
-
-### Status line (optional)
-
-The plugin maintains a stable symlink `~/.claude/task-station-engine → <plugin>/lib/` (refreshed on every `SessionStart`) so callers outside the plugin context — delegate invocations, the status line — always find the engine without chasing a versioned cache path.
-
-To show the current task in the Claude Code status bar, add one line to `settings.json`:
-
-```json
-"statusLine": { "type": "command", "command": "bash ~/.claude/task-station-engine/statusline.sh" }
-```
-
-`~/.claude/task-station-engine/statusline.sh` is the self-contained script (`lib/statusline.sh`) exposed through the stable symlink. It reads the session JSON on stdin (as Claude Code passes it) and delegates to `task-station.py whoami --statusline`. No `$CLAUDE_PLUGIN_ROOT` dependency — it works in any context once the symlink exists.
-
-The symlink is written (or re-written) on the first `SessionStart` after install or update, so it self-heals across `/plugin update` without any manual step.
-
-### Storage
-
-One JSON file per task under `<data_dir>/tasks/<uuid>.json`; session→task links
-under `<data_dir>/links/`. All writes are atomic. The data directory defaults to
-`${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/`; set `$TASK_STATION_HOME` to
-override. It is machine-local and not tracked by the plugin — task data persists
-across `/plugin update`.
-
-### Limitations (Claude Code harness)
-
-- `/todo` is a numbered text list, not an arrow-key picker — slash-command bash
-  has no interactive TTY, so tools like `fzf` can't render.
-- "Resume" adopts a task into your **current** session; it can't jump back into
-  a different past chat transcript. To reopen the literal original chat, use
-  `claude --resume <session-id>` from your shell.
-
-## If you're Claude and someone asked you to install this
-
-Run these commands:
-
-```bash
-/plugin marketplace add ryanconmeo/task-station
-/plugin install task-station
-```
-
-That wires the namespaced `/task-station:todo` + `/task-station:done` commands and all four hooks automatically — no
-`settings.json` edit required. Task data lands in
-`${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/` and **survives `/plugin update`**. To also install the bare `/todo` + `/done` aliases, run `task-station config --bare-cmds on`.
-
-`categories.py` ships with the author's colour taxonomy and terminal tinting
-**on** by default (macOS only). To adjust without editing the shipped file, drop
-a `config.json` in the data directory — see [CATEGORIES.md](CATEGORIES.md)
-for the JSON shape and opt-out levels.
-
-**For in-project worker delegation** (optional, but the two halves are meant to be
-used together): nothing extra to install — `lib/delegate/delegate.py` ships with
-the plugin. To get *auto*-delegation, copy
-[`lib/delegate/POLICY-TEMPLATE.md`](lib/delegate/POLICY-TEMPLATE.md)
-into your global `~/.claude/CLAUDE.md` and customize the workspace paths. See the
-[Delegate](#delegate--in-project-workers) section.
-
-## Install
-
-**Prerequisites:** [Claude Code](https://claude.ai/code), `jq`, `python3` (stdlib only).
-
-    /plugin marketplace add ryanconmeo/task-station
-    /plugin install task-station
-
-That wires the namespaced `/task-station:todo` + `/task-station:done` commands and all four hooks automatically — no
-`settings.json` edit, no command copy. Task data lives in
-`${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/` (override with `$TASK_STATION_HOME`)
-and **survives `/plugin update`**. To also install the bare `/todo` + `/done` aliases, run `task-station config --bare-cmds on`.
-
-The `PostToolUse` + `Stop` pair is the **enforcement gate** (see [How it works](#how-it-works)): a file edit in an untracked session triggers a one-shot reminder, and the `Stop` hook refuses to end the turn until a task is attached/created (or the session is skipped). Both are included in the plugin by default — remove them from `hooks/hooks.json` if you only want the advisory nudges — but together they're what makes tracking reliable instead of best-effort.
-
-For *auto*-delegation, copy [`lib/delegate/POLICY-TEMPLATE.md`](lib/delegate/POLICY-TEMPLATE.md)
-into your global `~/.claude/CLAUDE.md` and customize the workspace paths.
-
 ## Configure
 
 All config lives in one file: `${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/config.json`. Use the commands below to read and write it — never edit the file directly.
@@ -438,28 +253,190 @@ Tinting is auto-detected: the engine reads `$TERM_PROGRAM` / `$ITERM_SESSION_ID`
 
 **Bare commands:** `/todo` and `/done` are marker-guarded user-level commands that forward to the engine. They are **not installed by default** — run `task-station config --bare-cmds on` (or set `TASK_STATION_BARE_CMDS=on`) to opt in. The namespaced form `/task-station:todo` and `/task-station:done` always exist regardless and work out of the box.
 
-## Update
+## Data & privacy
+
+- All task data is stored **locally** under `${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/` (one JSON file per task, plus `config.json`).
+- **No telemetry. By default there are no network calls.** An optional update check (off by default; enable with `task-station config --update-check on`) makes at most one version request to GitHub per day — it sends no task data.
+- The delegate feature spawns local `claude -p` workers — that's your own Claude usage, no third party.
+
+## How it works
+
+### Hooks
+
+Declared in `hooks/hooks.json`, run at your trust level:
+
+- **`SessionStart`** (`hooks/on_session_start.sh`) — maintains the `~/.claude/task-station-engine` symlink; self-registers a status-line segment at `~/.claude/statusline.d/50-task-station.sh`; sets the window title for attached sessions; shows a one-time setup nudge on first run; and — **only if you have opted in** — installs bare command aliases under `~/.claude/commands/`.
+- **`UserPromptSubmit`** (`hooks/on_user_prompt.sh`) — re-points the engine symlink at the active install (so the bare `/todo`/`/done` follow `/plugin update` without a restart), applies the per-category terminal tint (when enabled), and injects compact task-tracking guidance into each prompt so Claude knows to attach or create a task.
+- **`PostToolUse`** on `Write|Edit|NotebookEdit` (`hooks/on_post_tool.sh`) — fires a one-shot reminder the first time an untracked session edits a file. Part of the optional enforcement gate.
+- **`Stop`** (`hooks/on_stop.sh`) — refuses to end the turn while a session has edited files but tracked no task (self-healing, capped at two blocks). The other half of the optional enforcement gate.
+
+### Tracking, gating, and tasks
+
+- **Auto-attach.** On each user message, a `UserPromptSubmit` hook injects
+  guidance telling Claude to either **attach** the session to a matching open
+  task or **create** a new one. The per-prompt nudge is deliberately **compact**
+  (open-task list, a one-line trackability test — concrete work that edits files /
+  spans multiple steps, not a question or one-line fix — the attach/create
+  commands, and a one-line colour legend); the full rules, TRACK/SKIP examples,
+  and colour-picker guidance live in `task-station.py guidance`, fetched on demand, to
+  keep the recurring token cost low. When Claude attaches or creates a task it
+  announces it in one short line (e.g. "📋 Tracking this as a new task: …");
+  after that the nudge goes silent.
+- **Miss escalation.** Each message that goes by without the session attaching
+  bumps a per-session counter; after a few unattached messages the nudge
+  escalates ("N messages in and still untracked — attach now, or `skip`"). This
+  closes the feedback loop so a real task can't silently stay untracked.
+- **Enforcement gate (optional).** The nudges above are advisory — Claude can
+  ignore them. The gate makes tracking reliable by hooking the real signal,
+  *a file edit*. A `PostToolUse(Write|Edit|NotebookEdit)` hook fires a **one-shot**
+  reminder the first time an untracked session edits a file (gated by an
+  `.edited` marker, so it costs ~one injection per session, not one per edit).
+  A `Stop` hook then **refuses to end the turn** — returning
+  `{"decision":"block","reason":…}` — while the session has edited files but
+  tracked no task. So a session that did real work literally can't finish
+  without attaching/creating a task or running `skip`. It's **self-healing**
+  (attaching, creating, skipping, or `/done` clears the markers, silencing the
+  gate the instant work is tracked) and **anti-wedge** (capped at two blocks, so
+  a non-complying loop gives up rather than locking the session). Both hooks are
+  included in the plugin by default; remove them from `hooks/hooks.json` if you
+  only want the advisory nudges.
+- **Skip.** `task-station.py skip --session <id>` marks a session intentionally
+  untracked (e.g. a pure Q&A session); the nudge then stays silent for it.
+  Attaching to or creating a task later resumes tracking.
+- **Create dedup.** `create` refuses to make a near-duplicate of an existing
+  open task (title overlap by Jaccard or containment) and points at the match to
+  `attach` instead; pass `--force` to override.
+- **One task per session.** A session→task link is recorded in the data directory.
+  A `SessionStart` hook surfaces open tasks (or the already-attached one) so a
+  resumed session recognises its task.
+- **Activity tracking.** Every message bumps the attached task's `updated_at`,
+  which drives the "recent activity" sort.
+- **Effort estimate.** Each task carries an optional t-shirt size
+  (`XS`/`S`/`M`/`L`/`XL`) capturing its complexity & scope, shown as a gauged
+  column (`▰▰▱▱▱ S`) in the list and spelled out in the detail view. Claude sets it
+  at `create` time (the auto-attach nudge asks for it); adjust later with
+  `task-station.py update --task <n> --effort <xs|s|m|l|xl>`. `--effort` also accepts the
+  numeric 1–5 scale and words (`small`/`large`/…); unknown values are ignored
+  rather than guessed, so a task simply shows `· --` until one is set.
+- **Effort re-rates on scope change.** It isn't auto-derived from churn (that
+  would measure activity, not size) — instead, whenever an `update` amends a
+  task's title/summary/scope *without* also re-rating, it prints a one-line
+  prompt to reconsider the effort (showing the current size). So as scope grows
+  or shrinks, Claude bumps the size up or down to match — the estimate tracks
+  reality at exactly the moments scope actually moves, with no nudge noise on
+  otherwise-silent attached sessions.
+- **`/todo`** lists all tasks (open first, then by recent activity). Each task
+  shows its **stable number** (`seq`), assigned in creation order the first time
+  it's seen and never reused — so a task keeps the same number even as others
+  are added, closed, or reorder by recent activity.
+  **`/todo <n>`** (or a task-id prefix) prints the task's detail and **adopts it
+  into the current session** — your next message continues it. `<n>` matches the
+  stable number, not a position in the list. If the task was closed, opening it
+  reopens it.
+  **`/todo <n> -s`** does the same attach/reopen but **immediately opens a fresh
+  Terminal.app window** that runs the task's resume command (tint + `cd` +
+  `claude --resume`), dropping you straight into its working session — **no
+  recap**, and the window you typed `/todo` in is left untouched. A
+  comma-separated list (`/todo 1,2,5 -s`) jumps into several tasks at once,
+  opening one window per task. The new window
+  is opened by `open-session-window.sh` (macOS/Terminal-only; if it can't, the
+  block falls back to printing the one-liner for you to run by hand). The `-s`
+  flag may sit on either side of the number (`/todo -s <n>` works too).
+- **`/done`** closes the task the current session is working on **and detaches
+  the session** from it, so a follow-up message can't silently reopen it. To
+  pick the task back up, use `/todo <n>`, which re-attaches and reopens it.
+- **`/done <n>`** (or a task-id prefix) closes **any** task by its stable number
+  or id — you don't have to be in that task's session. It detaches every session
+  linked to the task and **leaves the current window open** (bare `/done` closes
+  the current session's window; `/done <n>` does not, since you're still working
+  here). A comma-separated list (`/done 1,2,5`) closes several tasks at once,
+  printing one result line per task; a bad ref is reported but doesn't abort the
+  others. Handy straight from the `/todo` list: see the numbers, close any of them
+  in place. The underlying call is `task-station.py done --task <n|id>`.
+- **Resume resolution.** `/todo <n>` resumes the task's **most-recent substantive
+  session**, finding it by id across all project buckets and reading the launch
+  directory from the transcript itself — so it self-corrects even if the recorded
+  cwd was wrong (e.g. you launched from `~` but `cd`'d into a worktree), and a 1-2
+  message "just looking" session never displaces real work. It only ever resumes
+  one of the task's *own* sessions, and starts fresh rather than risk a different
+  task's session. To override the heuristic, **`task-station.py pin --task <n> --session
+  <id>`** locks a specific session (PK-style; `unpin` reverts). The printed resume
+  one-liner also **re-tints the terminal to the task's colour** — it's prefixed with
+  the category's zsh alias (e.g. `green 2>/dev/null; cd … && claude --resume …`), so
+  pasting it into a fresh window restores the colour. The prefix is joined with `;`
+  and swallows stderr, so it's a silent no-op for anyone who hasn't installed the
+  colour aliases — the `cd` + resume always runs. (Omitted entirely when
+  tinting is off — `"tint_terminal": false` in `config.json`.)
+
+There is no auto-close: tasks stay open until you run `/done`. (The Claude Code
+harness can't distinguish `/exit` from a crash or window-close, so closing is
+kept explicit and deliberate.)
+
+### Resume & re-pin (save tokens)
+
+`/todo <n>` opens a task and resumes its pinned session (the most-recent substantive
+one by default). `/todo <n> -s` does the same but jumps into it in a fresh Terminal.app
+window rather than continuing in the current one.
+
+The engine pins the most-recent substantive session to each task automatically. You can
+**re-pin a new or fresh session to an existing task** using:
 
 ```bash
-/plugin update task-station
+python3 "$HOME/.claude/task-station-engine/task-station.py" pin --task <n> --session <id>
+# revert:
+python3 "$HOME/.claude/task-station-engine/task-station.py" unpin --task <n>
 ```
 
-Task data in `task-station-data/` is untouched.
+This is the **token-saving move**: when a task's session has accumulated a bloated
+context window (hundreds of messages, large file loads), re-pin a fresh session to it
+instead of resuming the old one. The task stays linked to the same work — same number,
+same history, same category — but resumes into a clean slate that doesn't reload the
+stale context. Use `claude --resume <id>` from your shell to reopen the literal original
+chat when you need it; Task Station's `/todo <n>` will follow the pin.
 
-## Uninstall
+### Files and directories created or used
+
+All paths are under your config dir (`${CLAUDE_CONFIG_DIR:-~/.claude}`) unless noted:
+
+| Path | What it is |
+|---|---|
+| `~/.claude/task-station-data/` | Local task storage: one JSON per task, plus `config.json`, `workers.json`, and `pending-briefs/` |
+| `~/.claude/task-station-engine` | Symlink to the plugin's `lib/` — a stable, version-independent handle refreshed every session and re-pointed on each prompt |
+| `~/.claude/statusline.d/50-task-station.sh` | Self-registered status-line segment (harmless if unused) |
+| `~/.claude/commands/{todo,done}.md` | **Only if you run `task-station config --bare-cmds on`** (opt-in; marker-guarded, never clobbers a pre-existing command) |
+| `~/.zshrc` (tint aliases) | **Only via the explicit `task-station config --tint-profiles` command you run** |
+| `~/.claude/CLAUDE.md` (delegation policy block) | **Only via the explicit `task-station config --policy on` command you run** (fenced, 100% reversible with `--policy off`) |
+
+The namespaced `/task-station:todo` and `/task-station:done` commands are registered by the plugin system automatically and always work out of the box. The bare `/todo` and `/done` aliases are **opt-in** — run `task-station config --bare-cmds on` to install them.
+
+### Storage
+
+One JSON file per task under `<data_dir>/tasks/<uuid>.json`; session→task links
+under `<data_dir>/links/`. All writes are atomic. The data directory defaults to
+`${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/`; set `$TASK_STATION_HOME` to
+override. It is machine-local and not tracked by the plugin — task data persists
+across `/plugin update`.
+
+### Status line (optional)
+
+`task-station.py whoami --session <id> --statusline` prints a ready-to-display, ANSI-colored one-line segment for the session's attached task — `#<seq>  <dot> [TAG]  <title>` — and nothing when the session has no task. Add `--width <N>` to truncate the title so the whole segment fits `N` columns (`0` = no limit). It's self-contained: it carries its own colors and knows nothing about the bar that renders it, so it drops into any status line (tmux, powerline, a custom prompt, or a Claude Code `statusLine` command).
 
 ```bash
-/plugin uninstall task-station
+$ task-station.py whoami --session 5c8edf12 --statusline --width 0
+#42  🔵 [DEVOPS]  Wire up the deploy pipeline
 ```
 
-Task data persists in `${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/` — delete that
-directory manually if you want to remove your task history. The worker registry
-(`task-station-data/workers.json`) also lives there; back it up first if you want to keep it.
+The plugin maintains a stable symlink `~/.claude/task-station-engine → <plugin>/lib/` (refreshed on every `SessionStart` and re-pointed on each prompt) so callers outside the plugin context — delegate invocations, the status line — always find the engine without chasing a versioned cache path.
 
-If you copied the delegation policy into your global `~/.claude/CLAUDE.md`,
-delete that block too. Restart Claude Code.
+To show the current task in the Claude Code status bar, add one line to `settings.json`:
 
-## Files
+```json
+"statusLine": { "type": "command", "command": "bash ~/.claude/task-station-engine/statusline.sh" }
+```
+
+`~/.claude/task-station-engine/statusline.sh` is the self-contained script (`lib/statusline.sh`) exposed through the stable symlink. It reads the session JSON on stdin (as Claude Code passes it) and delegates to `task-station.py whoami --statusline`. No `$CLAUDE_PLUGIN_ROOT` dependency — it works in any context once the symlink exists.
+
+### Files (what each ships)
 
 **`lib/task-station.py`** — the engine: task storage, `/todo` and `/done`, the hooks' logic, plus the `whoami` (incl. the `--statusline` segment provider) and `update` commands.
 
@@ -469,7 +446,7 @@ delete that block too. Restart Claude Code.
 
 **`hooks/on_session_start.sh`** — `SessionStart` hook. Surfaces open tasks (or the attached one) and auto-sets the window title to `task-station-<seq> · <title>`.
 
-**`hooks/on_user_prompt.sh`** — `UserPromptSubmit` hook. Attaches/nudges the session and tints the terminal for skill-mapped prompts.
+**`hooks/on_user_prompt.sh`** — `UserPromptSubmit` hook. Re-points the engine symlink, attaches/nudges the session, and tints the terminal for skill-mapped prompts.
 
 **`hooks/on_post_tool.sh`** — `PostToolUse(Write|Edit|NotebookEdit)` hook. Fires a one-shot reminder the first time an untracked session edits a file. Half of the optional enforcement gate.
 
@@ -494,3 +471,57 @@ delete that block too. Restart Claude Code.
 **`.claude-plugin/marketplace.json`** — marketplace listing metadata.
 
 **`commands/todo.md`**, **`commands/done.md`** — the `/todo` and `/done` slash commands; registered automatically by the plugin.
+
+### Limitations (Claude Code harness)
+
+- `/todo` is a numbered text list, not an arrow-key picker — slash-command bash
+  has no interactive TTY, so tools like `fzf` can't render.
+- "Resume" adopts a task into your **current** session; it can't jump back into
+  a different past chat transcript. To reopen the literal original chat, use
+  `claude --resume <session-id>` from your shell.
+
+## Update
+
+```bash
+/plugin update task-station
+```
+
+Task data in `task-station-data/` is untouched.
+
+## Uninstall
+
+```bash
+/plugin uninstall task-station
+```
+
+Task data persists in `${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/` — delete that
+directory manually if you want to remove your task history. The worker registry
+(`task-station-data/workers.json`) also lives there; back it up first if you want to keep it.
+
+If you copied the delegation policy into your global `~/.claude/CLAUDE.md`,
+delete that block too. Restart Claude Code.
+
+## If you're Claude and someone asked you to install this
+
+Run these commands:
+
+```bash
+/plugin marketplace add ryanconmeo/task-station
+/plugin install task-station
+```
+
+That wires the namespaced `/task-station:todo` + `/task-station:done` commands and all four hooks automatically — no
+`settings.json` edit required. Task data lands in
+`${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/` and **survives `/plugin update`**. To also install the bare `/todo` + `/done` aliases, run `task-station config --bare-cmds on`.
+
+`categories.py` ships with the author's colour taxonomy and terminal tinting
+**on** by default (macOS only). To adjust without editing the shipped file, drop
+a `config.json` in the data directory — see [CATEGORIES.md](CATEGORIES.md)
+for the JSON shape and opt-out levels.
+
+**For in-project worker delegation** (optional, but the two halves are meant to be
+used together): nothing extra to install — `lib/delegate/delegate.py` ships with
+the plugin. To get *auto*-delegation, copy
+[`lib/delegate/POLICY-TEMPLATE.md`](lib/delegate/POLICY-TEMPLATE.md)
+into your global `~/.claude/CLAUDE.md` and customize the workspace paths. See the
+[Delegate](#delegate--in-project-workers) section.

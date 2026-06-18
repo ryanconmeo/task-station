@@ -13,6 +13,12 @@ input=$(cat)
 # No-op outside plugin context (CLAUDE_PLUGIN_ROOT is set only when the plugin runs us);
 # guards against a stray registration resolving to /lib/task-station.py and exiting non-zero.
 [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || exit 0
+# Eagerly re-point the engine symlink at the active install so the bare /todo,/done
+# aliases track an in-session /plugin update without a restart. Idempotent and cheap:
+# a readlink to compare, then a rare `ln -sfn` only when the target differs.
+_cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+_want="$CLAUDE_PLUGIN_ROOT/lib"
+[ "$(readlink "$_cfg/task-station-engine" 2>/dev/null)" != "$_want" ] && ln -sfn "$_want" "$_cfg/task-station-engine" 2>/dev/null
 session_id=$(echo "$input" | jq -r '.session_id // "unknown"')
 prompt=$(echo "$input" | jq -r '.prompt // ""')
 
