@@ -28,7 +28,7 @@ Announce in one line first — e.g. `→ delegating this to a <repo> worker` —
 (do not wait for approval):
 
 ```bash
-python3 "$HOME/.claude/todo-engine/delegate/delegate.py" run \
+python3 "$HOME/.claude/task-station-engine/delegate/delegate.py" run \
   --repo /absolute/path/to/repo \
   --task "<self-contained instructions>"
 ```
@@ -52,12 +52,12 @@ Relay the worker's result back and continue orchestrating from here.
 
 ## Optional shorthand: `--project`
 
-If `CLAUDE_TODO_WORKSPACE_DIRS` is set to a `:`-separated list of directories that
+If `TASK_STATION_WORKSPACE_DIRS` is set to a `:`-separated list of directories that
 contain your repos, you can pass `--project <name>` instead of `--repo`:
 
 ```bash
-export CLAUDE_TODO_WORKSPACE_DIRS="$HOME/Workspace:$HOME/Projects"
-python3 "$HOME/.claude/todo-engine/delegate/delegate.py" run \
+export TASK_STATION_WORKSPACE_DIRS="$HOME/Workspace:$HOME/Projects"
+python3 "$HOME/.claude/task-station-engine/delegate/delegate.py" run \
   --project my-repo \
   --task "<instructions>"
 ```

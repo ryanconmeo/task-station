@@ -8,7 +8,7 @@
 # rationale as claude-win-theme.sh.
 #
 # Works in both terminals, AND from a captured-pipe context (Claude's Bash tool
-# for /todo & /done, the todo hooks) where stdout is NOT the visible session:
+# for /todo & /done, the task-station hooks) where stdout is NOT the visible session:
 #   - iTerm2       -> proprietary OSC 1337 "SetProfile" escape, written to the
 #                     ORIGINATING session's tty. Wrapped for tmux.
 #   - Terminal.app -> AppleScript targeting the ORIGINATING window's tab.
@@ -50,7 +50,7 @@ set_iterm() {
     printf '%b' "$seq"
     return
   fi
-  # Captured pipe (Claude's Bash tool for /todo, /done, the todo hooks): stdout
+  # Captured pipe (Claude's Bash tool for /todo, /done, the task-station hooks): stdout
   # does NOT point at the visible session, so resolve the originating session's
   # tty (focus-independent) and write the escape straight to it.
   local dev

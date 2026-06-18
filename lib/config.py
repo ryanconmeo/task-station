@@ -1,4 +1,4 @@
-"""Single JSON config store under the data dir, plus the `todo config` board."""
+"""Single JSON config store under the data dir, plus the `task-station config` board."""
 import json, os
 import paths
 
@@ -34,13 +34,13 @@ def unset(key):
 def workspace_dirs():
     raw = get("workspace_dirs")
     if raw is None:
-        env = os.environ.get("CLAUDE_TODO_WORKSPACE_DIRS", "")
+        env = os.environ.get("TASK_STATION_WORKSPACE_DIRS", "")
         raw = [p for p in env.split(os.pathsep) if p] if env else []
     return [os.path.expanduser(p) for p in raw]
 
 def bare_commands():
     """True only if the user opted in (config flag or env). Default off."""
-    if os.environ.get("CLAUDE_TODO_BARE_CMDS") == "on":
+    if os.environ.get("TASK_STATION_BARE_CMDS") == "on":
         return True
     return bool(get("bare_commands", False))
 
@@ -53,16 +53,16 @@ def render_board():
     cats = get("categories"); n_cat = len(cats) if isinstance(cats, dict) else 0
     lines = [
         "task-station config       store: %s" % _path(),
-        "                          set: todo config --<flag> <value>   ·   reset: <flag> default",
+        "                          set: task-station config --<flag> <value>   ·   reset: <flag> default",
         "",
         "  --workspace-dirs  %-34s repo roots for delegate --project" % ws,
-        "  --categories      %-34s custom tags/labels + skill auto-tint  (todo config --categories edit)"
+        "  --categories      %-34s custom tags/labels + skill auto-tint  (task-station config --categories edit)"
         % ("%d override(s)" % n_cat if n_cat else "defaults"),
         "  --bare-cmds        %-33s install bare /todo + /done (else /task-station:todo)  on · off"
         % ("on" if bare_commands() else "off"),
         "",
         "  read-only",
-        "  --data-dir        %-34s (set via $CLAUDE_TODO_HOME)" % paths.data_dir(),
+        "  --data-dir        %-34s (set via $TASK_STATION_HOME)" % paths.data_dir(),
         "  tint mode: %s · terminal: %s" % (tint_mode(), term.detect()),
     ]
     return "\n".join(lines)

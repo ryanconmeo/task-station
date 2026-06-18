@@ -12,7 +12,7 @@
 #
 # Terminal app: we open the window in whichever app the caller is running in —
 # iTerm2 when launched from iTerm2 (detected via $LC_TERMINAL / $TERM_PROGRAM),
-# otherwise Terminal.app. Best-effort and macOS-only: the caller (todo.py)
+# otherwise Terminal.app. Best-effort and macOS-only: the caller (task-station.py)
 # treats a non-zero exit as "couldn't open a window" and falls back to printing
 # the command for the user to run by hand.
 set -u

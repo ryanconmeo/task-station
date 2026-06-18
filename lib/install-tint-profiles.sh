@@ -38,7 +38,7 @@ BLOCK+="# Each function switches the current Terminal.app tab to the matching pr
 for color in "${COLORS[@]}"; do
     # Capitalise first letter for the profile name (e.g. "green" → "Green")
     profile="${color^}"
-    BLOCK+="${color}() { bash \"\$HOME/.claude/todo-engine/set-term-profile.sh\" '${profile}' 2>/dev/null; }"$'\n'
+    BLOCK+="${color}() { bash \"\$HOME/.claude/task-station-engine/set-term-profile.sh\" '${profile}' 2>/dev/null; }"$'\n'
 done
 BLOCK+="$FENCE_CLOSE"
 

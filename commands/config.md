@@ -5,7 +5,7 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-!`python3 "${CLAUDE_PLUGIN_ROOT}/lib/todo.py" config $ARGUMENTS`
+!`python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" config $ARGUMENTS`
 
 The block above is the live output of `task-station config` — either the settings board (no arguments) or the result of a `--flag` change. Present it to the user verbatim in a code block; do not editorialize.
 

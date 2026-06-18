@@ -10,13 +10,13 @@ import os
 
 
 def data_dir():
-    override = os.environ.get("CLAUDE_TODO_HOME")
+    override = os.environ.get("TASK_STATION_HOME")
     if override:
         return os.path.expanduser(override)
     cfg = os.environ.get("CLAUDE_CONFIG_DIR")
     if cfg:
-        return os.path.join(os.path.expanduser(cfg), "todo-data")
+        return os.path.join(os.path.expanduser(cfg), "task-station-data")
     xdg = os.environ.get("XDG_STATE_HOME")
     if xdg:
         return os.path.join(os.path.expanduser(xdg), "task-station")
-    return os.path.expanduser("~/.claude/todo-data")
+    return os.path.expanduser("~/.claude/task-station-data")

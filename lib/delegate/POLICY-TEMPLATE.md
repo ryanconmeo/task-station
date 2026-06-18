@@ -20,7 +20,7 @@ process whose cwd is inside the repo.
 
 My repos live under:
 - `<your workspace dirs>/*`   ← replace with your actual paths
-  (set `CLAUDE_TODO_WORKSPACE_DIRS` to a `:`-separated list of these parent dirs
+  (set `TASK_STATION_WORKSPACE_DIRS` to a `:`-separated list of these parent dirs
    to use `--project <name>` shorthand instead of `--repo /absolute/path`)
 
 ### When to delegate to an in-project worker
@@ -55,15 +55,15 @@ Before delegating any work that mutates a repo:
 Emit one line first — e.g. `→ delegating this to a <project> worker` — then run:
 
 ```bash
-python3 "$HOME/.claude/todo-engine/delegate/delegate.py" run \
+python3 "$HOME/.claude/task-station-engine/delegate/delegate.py" run \
   --repo /absolute/path/to/repo \
   --task "<self-contained instructions>"
 ```
 
-Or, if `CLAUDE_TODO_WORKSPACE_DIRS` is configured:
+Or, if `TASK_STATION_WORKSPACE_DIRS` is configured:
 
 ```bash
-python3 "$HOME/.claude/todo-engine/delegate/delegate.py" run \
+python3 "$HOME/.claude/task-station-engine/delegate/delegate.py" run \
   --project <repo-name> \
   --task "<self-contained instructions>"
 ```

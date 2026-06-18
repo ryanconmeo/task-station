@@ -1,6 +1,6 @@
 """Optional category / colour plugin for Task Station.
 
-If this module is importable, `todo.py` tags each task with a category — an
+If this module is importable, `task-station.py` tags each task with a category — an
 emoji dot + `[TAG]` after the title, a legend under the list — and, when
 TINT_TERMINAL is on, suggests a zsh alias that tints the terminal to match.
 It also maps skill (slash-command) invocations to a category so the
@@ -8,7 +8,7 @@ UserPromptSubmit hook can tint the terminal the instant a skill runs (see
 SKILL_COLORS / color_for_prompt and on_user_prompt.sh).
 
 This file is the ONLY place the colour taxonomy and the terminal-tinting live.
-`todo.py` imports it defensively, so the tracker degrades gracefully:
+`task-station.py` imports it defensively, so the tracker degrades gracefully:
 
   • Delete / rename this file        → a plain, colourless tracker.
   • Keep it, set TINT_TERMINAL=False → tags + labels, but no tint suggestions
@@ -32,7 +32,7 @@ TINT_TERMINAL = True
 CATEGORIES = {
     "red":    {"dot": "🔴", "tag": "BUG",       "label": "bug",                        "hex": "#3a2323"},
     "orange": {"dot": "🟠", "tag": "REVIEW",    "label": "code review",                "hex": "#3a3023"},
-    "yellow": {"dot": "🟡", "tag": "YELLOW",    "label": "reserved",                   "hex": "#3a3823"},
+    "yellow": {"dot": "🟡", "tag": "FIX PR",    "label": "fixing PR review feedback",  "hex": "#3a3823"},
     "green":  {"dot": "🟢", "tag": "FEATURE",   "label": "feature work",               "hex": "#233a2b"},
     "blue":   {"dot": "🔵", "tag": "DEVOPS",    "label": "devops",                     "hex": "#23303a"},
     "purple": {"dot": "🟣", "tag": "SPECIAL",   "label": "special",                    "hex": "#2e233a"},
@@ -40,8 +40,8 @@ CATEGORIES = {
     "pink":   {"dot": "🩷", "tag": "DESIGN",    "label": "design",                     "hex": "#3a2333"},
     "white":  {"dot": "⚪", "tag": "SKILLS",    "label": "skills and memories",         "hex": "#2b2b30"},
     "silver": {"dot": "🩶", "tag": "PERSONAL",  "label": "personal projects",           "hex": "#303033"},
-    "gold":   {"dot": "🟨", "tag": "FIX PR",    "label": "fixing PR review feedback",   "hex": "#3a3520"},
-    "brown":  {"dot": "🟤", "tag": "MIGRATION", "label": "data migration",              "hex": "#332a23"},
+    "gold":   {"dot": "🟨", "tag": "GOLD",      "label": "reserved",                   "hex": "#3a3520"},
+    "brown":  {"dot": "🟤", "tag": "DATABASE", "label": "database",                     "hex": "#332a23"},
 }
 DEFAULT = "black"
 _TAG_WIDTH = max(len(m["tag"]) for m in CATEGORIES.values()) + 2  # +2 for "[]"
@@ -53,7 +53,7 @@ _TAG_WIDTH = max(len(m["tag"]) for m in CATEGORIES.values()) + 2  # +2 for "[]"
 # "myplugin:review-pr" or "myplugin:build-feature". First match
 # wins; an unmatched skill (or a plain typed prompt) tints nothing. Edit freely.
 SKILL_COLORS = [
-    (r"fix-pr",                                                    "gold"),    # fixing PR review feedback
+    (r"fix-pr",                                                    "yellow"),  # fixing PR review feedback
     (r"review|security-review",                                    "orange"),  # PR / code review
     (r"update-config|keybindings|permission|schedule|statusline|"
      r"\binit\b|claude-api|\bloop\b|deep-research|simplify|verify", "white"),   # Claude tooling skills

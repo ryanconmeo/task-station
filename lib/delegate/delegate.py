@@ -28,7 +28,7 @@ Usage:
   delegate.py run  --repo <path> --task "<instructions>" [--worktree NAME] [--branch BR] [--base REF] [--seq N] [--solo] [--label L] [--fresh] [--timeout S]
   delegate.py run  --project <name> --task "<instructions>" [--worktree NAME] [--branch BR] [--base REF] [--seq N] [--solo] [--label L] [--fresh] [--timeout S]
     --repo takes an absolute path to a git repo and bypasses project-name→workspace resolution.
-    --project <name> scans directories from CLAUDE_TODO_WORKSPACE_DIRS (colon-separated on Unix).
+    --project <name> scans directories from TASK_STATION_WORKSPACE_DIRS (colon-separated on Unix).
     For write work (--worktree) with no --seq, the calling session's attached /todo
     seq is inherited automatically (use --solo to opt out for ad-hoc work).
   delegate.py list
@@ -36,7 +36,7 @@ Usage:
   delegate.py dir  --repo <path>    [--worktree NAME]
 
 Lives inside the task-station repo; the registry sits beside this script and it
-links back to the tracker via the sibling todo.py.
+links back to the tracker via the sibling task-station.py.
 """
 import argparse
 import json
@@ -52,9 +52,9 @@ HOME = os.path.expanduser("~")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths
 
-REG_DIR = paths.data_dir()                                     # data dir (e.g. ~/.claude/todo-data) — survives /plugin update
+REG_DIR = paths.data_dir()                                     # data dir (e.g. ~/.claude/task-station-data) — survives /plugin update
 REG = os.path.join(REG_DIR, "workers.json")
-TODO_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "todo.py")     # plugin root → sibling todo.py (delegate.py is one dir deeper)
+TASK_STATION_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "task-station.py")     # plugin root → sibling task-station.py (delegate.py is one dir deeper)
 WORKTREE_UP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worktree-up.sh")
 
 
@@ -80,7 +80,7 @@ def save_reg(d):
 
 def _workspace_roots():
     """Return the list of workspace root dirs from config.json (falling back to
-    the CLAUDE_TODO_WORKSPACE_DIRS env var). Non-existent dirs are silently
+    the TASK_STATION_WORKSPACE_DIRS env var). Non-existent dirs are silently
     dropped. Returns an empty list when neither is set.
     """
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -140,8 +140,8 @@ def resolve_dir(project=None, repo=None):
     roots = _workspace_roots()
     if not roots:
         raise SystemExit(
-            "delegate: --project %r given but CLAUDE_TODO_WORKSPACE_DIRS is not set.\n"
-            "  Either pass --repo /absolute/path/to/repo  OR  set CLAUDE_TODO_WORKSPACE_DIRS\n"
+            "delegate: --project %r given but TASK_STATION_WORKSPACE_DIRS is not set.\n"
+            "  Either pass --repo /absolute/path/to/repo  OR  set TASK_STATION_WORKSPACE_DIRS\n"
             "  to a %s-separated list of directories that contain your repos."
             % (project, os.pathsep)
         )
@@ -264,7 +264,7 @@ def run_worker(dirpath, task, session_id=None, resume=False, timeout=None, name=
         cmd += ["-n", name]
     # Workers are headless children: silence the /todo hooks so each worker turn
     # doesn't get nudged to track its own task (that's the hub's job).
-    env = dict(os.environ, CLAUDE_TODO_SUPPRESS="1")
+    env = dict(os.environ, TASK_STATION_SUPPRESS="1")
     return subprocess.run(cmd, cwd=dirpath, capture_output=True,
                           text=True, timeout=timeout, env=env)
 
@@ -272,13 +272,13 @@ def run_worker(dirpath, task, session_id=None, resume=False, timeout=None, name=
 def _attached_seq():
     """The /todo task seq the CALLING (hub) session is attached to, or None.
     Read from CLAUDE_CODE_SESSION_ID (set in the worker's parent env) via
-    `todo.py whoami --porcelain`. Lets write work inherit the right seq so the
+    `task-station.py whoami --porcelain`. Lets write work inherit the right seq so the
     worktree binding is deterministic without the hub remembering to pass it."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not sid:
         return None
     try:
-        out = subprocess.run(["python3", TODO_PY, "whoami", "--porcelain",
+        out = subprocess.run(["python3", TASK_STATION_PY, "whoami", "--porcelain",
                               "--session", sid], capture_output=True, text=True, timeout=20)
         return (out.stdout or "").strip() or None
     except Exception:
@@ -341,7 +341,7 @@ def cmd_run(a):
     # two trees in one repo from sharing a slot.
     if seq:
         key = "%s:%s" % (seq, project)
-        name = "todo-%s-%s" % (seq, project)
+        name = "task-station-%s-%s" % (seq, project)
     else:
         key = "%s@%s" % (project, a.worktree) if a.worktree else project
         name = ("wk-%s-%s" % (project, a.worktree)) if a.worktree else None
@@ -420,7 +420,7 @@ def cmd_run(a):
     # Link the repo to the /todo task so its detail view lists this worker.
     if seq:
         try:
-            subprocess.run(["python3", TODO_PY, "add-project", "--task", str(seq),
+            subprocess.run(["python3", TASK_STATION_PY, "add-project", "--task", str(seq),
                             "--project", project],
                            capture_output=True, text=True, timeout=20)
         except Exception:
@@ -462,13 +462,13 @@ def _add_repo_or_project(p, *, project_required=False):
         "--repo",
         metavar="PATH",
         help="absolute path to a git repo — bypasses workspace scanning, "
-             "no CLAUDE_TODO_WORKSPACE_DIRS needed."
+             "no TASK_STATION_WORKSPACE_DIRS needed."
     )
     g.add_argument(
         "--project",
         metavar="NAME",
         help="repo name to find inside your configured workspace dirs "
-             "(CLAUDE_TODO_WORKSPACE_DIRS env var, colon-separated)."
+             "(TASK_STATION_WORKSPACE_DIRS env var, colon-separated)."
     )
 
 

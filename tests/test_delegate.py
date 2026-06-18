@@ -15,16 +15,16 @@ import delegate as _delegate_mod
 
 
 class WorkspaceRootsTest(unittest.TestCase):
-    ENV_KEY = "CLAUDE_TODO_WORKSPACE_DIRS"
+    ENV_KEY = "TASK_STATION_WORKSPACE_DIRS"
 
     def setUp(self):
         # Isolate config.json: point the data dir at an empty tmp so
-        # config.workspace_dirs() can't read a real ~/.claude/todo-data/config.json
+        # config.workspace_dirs() can't read a real ~/.claude/task-station-data/config.json
         # and the env-var fallback path is what's exercised.
         import shutil  # noqa: F401 (used in tearDown)
-        self._saved = {k: os.environ.get(k) for k in (self.ENV_KEY, "CLAUDE_TODO_HOME")}
+        self._saved = {k: os.environ.get(k) for k in (self.ENV_KEY, "TASK_STATION_HOME")}
         self._tmphome = tempfile.mkdtemp()
-        os.environ["CLAUDE_TODO_HOME"] = self._tmphome
+        os.environ["TASK_STATION_HOME"] = self._tmphome
         os.environ.pop(self.ENV_KEY, None)
 
     def tearDown(self):
@@ -37,7 +37,7 @@ class WorkspaceRootsTest(unittest.TestCase):
                 os.environ[k] = v
 
     def test_unset_returns_empty_list(self):
-        """CLAUDE_TODO_WORKSPACE_DIRS unset → empty list."""
+        """TASK_STATION_WORKSPACE_DIRS unset → empty list."""
         self.assertNotIn(self.ENV_KEY, os.environ)
         result = _delegate_mod._workspace_roots()
         self.assertEqual(result, [])

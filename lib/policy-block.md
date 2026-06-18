@@ -7,7 +7,7 @@ permissions/env. Those load only in a `claude` process whose cwd is inside the r
 
 My repos live under:
 - `<your workspace dirs>/*`
-  (set `CLAUDE_TODO_WORKSPACE_DIRS` to a `:`-separated list, or `todo config --workspace-dirs`)
+  (set `TASK_STATION_WORKSPACE_DIRS` to a `:`-separated list, or `task-station config --workspace-dirs`)
 
 ### When to delegate to an in-project worker
 
@@ -49,7 +49,7 @@ repo.
 
 Emit one line first — e.g. `→ delegating to a <project> worker` — then run
 `delegate.py run --repo /path/to/repo --task "..."` (or `--project <name>` if
-`CLAUDE_TODO_WORKSPACE_DIRS` is set).
+`TASK_STATION_WORKSPACE_DIRS` is set).
 
 ### Additional policy (customize for your team)
 

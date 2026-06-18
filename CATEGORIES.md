@@ -4,12 +4,12 @@ Every task carries a `color` — one of the keys below. The colour does two jobs
 
 1. **List rendering.** `/todo` appends the category's `<emoji> [TAG]` after each
    task title — the emoji dot carries the colour, the bracketed tag names it
-   (see `color_tag()` / `legend_line()` in `todo.py`). ANSI tag-tinting was
+   (see `color_tag()` / `legend_line()` in `task-station.py`). ANSI tag-tinting was
    tried and dropped: the slash-command output pipe strips escape sequences,
    leaving raw `\033[…m` codes on screen, so the emoji conveys colour instead.
 2. **Terminal tinting.** When a session attaches to, creates, or resumes a task,
    the engine tints the terminal to the task's category. Two modes (set via
-   `todo setup --tint-profiles`):
+   `task-station setup --tint-profiles`):
    - **auto** *(default, zero-setup)* — writes a direct escape to set the background
      colour (`hex` field per category): iTerm2 uses `SetColors`, Terminal.app uses
      OSC 11. No profiles or aliases required.
@@ -35,7 +35,7 @@ Every task carries a `color` — one of the keys below. The colour does two jobs
 |--------|-----|--------------|-----------------------------------|
 | red    | 🔴  | `[BUG]`       | bug                               |
 | orange | 🟠  | `[REVIEW]`    | code review                       |
-| yellow | 🟡  | `[YELLOW]`    | reserved (unassigned)             |
+| yellow | 🟡  | `[FIX PR]`    | fixing PR review feedback         |
 | green  | 🟢  | `[FEATURE]`   | feature work                      |
 | blue   | 🔵  | `[DEVOPS]`    | devops                            |
 | purple | 🟣  | `[SPECIAL]`   | special                           |
@@ -43,13 +43,13 @@ Every task carries a `color` — one of the keys below. The colour does two jobs
 | pink   | 🩷  | `[DESIGN]`    | design                            |
 | white  | ⚪  | `[SKILLS]`    | skills and memories               |
 | silver | 🩶  | `[PERSONAL]`  | personal projects                 |
-| gold   | 🟨  | `[FIX PR]`    | fixing PR review feedback         |
-| brown  | 🟤  | `[MIGRATION]` | data migration                    |
+| gold   | 🟨  | `[GOLD]`      | reserved (unassigned)             |
+| brown  | 🟤  | `[DATABASE]` | database                          |
 
 Each task is rendered as `<dot> [TAG]` — e.g. `🔴 [BUG]`.
 
 `black` / general is the fallback for anything that doesn't fit a category.
-`yellow` is reserved — leave it unassigned until it gets a meaning.
+`gold` is reserved — leave it unassigned until it gets a meaning.
 
 ## Choosing a colour
 
@@ -57,19 +57,19 @@ Pick from the *nature of the work*, not the surface keywords:
 
 - **red** — fixing a defect / broken behaviour (e.g. "balance sheet plant columns bug").
 - **orange** — reviewing someone's code / a PR (running a review, leaving review threads).
-- **gold** — fixing PR *review feedback* on your own PR (addressing threads, pushing fixes, replying/resolving).
+- **yellow** — fixing PR *review feedback* on your own PR (addressing threads, pushing fixes, replying/resolving).
 - **green** — feature / product coding.
 - **blue** — infra, deploys, DNS, domains, CI, environment setup.
 - **pink** — UI/UX, theming, dark mode, layout, visual design.
-- **white** — Claude tooling: skills, slash commands, hooks, memory, this todo system.
-- **brown** — data migration work.
+- **white** — Claude tooling: skills, slash commands, hooks, memory, this task-station system.
+- **brown** — database work: schema, queries, SQL, DB tuning, **and data migrations** (moving/transforming data between systems counts as database work).
 - **purple** — anything genuinely special / one-off that warrants standing out.
 - **black** — general / catch-all when nothing above fits.
 
 ## Skill → colour (immediate tinting)
 
 The `skill_colors` array in `config.json` is an ordered list of `["regex", "color"]` entries, prepended to the shipped defaults (which live in `lib/categories.py`). On
-every prompt the hook runs `todo.py prompt-color`, which pulls the invoked
+every prompt the hook runs `task-station.py prompt-color`, which pulls the invoked
 command name out of the prompt (`<command-name>/myplugin:review-pr</command-name>`,
 or a hand-typed `/foo …`) and returns the colour of the **first** regex that
 matches the name — *with* its `plugin:` prefix kept, so any `<plugin>:`-prefixed
@@ -78,7 +78,7 @@ skill matches patterns against the full `plugin:name` string. The hook then runs
 
 | Pattern (regex, matched on the command name)        | Colour | Example skills                                  |
 |-----------------------------------------------------|--------|-------------------------------------------------|
-| `fix-pr`                                            | gold   | `my-fix-pr` (fixing PR review feedback)         |
+| `fix-pr`                                            | yellow | `my-fix-pr` (fixing PR review feedback)         |
 | `review`, `security-review`                         | orange | any review skill — e.g. `review`, `security-review`, `code-review`, or any plugin-namespaced `<plugin>:review-*` |
 | tooling: `update-config`, `keybindings`, `permission`, `schedule`, `statusline`, `init`, `claude-api`, `loop`, `deep-research`, `simplify`, `verify` | white  | `update-config`, `keybindings-help`             |
 
@@ -97,7 +97,7 @@ there are prepended and take priority over the shipped list.
 ## How it's wired — `categories.py` is an optional plugin
 
 All category/colour logic lives in **`lib/categories.py`**, not in the core.
-`todo.py` imports it defensively (`try: import categories as cats / except: cats = None`),
+`task-station.py` imports it defensively (`try: import categories as cats / except: cats = None`),
 so the tracker degrades gracefully for anyone who doesn't want your colours:
 
 - **No `categories.py`** (deleted from the plugin's `lib/` dir) → a plain,
@@ -115,14 +115,14 @@ so the tracker degrades gracefully for anyone who doesn't want your colours:
 `label`, `tag`, `summary`, `legend`, `compact_legend` (one-line `key=dotTAG`
 form used by the token-lean per-prompt nudge), `tint_command` (returns `None`
 when tinting is off or the platform isn't macOS), and `picker_lines` (the
-colour-choosing guidance, served via `todo.py guidance`).
+colour-choosing guidance, served via `task-station.py guidance`).
 
 **Do not edit `lib/categories.py` directly** — changes are overwritten on
 `/plugin update`. Customize via `config.json` instead (path shown by
-`todo config --categories edit`):
+`task-station config --categories edit`):
 
 ```
-${CLAUDE_CONFIG_DIR:-~/.claude}/todo-data/config.json
+${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/config.json
 ```
 
 JSON shape (all keys optional — only what you set is stored):
@@ -146,15 +146,15 @@ JSON shape (all keys optional — only what you set is stored):
 - **`tint_terminal`** toggles tinting globally. Set to `false` if you like the
   `<emoji> [TAG]` decoration but don't want any terminal tinting.
 - **`tint_mode`** — `"auto"` (default, zero-setup direct escapes) or `"profile"`
-  (named zsh aliases, set by `todo setup --tint-profiles`).
+  (named zsh aliases, set by `task-station setup --tint-profiles`).
 - **`skill_colors`** entries are **prepended** to the shipped list, so your
   patterns win over the defaults. Each entry is `["regex", "color"]`; first
   match wins.
 
 To remove categories entirely, delete `lib/categories.py` from the installed
-plugin directory. `todo.py` will run as a plain, colourless tracker.
+plugin directory. `task-station.py` will run as a plain, colourless tracker.
 
-`todo.py` never names a colour — it only calls into `categories.py`.
+`task-station.py` never names a colour — it only calls into `categories.py`.
 
 - `create` takes `--color`; `attach` takes an optional `--color` to set or
   backfill one. When categories are on they print the category and (if tinting
