@@ -2,21 +2,29 @@
 
 **Task Station** is an automatic, persistent task hub for Claude Code. Every session can attach to a task; tasks survive across sessions and are listed/resumed with `/todo`. Each task **pins to a resumable Claude session** — reopen the exact session behind it (or **re-pin a fresh session to save tokens**). Tasks are **auto-categorised and colour-tinted**, and Task Station is the **hub that launches parallel in-project workers**.
 
-```
-Tasks (open first, then by recent activity):  •  /todo <n> = open detail & resume   ·   /done = close current task   ·   /done <n> = close any task by number/id
+Run `/todo` and Claude renders your board as two tables — **open** first, then recently **closed**:
 
-OPEN
-  3  Add dark mode to settings page            🩷 [DESIGN]    ▰▰▰▱▱ M   2h ago
-  2  Fix auth token refresh bug                🔴 [BUG]       ▰▰▱▱▱ S   yesterday
-  1  Build cross-session task tracker          ⚪ [SKILLS]    ▰▰▰▰▱ L   3d ago
+**Open**
 
-CLOSED
-  5  Review payment webhook PR                 🟠 [REVIEW]    ▰▰▱▱▱ S   4h ago
-  4  Migrate billing tables to v2 schema       🟤 [DATABASE]  ▰▰▰▰▰ XL  3d ago
+|   # | Task | Category | Effort | Activity |
+| --: | --- | --- | --- | --- |
+|   3 | Add dark mode toggle to the settings page | 🩷 [DESIGN] | ▰▰▰▱▱ M | 2h ago |
+|   2 | Fix auth token refresh on expired sessions | 🔴 [BUG] | ▰▰▱▱▱ S | yesterday |
+|   1 | Build cross-session task tracker | ⚪ [SKILLS] | ▰▰▰▰▱ L | 3d ago |
 
-Effort:  ▰▱▱▱▱ XS  ▰▰▱▱▱ S  ▰▰▰▱▱ M  ▰▰▰▰▱ L  ▰▰▰▰▰ XL
-Legend: 🔴 [BUG] bug  ·  🟠 [REVIEW] code review  ·  🟡 [FIX PR] fixing PR review feedback  ·  🟢 [FEATURE] feature work  ·  🔵 [DEVOPS] devops  ·  🟣 [SPECIAL] special  ·  ⚫ [GENERAL] general  ·  🩷 [DESIGN] design  ·  ⚪ [SKILLS] skills and memories  ·  🩶 [PERSONAL] personal projects  ·  🟤 [DATABASE] database
-```
+**Closed**
+
+|   # | Task | Category | Effort | Activity |
+| --: | --- | --- | --- | --- |
+|  10 | Handle null avatar URLs in the header | 🔴 [BUG] | ▰▰▱▱▱ S | 4h ago |
+|   9 | Paginate the activity feed endpoint | 🟢 [FEATURE] | ▰▰▰▱▱ M | 8h ago |
+|   8 | Tidy up stale feature flags | ⚫ [GENERAL] | ▰▱▱▱▱ XS | yesterday |
+|   7 | Add CSV export to the reports dashboard | 🟢 [FEATURE] | ▰▰▰▰▱ L | 2d ago |
+|   6 | Pin CI node version and cache dependencies | 🔵 [DEVOPS] | ▰▰▰▱▱ M | 3d ago |
+
+> … 2 older closed task(s) hidden · show more with `/todo closed N` or `/todo all` · reachable by number: `/todo <n>` or `/done <n>`
+
+`/todo <n>` opens & resumes a task · `/done` closes the current one · effort runs `▰▱▱▱▱` XS → `▰▰▰▰▰` XL · each task is colour-tinted by category ([see the taxonomy](CATEGORIES.md)).
 
 ## Why Task Station (vs native Tasks)
 
