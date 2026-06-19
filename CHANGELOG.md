@@ -3,6 +3,17 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.0.8] — 2026-06-19
+
+### Changed
+- Storage is now a single indexed SQLite database (`store/tasks.db`, WAL mode) instead
+  of one JSON file per task plus per-session link files. Listing, counting, and the
+  per-prompt tracked-session check are indexed queries, so they stay fast as the board
+  grows rather than scanning every task file on each hook invocation. Falls back to the
+  JSON-file store if `sqlite3` is unavailable (stdlib, so effectively never).
+- A fresh install starts directly on SQLite — there is no migration step baked into the
+  plugin (new users have nothing to migrate).
+
 ## [1.0.7] — 2026-06-19
 
 ### Added

@@ -31,6 +31,7 @@ import uuid
 from datetime import datetime, timezone
 
 import paths
+import store
 
 BASE = os.path.dirname(os.path.abspath(__file__))  # code location only (self-invocation)
 DATA = paths.data_dir()                             # mutable state — survives /plugin update
@@ -196,10 +197,20 @@ def commands_footer_md():
 
 
 # ---------------------------------------------------------------- storage ----
+#
+# The read/write layer lives in store.py — a SQLite backend (`<store>/tasks.db`)
+# when sqlite3 is available, the original file-per-task JSON store as a fallback.
+# The functions below keep their historical names/signatures so call sites (and
+# the tests) don't change; each just delegates to the active backend. STORE is a
+# module global the tests repoint, so resolve the backend per call against it.
+
+
+def _backend():
+    return store.get_backend(STORE)
+
 
 def _ensure_dirs():
-    os.makedirs(TASKS_DIR, exist_ok=True)
-    os.makedirs(LINKS_DIR, exist_ok=True)
+    _backend().ensure()
 
 
 def _now():
@@ -218,40 +229,17 @@ def _iso_to_ts(s):
         return None
 
 
-def _task_path(task_id):
-    return os.path.join(TASKS_DIR, task_id + ".json")
-
-
-def _atomic_write(path, text):
-    tmp = path + ".tmp." + str(os.getpid())
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.replace(tmp, path)
-
-
 def load_task(task_id):
-    try:
-        with open(_task_path(task_id)) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return None
+    return _backend().load_task(task_id)
 
 
 def save_task(task):
-    _ensure_dirs()
     task["updated_at"] = _iso(task["updated_ts"])
-    _atomic_write(_task_path(task["id"]), json.dumps(task, indent=2))
+    _backend().save_task(task)
 
 
 def all_tasks():
-    _ensure_dirs()
-    out = []
-    for name in os.listdir(TASKS_DIR):
-        if name.endswith(".json") and not name.endswith(".tmp"):
-            t = load_task(name[:-5])
-            if t:
-                out.append(t)
-    return out
+    return _backend().all_tasks()
 
 
 def sorted_tasks():
@@ -288,30 +276,16 @@ def ensure_seqs():
 
 # ------------------------------------------------------------------ links ----
 
-def _link_path(session):
-    return os.path.join(LINKS_DIR, session)
-
-
 def get_link(session):
-    _ensure_dirs()
-    try:
-        with open(_link_path(session)) as f:
-            task_id = f.read().strip()
-    except OSError:
-        return None
-    return task_id or None
+    return _backend().get_link(session)
 
 
 def set_link(session, task_id):
-    _ensure_dirs()
-    _atomic_write(_link_path(session), task_id)
+    _backend().set_link(session, task_id)
 
 
 def clear_link(session):
-    try:
-        os.remove(_link_path(session))
-    except OSError:
-        pass
+    _backend().clear_link(session)
 
 
 def live_session_count(task):
@@ -319,37 +293,23 @@ def live_session_count(task):
 
     `task["sessions"]` is append-only — it keeps every session that ever touched
     the task, even ones that later attached elsewhere, closed, or were skipped —
-    so a raw `len()` over-reports. The live count is the sessions whose link file
+    so a raw `len()` over-reports. The live count is the sessions whose link
     currently resolves back to this task; that's the real concurrent-session
     signal /todo surfaces."""
-    tid = task.get("id")
-    return sum(1 for s in task.get("sessions", []) if get_link(s) == tid)
-
-
-def _count_path(session):
-    return _link_path(session) + ".n"
+    return _backend().live_session_count(task)
 
 
 def get_count(session):
     """How many prompts this session has gone without attaching to a task."""
-    try:
-        with open(_count_path(session)) as f:
-            return int(f.read().strip() or 0)
-    except (OSError, ValueError):
-        return 0
+    return _backend().get_count(session)
 
 
 def bump_count(session):
-    n = get_count(session) + 1
-    _atomic_write(_count_path(session), str(n))
-    return n
+    return _backend().bump_count(session)
 
 
 def clear_count(session):
-    try:
-        os.remove(_count_path(session))
-    except OSError:
-        pass
+    _backend().clear_count(session)
 
 
 # -- edited / blocked markers: the "real work happened" enforcement signal -----
@@ -360,49 +320,26 @@ def clear_count(session):
 STOP_GATE_MAX_BLOCKS = 2
 
 
-def _edited_path(session):
-    return _link_path(session) + ".edited"
-
-
-def _blocked_path(session):
-    return _link_path(session) + ".blocked"
-
-
 def mark_edited(session):
     """Record that this session edited a file. Returns True only on the FIRST
     call (so the PostToolUse reminder is one-shot, not per-edit)."""
-    _ensure_dirs()
-    p = _edited_path(session)
-    if os.path.exists(p):
-        return False
-    _atomic_write(p, "1")
-    return True
+    return _backend().mark_edited(session)
 
 
 def has_edited(session):
-    return os.path.exists(_edited_path(session))
+    return _backend().has_edited(session)
 
 
 def get_blocked(session):
-    try:
-        with open(_blocked_path(session)) as f:
-            return int(f.read().strip() or 0)
-    except (OSError, ValueError):
-        return 0
+    return _backend().get_blocked(session)
 
 
 def bump_blocked(session):
-    n = get_blocked(session) + 1
-    _atomic_write(_blocked_path(session), str(n))
-    return n
+    return _backend().bump_blocked(session)
 
 
 def clear_edit_markers(session):
-    for p in (_edited_path(session), _blocked_path(session)):
-        try:
-            os.remove(p)
-        except OSError:
-            pass
+    _backend().clear_edit_markers(session)
 
 
 # -------------------------------------------------------------- utilities ----
