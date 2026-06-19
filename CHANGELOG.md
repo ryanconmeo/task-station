@@ -3,6 +3,49 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.1.0] — 2026-06-19
+
+### Changed
+- **Repo enrichment is now OPT-IN per repo (behavior change).** Previously
+  `repos --refresh` sent each repo's README + file tree to a model (Haiku) by
+  default. Now a repo's content reaches the model **only** when its manifest
+  `enrich` flag is `true`, and that flag **defaults to `false`** for every repo.
+  A normal `repos --refresh` therefore sends **nothing** off-machine — it fills
+  `summary` deterministically (README first paragraph) plus the existing
+  stack/status/path detection. `--no-llm` still forces the deterministic path even
+  for `enrich:true` repos.
+- **Deterministic refreshes preserve existing summaries.** A deterministic refresh
+  no longer overwrites a non-empty `summary`/`keywords` (model- or override-derived)
+  with the README paragraph; it only fills repos that lack one. Force regeneration
+  with the new `--re-summarize`.
+
+### Added
+- **Auto-maintained include/exclude manifest** at `task-station-data/repos.config.json`,
+  a map keyed by repo name of `{ index: bool=true, enrich: bool=false }`.
+  `repos --refresh` reconciles it: newly-discovered repos are added with safe
+  defaults; vanished repos are pruned. It is the single surface where every
+  discovered repo name appears, so you never type a name from memory — just flip
+  flags. Only `index:true` repos reach `repos.md`/`repos.json`; only `enrich:true`
+  repos are eligible for model egress.
+- **Toggle commands (no JSON editing):** `repos include <name>` / `repos exclude <name>`
+  set `index`; `repos enrich <name> [on|off]` sets `enrich`; `repos config` prints the
+  full manifest. Names or paths are accepted; unknown names get a clear message.
+- **`.task-station-ignore` marker file** at a repo root fully excludes that repo from
+  discovery/index (as if `index:false`), regardless of the manifest — a repo-owner
+  self-exclude that travels with the repo.
+- **First-run onboarding on `/repos`** (not `/todo`): `repos --detect-roots` proposes
+  candidate roots (`~/Workspace`, `~/Workspace-Other`, plus any `~` dir with ≥2 git
+  repos); `commands/repos.md` walks you through confirming and persisting them with
+  `repos --set-roots <p1,p2,...>`, reassuring that enrichment is off by default.
+  `commands/todo.md` gains a single subtle one-line pointer to `/repos`.
+- **Egress transparency + hygiene:** `repos --refresh` prints exactly which repos are
+  having content sent (`enriching (sending README+tree NAMES): …`); `--dry-run` reports
+  what *would* be sent without sending. The enrichment input is bounded to repo name,
+  ado_project, stack, README top (~80 lines), and a `git ls-files` **name** sketch —
+  arbitrary file **contents** are never read, and a denylist guard keeps secret-bearing
+  names (`.env`, `*.pem`, `*.key`, `secrets*`, `credentials*`, `.npmrc`, …) out of the
+  prompt entirely.
+
 ## [1.0.11] — 2026-06-19
 
 ### Fixed

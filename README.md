@@ -222,12 +222,17 @@ on-demand, hub-side map of the repos under your workspace roots, so the hub can 
 right repo(s) *before* spinning up a worktree.
 
 ```bash
-/repos --refresh          # rescan the roots and rewrite the index (auto-fills cards)
-/repos --refresh --no-llm  # same, but deterministic only — no model enrichment
-/repos                    # print the index (one block per repo)
+/repos                    # print the index (one block per repo) — or first-run setup
+/repos --refresh          # rescan the roots + rewrite the index (sends NOTHING by default)
 /repos billing invoice    # rank repos by relevance to these terms
+/repos config             # list the include/exclude manifest (every repo + its flags)
+/repos exclude marketing  # drop a repo from the index (index:false)
+/repos enrich volt-api    # opt ONE repo in to model enrichment (the only egress path)
+/repos --refresh --dry-run # report which enrich:true repos WOULD be sent — send nothing
 /repos --json             # structured list, for tooling
 ```
+
+> **Enrichment is opt-in.** A normal `/repos --refresh` sends **nothing** off-machine. See [Privacy / data egress](#privacy--data-egress).
 
 It lives next to the task store at `<data_dir>/repos.{md,json}` (plus a small
 `.repos-cache.json`) — **not** in `tasks.db` (repos aren't tasks) and **not** as per-repo
@@ -254,16 +259,18 @@ Discovery roots come from `--workspace-dirs` / `TASK_STATION_WORKSPACE_DIRS`, de
     languages (`.md` is Markdown, not GCC Machine Description). The committed module is pure stdlib;
     regenerate it with `python3 tools/gen_stack_map.py` (the source `languages.yml` is vendored but
     gitignored).
-- **`summary` + `keywords` are auto-filled by a fingerprint-gated, best-effort model call** that
-  **degrades gracefully.** Each repo has a `fingerprint = sha1(remote + sorted top-level entries +
-  sha1(README) + sha1(each root manifest))[:12]` that moves only on identity/structure change — not
-  on ordinary commits. On `--refresh`, a cheap model (Haiku, via the headless `claude -p …
-  --output-format json` CLI) is called **only** for repos that are new or whose fingerprint changed
-  **and** have no override summary; the rest are served from `.repos-cache.json`, so steady-state
-  refreshes make **zero** model calls. If the call fails for any reason (CLI not on `PATH`, no network,
-  timeout, malformed JSON) it falls back to a **deterministic** README-derived summary + keywords — the
-  index **always** builds and the command never errors out. Force the deterministic path with
-  **`--no-llm`** (or `task-station config` / `TASK_STATION_REPO_ENRICH=off`; enrichment is ON by default).
+- **`summary` + `keywords` are deterministic by default**, and **opt-in** for model enrichment.
+  By default they're filled offline from the README's first paragraph — **no model call**. A repo's
+  content is sent to a cheap model (Haiku, via the headless `claude -p … --output-format json` CLI)
+  **only** when you flip its manifest `enrich` flag on (`/repos enrich <name>`). Even then the call is
+  **fingerprint-gated**: each repo has a `fingerprint = sha1(remote + sorted top-level entries +
+  sha1(README) + sha1(each root manifest))[:12]` that moves only on identity/structure change — not on
+  ordinary commits — so an enriched repo is re-sent only when new or structurally changed; the rest are
+  served from `.repos-cache.json`. If the call fails for any reason (CLI not on `PATH`, no network,
+  timeout, malformed JSON) it falls back to the **deterministic** README-derived summary — the index
+  **always** builds and the command never errors out. `--no-llm` forces the deterministic path even for
+  `enrich:true` repos; `TASK_STATION_REPO_ENRICH=off` (or `repo_enrich:false`) hard-disables all egress
+  globally. See [Privacy / data egress](#privacy--data-egress).
 - **Precedence: override > model > deterministic-fallback.** Hand-authored prose
   (`summary`/`keywords`/`domain`, plus a `status` override) in `<data_dir>/repos.overrides.json`
   (keyed by repo name) **wins** and **survives every refresh** — discovery never writes it.
@@ -276,6 +283,45 @@ resolving a worktree.
 > doubles as a stage-1 top-K pre-filter (only the top cards' prose need be read into context), and the
 > fingerprint cache already avoids redundant model work — a future `--refresh` debounce is the only
 > remaining additive piece.
+
+### Privacy / data egress
+
+The repo index is **local-first and opt-in for any model egress.** What leaves your machine is fully
+under your control:
+
+- **Enrichment is OFF by default, per repo.** A normal `/repos --refresh` makes **zero** model calls
+  and sends **nothing** off-machine — it builds the index entirely offline (filesystem + `git` +
+  README first paragraph). A repo's content is sent to the model **only** when you opt that repo in
+  with `/repos enrich <name>`.
+- **The manifest is the single include/exclude surface.** `task-station-data/repos.config.json` is
+  auto-maintained: every discovered repo appears with `{ index: true, enrich: false }` defaults; new
+  repos are added on refresh and vanished ones pruned. Flip flags by name — no JSON editing:
+  - `/repos config` — list every repo and its flags.
+  - `/repos include <name>` / `/repos exclude <name>` — `index` controls whether a repo appears in the
+    index at all.
+  - `/repos enrich <name> [on|off]` — `enrich` controls model egress; it's the **only** path by which a
+    repo's content reaches the model.
+- **`.task-station-ignore` marker.** Drop an empty file by that name at a repo root and the repo is
+  excluded from discovery entirely, regardless of the manifest. It travels with the repo, so a repo
+  owner can self-exclude.
+- **Bounded, transparent input.** When enrichment runs for an `enrich:true` repo, the prompt is bounded
+  to: repo name, `ado_project`, detected stack, the README top (~80 lines), and a `git ls-files`
+  **name** sketch. Arbitrary file **contents** are **never** read — and a denylist guard keeps
+  secret-bearing names (`.env`, `*.pem`, `*.key`, `secrets*`, `credentials*`, `.npmrc`, private keys, …)
+  out of the prompt entirely. `--refresh` prints exactly which repos are having content sent
+  (`enriching (sending README+tree NAMES): …`), and `--refresh --dry-run` reports what *would* be sent
+  without sending anything.
+- **Deterministic refreshes don't clobber.** A deterministic refresh preserves an existing
+  summary/keywords (model- or override-derived) rather than overwriting it; use `--re-summarize` to
+  force regeneration. `--no-llm` forces the deterministic path even for `enrich:true` repos, and
+  `TASK_STATION_REPO_ENRICH=off` hard-disables all egress globally.
+
+> **Honest nuance: listing ≠ sending, but indexing ≠ fully private.** An `enrich:false` repo never has
+> its README/tree sent during `--refresh`. But an `index:true` repo's deterministic **card** (name,
+> path, stack, status, README-derived summary) lives in `repos.md`/`repos.json`, which the hub reads
+> **into the model's context at routing time** to pick a repo for a task. So an indexed repo's card
+> still reaches the model when you route work. To keep a repo **fully** off the model, `exclude` it
+> (`index:false`) or drop a `.task-station-ignore` marker — then it never enters the index at all.
 
 ## Configure
 

@@ -29,3 +29,5 @@ Each task is colour-coded by category (an `<emoji> [TAG]` after the title — th
   Either way, **skip the recap** — that's the whole point of `-s`. Treat this task as the active context for the rest of the session.
 
 After any mutation (closing, attaching, creating, pinning, updating a task), confirm with the tool's result line(s) **only** — do **not** re-render this full `/todo` list unless the user explicitly asks to see it.
+
+_tip: `/repos` sets up repo routing for delegating fuzzy tasks (enrichment is off by default)._
