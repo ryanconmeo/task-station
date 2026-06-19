@@ -22,6 +22,28 @@ Delegate when the work targets a specific repo **and** needs at least one of:
 **Do NOT delegate** for: questions, explanations, plans, research, cross-repo
 read-only reasoning, or anything about `~/.claude` itself. Handle those directly.
 
+## Resolve the target repo (when it's ambiguous)
+
+If the task names its repo, skip this. When it's fuzzy ("fix the billing rounding
+bug", "add a health check") and you're not sure which repo under the workspace
+roots it belongs to, use the hub **repo index** to pick before resolving a
+worktree — a hub session can't see inside any repo, so guessing wastes a worktree:
+
+```bash
+# refresh quietly, then rank repos by the task's own words
+python3 "$HOME/.claude/task-station-engine/task-station.py" repos --refresh --quiet
+python3 "$HOME/.claude/task-station-engine/task-station.py" repos <task terms>
+```
+
+`repos <terms>` ranks by name/keywords/domain/stack/ado_project/path and prints
+the matches best-first; `repos show` prints the whole index; `--json` is the
+machine-readable form. The index is on-demand only (no SessionStart injection) and
+lives at `<data_dir>/repos.{md,json}`, separate from the task store. If a repo's
+purpose isn't obvious from its name, add a `summary`/`keywords`/`domain` entry for
+it in `<data_dir>/repos.overrides.json` (keyed by repo name) — those survive every
+refresh. Once you've picked the repo, pass it as `--repo <path>` (or `--project
+<name>`) below.
+
 ## How
 
 Announce in one line first — e.g. `→ delegating this to a <repo> worker` — then run
