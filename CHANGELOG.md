@@ -3,9 +3,16 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [1.0.5] — 2026-06-18
+
+### Added
+- OS-appearance-aware tinting: each category now ships a light **and** a dark
+  palette, auto-detected on macOS (`defaults read -g AppleInterfaceStyle`). Use
+  `config --tint-theme auto|dark|light` to override the auto-detection.
 
 ### Changed
+- Darkened the white/neutral dark-mode tint (`#2b2b30` → `#202024`); it was too
+  bright on dark backgrounds.
 - README: documented that `/todo` output enters the session as context, giving Claude a
   cross-project big-picture view for large multi-domain work.
 

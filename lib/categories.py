@@ -30,18 +30,18 @@ TINT_TERMINAL = True
 
 # key (== zsh alias name) → {emoji dot, short [TAG], human label}
 CATEGORIES = {
-    "red":    {"dot": "🔴", "tag": "BUG",       "label": "bug",                        "hex": "#3a2323"},
-    "orange": {"dot": "🟠", "tag": "REVIEW",    "label": "code review",                "hex": "#3a3023"},
-    "yellow": {"dot": "🟡", "tag": "FIX PR",    "label": "fixing PR review feedback",  "hex": "#3a3823"},
-    "green":  {"dot": "🟢", "tag": "FEATURE",   "label": "feature work",               "hex": "#233a2b"},
-    "blue":   {"dot": "🔵", "tag": "DEVOPS",    "label": "devops",                     "hex": "#23303a"},
-    "purple": {"dot": "🟣", "tag": "SPECIAL",   "label": "special",                    "hex": "#2e233a"},
-    "black":  {"dot": "⚫", "tag": "GENERAL",   "label": "general",                    "hex": "#262626"},
-    "pink":   {"dot": "🩷", "tag": "DESIGN",    "label": "design",                     "hex": "#3a2333"},
-    "white":  {"dot": "⚪", "tag": "SKILLS",    "label": "skills and memories",         "hex": "#2b2b30"},
-    "silver": {"dot": "🩶", "tag": "PERSONAL",  "label": "personal projects",           "hex": "#303033"},
-    "gold":   {"dot": "🟨", "tag": "GOLD",      "label": "reserved",                   "hex": "#3a3520"},
-    "brown":  {"dot": "🟤", "tag": "DATABASE", "label": "database",                     "hex": "#332a23"},
+    "red":    {"dot": "🔴", "tag": "BUG",       "label": "bug",                        "hex": "#3a2323", "hex_light": "#f7e6e6"},
+    "orange": {"dot": "🟠", "tag": "REVIEW",    "label": "code review",                "hex": "#3a3023", "hex_light": "#f7eede"},
+    "yellow": {"dot": "🟡", "tag": "FIX PR",    "label": "fixing PR review feedback",  "hex": "#3a3823", "hex_light": "#f6f3da"},
+    "green":  {"dot": "🟢", "tag": "FEATURE",   "label": "feature work",               "hex": "#233a2b", "hex_light": "#e4f3e8"},
+    "blue":   {"dot": "🔵", "tag": "DEVOPS",    "label": "devops",                     "hex": "#23303a", "hex_light": "#e4eef6"},
+    "purple": {"dot": "🟣", "tag": "SPECIAL",   "label": "special",                    "hex": "#2e233a", "hex_light": "#ece4f5"},
+    "black":  {"dot": "⚫", "tag": "GENERAL",   "label": "general",                    "hex": "#262626", "hex_light": "#ececec"},
+    "pink":   {"dot": "🩷", "tag": "DESIGN",    "label": "design",                     "hex": "#3a2333", "hex_light": "#f7e4ef"},
+    "white":  {"dot": "⚪", "tag": "SKILLS",    "label": "skills and memories",         "hex": "#202024", "hex_light": "#f2f2f5"},
+    "silver": {"dot": "🩶", "tag": "PERSONAL",  "label": "personal projects",           "hex": "#303033", "hex_light": "#eeeef0"},
+    "gold":   {"dot": "🟨", "tag": "GOLD",      "label": "reserved",                   "hex": "#3a3520", "hex_light": "#f5f0d8"},
+    "brown":  {"dot": "🟤", "tag": "DATABASE", "label": "database",                     "hex": "#332a23", "hex_light": "#f0e9e0"},
 }
 DEFAULT = "black"
 _TAG_WIDTH = max(len(m["tag"]) for m in CATEGORIES.values()) + 2  # +2 for "[]"
@@ -218,6 +218,57 @@ def _hex_of(color):
     m = CATEGORIES.get(key) if key else None
     return m.get("hex") if m else None
 
+
+def tint_theme_setting():
+    """The configured `tint_theme` ("auto" | "dark" | "light"), default "auto".
+    "auto" means "follow the OS appearance" (see resolve_theme)."""
+    try:
+        import config as _config
+        val = _config.get("tint_theme", "auto")
+    except Exception:
+        return "auto"
+    return val if val in ("auto", "dark", "light") else "auto"
+
+
+def resolve_theme():
+    """Resolve the effective palette: "dark" or "light". Never raises.
+
+    A manual "dark"/"light" setting is returned as-is (no detection). "auto"
+    detects the OS appearance: on macOS, `defaults read -g AppleInterfaceStyle`
+    prints "Dark" in dark mode and errors (no such key) in light mode. Any
+    non-macOS platform or any failure falls back to "dark" — today's behaviour."""
+    setting = tint_theme_setting()
+    if setting in ("dark", "light"):
+        return setting
+    if _sys.platform != "darwin":
+        return "dark"
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["defaults", "read", "-g", "AppleInterfaceStyle"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return "dark" if out.stdout.strip() == "Dark" else "light"
+    except Exception:
+        return "dark"
+
+
+def hex_for(color, theme=None):
+    """The tint hex for `color` under the given theme (resolved if None).
+    Returns the light palette when theme is "light" and the slot defines
+    `hex_light`, else the dark `hex` — so user overrides that only set `hex`
+    still work. None when the colour is unrecognized."""
+    key = resolve(color)  # None if unrecognized (no DEFAULT fallback)
+    m = CATEGORIES.get(key) if key else None
+    if not m:
+        return None
+    if theme is None:
+        theme = resolve_theme()
+    if theme == "light" and m.get("hex_light"):
+        return m["hex_light"]
+    return m.get("hex")
+
+
 def tint_escape(color, mode, term):
     """Return the string to print/run to tint the terminal, or '' for no-op.
     profile -> `zsh -ic '<color>'` (user aliases); auto -> direct escape (zero-setup)."""
@@ -225,7 +276,7 @@ def tint_escape(color, mode, term):
         return "zsh -ic '%s'" % normalize(color)
     if term == "none":
         return ""
-    hx = _hex_of(color)
+    hx = hex_for(color)  # picks dark/light by resolved OS theme
     if not hx:
         return ""
     if term == "iterm":
