@@ -3,3 +3,7 @@ store/
 
 # delegate runtime registry (live worker session ids) — machine-local, not committed.
 delegate/workers.json
+
+# Vendored GitHub Linguist data — input to tools/gen_stack_map.py only. The
+# generated lib/stack_map.py is committed; the source yml is not.
+languages.yml
