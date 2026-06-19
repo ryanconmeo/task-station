@@ -119,6 +119,62 @@ def color_for_prompt(prompt):
     return None
 
 
+# --- Explicit "create/attach a task" intent in a free-typed prompt -----------
+# When the user literally asks to make/attach a task, the prompt-context hook
+# must hard-steer to task-station and away from the built-in/native TaskCreate
+# (ephemeral session-todo) tool. These run once per prompt, like _CMD_RE.
+
+# Same-clause guards: a question ABOUT the concept, or a negation, before the
+# matched verb means it is NOT an imperative → no intent.
+_INTENT_QUESTION_RE = re.compile(
+    r"\b(what's|whats|what|how|why|does|do you|can you|should|could|when|"
+    r"explain|tell me|difference between)\b", re.I)
+_INTENT_NEGATION_RE = re.compile(
+    r"\b(don't|dont|do not|no need to|without|never|stop|instead of)\b", re.I)
+
+# attach — more specific ("to … task" shape); checked BEFORE create.
+ATTACH_INTENT_RES = [
+    re.compile(r"\battach\b(\s+(this|it|me|us))?\s+to\s+(a|the|task)\b", re.I),
+    re.compile(r"\battach\s+to\s+(a\s+|the\s+)?task\b", re.I),
+    re.compile(r"\badd\s+(this|it|that)\s+to\s+(the\s+)?(existing\s+)?task\b", re.I),
+    re.compile(r"\blink\s+(this\s+|it\s+|that\s+)?to\s+(a\s+|the\s+)?(existing\s+)?task\b", re.I),
+    re.compile(r"\bassociate\s+(this\s+|it\s+|that\s+)?with\s+(the\s+)?task\b", re.I),
+]
+
+# create — imperative to make a NEW task.
+CREATE_INTENT_RES = [
+    re.compile(r"\bmake\s+(this|it|that|them|a)?\s*((in)?to\s+)?(a\s+)?(new\s+)?task\b", re.I),
+    re.compile(r"\bcreate\s+(a\s+|this\s+|it\s+|that\s+)?(as\s+)?(a\s+)?(new\s+)?task\b", re.I),
+    re.compile(r"\badd\s+a\s+(new\s+)?task\b", re.I),
+    re.compile(r"\bstart\s+a\s+(new\s+)?task\b", re.I),
+    re.compile(r"\bopen\s+a\s+(new\s+)?task\b", re.I),
+    re.compile(r"\bnew\s+task\b", re.I),
+    re.compile(r"\btrack\s+(this|it|that)(\s+as\s+a\s+task)?\b", re.I),
+    re.compile(r"\bsave\s+(this|it|that)\s+as\s+a\s+task\b", re.I),
+    re.compile(r"\blog\s+(this|it|that)\s+as\s+a\s+task\b", re.I),
+]
+
+
+def task_intent(prompt):
+    """Return 'create' | 'attach' | None for prompts that EXPLICITLY ask to
+    create or attach a task. Conservative: only fires on clear imperative
+    phrasing, not on questions about the concept or negations."""
+    if not prompt:
+        return None
+    for intent, regexes in (("attach", ATTACH_INTENT_RES), ("create", CREATE_INTENT_RES)):
+        for rx in regexes:
+            m = rx.search(prompt)
+            if not m:
+                continue
+            # Same-clause guard: only the text since the last clause boundary
+            # (so "what does create a task do?" / "don't make a task" → None).
+            clause = re.split(r"[.;\n?!]", prompt[:m.start()])[-1]
+            if _INTENT_QUESTION_RE.search(clause) or _INTENT_NEGATION_RE.search(clause):
+                return None
+            return intent
+    return None
+
+
 def _build_aliases():
     """Reverse lookup so a category can be named by key, emoji dot, [TAG]/TAG,
     or human label — whatever the caller copied out of the legend/picker.
