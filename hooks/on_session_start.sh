@@ -29,7 +29,7 @@ fi
 
 if [ -n "$CLAUDE_PLUGIN_ROOT" ] && [ "$(python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" config --bare-cmds-get 2>/dev/null)" = "on" ]; then
   _cmds="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/commands"; mkdir -p "$_cmds" 2>/dev/null
-  for c in todo done; do
+  for c in todo done repos; do
     _dst="$_cmds/$c.md"; _src="$CLAUDE_PLUGIN_ROOT/commands/$c.md"
     if [ ! -e "$_dst" ] || head -1 "$_dst" 2>/dev/null | grep -q 'task-station-managed'; then
       { printf '%s\n' "<!-- task-station-managed: bare alias for /task-station:$c -->";
