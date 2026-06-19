@@ -1368,12 +1368,50 @@ def cmd_prompt_tint(a):
 
 
 def cmd_prompt_context(a):
-    """UserPromptSubmit: bump if attached; otherwise nudge Claude to attach/create."""
+    """UserPromptSubmit: bump if attached; otherwise nudge Claude to attach/create.
+
+    An EXPLICIT 'create/attach a task' request in the prompt always prints a hard
+    directive FIRST — even in a skipped or already-attached session — steering to
+    task-station and away from the built-in/native TaskCreate session-todo tool."""
+    intent = (cats.task_intent(os.environ.get("TASK_STATION_PROMPT", ""))
+              if (cats and hasattr(cats, "task_intent")) else None)
     task_id = get_link(a.session)
-    if task_id == SKIP_SENTINEL:
+    skipped = task_id == SKIP_SENTINEL
+    task = load_task(task_id) if (task_id and not skipped) else None
+
+    if intent:
+        verb = "attach" if intent == "attach" else "create"
+        dlines = [
+            "⚡ EXPLICIT TASK INTENT — the user's message explicitly asks to %s a task." % verb,
+            "Use task-station NOW. Do NOT use the built-in/native TaskCreate (session todo) tool — that",
+            "list is ephemeral (this-conversation-only) and is NOT what the user wants.",
+        ]
+        if intent == "create":
+            dlines.append("  create: python3 %s/task-station.py create --session %s --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'"
+                          % (BASE, a.session))
+            if task:
+                dlines.append("You are already attached to [%s] %s; if the user wants a SEPARATE task, "
+                              "create with --force; if they mean this same task, you are already tracking "
+                              "it — just say so." % (task["id"][:8], task["title"]))
+        else:  # attach
+            dlines.append("  attach: python3 %s/task-station.py attach --session %s --task <task-id> [--color <color>]"
+                          % (BASE, a.session))
+            opens = [t for t in sorted_tasks() if t["status"] == "open"]
+            if opens:
+                dlines.append("Open tasks you can attach to:")
+                for t in opens[:8]:
+                    dlines.append("  - [%s] %s (%s)" % (t["id"][:8], t["title"], rel_time(t.get("updated_ts"))))
+        print("\n".join(dlines))
+        # The directive IS the message. Keep an attached task's activity fresh as
+        # usual, but don't also dump the standard nudge after a hard directive.
+        if task:
+            touch(task, session=a.session, note=os.environ.get("TASK_STATION_PROMPT", ""), reopen=True)
+            save_task(task)
+        return
+
+    if skipped:
         return  # session intentionally untracked: stay silent
 
-    task = load_task(task_id) if task_id else None
     if task:
         was_closed = task.get("status") == "closed"
         touch(task, session=a.session, note=os.environ.get("TASK_STATION_PROMPT", ""), reopen=True)
@@ -1454,6 +1492,8 @@ def cmd_guidance(a):
     else:
         lines.append("  • attach: python3 %s/task-station.py attach --session <session-id> --task <task-id>" % BASE)
         lines.append("  • create: python3 %s/task-station.py create --session <session-id> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'" % BASE)
+    lines.append("Always track via task-station (attach/create above) — NEVER the built-in/native "
+                 "TaskCreate session-todo tool; that list is ephemeral and invisible later.")
     lines.append("Do this as a side action, but DO tell the user in one short line when you "
                  "create or attach a task — e.g. \"📋 Tracking this as a new task: <title>\" or "
                  "\"📋 Attached to existing task: <title>\".")
