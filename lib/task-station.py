@@ -1566,6 +1566,8 @@ def main():
     sp.add_argument("--bare-cmds-get", dest="bare_cmds_get", action="store_true")
     sp.add_argument("--update-check", dest="update_check", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--update-check-get", dest="update_check_get", action="store_true")
+    sp.add_argument("--tint-theme", dest="tint_theme", nargs="?", choices=["auto","dark","light"], const="auto", default=None)
+    sp.add_argument("--tint-theme-get", dest="tint_theme_get", action="store_true")
     sp.add_argument("--policy", nargs="?", choices=["on", "off"], const="on", default=None)
     sp.add_argument("--tint-profiles", dest="tint_profiles", action="store_true")
     sp.set_defaults(fn=lambda a: __import__("config").cmd_config(a))

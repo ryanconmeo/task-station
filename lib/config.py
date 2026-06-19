@@ -51,6 +51,11 @@ def update_check_enabled():
 def tint_mode():
     return get("tint_mode", "auto")
 
+def tint_theme():
+    """Configured palette: "auto" (follow OS appearance), "dark", or "light"."""
+    val = get("tint_theme", "auto")
+    return val if val in ("auto", "dark", "light") else "auto"
+
 def render_board():
     import term
     ws = ":".join(get("workspace_dirs") or []) or "(unset — use --repo)"
@@ -66,6 +71,8 @@ def render_board():
         % ("on" if bare_commands() else "off"),
         "  --update-check     %-33s opt-in /todo footer when a newer version ships  on · off"
         % ("on" if update_check_enabled() else "off"),
+        "  --tint-theme      %-34s tint palette; auto follows OS appearance  auto · dark · light"
+        % tint_theme(),
         "",
         "  read-only",
         "  --data-dir        %-34s (set via $TASK_STATION_HOME)" % paths.data_dir(),
@@ -89,6 +96,11 @@ def cmd_config(a):
         print("update_check = %s" % ("on" if get("update_check") else "off")); return
     if getattr(a, "update_check_get", False):
         print("on" if update_check_enabled() else "off"); return
+    if getattr(a, "tint_theme", None) is not None:
+        set("tint_theme", a.tint_theme)
+        print("tint_theme = %s" % tint_theme()); return
+    if getattr(a, "tint_theme_get", False):
+        print(tint_theme()); return
     if a.categories == "edit":
         print(_path()); return
     import setup
