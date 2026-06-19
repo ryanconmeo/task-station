@@ -5,13 +5,13 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-!`python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" render --session "${CLAUDE_SESSION_ID:-$CLAUDE_CODE_SESSION_ID}" --arg "$ARGUMENTS"`
+!`python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" render --format md --session "${CLAUDE_SESSION_ID:-$CLAUDE_CODE_SESSION_ID}" --arg "$ARGUMENTS"`
 
 The block above is the live output of the task tracker.
 
 Each task is colour-coded by category (an `<emoji> [TAG]` after the title — the emoji dot carries the colour, the tag names it). The categories map to zsh aliases that tint the Terminal.app profile — see `$CLAUDE_PLUGIN_ROOT/CATEGORIES.md` for the full taxonomy; customize colours without touching that file via `task-station-data/categories.json`.
 
-- If it is a **list**, present it to the user as a **clean Markdown table** — never a plain numbered list. Render **two separate tables**, an **Open** one first then a **Closed** one, each preserving the tracker's ordering (open first, then by most recent activity). The `#` column must show each task's **exact number from the tracker output, verbatim** — numbers are stable ids, never renumber or resequence them. Use exactly these columns: `#` (task number, right-aligned), `Task` (title), `Category` (the `<emoji> [TAG]` kept intact), `Effort` (the `▰▱` bar + size), `Activity` (the relative timestamp). If the tracker notes hidden older closed tasks, repeat that note after the Closed table. Then relay the block's `Commands:` footer as a short bullet list — one bullet per command. Do not invent commands or reword them beyond light formatting; list exactly what the footer shows. Do not take any other action.
+- If it is a **list**, the tracker has already rendered it as GitHub-flavored Markdown — two tables (Open then Closed), the `#`/`Task`/`Category`/`Effort`/`Activity` columns, any "… older closed …" note, and a `**Commands:**` bullet list. **Print that block verbatim** to the user — do not re-transcribe it, rebuild the tables, renumber rows, or reword the commands. Do not take any other action.
 - If it is a **task detail**, this session has just been attached to that task (reopened if it was closed). Do all of the following, in order:
   1. The detail prints the task's category and a `zsh -ic '<color>'` line — **run that command** to tint this terminal to the task's colour.
   2. Give the user a **detailed recap** — not a one-liner. Draw on the full summary and the recent-activity log:
@@ -27,3 +27,5 @@ Each task is colour-coded by category (an `<emoji> [TAG]` after the title — th
   - For **each** block that does **not** contain `[JUMP-WINDOW-OPENED]` (auto-open failed, or there's no recorded session yet): surface that task's `cd … && claude --resume …` one-liner **verbatim in a copyable code block** so the user can run it themselves, note in one line what it does, and stop. Do not attempt to open a window yourself. (A `No task matching '…'.` line for a bad ref should be surfaced verbatim too.)
 
   Either way, **skip the recap** — that's the whole point of `-s`. Treat this task as the active context for the rest of the session.
+
+After any mutation (closing, attaching, creating, pinning, updating a task), confirm with the tool's result line(s) **only** — do **not** re-render this full `/todo` list unless the user explicitly asks to see it.

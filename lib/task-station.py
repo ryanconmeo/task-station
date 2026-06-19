@@ -185,6 +185,16 @@ def commands_footer():
             "comma list closes several)  ·  /task-station:config (settings)")
 
 
+def commands_footer_md():
+    """The authoritative command list as a Markdown bullet list, derived from the
+    same single source of truth as the ASCII `commands_footer()` — split its
+    `·`-separated body into one bullet per command so the Markdown `/todo` output
+    can emit it verbatim."""
+    _, _, body = commands_footer().partition(":")
+    items = [c.strip() for c in body.split("·") if c.strip()]
+    return "\n".join(["**Commands:**"] + ["- " + c for c in items])
+
+
 # ---------------------------------------------------------------- storage ----
 
 def _ensure_dirs():
@@ -302,6 +312,18 @@ def clear_link(session):
         os.remove(_link_path(session))
     except OSError:
         pass
+
+
+def live_session_count(task):
+    """How many of this task's recorded sessions are STILL attached to it.
+
+    `task["sessions"]` is append-only — it keeps every session that ever touched
+    the task, even ones that later attached elsewhere, closed, or were skipped —
+    so a raw `len()` over-reports. The live count is the sessions whose link file
+    currently resolves back to this task; that's the real concurrent-session
+    signal /todo surfaces."""
+    tid = task.get("id")
+    return sum(1 for s in task.get("sessions", []) if get_link(s) == tid)
 
 
 def _count_path(session):
@@ -868,6 +890,16 @@ def cmd_stop_gate(a):
     print(json.dumps({"decision": "block", "reason": reason}))
 
 
+def _split_refs(ref):
+    """Split a `--task` value into individual refs: comma-separated, each
+    whitespace-trimmed, empties dropped. A single ref is just a list of one.
+
+    Shared by every batchable mutating subcommand (done / update / pin / unpin /
+    add-project) so they all honor the same contract: one result line per ref, a
+    bad ref reported but never aborting the rest."""
+    return [r.strip() for r in (ref or "").split(",") if r.strip()]
+
+
 def _close_one(ref, session):
     """Close a single task by seq/id ref and return one human result line.
 
@@ -901,7 +933,7 @@ def cmd_done(a):
         # print one result line per task, and tolerate a mix of valid/invalid —
         # a bad ref is reported but doesn't abort the rest. A single number is
         # just a list of one.
-        refs = [r.strip() for r in ref.split(",") if r.strip()]
+        refs = _split_refs(ref)
         if not refs:
             print("No task matching '%s'.\n\n%s" % (ref, _format_list()))
             return
@@ -926,6 +958,14 @@ def cmd_done(a):
     clear_edit_markers(a.session)   # deliberate wrap-up — don't let the Stop gate block
     print("Closed task [%s] %s and detached this session. Reopen later with /todo."
           % (task["id"][:8], task["title"]))
+
+
+def _live_marker(task):
+    """` ⧉N` when more than one session is concurrently attached to this task,
+    else "". Every open task trivially has ≥1 live session, so the marker only
+    appears on the interesting case (N > 1) and never clutters the common row."""
+    n = live_session_count(task)
+    return " ⧉%d" % n if n > 1 else ""
 
 
 def _format_list(closed_limit=MAX_CLOSED_IN_LIST):
@@ -959,12 +999,13 @@ def _format_list(closed_limit=MAX_CLOSED_IN_LIST):
             last_status = t["status"]
         tag = cat_tag(t.get("color"), pad=True)
         eff = effort_cell(t.get("effort"))
+        marker = _live_marker(t)
         if tag:
-            lines.append("%3d  %-40.40s  %s  %s  %s"
-                         % (t["seq"], t["title"], tag, eff, rel_time(t.get("updated_ts"))))
+            lines.append("%3d  %-40.40s  %s  %s  %s%s"
+                         % (t["seq"], t["title"], tag, eff, rel_time(t.get("updated_ts")), marker))
         else:
-            lines.append("%3d  %-40.40s  %s  %s"
-                         % (t["seq"], t["title"], eff, rel_time(t.get("updated_ts"))))
+            lines.append("%3d  %-40.40s  %s  %s%s"
+                         % (t["seq"], t["title"], eff, rel_time(t.get("updated_ts")), marker))
     if capped:
         lines.append("     … %d older closed task(s) hidden  ·  show more with /todo closed N "
                      "or /todo all  ·  reachable by number: /todo <n> or /done <n>"
@@ -978,6 +1019,73 @@ def _format_list(closed_limit=MAX_CLOSED_IN_LIST):
             + "\n".join(lines))
 
 
+def _md_escape(text):
+    """Escape the characters that would break a GitHub table cell."""
+    return (text or "").replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+
+def _md_effort(effort):
+    """`▰▱` gauge + size for a Markdown cell — same content as the ASCII column
+    (reuses effort_cell) but without its fixed-width padding."""
+    return effort_cell(effort).rstrip()
+
+
+def _md_task_row(task):
+    """One GitHub-table row: `| # | Task | Category | Effort | Activity |`.
+    The Task cell carries the ` ⧉N` live-session marker (when >1), mirroring the
+    ASCII list; the Category cell keeps the `<emoji> [TAG]` intact."""
+    return "| %s | %s | %s | %s | %s |" % (
+        task.get("seq", ""),
+        _md_escape(task["title"]) + _live_marker(task),
+        cat_tag(task.get("color")),
+        _md_effort(task.get("effort")),
+        rel_time(task.get("updated_ts")),
+    )
+
+
+_MD_HEADER = ("| # | Task | Category | Effort | Activity |\n"
+              "|--:|------|----------|--------|----------|")
+
+
+def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
+    """Markdown form of the /todo list — what the skill now prints VERBATIM (no
+    hand-transcription). Two GitHub tables, Open first then Closed, preserving the
+    tracker's ordering; columns are # (stable seq, right-aligned) · Task ·
+    Category (`<emoji> [TAG]`) · Effort (`▰▱` bar + size) · Activity (relative
+    time). Honors the same closed-limit logic as the ASCII list (default
+    MAX_CLOSED_IN_LIST, `all`, or N) and repeats the hidden-older note after the
+    Closed table, then the Commands footer as a bullet list."""
+    ensure_seqs()
+    listing = sorted_tasks()
+    if not listing:
+        return ("No tasks yet. One will be tracked automatically once the work "
+                "in a session becomes clear, or say so explicitly.")
+    open_tasks = [t for t in listing if t["status"] == "open"]
+    closed_tasks = [t for t in listing if t["status"] != "open"]
+    closed_total = len(closed_tasks)
+    capped = closed_limit is not None and closed_total > closed_limit
+    shown_closed = closed_tasks[:closed_limit] if capped else closed_tasks
+
+    out = []
+    if open_tasks:
+        out.append("### Open")
+        out.append(_MD_HEADER)
+        out.extend(_md_task_row(t) for t in open_tasks)
+    if shown_closed:
+        if out:
+            out.append("")
+        out.append("### Closed")
+        out.append(_MD_HEADER)
+        out.extend(_md_task_row(t) for t in shown_closed)
+    if capped:
+        out.append("")
+        out.append("… %d older closed task(s) hidden — show more with `/todo closed N` "
+                   "or `/todo all`." % (closed_total - closed_limit))
+    out.append("")
+    out.append(commands_footer_md())
+    return "\n".join(out)
+
+
 def _format_detail(task, session):
     out = []
     out.append("Task [%s]  —  %s" % (task["id"][:8], task["status"].upper()))
@@ -989,7 +1097,10 @@ def _format_detail(task, session):
         out.append("Effort:  %s %s (%s)" % (EFFORT_GAUGE[eff], eff, EFFORT_WORD[eff]))
     out.append("Created: %s (%s)" % (rel_time(task.get("created_ts")), task.get("created_at", "")))
     out.append("Updated: %s" % rel_time(task.get("updated_ts")))
-    out.append("Sessions attached: %d" % len(task.get("sessions", [])))
+    # Live = sessions still attached right now (link resolves back to this task);
+    # total = every session that ever touched it (append-only, never pruned).
+    out.append("Live sessions: %d  (of %d ever attached)"
+               % (live_session_count(task), len(task.get("sessions", []))))
     out.append("")
     out.append("Summary:")
     out.append(task.get("summary") or "  (no summary recorded)")
@@ -1148,14 +1259,19 @@ def _print_list_footer():
 
 
 def cmd_render(a):
+    # --format md makes the LIST branches emit GitHub-flavored Markdown tables the
+    # skill prints verbatim (no hand-transcription). Detail and session-jump
+    # branches are unaffected — they stay ASCII for this PR.
+    md = getattr(a, "format", None) == "md"
+    _fmt_list = _format_list_md if md else _format_list
     arg, jump = _parse_session_flag((a.arg or "").strip())
     if not arg:
-        print(_format_list())
+        print(_fmt_list())
         _print_list_footer()
         return
     closed_limit = _parse_list_arg(arg)
     if closed_limit is not False:
-        print(_format_list(closed_limit=closed_limit))
+        print(_fmt_list(closed_limit=closed_limit))
         _print_list_footer()
         return
     if jump:
@@ -1167,13 +1283,13 @@ def cmd_render(a):
         # falls back to printing its one-liner if its window can't open.
         refs = [r.strip() for r in arg.split(",") if r.strip()]
         if not refs:
-            print("No task matching '%s'.\n\n%s" % (arg, _format_list()))
+            print("No task matching '%s'.\n\n%s" % (arg, _fmt_list()))
             return
         print("\n\n".join(_jump_one(r, a.session) for r in refs))
         return
     task = resolve_ref(arg)
     if not task:
-        print("No task matching '%s'.\n\n%s" % (arg, _format_list()))
+        print("No task matching '%s'.\n\n%s" % (arg, _fmt_list()))
         return
     touch(task, session=a.session, note="resumed", reopen=True)
     save_task(task)
@@ -1182,21 +1298,37 @@ def cmd_render(a):
     print(_format_detail(task, a.session))
 
 
+def _add_project_one(ref, project):
+    """Record `project` on the task named by `ref` (idempotent). Returns an error
+    line for a bad ref, or None on success (success stays silent — this is
+    machine-called by delegate)."""
+    task = resolve_ref(ref) or load_task(ref)
+    if not task:
+        return "add-project: no task matching %r" % ref
+    projs = task.setdefault("projects", [])
+    if project not in projs:
+        projs.append(project)
+        task["updated_ts"] = _now()
+        save_task(task)
+    return None
+
+
 def cmd_add_project(a):
     """Record that a task has delegated work into a repo (project). Idempotent.
 
     Called by delegate.py when a worker is spawned with --seq, so /todo can
     list the task's in-project workers in its detail view. No session attach, no
-    activity-log entry — keeps the link bookkeeping quiet."""
-    task = resolve_ref(a.task) or load_task(a.task)
-    if not task:
-        sys.stderr.write("add-project: no task matching %r\n" % a.task)
+    activity-log entry — keeps the link bookkeeping quiet. `--task` accepts a
+    comma-separated list (record the project on several tasks at once); a bad ref
+    is reported on stderr without aborting the rest."""
+    refs = _split_refs(a.task)
+    if not refs:
+        sys.stderr.write("add-project: no task given\n")
         return
-    projs = task.setdefault("projects", [])
-    if a.project not in projs:
-        projs.append(a.project)
-        task["updated_ts"] = _now()
-        save_task(task)
+    for r in refs:
+        err = _add_project_one(r, a.project)
+        if err:
+            sys.stderr.write(err + "\n")
 
 
 def cmd_session_title(a):
@@ -1246,15 +1378,15 @@ def cmd_whoami(a):
           % (a.session[:8], task.get("seq", "?"), task["title"], task["status"]))
 
 
-def cmd_update(a):
-    """Amend a task's title / summary / scope / colour after creation.
-
-    Fills the gap that `summary` was otherwise frozen at create — keeps the task
-    description current as scope drifts."""
-    task = resolve_ref(a.task) or load_task(a.task)
+def _update_one(ref, a):
+    """Apply the update flags to the single task named by `ref` and return its
+    result line(s). Never raises — a bad ref returns a no-match line — so a caller
+    updating a comma list keeps going past it. The SAME flags are applied to every
+    task in a batch (e.g. set several tasks' colour at once)."""
+    task = resolve_ref(ref) or load_task(ref)
     if not task:
-        sys.stderr.write("update: no task matching %r\n" % a.task)
-        return
+        return "update: no task matching %r" % ref
+    msgs = []
     changed = []
     if a.title is not None:
         task["title"] = a.title.strip(); changed.append("title")
@@ -1270,37 +1402,50 @@ def cmd_update(a):
     if a.effort is not None:
         e = normalize_effort(a.effort)
         if e is None:
-            print("update: ignoring --effort %r — use xs/s/m/l/xl (or 1–5)." % a.effort)
+            msgs.append("update: ignoring --effort %r — use xs/s/m/l/xl (or 1–5)." % a.effort)
         else:
             task["effort"] = e; changed.append("effort")
+    label = task.get("seq", task["id"][:8])
     if not changed:
-        print("update: nothing to change (pass --title/--summary/--append-summary/--color/--effort)")
-        return
+        msgs.append("update %s: nothing to change (pass --title/--summary/--append-summary/--color/--effort)" % label)
+        return "\n".join(msgs)
     touch(task, note="scope updated: " + ", ".join(changed))
     save_task(task)
-    print("updated task %s: %s" % (task.get("seq", task["id"][:8]), ", ".join(changed)))
+    msgs.append("updated task %s: %s" % (label, ", ".join(changed)))
     # A scope change is the moment effort might have grown or shrunk — prompt a
     # re-rate so the column tracks reality, but only when this update touched
     # scope WITHOUT already re-rating (so re-setting effort itself stays quiet).
     if {"title", "summary", "summary+"} & set(changed) and "effort" not in changed:
         cur = task.get("effort")
         shown = ("currently %s %s" % (EFFORT_GAUGE[cur], cur)) if cur in EFFORT_GAUGE else "currently unset"
-        print("  ↳ scope changed (%s). If the work now looks bigger or smaller, re-rate:\n"
-              "      python3 %s/task-station.py update --task %s --effort <xs|s|m|l|xl>"
-              % (shown, BASE, task.get("seq", task["id"][:8])))
+        msgs.append("  ↳ scope changed (%s). If the work now looks bigger or smaller, re-rate:\n"
+                    "      python3 %s/task-station.py update --task %s --effort <xs|s|m|l|xl>"
+                    % (shown, BASE, label))
+    return "\n".join(msgs)
 
 
-def cmd_pin(a):
-    """Pin a specific session as the task's canonical resume target (PK-style).
+def cmd_update(a):
+    """Amend a task's title / summary / scope / colour after creation.
 
-    `/todo` then always resumes THIS session, overriding the most-recent-substantive
-    heuristic — the cwd is still read live from the transcript, so the pin survives
-    directory changes. A pin with no findable live transcript is ignored (falls back
-    to the heuristic) so it can't strand you."""
-    task = resolve_ref(a.task) or load_task(a.task)
-    if not task:
-        sys.stderr.write("pin: no task matching %r\n" % a.task)
+    Fills the gap that `summary` was otherwise frozen at create — keeps the task
+    description current as scope drifts. `--task` accepts a comma-separated list:
+    the same flags are applied to each task, one result line per ref, a bad ref
+    reported but not aborting the rest."""
+    refs = _split_refs(a.task)
+    if not refs:
+        sys.stderr.write("update: no task given\n")
         return
+    for r in refs:
+        print(_update_one(r, a))
+
+
+def _pin_one(ref, a):
+    """Pin session `a.session` as the resume target for the task named by `ref`
+    and return its result line. A bad ref returns a no-match line (never raises)
+    so a comma list keeps going past it."""
+    task = resolve_ref(ref) or load_task(ref)
+    if not task:
+        return "pin: no task matching %r" % ref
     task["pinned_session"] = a.session
     meta = task.setdefault("session_meta", {})
     if a.session not in meta:
@@ -1311,26 +1456,53 @@ def cmd_pin(a):
     save_task(task)
     label = task.get("seq", task["id"][:8])
     if _find_session_path(a.session):
-        print("Pinned task %s → session %s\n  resume: %s"
-              % (label, a.session[:8], resume_command(task)))
-    else:
-        print("Pinned task %s → session %s — note: no transcript found for that id yet; "
-              "/todo falls back to the heuristic until it appears." % (label, a.session[:8]))
+        return ("Pinned task %s → session %s\n  resume: %s"
+                % (label, a.session[:8], resume_command(task)))
+    return ("Pinned task %s → session %s — note: no transcript found for that id yet; "
+            "/todo falls back to the heuristic until it appears." % (label, a.session[:8]))
 
 
-def cmd_unpin(a):
-    """Drop a task's pinned resume session — revert to most-recent-substantive."""
-    task = resolve_ref(a.task) or load_task(a.task)
-    if not task:
-        sys.stderr.write("unpin: no task matching %r\n" % a.task)
+def cmd_pin(a):
+    """Pin a specific session as the task's canonical resume target (PK-style).
+
+    `/todo` then always resumes THIS session, overriding the most-recent-substantive
+    heuristic — the cwd is still read live from the transcript, so the pin survives
+    directory changes. A pin with no findable live transcript is ignored (falls back
+    to the heuristic) so it can't strand you. `--task` accepts a comma-separated
+    list (pin the session across several tasks), one result line per ref."""
+    refs = _split_refs(a.task)
+    if not refs:
+        sys.stderr.write("pin: no task given\n")
         return
+    for r in refs:
+        print(_pin_one(r, a))
+
+
+def _unpin_one(ref):
+    """Drop the pinned resume session on the task named by `ref` and return its
+    result line. A bad ref returns a no-match line (never raises)."""
+    task = resolve_ref(ref) or load_task(ref)
+    if not task:
+        return "unpin: no task matching %r" % ref
     if task.pop("pinned_session", None):
         touch(task, note="unpinned resume session")
         save_task(task)
-        print("Unpinned task %s — resume reverts to most-recent-substantive."
-              % task.get("seq", task["id"][:8]))
-    else:
-        print("Task %s was not pinned." % task.get("seq", task["id"][:8]))
+        return ("Unpinned task %s — resume reverts to most-recent-substantive."
+                % task.get("seq", task["id"][:8]))
+    return "Task %s was not pinned." % task.get("seq", task["id"][:8])
+
+
+def cmd_unpin(a):
+    """Drop a task's pinned resume session — revert to most-recent-substantive.
+
+    `--task` accepts a comma-separated list (unpin several at once), one result
+    line per ref, a bad ref reported but not aborting the rest."""
+    refs = _split_refs(a.task)
+    if not refs:
+        sys.stderr.write("unpin: no task given\n")
+        return
+    for r in refs:
+        print(_unpin_one(r))
 
 
 def cmd_prompt_color(a):
@@ -1423,6 +1595,27 @@ def cmd_prompt_context(a):
 
     # Not attached: count the miss, surface open tasks, and nudge Claude.
     n = bump_count(a.session)
+
+    # Intermediate misses (1 < n < NUDGE_ESCALATE_AFTER): a SINGLE compact line.
+    # The full block — open-task list, attach/create syntax, colour legend, tint,
+    # guidance pointer — was already shown at n == 1, so reprinting it every
+    # message just burns tokens. The first miss and the escalation still get the
+    # full block (below).
+    if 1 < n < NUDGE_ESCALATE_AFTER:
+        line = ("[task-station] Still untracked (msg %d). Attach/create when it's "
+                "real work, or skip." % n)
+        # Category auto-detection is a compiled-regex + dict lookup — effectively
+        # free — so it keeps running on EVERY prompt, even the collapsed nudge. If
+        # this prompt maps to a category, carry just that one hint (no legend) so a
+        # later attach can still auto-categorize.
+        if cats and hasattr(cats, "color_for_prompt"):
+            skill_color = cats.color_for_prompt(os.environ.get("TASK_STATION_PROMPT", ""))
+            if skill_color:
+                line += (" This prompt maps to category '%s' (%s) — use --color %s on attach."
+                         % (skill_color, cats.label(skill_color), skill_color))
+        print(line)
+        return
+
     opens = [t for t in sorted_tasks() if t["status"] == "open"]
     lines = ["[task-station] This session is not attached to a tracked task yet."]
     if opens:
@@ -1554,7 +1747,10 @@ def main():
     sp.set_defaults(fn=cmd_stop_gate)     # Stop hook: block ending an untracked edit session
 
     sp = sub.add_parser("render"); sp.add_argument("--session", required=True)
-    sp.add_argument("--arg", default=""); sp.set_defaults(fn=cmd_render)
+    sp.add_argument("--arg", default="")
+    sp.add_argument("--format", choices=["ascii", "md"], default="ascii",
+                    help="list output format: ascii (default) or md (GitHub tables, printed verbatim)")
+    sp.set_defaults(fn=cmd_render)
 
     sp = sub.add_parser("add-project"); sp.add_argument("--task", required=True)
     sp.add_argument("--project", required=True); sp.set_defaults(fn=cmd_add_project)
