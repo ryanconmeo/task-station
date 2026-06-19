@@ -242,6 +242,14 @@ class StackFromContent(unittest.TestCase):
         self._files(["App.swift", "View.swift", "Model.swift"])
         self.assertIn("swift", repo_index._detect_stack(self.repo))
 
+    def test_readme_md_does_not_pollute_stack(self):
+        # A plain Python repo with a README.md must yield [python], NOT the
+        # bogus `gcc-machine-description` that `.md` used to map to.
+        self._files(["README.md", "app.py", "util.py", "test_app.py"])
+        st = repo_index._detect_stack(self.repo)
+        self.assertEqual(st, ["python"])
+        self.assertNotIn("gcc-machine-description", st)
+
 
 class Fingerprint(unittest.TestCase):
     def setUp(self):
