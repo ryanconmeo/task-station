@@ -3,6 +3,29 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import repo_index
 
 
+def _load_ts():
+    """Load the (hyphenated) task-station.py CLI module for end-to-end CLI tests."""
+    import importlib.util
+    lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
+    spec = importlib.util.spec_from_file_location("task_station_cli", os.path.join(lib, "task-station.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _repos_args(**kw):
+    """A stand-in for the parsed `repos` argparse namespace."""
+    class _A:
+        pass
+    a = _A()
+    d = dict(terms=[], refresh=False, force=False, json=False, quiet=False,
+             no_llm=False, dry_run=False, re_summarize=False,
+             detect_roots=False, set_roots=None)
+    d.update(kw)
+    a.__dict__.update(d)
+    return a
+
+
 def _mkrepo(root, name, manifests=(), git=True):
     """Create a fake repo dir under root with an optional .git marker and
     manifest files. Returns the repo path."""
@@ -307,6 +330,9 @@ class Enrichment(unittest.TestCase):
         os.mkdir(os.path.join(self.repo, ".git"))
         with open(os.path.join(self.repo, "README.md"), "w") as f:
             f.write("# Acme\n\nAcme processes billing events for the platform.\n\n## Setup\nrun it\n")
+        # Enrichment is opt-in: these tests exercise the model path, so acme is
+        # explicitly flagged enrich:true in the manifest (the default is false).
+        repo_index.save_manifest(self.data, {"acme": {"index": True, "enrich": True}})
         self._orig = repo_index._call_model
         self.calls = []
     def tearDown(self):
@@ -440,7 +466,9 @@ class CommandDegradable(unittest.TestCase):
 
     class _Args:
         def __init__(self, **kw):
-            d = dict(terms=[], refresh=False, force=False, json=False, quiet=False, no_llm=False)
+            d = dict(terms=[], refresh=False, force=False, json=False, quiet=False,
+                     no_llm=False, dry_run=False, re_summarize=False,
+                     detect_roots=False, set_roots=None)
             d.update(kw); self.__dict__.update(d)
 
     def test_refresh_exits_clean_when_model_fails(self):
@@ -456,6 +484,261 @@ class CommandDegradable(unittest.TestCase):
             data = json.load(f)
         acme = {r["name"]: r for r in data}["acme"]
         self.assertIn("Acme does things", acme["summary"])      # deterministic fallback
+
+
+class OptInEnrichment(unittest.TestCase):
+    """The core privacy guarantee: enrichment (model egress) is OFF by default and
+    only fires for a repo explicitly flagged `enrich:true`. `_call_model` is
+    monkeypatched in EVERY test — a real model is never contacted."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = os.path.join(self.tmp, "ws"); os.makedirs(self.root)
+        self.data = os.path.join(self.tmp, "data"); os.makedirs(self.data)
+        for n in ("alpha", "beta"):
+            r = _mkrepo(self.root, n)
+            with open(os.path.join(r, "README.md"), "w") as f:
+                f.write("# %s\n\n%s does things.\n" % (n, n))
+        self._orig = repo_index._call_model
+        self.calls = []
+        def fake(prompt, **kw):
+            self.calls.append(prompt)
+            return json.dumps({"result": json.dumps({"summary": "m", "keywords": ["k"]})})
+        repo_index._call_model = fake
+    def tearDown(self):
+        repo_index._call_model = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _set(self, name, **flags):
+        m = repo_index.load_manifest(self.data)
+        m.setdefault(name, {"index": True, "enrich": False}).update(flags)
+        repo_index.save_manifest(self.data, m)
+
+    def test_default_refresh_zero_model_calls(self):
+        # Even with use_llm=True, all repos default enrich:false → NOTHING is sent.
+        repo_index.build_index([self.root], data_dir=self.data, use_llm=True)
+        self.assertEqual(len(self.calls), 0)
+
+    def test_enrich_flag_triggers_exactly_one_call(self):
+        repo_index.build_index([self.root], data_dir=self.data, use_llm=True)
+        self.assertEqual(len(self.calls), 0)
+        self._set("alpha", enrich=True)
+        egress = []
+        repo_index.build_index([self.root], data_dir=self.data, use_llm=True, egress=egress)
+        self.assertEqual(len(self.calls), 1)        # exactly one repo enriched
+        self.assertEqual(egress, ["alpha"])         # and we recorded WHICH
+
+    def test_manifest_auto_adds_and_prunes(self):
+        repo_index.build_index([self.root], data_dir=self.data)
+        m = repo_index.load_manifest(self.data)
+        self.assertEqual(set(m), {"alpha", "beta"})
+        self.assertTrue(m["alpha"]["index"])
+        self.assertFalse(m["alpha"]["enrich"])      # safe default
+        _mkrepo(self.root, "gamma")
+        shutil.rmtree(os.path.join(self.root, "alpha"))
+        repo_index.build_index([self.root], data_dir=self.data)
+        m2 = repo_index.load_manifest(self.data)
+        self.assertEqual(set(m2), {"beta", "gamma"})  # alpha pruned, gamma added
+
+    def test_manifest_preserves_existing_flags(self):
+        repo_index.build_index([self.root], data_dir=self.data)
+        self._set("beta", enrich=True)
+        self._set("alpha", index=False)
+        repo_index.build_index([self.root], data_dir=self.data)
+        m = repo_index.load_manifest(self.data)
+        self.assertTrue(m["beta"]["enrich"])
+        self.assertFalse(m["alpha"]["index"])
+
+    def test_index_false_absent_from_outputs(self):
+        repo_index.build_index([self.root], data_dir=self.data)
+        self._set("beta", index=False)
+        repos = repo_index.build_index([self.root], data_dir=self.data)
+        self.assertEqual([r["name"] for r in repos], ["alpha"])
+        with open(os.path.join(self.data, "repos.json")) as f:
+            self.assertNotIn("beta", [r["name"] for r in json.load(f)])
+        with open(os.path.join(self.data, "repos.md")) as f:
+            self.assertNotIn("## beta", f.read())
+
+    def test_deterministic_refresh_preserves_summary(self):
+        repo_index.build_index([self.root], data_dir=self.data)
+        self._set("alpha", enrich=True)
+        repos = repo_index.build_index([self.root], data_dir=self.data, use_llm=True)
+        self.assertEqual({r["name"]: r for r in repos}["alpha"]["summary"], "m")
+        # Turn enrich off → a deterministic refresh must NOT clobber the model summary.
+        self._set("alpha", enrich=False)
+        repos = repo_index.build_index([self.root], data_dir=self.data, use_llm=False)
+        self.assertEqual({r["name"]: r for r in repos}["alpha"]["summary"], "m")
+
+    def test_re_summarize_overrides_preservation(self):
+        repo_index.build_index([self.root], data_dir=self.data)
+        self._set("alpha", enrich=True)
+        repo_index.build_index([self.root], data_dir=self.data, use_llm=True)  # "m"
+        self._set("alpha", enrich=False)
+        repos = repo_index.build_index([self.root], data_dir=self.data,
+                                       use_llm=False, re_summarize=True)
+        self.assertIn("does things", {r["name"]: r for r in repos}["alpha"]["summary"])
+
+    def test_dry_run_sends_nothing(self):
+        repo_index.build_index([self.root], data_dir=self.data)
+        self._set("alpha", enrich=True)
+        egress = []
+        repo_index.build_index([self.root], data_dir=self.data, use_llm=True,
+                               dry_run=True, egress=egress)
+        self.assertEqual(len(self.calls), 0)        # dry run: NOTHING sent
+        self.assertEqual(egress, ["alpha"])         # but reports what WOULD be sent
+
+
+class MarkerExclusion(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = os.path.join(self.tmp, "ws"); os.makedirs(self.root)
+        self.data = os.path.join(self.tmp, "data"); os.makedirs(self.data)
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_marker_excludes_from_discovery_and_index(self):
+        _mkrepo(self.root, "alpha")
+        beta = _mkrepo(self.root, "beta")
+        open(os.path.join(beta, ".task-station-ignore"), "w").close()
+        names = sorted(r["name"] for r in repo_index.discover([self.root]))
+        self.assertEqual(names, ["alpha"])          # beta excluded from discovery
+        repos = repo_index.build_index([self.root], data_dir=self.data)
+        self.assertEqual([r["name"] for r in repos], ["alpha"])
+        # …and never even appears in the manifest, regardless of any prior entry.
+        self.assertNotIn("beta", repo_index.load_manifest(self.data))
+
+
+class DetectRoots(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+    def tearDown(self):
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def test_detects_workspace_and_dense_dirs(self):
+        os.makedirs(os.path.join(self.home, "Workspace"))
+        dense = os.path.join(self.home, "projects"); os.makedirs(dense)
+        _mkrepo(dense, "r1"); _mkrepo(dense, "r2")        # >=2 git repos → candidate
+        sparse = os.path.join(self.home, "misc"); os.makedirs(sparse)
+        _mkrepo(sparse, "only")                           # 1 git repo → NOT a candidate
+        roots = repo_index.detect_roots(home=self.home)
+        self.assertIn(os.path.join(self.home, "Workspace"), roots)
+        self.assertIn(dense, roots)
+        self.assertNotIn(sparse, roots)
+
+
+class EgressGuard(unittest.TestCase):
+    """The enrichment prompt must never carry secret-bearing file CONTENTS — and
+    the denylist additionally keeps their NAMES out of the tree sketch."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = os.path.join(self.tmp, "r"); os.makedirs(self.repo)
+        with open(os.path.join(self.repo, "README.md"), "w") as f:
+            f.write("# R\n\nA service.\n")
+        with open(os.path.join(self.repo, ".env"), "w") as f:
+            f.write("API_TOKEN=supersecretvalue123\n")
+        with open(os.path.join(self.repo, "secrets.yaml"), "w") as f:
+            f.write("password: hunter2\n")
+        self._orig = repo_index._git_ls_files
+        repo_index._git_ls_files = lambda repo: [
+            "README.md", "app.py", ".env", "secrets.yaml", "deploy/tls.pem", ".npmrc"]
+    def tearDown(self):
+        repo_index._git_ls_files = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_secret_contents_and_names_never_in_prompt(self):
+        prompt = repo_index._build_prompt(
+            {"name": "r", "path": self.repo, "ado_project": None, "stack": ["python"]})
+        for leaked in ("supersecretvalue123", "hunter2"):
+            self.assertNotIn(leaked, prompt)          # contents never read
+        for name in (".env", "secrets.yaml", "tls.pem", ".npmrc"):
+            self.assertNotIn(name, prompt)            # names filtered from the sketch
+        self.assertIn("app.py", prompt)               # benign names survive
+
+    def test_is_sensitive_name(self):
+        for s in (".env", ".env.local", "secrets.json", "credentials.yml",
+                  "server.key", "cert.pem", "id_rsa", ".npmrc", "db-password.txt"):
+            self.assertTrue(repo_index._is_sensitive_name(s), s)
+        for ok in ("app.py", "README.md", "main.go", "Dockerfile"):
+            self.assertFalse(repo_index._is_sensitive_name(ok), ok)
+
+
+class ReposCLIToggles(unittest.TestCase):
+    """End-to-end CLI: the no-JSON-editing toggle/onboarding surface."""
+    def setUp(self):
+        self.ts = _load_ts()
+        self.tmp = tempfile.mkdtemp()
+        self.root = os.path.join(self.tmp, "ws"); os.makedirs(self.root)
+        self.data = os.path.join(self.tmp, "data"); os.makedirs(self.data)
+        for n in ("alpha", "beta"):
+            r = _mkrepo(self.root, n)
+            open(os.path.join(r, "README.md"), "w").close()
+        self._home = os.environ.get("TASK_STATION_HOME")
+        os.environ["TASK_STATION_HOME"] = self.data
+        import config
+        self.config = config
+        self._orig_roots = config.repo_roots
+        config.repo_roots = lambda: [self.root]
+    def tearDown(self):
+        self.config.repo_roots = self._orig_roots
+        if self._home is not None:
+            os.environ["TASK_STATION_HOME"] = self._home
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self, **kw):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.ts.cmd_repos(_repos_args(**kw))
+        return buf.getvalue()
+
+    def test_refresh_reports_nothing_sent(self):
+        out = self._run(refresh=True, quiet=True)
+        self.assertIn("sent: nothing", out)
+        self.assertEqual(set(repo_index.load_manifest(self.data)), {"alpha", "beta"})
+
+    def test_exclude_then_absent(self):
+        self._run(refresh=True, quiet=True)
+        out = self._run(terms=["exclude", "beta"])
+        self.assertIn("excluded", out)
+        self.assertFalse(repo_index.load_manifest(self.data)["beta"]["index"])
+        self._run(refresh=True, quiet=True)
+        with open(os.path.join(self.data, "repos.json")) as f:
+            self.assertNotIn("beta", [r["name"] for r in json.load(f)])
+
+    def test_include_path_accepted(self):
+        self._run(refresh=True, quiet=True)
+        self._run(terms=["exclude", "beta"])
+        self._run(terms=["include", os.path.join(self.root, "beta")])  # path, not name
+        self.assertTrue(repo_index.load_manifest(self.data)["beta"]["index"])
+
+    def test_enrich_toggle(self):
+        self._run(refresh=True, quiet=True)
+        self._run(terms=["enrich", "alpha"])
+        self.assertTrue(repo_index.load_manifest(self.data)["alpha"]["enrich"])
+        self._run(terms=["enrich", "alpha", "off"])
+        self.assertFalse(repo_index.load_manifest(self.data)["alpha"]["enrich"])
+
+    def test_config_lists_all(self):
+        self._run(refresh=True, quiet=True)
+        out = self._run(terms=["config"])
+        self.assertIn("alpha", out)
+        self.assertIn("beta", out)
+
+    def test_unknown_name_message(self):
+        self._run(refresh=True, quiet=True)
+        out = self._run(terms=["include", "does-not-exist"])
+        self.assertIn("no repo named", out)
+
+    def test_set_roots_persists(self):
+        self._run(set_roots="/a/x,/b/y")
+        self.assertEqual(self.config.get("repo_roots"), ["/a/x", "/b/y"])
+
+    def test_first_run_onboarding(self):
+        # No roots configured AND no manifest yet → onboarding, no scan.
+        out = self._run()
+        self.assertIn("first-run setup", out)
+        self.assertIn("OFF by default", out)
+        self.assertFalse(os.path.exists(os.path.join(self.data, "repos.json")))
 
 
 if __name__ == "__main__":
