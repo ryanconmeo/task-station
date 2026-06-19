@@ -1638,7 +1638,9 @@ def _repos_load(repo_index, roots, data_dir):
         with open(p) as f:
             return json.load(f)
     except Exception:
-        return repo_index.build_index(roots, data_dir=data_dir)
+        # Auto-build on a read path: stay deterministic (no model calls); explicit
+        # `repos --refresh` is the only place enrichment runs.
+        return repo_index.build_index(roots, data_dir=data_dir, use_llm=False)
 
 
 def cmd_repos(a):
@@ -1655,10 +1657,12 @@ def cmd_repos(a):
 
     repos = None
     if a.refresh or a.force:
-        # Plain rescan each call for now; the debounce/cache seam lives in
-        # repo_index._fingerprint (see its TODO). --force is reserved for
-        # bypassing that future debounce and today behaves like --refresh.
-        repos = repo_index.build_index(roots, data_dir=data_dir)
+        # Rescan + rewrite. Summary/keywords enrichment is fingerprint-gated (only
+        # new/changed repos make a model call) and always degrades deterministically.
+        # --no-llm (or the repo_enrich config toggle) forces the deterministic path.
+        # --force is reserved for bypassing the future refresh debounce.
+        use_llm = config.repo_enrich_enabled() and not getattr(a, "no_llm", False)
+        repos = repo_index.build_index(roots, data_dir=data_dir, use_llm=use_llm)
         if a.quiet and not terms and not a.json:
             print("repos: indexed %d repo(s) → %s" % (len(repos), md_path))
             return
@@ -1687,7 +1691,7 @@ def cmd_repos(a):
         print(repo_index.render_md(repos))
         return
     if not os.path.exists(md_path):
-        repo_index.build_index(roots, data_dir=data_dir)
+        repo_index.build_index(roots, data_dir=data_dir, use_llm=False)
     with open(md_path) as f:
         print(f.read())
 
@@ -1801,6 +1805,8 @@ def main():
                     help="reserved: bypass the future refresh debounce (today == --refresh)")
     sp.add_argument("--json", action="store_true", help="emit the structured list for the skill")
     sp.add_argument("--quiet", action="store_true", help="with --refresh, print only a one-line summary")
+    sp.add_argument("--no-llm", dest="no_llm", action="store_true",
+                    help="with --refresh, skip model enrichment — deterministic summary/keywords only")
     sp.set_defaults(fn=cmd_repos)
 
     sp = sub.add_parser("config")

@@ -1,6 +1,6 @@
 ---
 description: Hub repo index — list discovered repos, /repos <term> ranks them for routing a fuzzy task, /repos --refresh rescans.
-argument-hint: "[term(s) to match · 'show' to print the index · --refresh [--force] to rescan · --json]"
+argument-hint: "[term(s) to match · 'show' to print the index · --refresh [--force] [--no-llm] to rescan · --json]"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -13,7 +13,7 @@ Use it to route a fuzzy task to the right repo(s) **before** delegating in-proje
 
 - **No argument** (or `show`) → prints `repos.md`: one short block per repo (name, path, ado_project, stack, status, plus any hand-authored summary/keywords/domain). Rebuilt automatically if the index doesn't exist yet. **Print it verbatim.**
 - **`<term...>`** → ranks repos by token overlap of the term against name/keywords/domain/stack/ado_project/path and prints only the matches, best first. Use the task's own words (e.g. `/repos billing invoices`) to find the target repo.
-- **`--refresh [--force]`** → rescans the roots and rewrites the index. Run this when repos have been added/removed/moved. Add **`--quiet`** for a one-line summary instead of the full board (used by the delegation routing step).
+- **`--refresh [--force]`** → rescans the roots and rewrites the index, auto-filling each card. Run this when repos have been added/removed/moved. Add **`--quiet`** for a one-line summary instead of the full board (used by the delegation routing step), or **`--no-llm`** to skip model enrichment and use deterministic summaries only.
 - **`--json`** → emits the structured list (for tooling / the routing step to consume).
 
-Each repo's deterministic fields (name, path, remote, ado_project, stack, status) come from the filesystem + a couple of cheap `git` calls. The prose fields (`summary`, `keywords`, `domain`) are hand-authored in `<data_dir>/repos.overrides.json`, keyed by repo name — those **win** and **survive** every regeneration; discovery never overwrites them. Edit that file to make fuzzy matching smarter for repos whose purpose isn't obvious from the name.
+Cards are **fully auto-filled**. The deterministic fields (name, path, remote, ado_project, status) come from the filesystem + a couple of cheap `git` calls; **`stack` is detected by content** — a `git ls-files` extension histogram plus config/tooling signals (Dockerfile, `.github/workflows/`, Flyway/`*.sql` migrations, `*.tf`) unioned with root manifests, so SQL/Flyway and manifest-less repos still get a stack. **`summary` + `keywords`** are auto-filled on `--refresh` by a **fingerprint-gated, best-effort** model call (a cheap headless `claude -p` run) that fires **only** for new or structurally-changed repos and **degrades** to a deterministic README-derived summary if the model is unavailable — the index always builds. Precedence is **override > model > deterministic-fallback**: hand-authored prose in `<data_dir>/repos.overrides.json` (keyed by repo name) **wins** and **survives** every regeneration. You rarely need overrides; they're an escape hatch for repos whose purpose still isn't obvious.
