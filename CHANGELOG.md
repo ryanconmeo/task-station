@@ -3,6 +3,33 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.0.9] — 2026-06-19
+
+### Added
+- **Repo index for hub task routing** — a hub `claude` session launched from `~`
+  can't auto-load anything inside a repo, so `/repos` gives it an on-demand, hub-side
+  map of the repos under your workspace roots to route a fuzzy task to the right
+  repo(s) at delegation time. `/repos` / `/repos show` print the index, `/repos
+  <term>` ranks repos by token overlap (name/keywords/domain/stack/ado_project/path),
+  `/repos --refresh [--force] [--quiet]` rescans, and `/repos --json` emits the
+  structured list. Backed by new `lib/repo_index.py`.
+  - Deterministic discovery (no LLM): per repo it derives name, abs path, `origin`
+    remote, `ado_project` (Azure DevOps `…/_git/` project or GitHub `owner/repo`),
+    `stack` (by manifest — dotnet/node/python/go/rust/jvm), and `status`
+    (`active`/`stale`/`unknown` from the last commit vs `REPO_STALE_MONTHS`, default 6).
+  - Hand-authored prose (`summary`/`keywords`/`domain`, plus a `status` override) lives
+    in `<data_dir>/repos.overrides.json` keyed by repo name — overrides **win** and
+    **survive** every regeneration; discovery never writes them.
+  - The index lives next to the task store at `<data_dir>/repos.{md,json}` — **not** in
+    `tasks.db` (repos aren't tasks) and **not** as per-repo committed files. Discovery
+    roots come from `--workspace-dirs` / `TASK_STATION_WORKSPACE_DIRS`, defaulting to
+    `~/Workspace` + `~/Workspace-Other`.
+  - The `delegating-work` skill gains a "resolve the target repo" step that uses the
+    index when the target repo is ambiguous — on-demand only, no SessionStart injection.
+  - Schema is forward-compatible for scale: `match()` already doubles as a stage-1
+    top-K pre-filter, and a `_fingerprint()` seam is in place for a future
+    incremental-refresh cache + debounce (not built yet; a full rescan is fine now).
+
 ## [1.0.8] — 2026-06-19
 
 ### Changed
