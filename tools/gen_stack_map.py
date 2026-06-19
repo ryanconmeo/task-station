@@ -17,6 +17,13 @@ DESIGN
   * Keep only `type: programming` plus a small allowlist of useful non-programming
     routing signals (SQL and its dialects). Prose/data/markup noise (json,
     markdown, csv, …) is dropped.
+  * Ambiguous-extension disambiguation: an extension claimed by a prose/markup/
+    data language is dropped from the programming map UNLESS a curated
+    programming language also claims it. This kills false positives like
+    `.md` -> GCC Machine Description (Markdown=prose owns `.md`) while keeping
+    `.ts`/`.tsx`/`.rs` (XML lists them incidentally, but TypeScript/TSX/Rust are
+    curated). A small EXT_TIEBREAK dict resolves the remaining programming-only
+    collisions (`.h` -> C, `.m` -> Objective-C).
   * Ergonomic-label overlay: an explicit alias dict maps Linguist language NAMES
     to the stack labels the tool already uses, so existing behaviour doesn't
     regress (Python->python, JavaScript->node, C#/F#/VB.NET->dotnet, HCL->
@@ -48,7 +55,9 @@ ALIASES = {
     "SQLPL": "sql",
     "TSQL": "sql",
     "TypeScript": "typescript",
+    "TSX": "typescript",         # collapse the TSX variant onto the typescript label
     "JavaScript": "node",
+    "JSX": "node",               # collapse the JSX variant onto the node label
     "C#": "dotnet",
     "F#": "dotnet",
     "Visual Basic .NET": "dotnet",
@@ -75,6 +84,17 @@ CURATED_PRIORITY = [
     "PHP", "Ruby",               # claimed by Hack/Faust etc.; keep ergonomic labels
     "HCL", "Dockerfile",
 ]
+
+# Tie-break for the handful of well-known extensions claimed by SEVERAL
+# programming languages (no prose/markup/data claimant to defer to). Maps the
+# extension to the single Linguist NAME that should own it — the popular
+# mainstream language. Only that name may write the extension; the obscure
+# co-claimants (Limbo/MUF/Mercury for `.m`, etc.) are skipped. Keep it small;
+# this is for genuine programming-vs-programming collisions only.
+EXT_TIEBREAK = {
+    ".h": "C",            # C / C++ / Objective-C all claim .h -> C wins
+    ".m": "Objective-C",  # Objective-C / MATLAB / Mathematica / ... -> Objective-C wins
+}
 
 
 def parse_languages(text):
@@ -141,15 +161,45 @@ def _kept_names(langs):
     return ordered
 
 
+def _excluded_exts(langs):
+    """Extensions to DROP from the programming map because a common doc/data
+    format owns them. An extension is excluded when some prose/markup/data
+    language claims it AND no curated programming language (alias/priority/
+    allowlist) also claims it. So `.md` (Markdown=prose, only the obscure GCC
+    Machine Description in programming) is dropped, while `.ts`/`.tsx`/`.rs`
+    (XML=data lists them incidentally, but TypeScript/TSX/Rust are curated)
+    survive and resolve to their ergonomic labels."""
+    curated = set(ALIASES) | set(CURATED_PRIORITY) | NAME_ALLOWLIST
+    claimants = {}  # ext -> list of (name, type)
+    for name, v in langs.items():
+        for ext in v["extensions"]:
+            claimants.setdefault(ext.lower(), []).append((name, v.get("type")))
+    excluded = set()
+    for ext, cl in claimants.items():
+        nonprog = any(t in ("prose", "markup", "data") for _, t in cl)
+        has_curated = any(nm in curated for nm, _ in cl)
+        if nonprog and not has_curated:
+            excluded.add(ext)
+    return excluded
+
+
 def build_maps(langs):
     """Return (ext_to_stack, filename_to_stack). First writer wins per the
-    curated-priority ordering, so shared extensions resolve to curated labels."""
+    curated-priority ordering, so shared extensions resolve to curated labels.
+    Prose/markup/data-ambiguous extensions are excluded (see `_excluded_exts`),
+    and a small tie-break dict picks the owner for programming-only collisions."""
+    excluded = _excluded_exts(langs)
     ext_to_stack = {}
     filename_to_stack = {}
     for name in _kept_names(langs):
         label = label_for(name)
         for ext in langs[name]["extensions"]:
-            ext_to_stack.setdefault(ext.lower(), label)
+            ext = ext.lower()
+            if ext in excluded:
+                continue
+            if ext in EXT_TIEBREAK and EXT_TIEBREAK[ext] != name:
+                continue
+            ext_to_stack.setdefault(ext, label)
         for fn in langs[name]["filenames"]:
             filename_to_stack.setdefault(fn, label)
     return ext_to_stack, filename_to_stack

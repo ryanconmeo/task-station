@@ -48,6 +48,7 @@ class KnownMappings(unittest.TestCase):
             ".cs": "dotnet",
             ".sql": "sql",
             ".ts": "typescript",
+            ".tsx": "typescript",   # TSX variant collapses onto typescript
             ".js": "node",
             ".go": "go",
             ".rs": "rust",
@@ -69,6 +70,40 @@ class KnownMappings(unittest.TestCase):
     def test_swift_present(self):
         self.assertIn(".swift", stack_map.EXT_TO_STACK)
         self.assertEqual(stack_map.EXT_TO_STACK[".swift"], "swift")
+
+
+class AmbiguousExtensions(unittest.TestCase):
+    """Prose/markup/data-ambiguous extensions are excluded from the programming
+    map; curated programming languages still win incidental data claims."""
+
+    def test_md_excluded(self):
+        # `.md` is owned by Markdown (prose); the obscure GCC Machine Description
+        # claim must NOT leak through as a stack.
+        self.assertNotIn(".md", stack_map.EXT_TO_STACK)
+
+    def test_no_prose_noise_values(self):
+        values = set(stack_map.EXT_TO_STACK.values())
+        self.assertNotIn("gcc-machine-description", values)
+        self.assertNotIn("markdown", values)
+
+    def test_other_doc_data_extensions_excluded(self):
+        for ext in (".rst", ".txt", ".json", ".yaml", ".xml", ".csv"):
+            self.assertNotIn(ext, stack_map.EXT_TO_STACK, "%s should be excluded" % ext)
+
+    def test_curated_survives_incidental_data_claim(self):
+        # XML lists .ts/.tsx/.rs incidentally, but the curated programming owner wins.
+        self.assertEqual(stack_map.EXT_TO_STACK.get(".ts"), "typescript")
+        self.assertEqual(stack_map.EXT_TO_STACK.get(".tsx"), "typescript")
+        self.assertEqual(stack_map.EXT_TO_STACK.get(".rs"), "rust")
+
+    def test_programming_collision_tiebreak(self):
+        # Programming-only collisions resolve to the popular mainstream owner.
+        self.assertEqual(stack_map.EXT_TO_STACK.get(".h"), "c")
+        self.assertEqual(stack_map.EXT_TO_STACK.get(".m"), "objective-c")
+
+    def test_niche_detection_kept(self):
+        # Correct niche detections (no doc/data claimant) must survive.
+        self.assertEqual(stack_map.EXT_TO_STACK.get(".com"), "digital-command-language")
 
 
 # languages.yml is vendored but gitignored (not committed), so the generator
