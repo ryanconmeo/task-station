@@ -4,7 +4,9 @@ idempotency), and the sqlite3-unavailable JSON fallback.
 
 These exercise lib/store.py both directly (SqliteBackend / JsonBackend) and
 through task-station.py's public primitives, under per-test temp-home isolation."""
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -193,8 +195,10 @@ class MigrationTest(unittest.TestCase):
         self.links_dir = os.path.join(self.store_dir, "links")
         os.makedirs(self.tasks_dir)
         os.makedirs(self.links_dir)
+        os.environ.pop(store.MIGRATE_OPT_IN_ENV, None)
 
     def tearDown(self):
+        os.environ.pop(store.MIGRATE_OPT_IN_ENV, None)
         store.reset_cache()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
@@ -210,20 +214,21 @@ class MigrationTest(unittest.TestCase):
         with open(os.path.join(self.links_dir, name), "w") as f:
             f.write(content)
 
-    def test_migrate_imports_tasks_and_makes_backup(self):
+    def test_explicit_migrate_moves_json_into_backup(self):
         self._write_task("alpha", updated_ts=20.0)
         self._write_task("beta", status="closed", updated_ts=99.0)
         b = store.SqliteBackend(self.store_dir)
         res = b.migrate()
 
         self.assertEqual(res["tasks"], 2)
-        self.assertIsNotNone(res["backup"])
-        self.assertTrue(os.path.isdir(res["backup"]))
-        # backup contains the original task json
-        self.assertTrue(os.path.exists(os.path.join(res["backup"], "tasks", "alpha.json")))
-        # stamp derives from the newest updated_ts (99), not wall-clock
+        # Stamp derives from the newest updated_ts (99), not wall-clock.
         self.assertTrue(res["backup"].endswith("json-backup-99"))
-        # DB matches the JSON store
+        # ATOMIC SWAP: the JSON dirs are MOVED into the backup, gone from store/.
+        self.assertFalse(os.path.exists(self.tasks_dir))
+        self.assertFalse(os.path.exists(self.links_dir))
+        self.assertTrue(os.path.exists(os.path.join(res["backup"], "tasks", "alpha.json")))
+        self.assertTrue(os.path.isdir(os.path.join(res["backup"], "links")))
+        # DB is now the unambiguous sole store.
         self.assertEqual(b.load_task("alpha")["title"], "alpha")
         self.assertEqual(b.load_task("beta")["status"], "closed")
         self.assertEqual(len(b.all_tasks()), 2)
@@ -243,26 +248,58 @@ class MigrationTest(unittest.TestCase):
         self.assertIsNone(b.get_link("sess-stale"))      # pointer GC'd
         self.assertEqual(b.get_link("sess-skip"), ts.SKIP_SENTINEL)
 
-    def test_migrate_is_idempotent(self):
+    def test_migrate_is_idempotent_after_swap(self):
         self._write_task("alpha")
         self._write_task("beta")
         self._write_file("sess-live", "alpha")
         b = store.SqliteBackend(self.store_dir)
-        b.migrate()
-        first = len(b.all_tasks())
-        res2 = b.migrate()                               # re-run
-        self.assertEqual(len(b.all_tasks()), first)      # no duplicates
-        self.assertEqual(res2["tasks"], 2)
+        res1 = b.migrate()
+        self.assertEqual(res1["tasks"], 2)
+        self.assertFalse(os.path.exists(self.tasks_dir))   # JSON moved away
+        res2 = b.migrate()                                 # re-run: nothing left
+        self.assertEqual(res2["tasks"], 0)
+        self.assertIsNone(res2["backup"])
+        self.assertEqual(len(b.all_tasks()), 2)            # no duplicates
         self.assertEqual(b.get_link("sess-live"), "alpha")
 
-    def test_auto_migrates_on_first_open(self):
+    def test_no_auto_migration_without_opt_in(self):
+        # The opt-in flag is unset (popped in setUp) — a bare invocation must NOT
+        # migrate as a side effect, must leave the JSON untouched, and must warn.
         self._write_task("alpha")
         self._write_file("sess-live", "alpha")
-        # No explicit migrate() — first DB access should pull the JSON store in.
+        err = io.StringIO()
+        b = store.SqliteBackend(self.store_dir)
+        with contextlib.redirect_stderr(err):
+            tasks = b.all_tasks()
+        self.assertEqual(tasks, [])                                       # not migrated
+        self.assertTrue(os.path.exists(os.path.join(self.tasks_dir, "alpha.json")))
+        self.assertIn("WARNING", err.getvalue())                         # divergence guard fires
+
+    def test_auto_migration_with_opt_in(self):
+        os.environ[store.MIGRATE_OPT_IN_ENV] = "1"
+        self._write_task("alpha")
+        self._write_file("sess-live", "alpha")
+        # First DB access auto-migrates because the opt-in flag is set.
         b = store.SqliteBackend(self.store_dir)
         tasks = b.all_tasks()
         self.assertEqual(len(tasks), 1)
         self.assertEqual(b.get_link("sess-live"), "alpha")
+        self.assertFalse(os.path.exists(self.tasks_dir))   # JSON swapped away
+
+    def test_divergence_warning_when_db_and_json_coexist(self):
+        # Clean migration first: DB holds 'alpha', JSON swapped away.
+        self._write_task("alpha")
+        store.SqliteBackend(self.store_dir).migrate()
+        # A newer/leftover JSON store reappears beside the DB.
+        os.makedirs(self.tasks_dir, exist_ok=True)
+        self._write_task("beta")
+        err = io.StringIO()
+        b = store.SqliteBackend(self.store_dir)
+        with contextlib.redirect_stderr(err):
+            ids = {t["id"] for t in b.all_tasks()}
+        self.assertIn("WARNING", err.getvalue())
+        self.assertIn(self.tasks_dir, err.getvalue())      # names the ignored store
+        self.assertEqual(ids, {"alpha"})                   # DB used; JSON 'beta' ignored
 
     def test_migrate_empty_store_is_noop(self):
         b = store.SqliteBackend(self.store_dir)

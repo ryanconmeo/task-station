@@ -23,7 +23,7 @@ task-station.py's STORE global — flows through unchanged.
 """
 import json
 import os
-import shutil
+import sys
 
 # Guarded, belt-and-suspenders: sqlite3 is stdlib, but mirror the optional-import
 # pattern so the tool still runs (on the JSON store) if it's ever missing. Tests
@@ -36,6 +36,17 @@ except Exception:  # pragma: no cover - sqlite3 is part of the stdlib
 # Link value marking a session intentionally untracked (mirrors task-station.py's
 # SKIP_SENTINEL). Kept here so migration's stale-link GC doesn't drop skip markers.
 SKIP_SENTINEL = "__skip__"
+
+# Env opt-in that authorises auto-migration of an existing JSON store into SQLite.
+# The installed plugin's hook entrypoints export TASK_STATION_MIGRATE=1, so real
+# users upgrade seamlessly; a bare `python3 lib/task-station.py ...` from a dev
+# checkout has it unset and therefore NEVER migrates as a side effect.
+MIGRATE_OPT_IN_ENV = "TASK_STATION_MIGRATE"
+
+
+def _migrate_opted_in():
+    val = os.environ.get(MIGRATE_OPT_IN_ENV, "").strip().lower()
+    return val not in ("", "0", "false", "no", "off")
 
 
 # ---------------------------------------------------------------- JSON store ---
@@ -224,6 +235,8 @@ class SqliteBackend:
         self.store_dir = store_dir
         self.db_path = os.path.join(store_dir, "tasks.db")
         self._conn = None
+        self._db_existed = None   # set by _raw_connect: did tasks.db pre-exist?
+        self._inited = False      # one-time auto-migrate / divergence check done?
 
     def close(self):
         if self._conn is not None:
@@ -232,11 +245,13 @@ class SqliteBackend:
             finally:
                 self._conn = None
 
-    def _connect(self):
+    def _raw_connect(self):
+        """Open the connection + ensure schema. No migration, no divergence
+        check — pure plumbing, safe to call from migrate() itself."""
         if self._conn is not None:
             return self._conn
         os.makedirs(self.store_dir, exist_ok=True)
-        db_existed = os.path.exists(self.db_path)
+        self._db_existed = os.path.exists(self.db_path)
         conn = sqlite3.connect(self.db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
         # WAL + a busy timeout so concurrent claude sessions/hooks don't lock each
@@ -247,18 +262,50 @@ class SqliteBackend:
         conn.executescript(self._SCHEMA)
         conn.commit()
         self._conn = conn
-        if not db_existed:
-            # First time we materialise the DB: pull in any existing JSON store.
-            # Guarded so a migration hiccup never wedges the hook — the explicit
-            # `migrate` subcommand re-runs it (idempotently) and surfaces errors.
-            try:
-                self.migrate()
-            except Exception:  # pragma: no cover - defensive
-                pass
+        return conn
+
+    def _connect(self):
+        """The connection every public primitive uses. On first touch it runs a
+        one-time init: auto-migrate an existing JSON store ONLY when explicitly
+        opted in (TASK_STATION_MIGRATE), then warn if a DB and a live JSON store
+        coexist. Auto-migration is gated so a bare dev-checkout invocation never
+        migrates the real store as a side effect of `render`/`create`/etc."""
+        conn = self._raw_connect()
+        if not self._inited:
+            self._inited = True
+            if not self._db_existed and _migrate_opted_in():
+                # Guarded so a migration hiccup never wedges the hook — the
+                # explicit `migrate` subcommand re-runs it and surfaces errors.
+                try:
+                    self.migrate()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+            self._warn_if_diverged()
         return conn
 
     def ensure(self):
         self._connect()
+
+    def _warn_if_diverged(self):
+        """Belt-and-suspenders: a DB plus a non-empty JSON tasks/ is an ambiguous
+        double store (an un-opted-in dev run that created an empty DB, or a
+        half-finished migration). After a real migration the swap removes the
+        JSON, so this is silent then. When it isn't, never silently prefer the
+        DB — name both stores on stderr so the user can reconcile."""
+        tasks_dir = os.path.join(self.store_dir, "tasks")
+        try:
+            has_json = os.path.isdir(tasks_dir) and any(
+                n.endswith(".json") for n in os.listdir(tasks_dir))
+        except OSError:
+            has_json = False
+        if has_json:
+            sys.stderr.write(
+                "task-station: WARNING - two task stores coexist:\n"
+                "  SQLite (in use): %s\n"
+                "  JSON   (IGNORED, possibly newer): %s\n"
+                "The JSON store is NOT being read. Reconcile them - run "
+                "`task-station migrate` to import it, or remove the stale store "
+                "- to silence this.\n" % (self.db_path, tasks_dir))
 
     # -- tasks --
     def load_task(self, task_id):
@@ -397,11 +444,14 @@ class SqliteBackend:
 
     # -- migration (JSON -> SQLite) --
     def migrate(self):
-        """Idempotently import an existing JSON store. Backs the JSON up first,
-        upserts every task, folds every link/counter/marker into the `links`
-        table, and GCs links whose target task no longer exists. Re-running is a
-        no-op set of upserts (no duplicates)."""
-        conn = self._connect()
+        """Import an existing JSON store into SQLite, then ATOMICALLY hand the
+        DB sole ownership: after the rows are written and verified, the JSON
+        `tasks/`/`links/` dirs are moved (os.rename) into a timestamped backup
+        dir, so no live JSON is left to shadow the DB. Always works regardless of
+        the opt-in flag (it's the explicit, user-intended path). Idempotent: once
+        the JSON has been moved away a re-run finds nothing and is a no-op."""
+        conn = self._raw_connect()
+        self._inited = True   # migrate owns init; don't let _connect re-trigger it
         tasks_dir = os.path.join(self.store_dir, "tasks")
         links_dir = os.path.join(self.store_dir, "links")
 
@@ -419,8 +469,6 @@ class SqliteBackend:
         if not json_tasks and not links_present:
             return {"tasks": 0, "links_kept": 0, "links_stale": 0, "backup": None}
 
-        backup = self._backup_json_store(json_tasks)
-
         task_ids = set()
         for t in json_tasks:
             if t.get("id"):
@@ -428,6 +476,15 @@ class SqliteBackend:
                 self.save_task(t)
 
         kept, stale = self._migrate_links(conn, links_dir, task_ids)
+
+        # Verify every task landed before we move the JSON away. On mismatch we
+        # raise WITHOUT swapping, so the JSON store is preserved untouched.
+        got = conn.execute("SELECT COUNT(*) AS c FROM tasks").fetchone()["c"]
+        if got < len(task_ids):
+            raise RuntimeError(
+                "migration verify failed: %d of %d tasks in DB" % (got, len(task_ids)))
+
+        backup = self._swap_json_into_backup(json_tasks, tasks_dir, links_dir)
         return {
             "tasks": len(task_ids),
             "links_kept": kept,
@@ -486,23 +543,29 @@ class SqliteBackend:
         conn.commit()
         return kept, stale
 
-    def _backup_json_store(self, json_tasks):
-        """Copy tasks/ and links/ to `<store>/json-backup-<stamp>/`. The stamp is
-        the newest task's updated_ts (NOT wall-clock — the repo's render paths
-        avoid time.time()/now() for determinism) so a re-run reuses the same dir
-        rather than piling up backups."""
+    def _swap_json_into_backup(self, json_tasks, tasks_dir, links_dir):
+        """Move tasks/ and links/ into `<store>/json-backup-<stamp>/` via os.rename
+        (atomic per dir). The stamp is the newest task's updated_ts (NOT wall-clock
+        — the repo's render paths avoid time.time()/now() for determinism). After
+        this the DB is the unambiguous sole store; nothing live remains to shadow
+        it. A pre-existing backup dir gets a numeric suffix so nothing is clobbered."""
         stamps = [t.get("updated_ts") or t.get("created_ts") or 0 for t in json_tasks]
         newest = max(stamps) if stamps else 0
         if not newest:
             try:
-                newest = os.stat(os.path.join(self.store_dir, "tasks")).st_mtime
+                newest = os.stat(tasks_dir).st_mtime
             except OSError:
                 newest = 0
-        backup_dir = os.path.join(self.store_dir, "json-backup-%d" % int(newest))
-        for sub in ("tasks", "links"):
-            src = os.path.join(self.store_dir, sub)
+        base = os.path.join(self.store_dir, "json-backup-%d" % int(newest))
+        backup_dir = base
+        suffix = 2
+        while os.path.exists(backup_dir):
+            backup_dir = "%s-%d" % (base, suffix)
+            suffix += 1
+        os.makedirs(backup_dir)
+        for src in (tasks_dir, links_dir):
             if os.path.isdir(src):
-                shutil.copytree(src, os.path.join(backup_dir, sub), dirs_exist_ok=True)
+                os.rename(src, os.path.join(backup_dir, os.path.basename(src)))
         return backup_dir
 
 

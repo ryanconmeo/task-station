@@ -5,7 +5,7 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-!`python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" render --format md --session "${CLAUDE_SESSION_ID:-$CLAUDE_CODE_SESSION_ID}" --arg "$ARGUMENTS"`
+!`TASK_STATION_MIGRATE=1 python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" render --format md --session "${CLAUDE_SESSION_ID:-$CLAUDE_CODE_SESSION_ID}" --arg "$ARGUMENTS"`
 
 The block above is the live output of the task tracker.
 
