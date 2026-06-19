@@ -3,6 +3,24 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.0.10] — 2026-06-19
+
+### Changed
+- **Stack detection is now GitHub-Linguist-derived.** The repo index's hand-rolled
+  ~18-entry extension→stack list is replaced by `lib/stack_map.py`, a generated map
+  (`EXT_TO_STACK` + `FILENAME_TO_STACK`, ~950 extensions) distilled from GitHub
+  Linguist's `languages.yml` — the data behind GitHub's per-repo language bar.
+  Coverage jumps from a handful of stacks to the full programming-language long tail
+  (Swift, Kotlin, Ruby, PHP, Scala, …) while the ergonomic labels the tool already
+  uses are preserved via an alias overlay (`python`/`node`/`dotnet`/`sql`/`typescript`/
+  `go`/`rust`/`terraform`/`docker`). Swift repos (`.swift`) are now detected.
+  - The combination logic is unchanged — the `git ls-files` histogram + threshold,
+    the flyway / github-actions / terraform config signals, and root manifests all
+    still apply; only the extension lookup got vastly wider.
+  - `lib/stack_map.py` is committed and pure stdlib (plain dict literals, no runtime
+    YAML, no imports). Regenerate with `python3 tools/gen_stack_map.py`. The source
+    `languages.yml` is vendored locally but gitignored (MIT-licensed, not committed).
+
 ## [1.0.9] — 2026-06-19
 
 ### Added

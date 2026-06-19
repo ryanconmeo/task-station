@@ -246,6 +246,12 @@ Discovery roots come from `--workspace-dirs` / `TASK_STATION_WORKSPACE_DIRS`, de
   Flyway config / `*.sql` migrations→flyway, `*.tf`→terraform) and the root manifests. So a
   SQL/Flyway repo resolves to `sql, flyway` and a manifest-less `lib/`-only repo to `python, shell`,
   where the old root-manifest-only check found nothing.
+  - The extension/filename lookup is **GitHub-Linguist-derived**: `lib/stack_map.py`
+    (`EXT_TO_STACK` + `FILENAME_TO_STACK`, ~950 extensions) is generated from Linguist's
+    `languages.yml`, so the whole programming-language long tail is covered (Swift, Kotlin, Ruby,
+    PHP, …) while the ergonomic labels above are preserved by an alias overlay. The committed
+    module is pure stdlib; regenerate it with `python3 tools/gen_stack_map.py` (the source
+    `languages.yml` is vendored but gitignored).
 - **`summary` + `keywords` are auto-filled by a fingerprint-gated, best-effort model call** that
   **degrades gracefully.** Each repo has a `fingerprint = sha1(remote + sorted top-level entries +
   sha1(README) + sha1(each root manifest))[:12]` that moves only on identity/structure change — not
