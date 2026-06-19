@@ -3,6 +3,18 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.0.6] — 2026-06-19
+
+### Added
+- prompt-context now detects explicit create/attach-a-task phrasing and hard-steers
+  to task-station over the native TaskCreate tool. A new `task_intent()` detector in
+  `categories.py` recognises imperatives like "make this a task" / "attach this to a
+  task" (ignoring questions about the concept and negations); when one fires,
+  `prompt-context` prints a hard directive — even in a skipped or already-attached
+  session — telling Claude to use task-station's `create`/`attach` now and NOT the
+  built-in/native (ephemeral session-todo) `TaskCreate` tool. `guidance` carries the
+  same one-line warning.
+
 ## [1.0.5] — 2026-06-18
 
 ### Added
