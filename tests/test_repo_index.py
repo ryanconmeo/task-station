@@ -236,6 +236,12 @@ class StackFromContent(unittest.TestCase):
         self._files(["main.go", "util.go", "x.go"])
         self.assertEqual(repo_index._detect_stack(self.repo), ["go"])  # deduped
 
+    def test_swift_repo_detected(self):
+        # Previously unmapped (.swift missing from the hand-rolled list); the
+        # Linguist-derived map now yields `swift`.
+        self._files(["App.swift", "View.swift", "Model.swift"])
+        self.assertIn("swift", repo_index._detect_stack(self.repo))
+
 
 class Fingerprint(unittest.TestCase):
     def setUp(self):
