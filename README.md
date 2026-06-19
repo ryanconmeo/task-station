@@ -97,6 +97,7 @@ Every command works in two forms: the namespaced `/task-station:todo` / `/task-s
 - **`/done`** — close the task **this session** is working on and detach it; the session's terminal window auto-closes ~1s later.
 - **`/done <n>`** — close **any** task by its stable number or id from anywhere — you don't have to be in that task's session. Leaves this window open.
 - **`/done 1,2,5`** — **multi-close**: a comma-separated list closes several tasks at once, printing **one result line per task**. A bad ref is reported but doesn't abort the others.
+- **`/repos`** / **`/repos show`** — print the hub **repo index** (one block per repo under your workspace roots). **`/repos <term>`** ranks repos by relevance to route a fuzzy task; **`/repos --refresh`** rescans; **`/repos --json`** emits the structured list. See [Repo index for routing](#repo-index-for-routing). (Bare `/repos` is part of the same opt-in as `/todo`/`/done`.)
 - **`/task-station:config`** — view or change settings; run one-time setup (tint profiles, delegation policy, bare-command install). See [Configure](#configure).
 
 ## Categories & terminal tint
@@ -211,6 +212,62 @@ ships a ready-to-adapt
 Copy it, fill in your specifics, and paste it into your global `CLAUDE.md`. Without it,
 `delegate.py` still works when invoked by hand — Claude just won't apply stricter rules
 automatically.
+
+### Repo index for routing
+
+A hub `claude` session launched from `~` **can't auto-load anything inside a repo** —
+so when you hand it a fuzzy task ("fix the billing rounding bug") it has no way to know
+which repo that lives in. The **repo index** solves the routing half of delegation: an
+on-demand, hub-side map of the repos under your workspace roots, so the hub can pick the
+right repo(s) *before* spinning up a worktree.
+
+```bash
+/repos --refresh          # rescan the roots and rewrite the index (auto-fills cards)
+/repos --refresh --no-llm  # same, but deterministic only — no model enrichment
+/repos                    # print the index (one block per repo)
+/repos billing invoice    # rank repos by relevance to these terms
+/repos --json             # structured list, for tooling
+```
+
+It lives next to the task store at `<data_dir>/repos.{md,json}` (plus a small
+`.repos-cache.json`) — **not** in `tasks.db` (repos aren't tasks) and **not** as per-repo
+committed files. There is **no SessionStart injection**; it's read only when you ask.
+Discovery roots come from `--workspace-dirs` / `TASK_STATION_WORKSPACE_DIRS`, defaulting to
+`~/Workspace` + `~/Workspace-Other`.
+
+**Cards are fully auto-filled** — overrides are optional, not required:
+
+- **Deterministic (no model):** name, absolute path, `origin` remote, `ado_project` (Azure
+  DevOps `…/_git/` project, or GitHub `owner/repo`), and `status` (`active`/`stale`/`unknown`
+  from the last commit date vs `REPO_STALE_MONTHS`, default 6).
+- **`stack` is detected by content**, not just root manifests: a `git ls-files` **extension
+  histogram** (`.py`→python, `.cs`→dotnet, `.sql`→sql, `.ts`→typescript, `.go`→go, `.tf`→terraform,
+  …) **unioned** with **config/tooling signals** (`Dockerfile`→docker, `.github/workflows/`→github-actions,
+  Flyway config / `*.sql` migrations→flyway, `*.tf`→terraform) and the root manifests. So a
+  SQL/Flyway repo resolves to `sql, flyway` and a manifest-less `lib/`-only repo to `python, shell`,
+  where the old root-manifest-only check found nothing.
+- **`summary` + `keywords` are auto-filled by a fingerprint-gated, best-effort model call** that
+  **degrades gracefully.** Each repo has a `fingerprint = sha1(remote + sorted top-level entries +
+  sha1(README) + sha1(each root manifest))[:12]` that moves only on identity/structure change — not
+  on ordinary commits. On `--refresh`, a cheap model (Haiku, via the headless `claude -p …
+  --output-format json` CLI) is called **only** for repos that are new or whose fingerprint changed
+  **and** have no override summary; the rest are served from `.repos-cache.json`, so steady-state
+  refreshes make **zero** model calls. If the call fails for any reason (CLI not on `PATH`, no network,
+  timeout, malformed JSON) it falls back to a **deterministic** README-derived summary + keywords — the
+  index **always** builds and the command never errors out. Force the deterministic path with
+  **`--no-llm`** (or `task-station config` / `TASK_STATION_REPO_ENRICH=off`; enrichment is ON by default).
+- **Precedence: override > model > deterministic-fallback.** Hand-authored prose
+  (`summary`/`keywords`/`domain`, plus a `status` override) in `<data_dir>/repos.overrides.json`
+  (keyed by repo name) **wins** and **survives every refresh** — discovery never writes it.
+
+The `delegating-work` skill uses this automatically: when the target repo is ambiguous it
+runs `repos --refresh --quiet`, ranks repos by the task's own words, and picks before
+resolving a worktree.
+
+> **Scaling.** The schema is built for 100+ repos: `match()` already returns a ranked list, so it
+> doubles as a stage-1 top-K pre-filter (only the top cards' prose need be read into context), and the
+> fingerprint cache already avoids redundant model work — a future `--refresh` debounce is the only
+> remaining additive piece.
 
 ## Configure
 
@@ -406,7 +463,8 @@ All paths are under your config dir (`${CLAUDE_CONFIG_DIR:-~/.claude}`) unless n
 | `~/.claude/task-station-data/` | Local task storage: an indexed SQLite DB (`store/tasks.db`), plus `config.json`, `workers.json`, and `pending-briefs/` |
 | `~/.claude/task-station-engine` | Symlink to the plugin's `lib/` — a stable, version-independent handle refreshed every session and re-pointed on each prompt |
 | `~/.claude/statusline.d/50-task-station.sh` | Self-registered status-line segment (harmless if unused) |
-| `~/.claude/commands/{todo,done}.md` | **Only if you run `task-station config --bare-cmds on`** (opt-in; marker-guarded, never clobbers a pre-existing command) |
+| `~/.claude/commands/{todo,done,repos}.md` | **Only if you run `task-station config --bare-cmds on`** (opt-in; marker-guarded, never clobbers a pre-existing command) |
+| `<data_dir>/repos.{md,json}` + `.repos-cache.json` | Hub repo index + enrichment cache, written on demand by `/repos --refresh`; `repos.overrides.json` (hand-authored, never written by discovery) is read if present |
 | `~/.zshrc` (tint aliases) | **Only via the explicit `task-station config --tint-profiles` command you run** |
 | `~/.claude/CLAUDE.md` (delegation policy block) | **Only via the explicit `task-station config --policy on` command you run** (fenced, 100% reversible with `--policy off`) |
 
@@ -450,6 +508,8 @@ To show the current task in the Claude Code status bar, add one line to `setting
 **`lib/categories.py`** — optional colour-taxonomy + terminal-tint plugin; `task-station.py` runs fine without it. Ships with defaults; users customize via `task-station-data/config.json` without editing this file. See [`CATEGORIES.md`](CATEGORIES.md).
 
 **`lib/paths.py`** — resolves the mutable data directory (`${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/`, overridable with `$TASK_STATION_HOME`) and handles legacy migration detection.
+
+**`lib/repo_index.py`** — the hub [repo index](#repo-index-for-routing): deterministic discovery (name/path/remote/`ado_project`/`stack`/`status`), hand-authored overrides merge, the relevance ranker, and `build_index` (writes `<data_dir>/repos.{md,json}`). Powers the `repos` subcommand and the `delegating-work` routing step.
 
 **`hooks/on_session_start.sh`** — `SessionStart` hook. Surfaces open tasks (or the attached one) and auto-sets the window title to `task-station-<seq> · <title>`.
 

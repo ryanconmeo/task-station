@@ -2,6 +2,11 @@
 import json, os
 import paths
 
+# Default repo roots scanned for the hub repo index (`task-station repos`) when no
+# workspace dirs are configured. Centralized here so both delegate's `--project`
+# shorthand and the repo index share one source of truth.
+DEFAULT_WORKSPACE_DIRS = ["~/Workspace", "~/Workspace-Other"]
+
 def _path():
     return os.path.join(paths.data_dir(), "config.json")
 
@@ -37,6 +42,26 @@ def workspace_dirs():
         env = os.environ.get("TASK_STATION_WORKSPACE_DIRS", "")
         raw = [p for p in env.split(os.pathsep) if p] if env else []
     return [os.path.expanduser(p) for p in raw]
+
+def repo_roots():
+    """Roots to scan for the hub repo index. Reuses the configured workspace dirs
+    (the `--workspace-dirs` flag or `TASK_STATION_WORKSPACE_DIRS`); falls back to
+    DEFAULT_WORKSPACE_DIRS when neither is set. Unlike delegate's `--project`
+    resolution — which deliberately errors when nothing is configured — the repo
+    index has a sensible default so the hub can route tasks out of the box."""
+    dirs = workspace_dirs()
+    if not dirs:
+        dirs = [os.path.expanduser(p) for p in DEFAULT_WORKSPACE_DIRS]
+    return dirs
+
+def repo_enrich_enabled():
+    """Whether `repos --refresh` may make a (fingerprint-gated, best-effort) model
+    call to auto-fill summary/keywords. Default ON; `TASK_STATION_REPO_ENRICH=off`
+    or the `repo_enrich` config flag turns it off (so does `repos --refresh --no-llm`
+    per-call). Enrichment always degrades to a deterministic summary regardless."""
+    if os.environ.get("TASK_STATION_REPO_ENRICH") == "off":
+        return False
+    return bool(get("repo_enrich", True))
 
 def bare_commands():
     """True only if the user opted in (config flag or env). Default off."""

@@ -3,6 +3,55 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.0.9] — 2026-06-19
+
+### Added
+- **Repo index for hub task routing** — a hub `claude` session launched from `~`
+  can't auto-load anything inside a repo, so `/repos` gives it an on-demand, hub-side
+  map of the repos under your workspace roots to route a fuzzy task to the right
+  repo(s) at delegation time. `/repos` / `/repos show` print the index, `/repos
+  <term>` ranks repos by token overlap (name/keywords/domain/stack/ado_project/path),
+  `/repos --refresh [--force] [--quiet]` rescans, and `/repos --json` emits the
+  structured list. Backed by new `lib/repo_index.py`.
+  - Repo cards are **fully auto-filled** — no manual overrides needed (overrides remain an
+    optional escape hatch).
+  - Deterministic discovery (no model): per repo it derives name, abs path, `origin`
+    remote, `ado_project` (Azure DevOps `…/_git/` project or GitHub `owner/repo`), and
+    `status` (`active`/`stale`/`unknown` from the last commit vs `REPO_STALE_MONTHS`,
+    default 6).
+  - **Stack detected by CONTENT, not just root manifests**: a `git ls-files` extension
+    histogram (`.py`→python, `.cs`→dotnet, `.sql`→sql, `.ts`→typescript, `.go`→go,
+    `.tf`→terraform, …, kept above a small threshold or if dominant) **unioned** with
+    config/tooling signals (`Dockerfile`→docker, `.github/workflows/`→github-actions,
+    flyway config / `*__*.sql` migrations→flyway, `*.tf`→terraform) and the root manifests.
+    SQL/Flyway and manifest-less repos now get a real stack (e.g. ConnxLandingZone→`sql,
+    flyway`; a `lib/`-only repo→`python,shell`).
+  - **`summary` + `keywords` are auto-filled by a fingerprint-gated, best-effort model call**
+    that **degrades gracefully**. Each repo carries a `fingerprint` =
+    `sha1(remote + sorted top-level entries + sha1(README) + sha1(each root manifest))[:12]`
+    that moves only on identity/structure change, not on ordinary commits. On `--refresh`
+    the model (cheap Haiku via the headless `claude -p … --output-format json` CLI) is
+    invoked **only** for a repo that is new or whose fingerprint changed **and** has no
+    override summary; results are cached in `<data_dir>/.repos-cache.json`, so steady-state
+    refreshes make **zero** model calls. If the call fails for any reason (CLI absent, no
+    network, timeout, bad JSON), it falls back to a **deterministic** README-derived summary
+    + keywords — the index always builds and never raises out of the command.
+  - **`/repos --refresh --no-llm`** (and the `repo_enrich` config toggle / `TASK_STATION_REPO_ENRICH=off`,
+    default ON) forces the deterministic-only path.
+  - **Precedence for summary/keywords: override > model > deterministic-fallback.**
+    Hand-authored prose (`summary`/`keywords`/`domain`, plus a `status` override) lives in
+    `<data_dir>/repos.overrides.json` keyed by repo name — overrides **win** and **survive**
+    every regeneration; discovery never writes them.
+  - The index lives next to the task store at `<data_dir>/repos.{md,json}` (+ the
+    `.repos-cache.json` enrichment cache) — **not** in `tasks.db` (repos aren't tasks) and
+    **not** as per-repo committed files. Discovery roots come from `--workspace-dirs` /
+    `TASK_STATION_WORKSPACE_DIRS`, defaulting to `~/Workspace` + `~/Workspace-Other`.
+  - The `delegating-work` skill gains a "resolve the target repo" step that uses the
+    index when the target repo is ambiguous — on-demand only, no SessionStart injection.
+  - Forward-compatible for scale: `match()` already doubles as a stage-1 top-K pre-filter,
+    and the fingerprint cache already avoids redundant model work (a future `--refresh`
+    debounce is the only remaining additive piece).
+
 ## [1.0.8] — 2026-06-19
 
 ### Changed

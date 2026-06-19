@@ -1630,6 +1630,72 @@ def cmd_guidance(a):
     print("\n".join(lines))
 
 
+def _repos_load(repo_index, roots, data_dir):
+    """Return the structured index, reading repos.json if present, else building
+    it from a fresh scan (so term/--json queries work before a first --refresh)."""
+    p = os.path.join(data_dir, "repos.json")
+    try:
+        with open(p) as f:
+            return json.load(f)
+    except Exception:
+        # Auto-build on a read path: stay deterministic (no model calls); explicit
+        # `repos --refresh` is the only place enrichment runs.
+        return repo_index.build_index(roots, data_dir=data_dir, use_llm=False)
+
+
+def cmd_repos(a):
+    """Hub repo index: `repos [show]` prints repos.md (building it if missing),
+    `repos --refresh [--force] [--quiet]` rescans + rewrites the index, `repos
+    <term...>` ranks matches, and `--json` emits the structured list. Not stored
+    in tasks.db; lives at <data_dir>/repos.{md,json}."""
+    import config
+    import repo_index
+    data_dir = paths.data_dir()
+    roots = config.repo_roots()
+    md_path = os.path.join(data_dir, "repos.md")
+    terms = [t for t in (a.terms or []) if t != "show"]
+
+    repos = None
+    if a.refresh or a.force:
+        # Rescan + rewrite. Summary/keywords enrichment is fingerprint-gated (only
+        # new/changed repos make a model call) and always degrades deterministically.
+        # --no-llm (or the repo_enrich config toggle) forces the deterministic path.
+        # --force is reserved for bypassing the future refresh debounce.
+        use_llm = config.repo_enrich_enabled() and not getattr(a, "no_llm", False)
+        repos = repo_index.build_index(roots, data_dir=data_dir, use_llm=use_llm)
+        if a.quiet and not terms and not a.json:
+            print("repos: indexed %d repo(s) → %s" % (len(repos), md_path))
+            return
+
+    if terms:
+        if repos is None:
+            repos = _repos_load(repo_index, roots, data_dir)
+        q = " ".join(terms)
+        hits = [r for r in repo_index.match(q, repos) if repo_index.score(q, r) > 0]
+        if a.json:
+            print(json.dumps(hits, indent=2, ensure_ascii=False))
+        elif hits:
+            print(repo_index.render_md(hits, query=q))
+        else:
+            print("No repos match %r." % q)
+        return
+
+    if a.json:
+        if repos is None:
+            repos = _repos_load(repo_index, roots, data_dir)
+        print(json.dumps(repos, indent=2, ensure_ascii=False))
+        return
+
+    if repos is not None:
+        # Just refreshed (non-quiet) → print what we wrote.
+        print(repo_index.render_md(repos))
+        return
+    if not os.path.exists(md_path):
+        repo_index.build_index(roots, data_dir=data_dir, use_llm=False)
+    with open(md_path) as f:
+        print(f.read())
+
+
 def cmd_session_start(a):
     task_id = get_link(a.session)
     if task_id == SKIP_SENTINEL:
@@ -1730,6 +1796,18 @@ def main():
 
     sp = sub.add_parser("session-start"); sp.add_argument("--session", required=True)
     sp.add_argument("--source", default=""); sp.set_defaults(fn=cmd_session_start)
+
+    sp = sub.add_parser("repos")
+    sp.add_argument("terms", nargs="*",
+                    help="terms to rank repos by; omit (or 'show') to print the index")
+    sp.add_argument("--refresh", action="store_true", help="rescan roots + rewrite the index")
+    sp.add_argument("--force", action="store_true",
+                    help="reserved: bypass the future refresh debounce (today == --refresh)")
+    sp.add_argument("--json", action="store_true", help="emit the structured list for the skill")
+    sp.add_argument("--quiet", action="store_true", help="with --refresh, print only a one-line summary")
+    sp.add_argument("--no-llm", dest="no_llm", action="store_true",
+                    help="with --refresh, skip model enrichment — deterministic summary/keywords only")
+    sp.set_defaults(fn=cmd_repos)
 
     sp = sub.add_parser("config")
     sp.add_argument("--workspace-dirs", dest="workspace_dirs", default=None)
