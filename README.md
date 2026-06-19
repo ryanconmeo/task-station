@@ -89,7 +89,7 @@ into your global `~/.claude/CLAUDE.md` and customize the workspace paths.
 
 Every command works in two forms: the namespaced `/task-station:todo` / `/task-station:done` (registered automatically, always available) and the bare `/todo` / `/done` aliases (**opt-in** — `task-station config --bare-cmds on`).
 
-- **`/todo`** — list all tasks (open first, then by recent activity) as two Markdown tables. Each row shows the task's stable number, category `<emoji> [TAG]`, effort gauge, and last activity.
+- **`/todo`** — list all tasks (open first, then by recent activity) as two Markdown tables, rendered directly by the engine (`render --format md`). Each row shows the task's stable number, category `<emoji> [TAG]`, effort gauge, last activity, and a `⧉N` marker when more than one live session is attached to the same task.
 - **`/todo <n>`** — open a task by its stable number (or an id prefix) and **resume it into the current session**; your next message continues it. Reopens the task if it was closed.
 - **`/todo <n> -s`** — same attach/reopen, but jump **straight into the task's pinned session in a fresh Terminal window** (no recap; the window you typed in is left untouched). The `-s` may sit on either side of the number (`/todo -s <n>` works too).
 - **`/todo 1,2,5 -s`** — **multi-jump**: a comma-separated list jumps into several tasks at once, opening **one window per task**. A bad ref in the list is reported but doesn't abort the others.
@@ -403,7 +403,7 @@ All paths are under your config dir (`${CLAUDE_CONFIG_DIR:-~/.claude}`) unless n
 
 | Path | What it is |
 |---|---|
-| `~/.claude/task-station-data/` | Local task storage: one JSON per task, plus `config.json`, `workers.json`, and `pending-briefs/` |
+| `~/.claude/task-station-data/` | Local task storage: an indexed SQLite DB (`store/tasks.db`), plus `config.json`, `workers.json`, and `pending-briefs/` |
 | `~/.claude/task-station-engine` | Symlink to the plugin's `lib/` — a stable, version-independent handle refreshed every session and re-pointed on each prompt |
 | `~/.claude/statusline.d/50-task-station.sh` | Self-registered status-line segment (harmless if unused) |
 | `~/.claude/commands/{todo,done}.md` | **Only if you run `task-station config --bare-cmds on`** (opt-in; marker-guarded, never clobbers a pre-existing command) |
@@ -414,8 +414,12 @@ The namespaced `/task-station:todo` and `/task-station:done` commands are regist
 
 ### Storage
 
-One JSON file per task under `<data_dir>/tasks/<uuid>.json`; session→task links
-under `<data_dir>/links/`. All writes are atomic. The data directory defaults to
+A single indexed SQLite database at `<data_dir>/store/tasks.db` holds tasks and
+session→task links — queried by index, so listing, counting, and the per-prompt
+"is this session tracked?" check stay fast as the board grows instead of scanning a
+file per task. All writes are transactional (WAL mode). If `sqlite3` is somehow
+unavailable (it's in the Python standard library, so effectively never), it falls
+back to a JSON-file store. The data directory defaults to
 `${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/`; set `$TASK_STATION_HOME` to
 override. It is machine-local and not tracked by the plugin — task data persists
 across `/plugin update`.
