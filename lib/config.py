@@ -44,21 +44,39 @@ def workspace_dirs():
     return [os.path.expanduser(p) for p in raw]
 
 def repo_roots():
-    """Roots to scan for the hub repo index. Reuses the configured workspace dirs
-    (the `--workspace-dirs` flag or `TASK_STATION_WORKSPACE_DIRS`); falls back to
-    DEFAULT_WORKSPACE_DIRS when neither is set. Unlike delegate's `--project`
-    resolution — which deliberately errors when nothing is configured — the repo
-    index has a sensible default so the hub can route tasks out of the box."""
+    """Roots to scan for the hub repo index. Precedence: an explicit `repo_roots`
+    config list (set via `repos --set-roots` during first-run onboarding) > the
+    configured workspace dirs (`--workspace-dirs` / `TASK_STATION_WORKSPACE_DIRS`) >
+    DEFAULT_WORKSPACE_DIRS. Unlike delegate's `--project` resolution — which
+    deliberately errors when nothing is configured — the repo index has a sensible
+    default so the hub can route tasks out of the box."""
+    explicit = get("repo_roots")
+    if explicit:
+        return [os.path.expanduser(p) for p in explicit]
     dirs = workspace_dirs()
     if not dirs:
         dirs = [os.path.expanduser(p) for p in DEFAULT_WORKSPACE_DIRS]
     return dirs
 
+def set_repo_roots(paths_list):
+    """Persist the repo-index discovery roots (stored un-expanded). Written by
+    `repos --set-roots` once the user confirms the first-run onboarding proposal."""
+    set("repo_roots", [p for p in paths_list if p])
+    return get("repo_roots")
+
+def repo_roots_configured():
+    """True once the user has explicitly chosen discovery roots (either `repo_roots`
+    or the legacy `workspace_dirs`). When False AND no manifest exists yet, `repos`
+    drives one-time onboarding instead of silently scanning the defaults."""
+    return bool(get("repo_roots") or get("workspace_dirs"))
+
 def repo_enrich_enabled():
-    """Whether `repos --refresh` may make a (fingerprint-gated, best-effort) model
-    call to auto-fill summary/keywords. Default ON; `TASK_STATION_REPO_ENRICH=off`
-    or the `repo_enrich` config flag turns it off (so does `repos --refresh --no-llm`
-    per-call). Enrichment always degrades to a deterministic summary regardless."""
+    """Global kill-switch for repo enrichment egress. Default ON — but this only
+    *permits* the per-repo `enrich` manifest flag to take effect; enrichment is OFF
+    for every repo by default, so a normal `repos --refresh` still sends nothing.
+    `TASK_STATION_REPO_ENRICH=off` or `repo_enrich:false` hard-disables ALL egress
+    regardless of per-repo flags (so does `repos --refresh --no-llm` per-call).
+    Enrichment always degrades to a deterministic summary regardless."""
     if os.environ.get("TASK_STATION_REPO_ENRICH") == "off":
         return False
     return bool(get("repo_enrich", True))

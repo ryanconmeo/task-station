@@ -1643,28 +1643,161 @@ def _repos_load(repo_index, roots, data_dir):
         return repo_index.build_index(roots, data_dir=data_dir, use_llm=False)
 
 
+def _repos_render_manifest(repo_index, data_dir):
+    """Print the full include/exclude manifest — every discovered repo + flags."""
+    manifest = repo_index.load_manifest(data_dir)
+    print("repo manifest  %s" % os.path.join(data_dir, "repos.config.json"))
+    print("  toggle: repos include/exclude <name>  ·  repos enrich <name> [on|off]")
+    print("")
+    if not manifest:
+        print("  (empty — run `repos --refresh` to discover repos)")
+        return
+    print("  index  enrich  repo")
+    for name in sorted(manifest):
+        e = repo_index.entry_for(manifest, name)
+        print("  %-6s %-7s %s" % (
+            "[x]" if e["index"] else "[ ]",
+            "[x]" if e["enrich"] else "[ ]",
+            name + ("" if e["index"] else "   (excluded)")))
+
+
+def _repos_set_flag(repo_index, data_dir, name, key, value):
+    """Set a manifest flag for `name` (or its basename if a path was given).
+    Returns the resolved repo name, or None if it isn't in the manifest."""
+    manifest = repo_index.load_manifest(data_dir)
+    candidate = name if name in manifest else os.path.basename(os.path.normpath(name))
+    if candidate not in manifest:
+        return None
+    entry = repo_index.entry_for(manifest, candidate)
+    entry[key] = value
+    manifest[candidate] = entry
+    repo_index.save_manifest(data_dir, manifest)
+    return candidate
+
+
+def _repos_manifest_action(repo_index, data_dir, action, terms):
+    """Handle the no-JSON-editing toggle subcommands. Returns True if it consumed
+    the invocation."""
+    if action == "config":
+        _repos_render_manifest(repo_index, data_dir)
+        return True
+    if len(terms) < 2:
+        print("usage: repos %s <name>%s" % (
+            action, " [on|off]" if action == "enrich" else ""))
+        return True
+    name = terms[1]
+    if action == "include":
+        key, value, label = "index", True, "included (index:true)"
+    elif action == "exclude":
+        key, value, label = "index", False, "excluded (index:false)"
+    else:  # enrich
+        on = (terms[2].lower() != "off") if len(terms) > 2 else True
+        key, value, label = "enrich", on, "enrich:%s" % ("on" if on else "off")
+    resolved = _repos_set_flag(repo_index, data_dir, name, key, value)
+    if resolved is None:
+        print("repos: no repo named %r in the manifest. Run `repos --refresh` to "
+              "discover repos, then `repos config` to list them." % name)
+    else:
+        print("repos: %s → %s" % (resolved, label))
+        if action == "enrich" and value:
+            print("       (its README + tree NAMES will be sent to the model on the "
+                  "next `repos --refresh`)")
+    return True
+
+
 def cmd_repos(a):
     """Hub repo index: `repos [show]` prints repos.md (building it if missing),
-    `repos --refresh [--force] [--quiet]` rescans + rewrites the index, `repos
-    <term...>` ranks matches, and `--json` emits the structured list. Not stored
-    in tasks.db; lives at <data_dir>/repos.{md,json}."""
+    `repos --refresh [--force] [--quiet] [--dry-run] [--re-summarize]` rescans +
+    rewrites the index, `repos <term...>` ranks matches, `--json` emits the
+    structured list. Include/exclude surface: `repos config` lists the manifest;
+    `repos include/exclude <name>` and `repos enrich <name> [on|off]` flip flags.
+    First-run onboarding via `--detect-roots` + `--set-roots`. Not stored in
+    tasks.db; lives at <data_dir>/repos.{md,json} + repos.config.json."""
     import config
     import repo_index
     data_dir = paths.data_dir()
-    roots = config.repo_roots()
     md_path = os.path.join(data_dir, "repos.md")
     terms = [t for t in (a.terms or []) if t != "show"]
 
+    # --- Onboarding helpers (no scan) ---
+    if getattr(a, "detect_roots", False):
+        found = repo_index.detect_roots()
+        if found:
+            print("repos: detected candidate roots:")
+            for p in found:
+                print("  %s" % p)
+            print("")
+            print("Enrichment is OFF by default — listing a repo sends nothing to "
+                  "Claude unless you turn it on per-repo with `repos enrich <name>`.")
+            print("Confirm/adjust, then: repos --set-roots %s" % ",".join(found))
+        else:
+            print("repos: no candidate roots detected under your home directory.")
+            print("Set them explicitly: repos --set-roots <p1,p2,...>")
+        return
+    if getattr(a, "set_roots", None) is not None:
+        chosen = [p.strip() for p in a.set_roots.split(",") if p.strip()]
+        config.set_repo_roots(chosen)
+        print("repos: roots set → %s" % ", ".join(chosen))
+        print("       Enrichment stays OFF until you opt in per repo "
+              "(`repos enrich <name>`). Run `repos --refresh` to build the index.")
+        return
+
+    # --- Manifest toggle subcommands (no JSON editing) ---
+    action = terms[0] if terms else None
+    if action in ("include", "exclude", "enrich", "config"):
+        _repos_manifest_action(repo_index, data_dir, action, terms)
+        return
+
+    roots = config.repo_roots()
+
+    # --- First-run onboarding: no roots configured and no manifest yet ---
+    if (not config.repo_roots_configured()
+            and not os.path.exists(os.path.join(data_dir, "repos.config.json"))
+            and not (a.refresh or a.force) and not terms and not a.json):
+        found = repo_index.detect_roots()
+        print("repos: first-run setup — no workspace roots configured yet.")
+        print("")
+        if found:
+            print("Detected candidate roots:")
+            for p in found:
+                print("  %s" % p)
+        else:
+            print("No candidate roots auto-detected; you can name your own.")
+        print("")
+        print("Enrichment is OFF by default — listing a repo sends NOTHING to Claude "
+              "unless you turn it on per-repo with `repos enrich <name>`.")
+        print("")
+        print("To proceed: confirm the roots above, then run "
+              "`repos --set-roots <p1,p2,...>` followed by `repos --refresh`.")
+        return
+
     repos = None
     if a.refresh or a.force:
-        # Rescan + rewrite. Summary/keywords enrichment is fingerprint-gated (only
-        # new/changed repos make a model call) and always degrades deterministically.
-        # --no-llm (or the repo_enrich config toggle) forces the deterministic path.
-        # --force is reserved for bypassing the future refresh debounce.
+        # Rescan + rewrite. Enrichment is OPT-IN: a model call fires ONLY for
+        # `enrich:true` repos (and only when new/changed). A normal refresh sends
+        # NOTHING off-machine. --no-llm (or the repo_enrich config gate) forces the
+        # deterministic path; --dry-run reports what WOULD be sent without sending;
+        # --re-summarize regenerates summaries even if cached.
         use_llm = config.repo_enrich_enabled() and not getattr(a, "no_llm", False)
-        repos = repo_index.build_index(roots, data_dir=data_dir, use_llm=use_llm)
+        dry_run = getattr(a, "dry_run", False)
+        egress = []
+        repos = repo_index.build_index(
+            roots, data_dir=data_dir, use_llm=use_llm, dry_run=dry_run,
+            re_summarize=getattr(a, "re_summarize", False), egress=egress)
+        if not a.quiet and not a.json:
+            if dry_run:
+                if egress:
+                    print("repos: --dry-run — WOULD send README+tree for: %s "
+                          "(nothing sent)" % ", ".join(sorted(egress)))
+                else:
+                    print("repos: --dry-run — no repos are enrich:true; nothing "
+                          "would be sent.")
+            elif egress:
+                print("repos: enriching (sending README+tree NAMES): %s"
+                      % ", ".join(sorted(egress)))
         if a.quiet and not terms and not a.json:
-            print("repos: indexed %d repo(s) → %s" % (len(repos), md_path))
+            sent = (" · sent: %s" % ", ".join(sorted(egress))) if egress else " · sent: nothing"
+            print("repos: indexed %d repo(s) → %s%s" % (len(repos), md_path, sent))
             return
 
     if terms:
@@ -1799,7 +1932,8 @@ def main():
 
     sp = sub.add_parser("repos")
     sp.add_argument("terms", nargs="*",
-                    help="terms to rank repos by; omit (or 'show') to print the index")
+                    help="terms to rank repos by; omit (or 'show') to print the index. "
+                         "Also: include/exclude/enrich <name>, config")
     sp.add_argument("--refresh", action="store_true", help="rescan roots + rewrite the index")
     sp.add_argument("--force", action="store_true",
                     help="reserved: bypass the future refresh debounce (today == --refresh)")
@@ -1807,6 +1941,14 @@ def main():
     sp.add_argument("--quiet", action="store_true", help="with --refresh, print only a one-line summary")
     sp.add_argument("--no-llm", dest="no_llm", action="store_true",
                     help="with --refresh, skip model enrichment — deterministic summary/keywords only")
+    sp.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="with --refresh, report which enrich:true repos WOULD be sent — send nothing")
+    sp.add_argument("--re-summarize", dest="re_summarize", action="store_true",
+                    help="with --refresh, regenerate summaries even when one already exists")
+    sp.add_argument("--detect-roots", dest="detect_roots", action="store_true",
+                    help="propose candidate discovery roots for first-run setup")
+    sp.add_argument("--set-roots", dest="set_roots", default=None,
+                    help="persist a comma-separated list of discovery roots")
     sp.set_defaults(fn=cmd_repos)
 
     sp = sub.add_parser("config")

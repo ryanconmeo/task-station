@@ -8,18 +8,35 @@ time. The index lives next to the task store (`<data_dir>/repos.md` +
 `repos.json`) — NOT in tasks.db (repos aren't tasks), and NOT as per-repo
 committed files.
 
+== Privacy / opt-in enrichment ==
+The index ALWAYS builds deterministically and offline: discovery + content stack
+detection + a README-derived summary read NOTHING off the machine. The model
+(`_call_model`) is contacted ONLY for a repo whose manifest `enrich` flag is True
+— and `enrich` defaults to False for every repo. So a normal `repos --refresh`
+makes ZERO model calls. Egress is opt-in, per repo, and the prompt is bounded to
+repo name + ado_project + stack + README top + a `git ls-files` NAME sketch (with
+a secret-name denylist guard); arbitrary file CONTENTS are never read.
+
 Cards are FULLY auto-filled — no manual overrides required:
   - Deterministic discovery (no model): name/path/remote/ado_project/status, plus
     `stack` detected by CONTENT (tracked-file extension histogram + config/tooling
     signals + root manifests), so SQL/Flyway and manifest-less repos still get a
     stack.
-  - `summary`/`keywords` are auto-filled by a best-effort, FINGERPRINT-GATED model
-    call that DEGRADES to a deterministic README-derived summary when the model is
-    unavailable. The index ALWAYS builds deterministically; enrichment is a layer
-    on top and never raises out of the build.
+  - `summary`/`keywords`: deterministic README-derived by default; replaced by a
+    best-effort, FINGERPRINT-GATED model call ONLY for `enrich:true` repos. The
+    index ALWAYS builds deterministically; enrichment is a layer on top and never
+    raises out of the build. A deterministic refresh PRESERVES an existing non-empty
+    summary rather than clobbering it (use `--re-summarize` to force regeneration).
   - Hand-authored overrides (`<data_dir>/repos.overrides.json`, keyed by repo name)
     remain as an optional escape hatch and ALWAYS win.
 Precedence for summary/keywords: override > model > deterministic-fallback.
+
+== Include/exclude manifest (`<data_dir>/repos.config.json`) ==
+An auto-maintained map keyed by repo name -> {index: bool=true, enrich: bool=false}.
+`repos --refresh` reconciles it: newly-discovered repos are added with safe defaults
+and vanished repos are pruned. Only `index:true` repos reach the index; only
+`enrich:true` repos are eligible for model egress. A `.task-station-ignore` marker
+file at a repo root excludes it from discovery entirely, regardless of the manifest.
 
 == Fingerprint gating (cheap in steady state) ==
 Each repo carries a `fingerprint` = sha1(remote + sorted top-level entries +
@@ -69,6 +86,14 @@ _LLM_MODEL = os.environ.get("TASK_STATION_REPO_MODEL", "claude-haiku-4-5-2025100
 _LLM_TIMEOUT = int(os.environ.get("TASK_STATION_REPO_MODEL_TIMEOUT", "45"))
 _README_NAMES = ("README.md", "README.MD", "Readme.md", "readme.md",
                  "README.rst", "README.txt", "README")
+
+# A repo owner can self-exclude by dropping this marker file at the repo root; it
+# travels with the repo and wins over the manifest (excluded from discovery/index).
+_IGNORE_MARKER = ".task-station-ignore"
+
+# The auto-maintained include/exclude manifest (the single include/exclude surface).
+_MANIFEST_FILE = "repos.config.json"
+_DEFAULT_ENTRY = {"index": True, "enrich": False}
 
 
 def _git(repo, *args):
@@ -240,7 +265,9 @@ def _derive(path):
 
 def discover(roots):
     """For each root, find immediate child dirs that contain a `.git` entry and
-    derive each one's deterministic fields. Missing/unreadable roots are skipped."""
+    derive each one's deterministic fields. Missing/unreadable roots are skipped.
+    A `.task-station-ignore` marker at a repo root excludes it entirely (repo-owner
+    opt-out), as if it didn't exist."""
     repos = []
     for root in roots:
         root = os.path.expanduser(root)
@@ -255,8 +282,105 @@ def discover(roots):
             # `.git` is a dir for a normal clone, a file for a worktree/submodule.
             if not os.path.exists(os.path.join(path, ".git")):
                 continue
+            # Repo-owner self-exclusion: the marker fully removes it from discovery.
+            if os.path.exists(os.path.join(path, _IGNORE_MARKER)):
+                continue
             repos.append(_derive(path))
     return repos
+
+
+# ---------------------------------------------------------------------------
+# Discovery-root detection (first-run onboarding helper)
+# ---------------------------------------------------------------------------
+
+def _count_git_children(path):
+    """How many immediate child dirs of `path` look like git repos."""
+    try:
+        entries = os.listdir(path)
+    except OSError:
+        return 0
+    n = 0
+    for name in entries:
+        child = os.path.join(path, name)
+        if os.path.isdir(child) and os.path.exists(os.path.join(child, ".git")):
+            n += 1
+    return n
+
+
+def detect_roots(home=None):
+    """Propose candidate discovery roots for first-run onboarding: `~/Workspace`
+    and `~/Workspace-Other` if they exist, plus any other top-level `~` directory
+    that itself contains >=2 git repos. Returned in a stable order, de-duplicated."""
+    if home is None:
+        home = os.path.expanduser("~")
+    roots = []
+    for name in ("Workspace", "Workspace-Other"):
+        p = os.path.join(home, name)
+        if os.path.isdir(p) and p not in roots:
+            roots.append(p)
+    try:
+        entries = sorted(os.listdir(home))
+    except OSError:
+        entries = []
+    for name in entries:
+        p = os.path.join(home, name)
+        if p in roots or not os.path.isdir(p):
+            continue
+        if _count_git_children(p) >= 2:
+            roots.append(p)
+    return roots
+
+
+# ---------------------------------------------------------------------------
+# Include/exclude manifest (repos.config.json)
+# ---------------------------------------------------------------------------
+
+def _manifest_path(data_dir):
+    return os.path.join(data_dir, _MANIFEST_FILE)
+
+
+def load_manifest(data_dir):
+    """Load the include/exclude manifest (name -> {index, enrich}); {} if absent."""
+    try:
+        with open(_manifest_path(data_dir)) as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_manifest(data_dir, manifest):
+    """Atomically persist the manifest (sorted keys for stable diffs)."""
+    os.makedirs(data_dir, exist_ok=True)
+    _write(_manifest_path(data_dir),
+           json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _norm_entry(entry):
+    """Coerce a (possibly partial/legacy) manifest entry to {index, enrich}."""
+    e = dict(_DEFAULT_ENTRY)
+    if isinstance(entry, dict):
+        if "index" in entry:
+            e["index"] = bool(entry["index"])
+        if "enrich" in entry:
+            e["enrich"] = bool(entry["enrich"])
+    return e
+
+
+def reconcile_manifest(manifest, discovered_names):
+    """Return a manifest reconciled against the discovered repo names: every
+    discovered repo present (existing flags preserved, new repos get index:true,
+    enrich:false), and entries whose repo no longer exists pruned. Does not mutate
+    the input."""
+    out = {}
+    for name in discovered_names:
+        out[name] = _norm_entry(manifest.get(name))
+    return out
+
+
+def entry_for(manifest, name):
+    """The normalized {index, enrich} entry for `name` (defaults if unknown)."""
+    return _norm_entry(manifest.get(name))
 
 
 def _load_overrides(data_dir):
@@ -327,8 +451,8 @@ def render_md(repos, query=None):
     """Render a compact human/agent-readable index: one short block per repo."""
     lines = ["# Repo index", ""]
     note = ("Generated by `task-station repos --refresh`. Deterministic discovery + "
-            "fingerprint-gated auto-summary; hand-authored overrides "
-            "(`repos.overrides.json`) win.")
+            "offline README summary; model enrichment is opt-in per repo "
+            "(`repos enrich <name>`). Overrides (`repos.overrides.json`) win.")
     if query:
         lines.append("_%s %d repo(s) matching `%s`._" % (note, len(repos), query))
     else:
@@ -488,6 +612,35 @@ def _deterministic_enrich(repo):
 # Best-effort model enrichment
 # ---------------------------------------------------------------------------
 
+# Egress denylist: secret-bearing filenames that must NEVER enter the enrichment
+# input — not even as names in the tree sketch. The enrichment only ever reads the
+# README + file NAMES (never arbitrary contents), so contents of these can't leak;
+# this guard additionally keeps their NAMES out of the prompt.
+_SECRET_SUFFIXES = (".pem", ".key", ".pfx", ".p12", ".keystore", ".jks",
+                    ".crt", ".cer", ".der", ".asc", ".gpg", ".kdbx")
+_SECRET_EXACT = (".env", ".npmrc", ".netrc", ".pgpass", ".htpasswd",
+                 "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519")
+
+
+def _is_sensitive_name(path):
+    """True if `path`'s basename looks secret-bearing (.env, *.pem, *.key,
+    secrets*, credentials*, .npmrc, private keys, …). Conservative by design —
+    the cost of dropping a benign name from the tree sketch is nil."""
+    base = os.path.basename(path).lower()
+    if base in _SECRET_EXACT:
+        return True
+    if base.startswith(".env") or base.startswith("env."):
+        return True
+    if base.startswith("secret") or base.startswith("credential"):
+        return True
+    if "secret" in base or "credential" in base or "password" in base:
+        return True
+    for suf in _SECRET_SUFFIXES:
+        if base.endswith(suf):
+            return True
+    return False
+
+
 def _tree_sketch(repo, limit=40):
     files = _git_ls_files(repo["path"])
     if not files:
@@ -495,6 +648,8 @@ def _tree_sketch(repo, limit=40):
             files = sorted(os.listdir(repo["path"]))
         except OSError:
             files = []
+    # Egress guard: never let secret-bearing names into the prompt.
+    files = [f for f in files if not _is_sensitive_name(f)]
     return "\n".join(files[:limit])
 
 
@@ -592,21 +747,39 @@ def _enrich(repo, use_llm=True):
     return _deterministic_enrich(repo)
 
 
-def build_index(roots, data_dir=None, use_llm=False):
-    """Discover repos, fill stack by content, fingerprint-gate enrichment of
-    summary/keywords, merge overrides, and write the index (`repos.md` +
-    `repos.json`, plus the `.repos-cache.json` enrichment cache). Returns the
-    structured list.
+def build_index(roots, data_dir=None, use_llm=False, dry_run=False,
+                re_summarize=False, egress=None):
+    """Discover repos, reconcile the include/exclude manifest, fill stack by
+    content, enrich summary/keywords for `enrich:true` repos only, merge overrides,
+    and write the index (`repos.md` + `repos.json`, plus the `.repos-cache.json`
+    enrichment cache and `repos.config.json` manifest). Returns the structured list
+    (index:true repos only).
 
-    `use_llm` controls only whether NEW/CHANGED repos attempt a model call;
-    cached results are always reused and the build is always deterministic and
-    crash-free regardless. Defaults to False (no model) so library/read-path callers
-    never spawn a model by accident — the CLI's `repos --refresh` opts in per the
-    config toggle / `--no-llm`.
+    Egress is OPT-IN: a model call happens ONLY for a repo whose manifest `enrich`
+    flag is True AND `use_llm` is set AND it's new/changed (fingerprint-gated). Every
+    other repo gets a deterministic README-derived summary — and an EXISTING non-empty
+    summary is PRESERVED, not clobbered (unless `re_summarize`). `use_llm` defaults to
+    False so library/read-path callers never spawn a model by accident; the CLI's
+    `repos --refresh` passes it (subject to `--no-llm` / the global config gate).
+
+    `dry_run` reports (via `egress`, a list the caller passes) which repos WOULD have
+    content sent, without sending. On a real send, the sent repo names are appended to
+    `egress` too. The build is always deterministic and crash-free regardless.
     """
     if data_dir is None:
         data_dir = paths.data_dir()
-    repos = discover(roots)
+    discovered = discover(roots)
+    discovered_names = [r["name"] for r in discovered]
+
+    # The manifest is the single include/exclude surface: reconcile (add new repos
+    # with safe defaults, prune vanished ones) and persist BEFORE filtering so the
+    # user can flip flags on anything that was discovered.
+    manifest = reconcile_manifest(load_manifest(data_dir), discovered_names)
+    save_manifest(data_dir, manifest)
+
+    # Only index:true repos reach the index (and are eligible for enrichment).
+    repos = [r for r in discovered if entry_for(manifest, r["name"])["index"]]
+
     overrides = _load_overrides(data_dir)
     cache = _load_cache(data_dir)
     new_cache = {}
@@ -614,25 +787,53 @@ def build_index(roots, data_dir=None, use_llm=False):
     for r in repos:
         fp = _fingerprint(r["path"])
         r["fingerprint"] = fp
-        ov = overrides.get(r["name"]) or {}
+        name = r["name"]
+        enrich_flag = entry_for(manifest, name)["enrich"]
+        ov = overrides.get(name) or {}
         if ov.get("summary"):
             # Override supplies the summary; skip enrichment entirely (it wins in
             # merge_overrides below). Record the fingerprint so a later removal of
             # the override re-triggers a fresh enrichment.
-            new_cache[r["name"]] = {"fingerprint": fp}
+            new_cache[name] = {"fingerprint": fp}
             continue
-        cached = cache.get(r["name"])
-        if cached and cached.get("fingerprint") == fp and cached.get("summary") is not None:
-            # Unchanged since last enrichment -> reuse, zero model calls.
+        cached = cache.get(name) or {}
+        eligible = enrich_flag and use_llm
+
+        if eligible and not dry_run:
+            # Opt-in egress path. Reuse a prior MODEL summary when nothing structural
+            # changed -> zero model calls in steady state.
+            if (cached.get("source") == "llm"
+                    and cached.get("fingerprint") == fp
+                    and cached.get("summary") is not None
+                    and not re_summarize):
+                r["summary"] = cached["summary"]
+                r["keywords"] = list(cached.get("keywords") or [])
+                new_cache[name] = cached
+                continue
+            if egress is not None:
+                egress.append(name)
+            enr = _enrich(r, use_llm=True)
+            r["summary"] = enr["summary"]
+            r["keywords"] = enr["keywords"]
+            new_cache[name] = {"fingerprint": fp, "summary": enr["summary"],
+                               "keywords": enr["keywords"], "source": enr["source"]}
+            continue
+
+        # Deterministic path (enrich off, --no-llm, or --dry-run): no egress.
+        if dry_run and eligible and egress is not None:
+            egress.append(name)
+        if cached.get("summary") and not re_summarize:
+            # Don't clobber an existing (model- or fallback-derived) summary on a
+            # deterministic refresh; preserve it. Only fill repos that lack one.
             r["summary"] = cached["summary"]
             r["keywords"] = list(cached.get("keywords") or [])
-            new_cache[r["name"]] = cached
+            new_cache[name] = cached
             continue
-        enr = _enrich(r, use_llm=use_llm)
+        enr = _deterministic_enrich(r)
         r["summary"] = enr["summary"]
         r["keywords"] = enr["keywords"]
-        new_cache[r["name"]] = {"fingerprint": fp, "summary": enr["summary"],
-                                "keywords": enr["keywords"], "source": enr["source"]}
+        new_cache[name] = {"fingerprint": fp, "summary": enr["summary"],
+                           "keywords": enr["keywords"], "source": enr["source"]}
 
     repos = merge_overrides(repos, overrides)
     repos.sort(key=lambda r: r["name"].lower())
