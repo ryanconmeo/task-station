@@ -45,22 +45,17 @@ import time
 from collections import Counter
 
 import paths
+from stack_map import EXT_TO_STACK, FILENAME_TO_STACK
 
 # A repo whose last commit is older than this is flagged `stale`. Overridable via
 # env for testing / tuning; the default matches the brief.
 REPO_STALE_MONTHS = int(os.environ.get("REPO_STALE_MONTHS", "6"))
 _MONTH_SECONDS = 30 * 86400
 
-# Source-file extension -> stack, for the tracked-file histogram.
-_EXT_STACK = {
-    ".py": "python", ".cs": "dotnet", ".sql": "sql",
-    ".ts": "typescript", ".tsx": "typescript",
-    ".js": "node", ".jsx": "node", ".mjs": "node", ".cjs": "node",
-    ".go": "go", ".rs": "rust",
-    ".java": "jvm", ".kt": "jvm", ".kts": "jvm", ".scala": "jvm",
-    ".rb": "ruby", ".sh": "shell", ".bash": "shell",
-    ".tf": "terraform",
-}
+# Extension/filename -> stack for the tracked-file histogram. Sourced from
+# `stack_map`, which is GENERATED from GitHub Linguist's languages.yml
+# (regenerate via `tools/gen_stack_map.py`) — comprehensive language coverage
+# with the tool's ergonomic labels preserved (python/node/dotnet/sql/...).
 _EXT_THRESHOLD = 3          # a histogram stack needs this many files (or be dominant)
 _STACK_CAP = 6              # keep cards readable
 
@@ -154,12 +149,16 @@ def _manifest_stacks(repo):
 
 
 def _ext_histogram_stacks(files):
-    """Stacks implied by the dominant tracked-file extensions. Includes any stack
-    at/above the threshold; if none reach it, includes the single dominant one so
-    tiny repos still get a stack."""
+    """Stacks implied by the dominant tracked files. Counts each file by its
+    extension (Linguist-derived `EXT_TO_STACK`), falling back to its basename for
+    extension-less files (`FILENAME_TO_STACK`: Dockerfile, Makefile, …). Includes
+    any stack at/above the threshold; if none reach it, includes the single
+    dominant one so tiny repos still get a stack."""
     counts = Counter()
     for f in files:
-        st = _EXT_STACK.get(os.path.splitext(f)[1].lower())
+        st = EXT_TO_STACK.get(os.path.splitext(f)[1].lower())
+        if not st:
+            st = FILENAME_TO_STACK.get(os.path.basename(f))
         if st:
             counts[st] += 1
     if not counts:
