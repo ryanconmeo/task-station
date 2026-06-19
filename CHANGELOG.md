@@ -3,6 +3,24 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.0.4] — 2026-06-18
+
+### Added
+- `/done` and `/todo … -s` accept comma-separated task numbers (multi-close /
+  multi-jump): `/done 1,2,5` closes each task with one result line apiece, and
+  `/todo 1,2,5 -s` attaches and opens a window per task. A bad ref in the list is
+  reported but doesn't abort the others; a single number works as before.
+
+### Fixed
+- Bare `/todo`/`/done` now follow plugin updates without a restart: the engine
+  symlink is re-pointed on every prompt (idempotent), not just at session start,
+  so an in-session `/plugin update` no longer leaves them on stale code.
+
+### Changed
+- README reorganized — `/todo` table preview and a new **Key Features** section
+  first, then a linked **Table of Contents**, with **Install** and a dedicated
+  **Commands** section moved up.
+
 ## [1.0.3] — 2026-06-18
 
 ### Changed

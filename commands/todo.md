@@ -1,6 +1,6 @@
 ---
 description: List tracked tasks; /todo <n> opens & resumes one; /todo closed [N] / all list more closed.
-argument-hint: "[task # · -s to jump · 'closed [N]' / 'all' to list closed]"
+argument-hint: "[task # · -s to jump (comma-separated #s jump several) · 'closed [N]' / 'all' to list closed]"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -22,8 +22,8 @@ Each task is colour-coded by category (an `<emoji> [TAG]` after the title — th
   4. Ask what they'd like to do next, or just continue the work.
 
   Treat this task as the active context for the rest of the session.
-- If it is a **session-jump** (the block starts with `[SESSION-JUMP]` — produced by `/todo <n> -s`), the user wants to hop **straight into this task's working session in a fresh window**, not read a recap. This session is now attached to the task (reopened if it was closed). The tracker has *already* tried to open a new Terminal window running the resume command, leaving this window untouched. Do only this, then stop:
-  - If the block contains `[JUMP-WINDOW-OPENED]`: a new Terminal window is already up and running the resume command. Reply with **only the `↪ …` line from the block, copied verbatim, and nothing else** — no preamble, no recap, no extra words. Do **not** run the resume command yourself; it's already running in the new window.
-  - If the block does **not** contain `[JUMP-WINDOW-OPENED]` (auto-open failed, or there's no recorded session yet): surface the `cd … && claude --resume …` one-liner **verbatim in a copyable code block** so the user can run it themselves, note in one line what it does, and stop. Do not attempt to open a window yourself.
+- If it is a **session-jump** (the block starts with `[SESSION-JUMP]` — produced by `/todo <n> -s`, which accepts a comma-separated list like `/todo 1,2,5 -s` to jump into several tasks at once), the user wants to hop **straight into each task's working session in a fresh window**, not read a recap. Each session-jump task is now attached (reopened if it was closed). The tracker has *already* tried to open a new Terminal window per task running its resume command, leaving this window untouched. The output may contain **several** `[SESSION-JUMP]` blocks — one per task. Do only this, then stop:
+  - For **each** block that contains `[JUMP-WINDOW-OPENED]`: a new Terminal window is already up and running that task's resume command. Reply with **each** `↪ …` line from the block(s), one per task, copied verbatim, and nothing else — no preamble, no recap, no extra words. Do **not** run any resume command yourself; they're already running in the new windows.
+  - For **each** block that does **not** contain `[JUMP-WINDOW-OPENED]` (auto-open failed, or there's no recorded session yet): surface that task's `cd … && claude --resume …` one-liner **verbatim in a copyable code block** so the user can run it themselves, note in one line what it does, and stop. Do not attempt to open a window yourself. (A `No task matching '…'.` line for a bad ref should be surfaced verbatim too.)
 
   Either way, **skip the recap** — that's the whole point of `-s`. Treat this task as the active context for the rest of the session.

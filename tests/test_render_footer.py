@@ -29,7 +29,8 @@ class RenderFooterTest(unittest.TestCase):
         ts.save_task(ts.new_task("Second task", "do another thing"))
         out = ts._format_list()
         self.assertIn("Commands:", out)
-        self.assertIn("/todo <n> -s", out)
+        self.assertIn("/todo <n[,n…]> -s", out)
+        self.assertIn("/done <n[,n…]>", out)
         self.assertIn("/task-station:config", out)
 
 
