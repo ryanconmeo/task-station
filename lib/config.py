@@ -54,6 +54,15 @@ def repo_roots():
         dirs = [os.path.expanduser(p) for p in DEFAULT_WORKSPACE_DIRS]
     return dirs
 
+def repo_enrich_enabled():
+    """Whether `repos --refresh` may make a (fingerprint-gated, best-effort) model
+    call to auto-fill summary/keywords. Default ON; `TASK_STATION_REPO_ENRICH=off`
+    or the `repo_enrich` config flag turns it off (so does `repos --refresh --no-llm`
+    per-call). Enrichment always degrades to a deterministic summary regardless."""
+    if os.environ.get("TASK_STATION_REPO_ENRICH") == "off":
+        return False
+    return bool(get("repo_enrich", True))
+
 def bare_commands():
     """True only if the user opted in (config flag or env). Default off."""
     if os.environ.get("TASK_STATION_BARE_CMDS") == "on":
