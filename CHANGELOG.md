@@ -3,6 +3,26 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.0.7] — 2026-06-19
+
+### Added
+- `render --format md` emits the `/todo` list as GitHub-flavored Markdown tables
+  (Open then Closed) directly, so the skill prints them verbatim instead of
+  hand-transcribing the ASCII block (table cells are `|`/newline-escaped).
+- Live attached-session marker: tasks with more than one currently-attached session
+  show a ` ⧉N` count (sessions whose link still resolves to the task) in both ASCII
+  and Markdown list output.
+
+### Changed
+- The per-message unattached-session nudge is collapsed: the full block (open-task
+  list, attach/create syntax, colour legend) prints only on the first miss and at
+  escalation; intermediate misses get a single compact line — a large recurring
+  token saving. Per-prompt category detection is preserved in the compact line.
+- `update`, `pin`, and `unpin` accept comma-separated task lists, mirroring `done`'s
+  batch contract (one result line per ref; a bad ref is reported but doesn't abort).
+- Skill docs: after a close/mutation, confirm with the result line(s) only — don't
+  re-render the full `/todo` list unless asked.
+
 ## [1.0.6] — 2026-06-19
 
 ### Added
