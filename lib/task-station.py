@@ -1654,18 +1654,6 @@ def cmd_session_start(a):
 
 # ------------------------------------------------------------------- main ----
 
-def cmd_migrate(a):
-    """Explicitly run the JSON -> SQLite migration (the auto-path on first DB
-    materialisation calls the same code). Idempotent: safe to re-run."""
-    res = store.migrate(STORE)
-    if not res or res.get("backup") is None:
-        print("Nothing to migrate (no JSON store, or SQLite unavailable).")
-        return
-    print("Migrated %d task(s); kept %d link(s), GC'd %d stale link(s)."
-          % (res["tasks"], res["links_kept"], res["links_stale"]))
-    print("JSON store backed up to %s" % res["backup"])
-
-
 def main():
     p = argparse.ArgumentParser(prog="task-station")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1742,8 +1730,6 @@ def main():
 
     sp = sub.add_parser("session-start"); sp.add_argument("--session", required=True)
     sp.add_argument("--source", default=""); sp.set_defaults(fn=cmd_session_start)
-
-    sp = sub.add_parser("migrate"); sp.set_defaults(fn=cmd_migrate)
 
     sp = sub.add_parser("config")
     sp.add_argument("--workspace-dirs", dest="workspace_dirs", default=None)

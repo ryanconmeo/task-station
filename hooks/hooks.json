@@ -1,21 +1,20 @@
 {
-  "_comment": "TASK_STATION_MIGRATE=1 on each entrypoint authorises the one-shot JSON->SQLite store migration (see lib/store.py). Only the plugin's own hooks/commands set it, so the real store upgrades seamlessly while a bare dev-checkout invocation never migrates as a side effect.",
   "hooks": {
     "SessionStart": [
       { "hooks": [
-        { "type": "command", "command": "TASK_STATION_MIGRATE=1 bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_session_start.sh\"" } ] }
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_session_start.sh\"" } ] }
     ],
     "UserPromptSubmit": [
       { "hooks": [
-        { "type": "command", "command": "TASK_STATION_MIGRATE=1 bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_user_prompt.sh\"" } ] }
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_user_prompt.sh\"" } ] }
     ],
     "PostToolUse": [
       { "matcher": "Write|Edit|NotebookEdit", "hooks": [
-        { "type": "command", "command": "TASK_STATION_MIGRATE=1 bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_post_tool.sh\"" } ] }
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_post_tool.sh\"" } ] }
     ],
     "Stop": [
       { "hooks": [
-        { "type": "command", "command": "TASK_STATION_MIGRATE=1 bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_stop.sh\"" } ] }
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_stop.sh\"" } ] }
     ]
   }
 }
