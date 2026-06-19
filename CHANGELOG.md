@@ -3,6 +3,24 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.0.11] — 2026-06-19
+
+### Fixed
+- **Exclude prose/markup-ambiguous extensions from stack detection.** The
+  Linguist-derived `lib/stack_map.py` kept only `type: programming`, so `.md`
+  (claimed by Markdown=prose AND GCC Machine Description=programming) mapped to
+  `gcc-machine-description` — polluting every repo with a `README.md`. The
+  generator now parses ALL languages with their `type` and drops any extension
+  a prose/markup/data language also claims (`.md`/`.rst`/`.txt`/`.json`/`.yaml`/
+  `.xml`/…), UNLESS a curated programming language owns it (so `.ts`/`.tsx`/`.rs`,
+  which XML lists incidentally, survive). Remaining programming-only collisions
+  resolve via a small tie-break dict (`.h`→`c`, `.m`→`objective-c`).
+- **Collapse the TSX/JSX variants** onto the ergonomic labels via the alias
+  overlay (`TSX`→`typescript`, `JSX`→`node`) so `tsx` no longer appears alongside
+  `typescript`. Correct niche detections are kept (e.g. `.com`→
+  `digital-command-language`). `EXT_TO_STACK` drops from 954 to 905 extensions;
+  the generator stays deterministic and stdlib-only.
+
 ## [1.0.10] — 2026-06-19
 
 ### Changed
