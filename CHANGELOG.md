@@ -3,6 +3,12 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Changed
+- README: documented that `/todo` output enters the session as context, giving Claude a
+  cross-project big-picture view for large multi-domain work.
+
 ## [1.0.4] — 2026-06-18
 
 ### Added
