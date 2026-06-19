@@ -235,7 +235,6 @@ class SqliteBackend:
         self.store_dir = store_dir
         self.db_path = os.path.join(store_dir, "tasks.db")
         self._conn = None
-        self._db_existed = None   # set by _raw_connect: did tasks.db pre-exist?
         self._inited = False      # one-time auto-migrate / divergence check done?
 
     def close(self):
@@ -247,11 +246,12 @@ class SqliteBackend:
 
     def _raw_connect(self):
         """Open the connection + ensure schema. No migration, no divergence
-        check — pure plumbing, safe to call from migrate() itself."""
+        check — pure plumbing, safe to call from migrate() itself. CREATES the DB
+        file, so it must only be reached when a SQLite store is actually intended
+        (the factory never builds this backend for the un-opted-in JSON path)."""
         if self._conn is not None:
             return self._conn
         os.makedirs(self.store_dir, exist_ok=True)
-        self._db_existed = os.path.exists(self.db_path)
         conn = sqlite3.connect(self.db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
         # WAL + a busy timeout so concurrent claude sessions/hooks don't lock each
@@ -266,14 +266,19 @@ class SqliteBackend:
 
     def _connect(self):
         """The connection every public primitive uses. On first touch it runs a
-        one-time init: auto-migrate an existing JSON store ONLY when explicitly
-        opted in (TASK_STATION_MIGRATE), then warn if a DB and a live JSON store
-        coexist. Auto-migration is gated so a bare dev-checkout invocation never
-        migrates the real store as a side effect of `render`/`create`/etc."""
+        one-time init: auto-migrate a JSON store when opted in, then warn if a DB
+        and a live JSON store coexist.
+
+        The migration gate is EMPTINESS-based, not file-existence based: migrate
+        only when opted in AND this DB holds zero tasks AND a JSON store has
+        tasks. So a stray empty/partial tasks.db (e.g. left by an earlier bare
+        run) no longer blocks a real migration — the opted-in run self-heals by
+        importing the full JSON, then atomically swapping it into the backup."""
         conn = self._raw_connect()
         if not self._inited:
             self._inited = True
-            if not self._db_existed and _migrate_opted_in():
+            if (_migrate_opted_in() and self._db_task_count() == 0
+                    and _json_store_has_tasks(self.store_dir)):
                 # Guarded so a migration hiccup never wedges the hook — the
                 # explicit `migrate` subcommand re-runs it and surfaces errors.
                 try:
@@ -282,6 +287,9 @@ class SqliteBackend:
                     pass
             self._warn_if_diverged()
         return conn
+
+    def _db_task_count(self):
+        return self._raw_connect().execute("SELECT COUNT(*) AS c FROM tasks").fetchone()["c"]
 
     def ensure(self):
         self._connect()
@@ -571,31 +579,96 @@ class SqliteBackend:
 
 # ------------------------------------------------------------ backend factory ---
 
+def _db_has_tasks(db_path):
+    """True iff tasks.db exists AND holds >=1 task row. Opens READ-ONLY so the
+    probe never creates the file, and tolerates a missing table / empty / corrupt
+    DB (any such case counts as 'no data')."""
+    if sqlite3 is None or not os.path.exists(db_path):
+        return False
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % os.path.abspath(db_path),
+                               uri=True, timeout=5.0)
+    except Exception:
+        return False
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()
+        return bool(row and row[0] > 0)
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def _json_store_has_tasks(store_dir):
+    """True iff a legacy JSON task store (store/tasks/*.json) holds at least one
+    task file."""
+    tasks_dir = os.path.join(store_dir, "tasks")
+    try:
+        return os.path.isdir(tasks_dir) and any(
+            n.endswith(".json") and not n.endswith(".tmp")
+            for n in os.listdir(tasks_dir))
+    except OSError:
+        return False
+
+
+def _select_backend(store_dir):
+    """State-based backend selection (NOT file-existence based). In priority:
+      1. sqlite3 unavailable          -> JsonBackend (fallback).
+      2. DB already holds task data   -> SqliteBackend (steady state).
+      3. a legacy JSON store has tasks:
+           - opted in  -> SqliteBackend (its emptiness gate then migrates).
+           - not opted -> JsonBackend: read JSON in place, create NO tasks.db.
+             This is the dev / bare-invocation path — non-destructive and
+             litter-free (no empty DB, no swap, no warning).
+      4. neither                      -> SqliteBackend (fresh install)."""
+    if sqlite3 is None:
+        return JsonBackend(store_dir)
+    if _db_has_tasks(os.path.join(store_dir, "tasks.db")):
+        return SqliteBackend(store_dir)
+    if _json_store_has_tasks(store_dir):
+        return SqliteBackend(store_dir) if _migrate_opted_in() else JsonBackend(store_dir)
+    return SqliteBackend(store_dir)
+
+
 # Single-slot cache: keep one live backend (and, for SQLite, its connection) per
-# resolved store dir. Tests repoint task-station.py's STORE between cases, so when
-# the key changes we close the previous backend before opening the next.
+# resolved store dir + selected backend type. Selection is recomputed each call
+# (the probe is cheap and read-only); when the resolved type changes — e.g. an
+# opted-in run migrates JSON into the DB, flipping case 3 to case 2 — the old
+# backend is closed and a fresh one cached.
 _cache = {"key": None, "backend": None}
 
 
 def get_backend(store_dir):
-    use_sqlite = sqlite3 is not None
-    key = (os.path.abspath(store_dir), use_sqlite)
+    backend = _select_backend(store_dir)
+    key = (os.path.abspath(store_dir), type(backend).__name__)
     if _cache["key"] == key and _cache["backend"] is not None:
-        return _cache["backend"]
+        return _cache["backend"]   # reuse the live one; discard the unconnected probe
     if _cache["backend"] is not None:
         try:
             _cache["backend"].close()
         except Exception:
             pass
-    backend = SqliteBackend(store_dir) if use_sqlite else JsonBackend(store_dir)
     _cache["key"] = key
     _cache["backend"] = backend
     return backend
 
 
+def migrate(store_dir):
+    """Run the explicit JSON->SQLite migration regardless of the opt-in flag or
+    current backend selection — the user asked for it directly. No-op when
+    sqlite3 is unavailable."""
+    if sqlite3 is None:
+        return {"tasks": 0, "links_kept": 0, "links_stale": 0, "backup": None}
+    b = SqliteBackend(store_dir)
+    try:
+        return b.migrate()
+    finally:
+        b.close()
+
+
 def reset_cache():
     """Drop the cached backend (closing it). Tests call this when toggling the
-    sqlite3 guard so the next get_backend() rebuilds from scratch."""
+    sqlite3 guard or store state so the next get_backend() reselects from scratch."""
     if _cache["backend"] is not None:
         try:
             _cache["backend"].close()

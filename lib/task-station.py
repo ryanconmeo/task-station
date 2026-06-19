@@ -1617,7 +1617,7 @@ def cmd_session_start(a):
 def cmd_migrate(a):
     """Explicitly run the JSON -> SQLite migration (the auto-path on first DB
     materialisation calls the same code). Idempotent: safe to re-run."""
-    res = _backend().migrate()
+    res = store.migrate(STORE)
     if not res or res.get("backup") is None:
         print("Nothing to migrate (no JSON store, or SQLite unavailable).")
         return
