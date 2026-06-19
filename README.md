@@ -39,6 +39,7 @@ Effort runs `▰▱▱▱▱` XS → `▰▰▰▰▰` XL, and each task is colo
 
 - **Persistent, cross-session tasks** — a `/todo` board that survives restarts; each task carries a stable number, summary, activity log, and effort estimate.
 - **Resumable, re-pinnable sessions** — every task pins to a Claude session you can reopen, or **re-pin a fresh session to save tokens** when context grows bloated.
+- **Big-picture context for Claude** — running `/todo` pulls your whole board into the session, so Claude can reason across *all* your tracked tasks at once. That cross-project view is the leverage behind large, multi-domain work — e.g. migrating data or wiring separate domains/systems together.
 - **Auto-categorised + colour-tinted** — tasks are tagged by category (bug/red, devops/blue, design/pink, …) and the terminal tints to match.
 - **Closed-task listing** — `/todo closed [N]` and `/todo all` page through your history.
 - **Multi-task `/done` and `/todo -s`** — close or jump into several tasks at once with a comma-separated list (`/done 1,2,5`, `/todo 1,2,5 -s`).
@@ -64,6 +65,8 @@ Effort runs `▰▱▱▱▱` XS → `▰▰▰▰▰` XL, and each task is colo
 ## Why Task Station (vs native Tasks)
 
 Claude Code's native **Tasks** are the agent's *internal* scratchpad (stored in `~/.claude/tasks/`, no user-facing list). **Task Station is the human-facing console on top**: a persistent `/todo` dashboard you control, where each task pins to a resumable session you can reopen, auto-categorised + colour-tinted, with parallel worker delegation. They're complementary — native Tasks tracks the agent's steps; Task Station tracks *your* work across sessions.
+
+Because `/todo` output lands in the session as context, Task Station doubles as a **shared map between you and Claude**: the board isn't just for you to read — Claude sees every tracked task and can connect them. Surface the board and Claude can plan and drive work that spans many tasks and repos at once (a migration touching several domains, say), instead of treating each task in isolation.
 
 ## Install
 
