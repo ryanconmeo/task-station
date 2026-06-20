@@ -3,6 +3,33 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.5.0] — 2026-06-20
+
+### Added
+- **Desktop bridge — an MCP server over the SHARED store.** Claude Desktop (and
+  any MCP client) can now create / read / update tasks in the *same* local
+  `tasks.db` the CLI uses — one store, two front doors. New `lib/mcp_server.py`
+  drives the existing engine (`paths.py` + `store.py` + `task-station.py`), so
+  store paths, seq numbering, lifecycle rules, and the `--format md` render are
+  reused verbatim — no forked logic. WAL is already on, so concurrent Desktop +
+  CLI access is safe.
+  - **Tools:** `list_tasks` (the Markdown board, byte-for-byte the CLI render),
+    `create_task` (makes an `open (◦)` task; `category`/`effort`/`source`),
+    `get_task` (full detail incl. the source link), `set_status`
+    (open → active → closed), `add_note` (timestamped activity-log entry).
+  - **Prompt:** `todo` — the rendered board, the Desktop analog of `/todo`.
+  - **Resources:** each task at `task://<seq>` returns its full detail, so a task
+    can be attached to a Desktop conversation via the + menu.
+  - **Source-conversation link.** `create_task(..., source=…)` records the
+    originating Desktop conversation ref/URL on the task; `get_task` surfaces it
+    — the Desktop ↔ Code provenance link.
+  - **`mcp` is an OPTIONAL, server-only dependency.** The tool logic is plain
+    stdlib; the FastMCP wrapper is lazily imported only inside `main()`. The core
+    plugin and the whole test suite stay stdlib-only — you only need
+    `pip install mcp` to *run* the bridge. Wire it up via the stable
+    `~/.claude/task-station-engine/mcp_server.py` symlink (survives
+    `/plugin update`) — see the README "Desktop bridge (MCP)" section.
+
 ## [1.4.0] — 2026-06-20
 
 ### Added

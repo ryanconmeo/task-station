@@ -58,6 +58,7 @@ A task's lifecycle is **one `status` field with three values: open (`◦`) → a
 - [Commands](#commands)
 - [Categories & terminal tint](#categories--terminal-tint)
 - [Delegate — in-project workers](#delegate--in-project-workers)
+- [Desktop bridge (MCP)](#desktop-bridge-mcp)
 - [Configure](#configure)
 - [Data & privacy](#data--privacy)
 - [How it works](#how-it-works)
@@ -346,6 +347,60 @@ under your control:
 > still reaches the model when you route work. To keep a repo **fully** off the model, `exclude` it
 > (`index:false`) or drop a `.task-station-ignore` marker — then it never enters the index at all.
 
+## Desktop bridge (MCP)
+
+Task Station ships an **MCP server** so **Claude Desktop** (or any MCP client) can create, read, and
+update tasks in the **same local store the CLI uses** — one `tasks.db`, two front doors. Raise a task
+in a Desktop conversation and it shows up in `/todo` in Claude Code, and vice-versa. WAL is already
+on, so concurrent Desktop + CLI access is safe.
+
+The `mcp` SDK is an **optional, server-only dependency**: the core plugin, the hooks, and the whole
+test suite stay stdlib-only. You only need it to *run* the bridge.
+
+**One-time setup**
+
+1. Install the SDK (the only extra dependency):
+
+   ```
+   pip install mcp
+   ```
+
+2. Add the server to your Claude Desktop config
+   (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS). Point it at the
+   **stable engine symlink** — `~/.claude/task-station-engine` always tracks the active install, so
+   the path survives `/plugin update`:
+
+   ```json
+   {
+     "mcpServers": {
+       "task-station": {
+         "command": "python3",
+         "args": ["/Users/YOU/.claude/task-station-engine/mcp_server.py"]
+       }
+     }
+   }
+   ```
+
+   Replace `/Users/YOU` with your home directory — Claude Desktop does **not** expand `~` in `args`,
+   so use the absolute path. (A ready-to-edit snippet lives at
+   [`claude_desktop_config.json`](claude_desktop_config.json).) Restart Claude Desktop to load it.
+
+   The bridge writes where the CLI reads automatically — it honors `TASK_STATION_HOME` /
+   `CLAUDE_CONFIG_DIR` exactly like the CLI. To point Desktop at a non-default store, add
+   `"env": { "TASK_STATION_HOME": "/path/to/store" }` to the server block.
+
+**What it exposes**
+
+| Kind | Name | What it does |
+|------|------|--------------|
+| Tool | `list_tasks(status="all-open")` | The Markdown board (byte-for-byte the CLI's `--format md`). `status`: `all-open` (default, open+active) · `open` · `active` · `closed` · `all`. |
+| Tool | `create_task(title, summary, category?, effort?, source?)` | Creates an `open (◦)` task. `source` records the originating Desktop conversation ref/URL (surfaced in `get_task`). |
+| Tool | `get_task(ref)` | Full detail by task number or id: status, category, effort, **source link**, and activity log. |
+| Tool | `set_status(ref, status)` | Moves a task along `open → active → closed`. |
+| Tool | `add_note(ref, text)` | Appends a timestamped note to the task's activity log. |
+| Prompt | `todo` | The rendered board — the Desktop analog of `/todo`. |
+| Resource | `task://<seq>` | A single task's full detail; attach one to a Desktop conversation via the **+** menu. |
+
 ## Configure
 
 All config lives in one file: `${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/config.json`. Use the commands below to read and write it — never edit the file directly.
@@ -586,6 +641,10 @@ To show the current task in the Claude Code status bar, add one line to `setting
 ### Files (what each ships)
 
 **`lib/task-station.py`** — the engine: task storage, `/todo` and `/done`, the hooks' logic, plus the `whoami` (incl. the `--statusline` segment provider) and `update` commands.
+
+**`lib/mcp_server.py`** — the [Desktop bridge (MCP)](#desktop-bridge-mcp): an MCP server exposing the task store to Claude Desktop / any MCP client over the *same* `tasks.db` the CLI uses. Stdlib tool logic drives the engine; the FastMCP wrapper is lazily imported, so `mcp` is an optional, server-only dependency (`pip install mcp` to run it). Exposed via the stable `~/.claude/task-station-engine/mcp_server.py` symlink.
+
+**`lib/store.py`** — the storage backend behind `task-station.py` (indexed SQLite `tasks.db` by default, JSON file-per-task fallback). Parameterised by store dir; never reads the environment itself.
 
 **`lib/categories.py`** — optional colour-taxonomy + terminal-tint plugin; `task-station.py` runs fine without it. Ships with defaults; users customize via `task-station-data/config.json` without editing this file. See [`CATEGORIES.md`](CATEGORIES.md).
 
