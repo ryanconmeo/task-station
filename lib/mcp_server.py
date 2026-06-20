@@ -59,6 +59,25 @@ def _resolve(ref):
 
 # --------------------------------------------------------------- tool logic ---
 
+# Claude Desktop Chat tends to paraphrase a Markdown board into prose unless it
+# is told to render it verbatim (the CLI `/todo` skill says "print verbatim" for
+# the same reason). So the bridge prepends this one-line instruction to the
+# board it hands Chat — for both the `list_tasks` tool result and the `todo`
+# prompt — while the board BODY stays byte-equal to the CLI `render --format md`.
+VERBATIM_INSTRUCTION = (
+    "Display this task board to the user EXACTLY as written below — it is "
+    "preformatted Markdown; render the tables verbatim, do not summarize, "
+    "reword, or re-rank."
+)
+
+
+def _board_with_instruction(status="all-open"):
+    """The verbatim-render instruction line, a blank line, then the board —
+    byte-equal to the CLI `render --format md` (only the prefix is added). This
+    is what Chat sees from the `list_tasks` tool and the `todo` prompt."""
+    return VERBATIM_INSTRUCTION + "\n\n" + _list_tasks(status)
+
+
 def _list_tasks(status="all-open"):
     """The rendered Markdown board — byte-for-byte the CLI's `render --format md`.
 
@@ -219,7 +238,8 @@ def _server_version():
 # client sees. Handlers reuse the stdlib logic fns verbatim — no forked logic.
 
 def _tool_list_tasks(args):
-    return _list_tasks(args.get("status", "all-open"))
+    # Prepend the verbatim-render instruction so Chat shows the table, not prose.
+    return _board_with_instruction(args.get("status", "all-open"))
 
 
 def _tool_create_task(args):
@@ -253,9 +273,9 @@ def _tool_add_note(args):
 TOOLS = [
     {
         "name": "list_tasks",
-        "description": ("The task board as Markdown (the Desktop analog of "
-                        "/todo). `status`: all-open (default, open+active) | "
-                        "open | active | closed | all."),
+        "description": ("Show the user's task board as Markdown (the Desktop "
+                        "analog of /todo). `status`: all-open (default, "
+                        "open+active) | open | active | closed | all."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -267,10 +287,10 @@ TOOLS = [
     },
     {
         "name": "create_task",
-        "description": ("Create an open(◦) task. `category` = a category "
-                        "key/emoji/[TAG]; `effort` = xs/s/m/l/xl; `source` = the "
-                        "originating Desktop conversation ref/URL (stored on the "
-                        "task, surfaced in get_task)."),
+        "description": ("Create / track a new open(◦) task. `category` = a "
+                        "category key/emoji/[TAG]; `effort` = xs/s/m/l/xl; "
+                        "`source` = the originating Desktop conversation ref/URL "
+                        "(stored on the task, surfaced in get_task)."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -286,8 +306,8 @@ TOOLS = [
     },
     {
         "name": "get_task",
-        "description": ("Full detail (status, category, effort, source, activity "
-                        "log) for a task by its number or id."),
+        "description": ("Show full detail (status, category, effort, source, "
+                        "activity log) for one task by its number or id."),
         "inputSchema": {
             "type": "object",
             "properties": {"ref": {"type": "string"}},
@@ -365,14 +385,20 @@ def _handle_tools_call(params):
     return {"content": _text_content(text)}
 
 
+# The `todo` prompt's human-facing labels for Desktop's prompt/attachment picker.
+TODO_PROMPT_TITLE = "Task Station: todo"
+TODO_PROMPT_DESCRIPTION = "Show your task-station board (open · active · closed)"
+
+
 def _handle_prompts_get(params):
     name = params.get("name")
     if name != "todo":
         raise _RpcError(-32602, "Unknown prompt: %s" % name)
     return {
-        "description": "The current task board, rendered as Markdown (the Desktop /todo).",
+        "description": TODO_PROMPT_DESCRIPTION,
         "messages": [{"role": "user",
-                      "content": {"type": "text", "text": _list_tasks("all-open")}}],
+                      "content": {"type": "text",
+                                  "text": _board_with_instruction("all-open")}}],
     }
 
 
@@ -419,8 +445,12 @@ def dispatch(method, params):
     if method == "tools/call":
         return _handle_tools_call(params)
     if method == "prompts/list":
+        # title + description so the prompt is recognizable in Desktop's prompt /
+        # attachment picker (the MCP spec carries `description`; newer clients
+        # also surface an optional `title`).
         return {"prompts": [{"name": "todo",
-                             "description": "The rendered task board (Desktop /todo)."}]}
+                             "title": TODO_PROMPT_TITLE,
+                             "description": TODO_PROMPT_DESCRIPTION}]}
     if method == "prompts/get":
         return _handle_prompts_get(params)
     if method == "resources/list":

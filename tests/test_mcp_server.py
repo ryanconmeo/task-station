@@ -133,6 +133,29 @@ class McpServerTest(unittest.TestCase):
         cli_md = self.ts._format_list_md()                     # CLI --format md
         self.assertEqual(bridge_md, cli_md)
 
+    # -- verbatim-render instruction prefix on the TOOL result --------------
+    def test_list_tasks_tool_result_leads_with_verbatim_instruction(self):
+        self.mcp._create_task("Board task one", "x", effort="s")
+        out = self.mcp._tool_list_tasks({})
+        # Leads with the verbatim-render instruction line.
+        self.assertTrue(out.startswith(self.mcp.VERBATIM_INSTRUCTION))
+        self.assertIn("EXACTLY as written below", out)
+        self.assertIn("render the tables verbatim", out)
+        # Then the Markdown board: section header + exact table header row.
+        self.assertIn("### Open", out)
+        self.assertIn("| # | Task |", out)
+        # The board body (minus the prefix) is byte-equal to the CLI render.
+        board = out[len(self.mcp.VERBATIM_INSTRUCTION):].lstrip("\n")
+        self.assertEqual(board, self.ts._format_list_md())
+        # The raw helper stays byte-equal to the CLI (no prefix leaks in).
+        self.assertEqual(self.mcp._list_tasks(), self.ts._format_list_md())
+
+    # -- every tool carries a crisp, non-empty description ------------------
+    def test_every_tool_has_a_description(self):
+        for t in self.mcp.TOOLS:
+            self.assertTrue(t["description"].strip(),
+                            "tool %r needs a description" % t["name"])
+
     # -- the module imports & runs with NO mcp SDK present -------------------
     def test_import_and_logic_work_without_mcp(self):
         # Poison `import mcp` so a top-level dependency would explode on import.
@@ -256,6 +279,39 @@ class McpProtocolTest(unittest.TestCase):
                          "params": {"name": "todo"}})
         msgs = got["result"]["messages"]
         self.assertIn("Prompt board task", msgs[0]["content"]["text"])
+
+    # -- todo prompt is discoverable: non-empty description (+ title) -------
+    def test_prompts_list_todo_has_description(self):
+        lst = self._one({"jsonrpc": "2.0", "id": 12, "method": "prompts/list"})
+        todo = next(p for p in lst["result"]["prompts"] if p["name"] == "todo")
+        self.assertTrue(todo.get("description", "").strip())   # discoverable
+        self.assertTrue(todo.get("title", "").strip())         # newer-spec title
+
+    # -- todo prompt CONTENT leads with the verbatim instruction + board ----
+    def test_prompts_get_todo_content_has_instruction_and_board(self):
+        self.mcp._create_task("Prompt verbatim task", "x")
+        got = self._one({"jsonrpc": "2.0", "id": 13, "method": "prompts/get",
+                         "params": {"name": "todo"}})
+        text = got["result"]["messages"][0]["content"]["text"]
+        self.assertTrue(text.startswith(self.mcp.VERBATIM_INSTRUCTION))
+        self.assertIn("### Open", text)
+        self.assertIn("Prompt verbatim task", text)
+
+    # -- tools/call list_tasks result leads with the instruction over RPC ---
+    def test_tools_call_list_tasks_leads_with_instruction(self):
+        self.mcp._create_task("Proto board task", "x")
+        resp = self._one({"jsonrpc": "2.0", "id": 14, "method": "tools/call",
+                          "params": {"name": "list_tasks", "arguments": {}}})
+        text = resp["result"]["content"][0]["text"]
+        self.assertTrue(text.startswith(self.mcp.VERBATIM_INSTRUCTION))
+        self.assertIn("### Open", text)
+        self.assertIn("| # | Task |", text)
+
+    # -- tools/list descriptions are all non-empty --------------------------
+    def test_tools_list_descriptions_non_empty(self):
+        resp = self._one({"jsonrpc": "2.0", "id": 15, "method": "tools/list"})
+        for t in resp["result"]["tools"]:
+            self.assertTrue(t["description"].strip())
 
     # -- resources ----------------------------------------------------------
     def test_resources_list_and_read_detail(self):
