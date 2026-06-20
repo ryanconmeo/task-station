@@ -3,6 +3,32 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.6.1] — 2026-06-20
+
+### Changed
+- **The Desktop bridge now points Claude Desktop at a stable, self-resolving
+  launcher instead of the volatile engine symlink.** Previously `--desktop-bridge
+  on` wired Desktop to `~/.claude/task-station-engine/mcp_server.py`, but that
+  symlink is re-pointed by *every* CLI session to *that session's* plugin version
+  — so an older session (e.g. a 1.2.2 version with no `mcp_server.py`) could
+  silently break Desktop. `on` now generates `<data_dir>/mcp-launcher.py` (a
+  stable, version-independent path) and points Desktop at `python3
+  <data_dir>/mcp-launcher.py`. At run time the launcher resolves the **installed**
+  task-station version itself — reading `plugins/installed_plugins.json` →
+  `task-station@ryanconmeo` `installPath` → `<installPath>/lib/mcp_server.py`,
+  falling back to the **highest** `plugins/cache/ryanconmeo/task-station/*/lib/mcp_server.py`
+  that exists — and `os.execv`s it with the same interpreter, passing stdio
+  straight through. Robust across `/plugin update` and concurrent CLI sessions.
+  The launcher is stdlib-only (system `python3` 3.9+) and is regenerated on every
+  `on` (idempotent); `off` removes only our config entry and leaves the (inert)
+  launcher file in place.
+
+### Added
+- **`TASK_STATION_DESKTOP_CONFIG` override.** When set, the `--desktop-bridge` CLI
+  path resolves the Desktop config from that path instead of the real
+  `~/Library/Application Support/Claude/claude_desktop_config.json` — so tests and
+  safe manual checks never touch the live Desktop config.
+
 ## [1.6.0] — 2026-06-20
 
 ### Changed

@@ -366,10 +366,21 @@ task-station config --desktop-bridge on
 
 This locates (or creates) Claude Desktop's `claude_desktop_config.json`
 (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS), backs it up, and
-**merges** a `task-station` server entry — pointed at the **stable engine symlink**
-`~/.claude/task-station-engine/mcp_server.py` (which always tracks the active install, so the wiring
-survives `/plugin update`). Other MCP servers in the file are left untouched, and re-running just
+**merges** a `task-station` server entry — pointed at a **stable, self-resolving launcher**,
+`python3 <data_dir>/mcp-launcher.py` (`data_dir` = `${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data`).
+Other MCP servers in the file are left untouched, and re-running just regenerates the launcher and
 updates the entry. **Restart Claude Desktop** to load it.
+
+**Why a launcher, not the engine symlink?** The wiring used to point at
+`~/.claude/task-station-engine/mcp_server.py`, but that symlink is **volatile** — every CLI session's
+`SessionStart` hook re-points it to *that session's* plugin version, which can lag (an old version
+may have no `mcp_server.py`, breaking Desktop). The launcher lives at a stable, version-independent
+path and resolves the **installed** version itself at run time: it reads
+`plugins/installed_plugins.json` (`task-station@ryanconmeo` → `installPath` → `<installPath>/lib/mcp_server.py`),
+falling back to the **highest** `plugins/cache/ryanconmeo/task-station/*/lib/mcp_server.py` that
+exists, then `exec`s it with the same interpreter — passing stdio straight through, so it *is* the
+MCP server, just version-resolved on every launch. Robust across `/plugin update` and concurrent CLI
+sessions. It is stdlib-only and runs on the system `python3` (3.9+).
 
 To remove the wiring later (leaving any other servers in place):
 
@@ -377,11 +388,16 @@ To remove the wiring later (leaving any other servers in place):
 task-station config --desktop-bridge off
 ```
 
-The current state (installed? path?) also shows in the no-arg `task-station config` view.
+`off` removes only our config entry; the generated `mcp-launcher.py` is left in place (inert without
+the entry, and lets a later `on` re-wire instantly — delete it by hand if you like). The current
+state (installed? launcher path?) also shows in the no-arg `task-station config` view.
 
 The bridge writes where the CLI reads automatically — it honors `TASK_STATION_HOME` /
 `CLAUDE_CONFIG_DIR` exactly like the CLI. To point Desktop at a non-default store, add
 `"env": { "TASK_STATION_HOME": "/path/to/store" }` to the `task-station` server block by hand.
+
+> Testing/CI tip: set `TASK_STATION_DESKTOP_CONFIG=/tmp/desktop.json` to redirect `--desktop-bridge`
+> at a throwaway config file, so checks never touch the real `claude_desktop_config.json`.
 
 **What it exposes**
 
@@ -636,7 +652,9 @@ To show the current task in the Claude Code status bar, add one line to `setting
 
 **`lib/task-station.py`** — the engine: task storage, `/todo` and `/done`, the hooks' logic, plus the `whoami` (incl. the `--statusline` segment provider) and `update` commands.
 
-**`lib/mcp_server.py`** — the [Desktop bridge (MCP)](#desktop-bridge-mcp): an MCP server exposing the task store to Claude Desktop / any MCP client over the *same* `tasks.db` the CLI uses. Stdlib tool logic drives the engine; the FastMCP wrapper is lazily imported, so `mcp` is an optional, server-only dependency (`pip install mcp` to run it). Exposed via the stable `~/.claude/task-station-engine/mcp_server.py` symlink.
+**`lib/mcp_server.py`** — the [Desktop bridge (MCP)](#desktop-bridge-mcp): an MCP server exposing the task store to Claude Desktop / any MCP client over the *same* `tasks.db` the CLI uses. Stdlib tool logic drives the engine and the MCP protocol is hand-rolled (`json` + `sys` only), so it runs on the system `python3` (3.9+) with no `pip install`. Reached by Desktop through the launcher below, never wired directly.
+
+**`lib/mcp_launcher.py`** — the **stable, self-resolving launcher** copied to `<data_dir>/mcp-launcher.py` by `config --desktop-bridge on`. Desktop is pointed at *this* (a version-independent path), not the volatile engine symlink; at run time it resolves the installed `mcp_server.py` (`installed_plugins.json` → `installPath`, else the highest cache version) and `exec`s it. Stdlib only.
 
 **`lib/store.py`** — the storage backend behind `task-station.py` (indexed SQLite `tasks.db` by default, JSON file-per-task fallback). Parameterised by store dir; never reads the environment itself.
 
