@@ -415,6 +415,15 @@ The bridge writes where the CLI reads automatically — it honors `TASK_STATION_
 board renders as a **table** (the same ◦/● tables as the CLI), not a paraphrase, because the bridge
 tells Chat to display it verbatim.
 
+**Desktop auto-track.** Desktop has no `UserPromptSubmit` hook, so the CLI's "auto-track every
+substantive topic as an open(◦) task" can't run there. Instead the bridge's MCP `initialize`
+response carries an **`instructions`** string (which clients fold into the model's context) nudging
+Desktop's Claude to track substantive work itself: when you raise real work, it first `list_tasks`
+and folds onto a matching open task with `add_note` (no duplicates), else `create_task` with a title,
+1–3 sentence summary, category, and a `source` identifying the conversation — those tasks show up in
+your `/todo`. It's a **model-driven nudge, not a hard hook**, and only fires on substantive work, so
+trivial one-off questions and casual chat stay off the board.
+
 ## Configure
 
 All config lives in one file: `${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/config.json`. Use the commands below to read and write it — never edit the file directly.

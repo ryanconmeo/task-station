@@ -224,6 +224,32 @@ class McpProtocolTest(unittest.TestCase):
         self.assertIn("prompts", caps)
         self.assertIn("resources", caps)
 
+    # -- initialize carries the Desktop auto-track instructions -------------
+    def test_initialize_carries_autotrack_instructions(self):
+        resp = self._one({"jsonrpc": "2.0", "id": 16, "method": "initialize",
+                          "params": {"protocolVersion": "2024-11-05"}})
+        result = resp["result"]
+        # A non-empty `instructions` string the client folds into the model's
+        # context — the Desktop analog of the CLI's prompt-context auto-track.
+        instructions = result.get("instructions")
+        self.assertIsInstance(instructions, str)
+        self.assertTrue(instructions.strip())
+        self.assertEqual(instructions, self.mcp.INITIALIZE_INSTRUCTIONS)
+        # It anchors the key behaviors: create vs fold, list first, substantive-only.
+        self.assertIn("create_task", instructions)
+        self.assertIn("list_tasks", instructions)
+        self.assertIn("add_note", instructions)
+        self.assertIn("source", instructions)
+        lowered = instructions.lower()
+        self.assertIn("substantive", lowered)            # only substantive work
+        self.assertIn("fold", lowered)                   # fold, don't duplicate
+        # The regression invariants still hold alongside the new field.
+        self.assertIn("protocolVersion", result)
+        self.assertEqual(result["serverInfo"]["name"], "task-station")
+        self.assertTrue(result["serverInfo"]["version"])
+        for k in ("tools", "prompts", "resources"):
+            self.assertIn(k, result["capabilities"])
+
     # -- ping + initialized notification ------------------------------------
     def test_ping_returns_empty(self):
         resp = self._one({"jsonrpc": "2.0", "id": 7, "method": "ping"})
