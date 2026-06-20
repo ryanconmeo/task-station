@@ -3,6 +3,35 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.2.0] — 2026-06-20
+
+### Changed
+- **Redesigned shipped category defaults.** `yellow` tag `FIX PR` → **`FIX`**;
+  `white` `SKILLS`/⚪ → **`AI CONFIG`/🪩** (disco ball), label "AI tooling & config";
+  and the `pink`↔`silver` roles swapped so **`pink` = `PERSONAL`/🩷** and
+  **`silver` = `DESIGN`/🎨** (palette). Tint hexes are kept *by slot* (pink keeps
+  its pink tint, silver its neutral grey), so existing tints stay sensible.
+  - **Stored tasks re-render with the new labels.** A task's stored `color` key is
+    **unchanged** — only its *rendered* tag/label/emoji updates. So tasks coloured
+    `pink` now show 🩷 `[PERSONAL]`, `silver` → 🎨 `[DESIGN]`, `white` → 🪩
+    `[AI CONFIG]`, and `yellow` → 🟡 `[FIX]`. No data migration; nothing on disk
+    changes.
+
+### Added
+- **Slot-determines-emoji.** The dot is now *canonical per colour slot* — you pick
+  the colour, the colour determines the icon. A category override / new category
+  needs only `tag` + `label`; the `dot` (and tint hexes) are inherited from the
+  slot automatically. An explicit `dot` is still honoured for power users.
+- **Seeded-but-removable enabled set.** A new `enabled_categories` config key
+  controls which slots are "on" — the legend, auto-classification nudge, and picker
+  consider only enabled categories. Unconfigured ⇒ the full set (back-compat).
+  **⚫ GENERAL is permanent** — always enabled, cannot be disabled.
+- **Category presets.** `config --categories preset <minimal|web|data|ops|full>`
+  applies a named enabled-set. Every preset contains the universal core
+  (`BUG`, `AI CONFIG`, `PERSONAL`, `GENERAL`). `config --categories` (no arg) shows
+  the current enabled set + available presets. `config --enable <key>` /
+  `--disable <key>` toggle individual slots (disabling `GENERAL` is refused).
+
 ## [1.1.0] — 2026-06-19
 
 ### Changed

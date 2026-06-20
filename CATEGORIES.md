@@ -35,21 +35,31 @@ Every task carries a `color` — one of the keys below. The colour does two jobs
 |--------|-----|--------------|-----------------------------------|
 | red    | 🔴  | `[BUG]`       | bug                               |
 | orange | 🟠  | `[REVIEW]`    | code review                       |
-| yellow | 🟡  | `[FIX PR]`    | fixing PR review feedback         |
+| yellow | 🟡  | `[FIX]`       | fixing PR review feedback         |
 | green  | 🟢  | `[FEATURE]`   | feature work                      |
 | blue   | 🔵  | `[DEVOPS]`    | devops                            |
 | purple | 🟣  | `[SPECIAL]`   | special                           |
-| black  | ⚫  | `[GENERAL]`   | general (the default)             |
-| pink   | 🩷  | `[DESIGN]`    | design                            |
-| white  | ⚪  | `[SKILLS]`    | skills and memories               |
-| silver | 🩶  | `[PERSONAL]`  | personal projects                 |
+| black  | ⚫  | `[GENERAL]`   | general (the default, permanent)  |
+| pink   | 🩷  | `[PERSONAL]`  | personal projects                 |
+| white  | 🪩  | `[AI CONFIG]` | AI tooling & config               |
+| silver | 🎨  | `[DESIGN]`    | design                            |
 | gold   | 🟨  | `[GOLD]`      | reserved (unassigned)             |
 | brown  | 🟤  | `[DATABASE]` | database                          |
 
 Each task is rendered as `<dot> [TAG]` — e.g. `🔴 [BUG]`.
 
-`black` / general is the fallback for anything that doesn't fit a category.
-`gold` is reserved — leave it unassigned until it gets a meaning.
+`black` / general is the fallback for anything that doesn't fit a category, and is
+**permanent** — it is always enabled and cannot be disabled (see *Enabled set &
+presets* below). `gold` is reserved — leave it unassigned until it gets a meaning.
+
+### The dot is slot-canonical — "you pick the colour; the colour determines the icon"
+
+Each colour slot **owns** an emoji. When you override a category or add a new one,
+you supply only `tag` + `label` + the colour slot — the **dot is taken from the
+slot's canonical emoji automatically**, as are the tint `hex`/`hex_light`. An
+explicit `dot` is still allowed (power users can override it), but it's optional:
+absent ⇒ the slot's emoji. So an override of `{"green": {"tag": "VOLT", "label":
+"volt work"}}` keeps 🟢 and green's tint while relabelling the slot.
 
 ## Choosing a colour
 
@@ -60,11 +70,44 @@ Pick from the *nature of the work*, not the surface keywords:
 - **yellow** — fixing PR *review feedback* on your own PR (addressing threads, pushing fixes, replying/resolving).
 - **green** — feature / product coding.
 - **blue** — infra, deploys, DNS, domains, CI, environment setup.
-- **pink** — UI/UX, theming, dark mode, layout, visual design.
-- **white** — Claude tooling: skills, slash commands, hooks, memory, this task-station system.
+- **silver** — UI/UX, theming, dark mode, layout, visual design (🎨).
+- **pink** — personal projects / side work (🩷).
+- **white** — AI tooling & config: skills, slash commands, hooks, memory, this task-station system (🪩).
 - **brown** — database work: schema, queries, SQL, DB tuning, **and data migrations** (moving/transforming data between systems counts as database work).
 - **purple** — anything genuinely special / one-off that warrants standing out.
 - **black** — general / catch-all when nothing above fits.
+
+## Enabled set & presets
+
+Not every taxonomy fits every workflow, so the active set of categories is
+**seeded-but-removable**, stored in `config.json` as `enabled_categories` (a list
+of colour keys). The legend, the auto-classification nudge, and the colour picker
+all consider **only enabled categories**. When `enabled_categories` is unset, the
+**full set** of all 12 shows (back-compat) — nothing changes until you opt into a
+preset or toggle slots.
+
+**⚫ GENERAL is permanent**: it is always enabled and cannot be disabled.
+
+### Presets
+
+`task-station config --categories preset <name>` sets `enabled_categories` to a
+named preset. The **universal core** — `red BUG`, `white AI CONFIG`,
+`pink PERSONAL`, `black GENERAL` — is seeded in **every** preset (removable except
+GENERAL):
+
+| preset    | enabled slots                                                   |
+|-----------|-----------------------------------------------------------------|
+| `minimal` | core only (BUG · AI CONFIG · PERSONAL · GENERAL)                 |
+| `web`     | core + FEATURE, DESIGN, DEVOPS, REVIEW, FIX                      |
+| `data`    | core + DATABASE, FEATURE, DEVOPS, REVIEW                         |
+| `ops`     | core + DEVOPS, DATABASE, REVIEW, FIX, SPECIAL                    |
+| `full`    | all 12 (the default)                                            |
+
+- `task-station config --categories` (no arg) — show the current enabled set +
+  available presets.
+- `task-station config --enable <key>` / `--disable <key>` — toggle a single slot
+  (accepts a key, emoji, or `[TAG]`). Disabling `black`/`GENERAL` is refused.
+- Editing the raw `categories` override map in `config.json` still works.
 
 ## Skill → colour (immediate tinting)
 
@@ -129,7 +172,8 @@ JSON shape (all keys optional — only what you set is stored):
 
 ```json
 {
-  "categories": { "teal": { "dot": "🟦", "tag": "TEAL", "label": "ops", "hex": "#1a3a3a" } },
+  "categories": { "green": { "tag": "VOLT", "label": "volt work" } },
+  "enabled_categories": ["red", "white", "pink", "black", "green"],
   "tint_terminal": false,
   "tint_mode": "auto",
   "skill_colors": [ ["regexpattern", "color"] ],
@@ -137,12 +181,15 @@ JSON shape (all keys optional — only what you set is stored):
 }
 ```
 
-- **`categories`** merges over (and can override) the shipped defaults. Only
-  entries with all three of `dot`, `tag`, and `label` are accepted; malformed
-  entries are silently skipped. The optional `hex` field (e.g. `"#1a3a3a"`) is
-  the background colour used in **auto** tint mode — without it, auto mode
-  produces no tint for that category. Any invalid JSON in the file leaves the
-  shipped defaults entirely intact.
+- **`categories`** merges over (and can override) the shipped defaults. Each entry
+  needs only `tag` + `label` — the `dot` and tint `hex`/`hex_light` are inherited
+  from the colour slot (see *slot-canonical* above); supply an explicit `dot`/`hex`
+  to override them. Entries missing `tag` or `label` are silently skipped. Any
+  invalid JSON in the file leaves the shipped defaults entirely intact.
+- **`enabled_categories`** is the list of "on" colour keys (see *Enabled set &
+  presets*). Absent ⇒ the full set. `⚫ GENERAL` is always forced in. Usually set
+  via `config --categories preset <name>` / `--enable` / `--disable` rather than by
+  hand.
 - **`tint_terminal`** toggles tinting globally. Set to `false` if you like the
   `<emoji> [TAG]` decoration but don't want any terminal tinting.
 - **`tint_mode`** — `"auto"` (default, zero-setup direct escapes) or `"profile"`

@@ -8,9 +8,9 @@ Run `/todo` and Claude renders your board as two tables — **open** first, then
 
 |   # | Task | Category | Effort | Activity |
 | --: | --- | --- | --- | --- |
-|  38 | Add dark mode toggle to the settings page | 🩷 [DESIGN] | ▰▰▰▱▱ M | 2h ago |
+|  38 | Add dark mode toggle to the settings page | 🎨 [DESIGN] | ▰▰▰▱▱ M | 2h ago |
 |  12 | Fix auth token refresh on expired sessions | 🔴 [BUG] | ▰▰▱▱▱ S | yesterday |
-|   5 | Build cross-session task tracker | ⚪ [SKILLS] | ▰▰▰▰▱ L | 3d ago |
+|   5 | Build cross-session task tracker | 🪩 [AI CONFIG] | ▰▰▰▰▱ L | 3d ago |
 
 **Closed**
 
@@ -40,7 +40,7 @@ Effort runs `▰▱▱▱▱` XS → `▰▰▰▰▰` XL, and each task is colo
 - **Persistent, cross-session tasks** — a `/todo` board that survives restarts; each task carries a stable number, summary, activity log, and effort estimate.
 - **Resumable, re-pinnable sessions** — every task pins to a Claude session you can reopen, or **re-pin a fresh session to save tokens** when context grows bloated.
 - **Big-picture context for Claude** — running `/todo` pulls your whole board into the session, so Claude can reason across *all* your tracked tasks at once. That cross-project view is the leverage behind large, multi-domain work — e.g. migrating data or wiring separate domains/systems together.
-- **Auto-categorised + colour-tinted** — tasks are tagged by category (bug/red, devops/blue, design/pink, …) and the terminal tints to match.
+- **Auto-categorised + colour-tinted** — tasks are tagged by category (bug/red, devops/blue, design/silver, personal/pink, …) and the terminal tints to match. The active set is presettable (`minimal`/`web`/`data`/`ops`/`full`).
 - **Closed-task listing** — `/todo closed [N]` and `/todo all` page through your history.
 - **Multi-task `/done` and `/todo -s`** — close or jump into several tasks at once with a comma-separated list (`/done 1,2,5`, `/todo 1,2,5 -s`).
 - **Optional enforcement gate** — a file edit in an untracked session can be made to block the turn from ending until work is tracked (self-healing, opt-out).
@@ -102,7 +102,9 @@ Every command works in two forms: the namespaced `/task-station:todo` / `/task-s
 
 ## Categories & terminal tint
 
-If `categories.py` is present (it ships with the plugin), every task carries a `color` from a taxonomy (bug/red, code-review/orange, devops/blue, design/pink, …); `/todo` appends a `<emoji> [TAG]` after each task and prints a legend. Each colour name is also a zsh alias that switches the Terminal.app profile, so on attach / create / resume Claude runs `zsh -ic '<color>'` to tint the terminal to the task's category.
+If `categories.py` is present (it ships with the plugin), every task carries a `color` from a taxonomy (bug/red, code-review/orange, devops/blue, design/silver, personal/pink, AI-config/white, …); `/todo` appends a `<emoji> [TAG]` after each task and prints a legend. Each colour name is also a zsh alias that switches the Terminal.app profile, so on attach / create / resume Claude runs `zsh -ic '<color>'` to tint the terminal to the task's category.
+
+**The dot is slot-canonical** — each colour slot owns its emoji, so a custom category (or an override) supplies only `tag` + `label`; the icon follows from the colour. **Presets & enabled set:** the active categories are seeded-but-removable — `config --categories preset <minimal|web|data|ops|full>` switches the set, and `config --enable/--disable <key>` toggles individual slots. Every preset keeps the universal core (BUG · AI CONFIG · PERSONAL · GENERAL); `⚫ GENERAL` is permanent. See [`CATEGORIES.md`](CATEGORIES.md).
 
 **Skills tint immediately:** when a prompt invokes a slash command mapped in `SKILL_COLORS` (e.g. `/review` or `/security-review` → orange), the `UserPromptSubmit` hook tints the terminal synchronously *before Claude responds*, so the colour applies the instant the skill runs.
 
@@ -342,7 +344,8 @@ python3 "$HOME/.claude/task-station-engine/task-station.py" config     # same as
 With no arguments, prints the unified board: current settings plus a status/doctor report (tint mode + detected terminal, tint-profiles, workspace dirs, whether the delegation policy is installed). Flags:
 
 - `--workspace-dirs <a:b>` — set repo-root directories (`:` separated) for delegate's `--project` shorthand.
-- `--categories edit` — prints the `config.json` path so you can open it and customize categories, `skill_colors`, etc.
+- `--categories` — show the current enabled category set + available presets. `--categories preset <minimal|web|data|ops|full>` switches the active set; `--categories edit` prints the `config.json` path so you can open it and customize categories, `skill_colors`, etc.
+- `--enable <key>` / `--disable <key>` — toggle a single category slot on/off (accepts a key, emoji, or `[TAG]`). Disabling `⚫ GENERAL` is refused — it's permanent.
 - `--bare-cmds on|off` — install or remove the bare `/todo` + `/done` aliases.
 - `--policy on|off` — adds or removes a 100%-reversible delegation-policy block in your `~/.claude/CLAUDE.md` (fenced, idempotent, hash-checked; `off` refuses if the block was hand-edited).
 - `--tint-profiles` — **Terminal.app:** sets profile mode, appends per-category zsh aliases to `~/.zshrc`, and prints the manual steps to create matching Terminal.app profiles. **iTerm2:** no-op (prints "already zero-setup").
