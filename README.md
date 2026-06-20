@@ -372,7 +372,7 @@ Tinting is auto-detected: the engine reads `$TERM_PROGRAM` / `$ITERM_SESSION_ID`
 
 ## Data & privacy
 
-- All task data is stored **locally** under `${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/` (one JSON file per task, plus `config.json`).
+- All task data is stored **locally** under `${CLAUDE_CONFIG_DIR:-~/.claude}/task-station-data/` (a single indexed SQLite DB `store/tasks.db`, plus `config.json`).
 - **No telemetry. By default there are no network calls.** An optional update check (off by default; enable with `task-station config --update-check on`) makes at most one version request to GitHub per day — it sends no task data.
 - The delegate feature spawns local `claude -p` workers — that's your own Claude usage, no third party.
 
