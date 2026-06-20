@@ -1954,7 +1954,12 @@ def main():
     sp = sub.add_parser("config")
     sp.add_argument("--workspace-dirs", dest="workspace_dirs", default=None)
     sp.add_argument("--workspace-dirs-get", dest="workspace_dirs_get", action="store_true")
-    sp.add_argument("--categories", dest="categories", nargs="?", const="edit", default=None)
+    sp.add_argument("--categories", dest="categories", nargs="*", default=None,
+                    help="(no arg) show enabled set + presets · 'edit' print config path · 'preset <name>' apply a preset")
+    sp.add_argument("--enable", dest="enable", default=None,
+                    help="enable a category slot (key, emoji, or [TAG])")
+    sp.add_argument("--disable", dest="disable", default=None,
+                    help="disable a category slot (refuses ⚫ GENERAL — permanent)")
     sp.add_argument("--bare-cmds", dest="bare_cmds", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--bare-cmds-get", dest="bare_cmds_get", action="store_true")
     sp.add_argument("--update-check", dest="update_check", nargs="?", choices=["on","off"], const="on", default=None)

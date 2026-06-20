@@ -29,21 +29,52 @@ import sys as _sys
 TINT_TERMINAL = True
 
 # key (== zsh alias name) → {emoji dot, short [TAG], human label}
+#
+# The dot is SLOT-CANONICAL: each colour slot OWNS an emoji. You pick the colour;
+# the colour determines the icon. A category override / new category therefore
+# needs only `tag` + `label` — the dot (and tint hexes) are inherited from the
+# slot automatically (an explicit `dot` is still allowed for power users). See
+# `_apply_overrides` and SLOT_DOTS below, and CATEGORIES.md.
+#
+# Hex choice: the tint `hex`/`hex_light` are kept BY SLOT through the pink↔silver
+# role swap — pink keeps its pink tint (suits 🩷 PERSONAL) and silver keeps its
+# neutral grey (fine for 🎨 DESIGN), so existing tints stay sensible.
 CATEGORIES = {
     "red":    {"dot": "🔴", "tag": "BUG",       "label": "bug",                        "hex": "#3a2323", "hex_light": "#f7e6e6"},
     "orange": {"dot": "🟠", "tag": "REVIEW",    "label": "code review",                "hex": "#3a3023", "hex_light": "#f7eede"},
-    "yellow": {"dot": "🟡", "tag": "FIX PR",    "label": "fixing PR review feedback",  "hex": "#3a3823", "hex_light": "#f6f3da"},
+    "yellow": {"dot": "🟡", "tag": "FIX",       "label": "fixing PR review feedback",  "hex": "#3a3823", "hex_light": "#f6f3da"},
     "green":  {"dot": "🟢", "tag": "FEATURE",   "label": "feature work",               "hex": "#233a2b", "hex_light": "#e4f3e8"},
     "blue":   {"dot": "🔵", "tag": "DEVOPS",    "label": "devops",                     "hex": "#23303a", "hex_light": "#e4eef6"},
     "purple": {"dot": "🟣", "tag": "SPECIAL",   "label": "special",                    "hex": "#2e233a", "hex_light": "#ece4f5"},
     "black":  {"dot": "⚫", "tag": "GENERAL",   "label": "general",                    "hex": "#262626", "hex_light": "#ececec"},
-    "pink":   {"dot": "🩷", "tag": "DESIGN",    "label": "design",                     "hex": "#3a2333", "hex_light": "#f7e4ef"},
-    "white":  {"dot": "⚪", "tag": "SKILLS",    "label": "skills and memories",         "hex": "#202024", "hex_light": "#f2f2f5"},
-    "silver": {"dot": "🩶", "tag": "PERSONAL",  "label": "personal projects",           "hex": "#303033", "hex_light": "#eeeef0"},
+    "pink":   {"dot": "🩷", "tag": "PERSONAL",  "label": "personal projects",          "hex": "#3a2333", "hex_light": "#f7e4ef"},
+    "white":  {"dot": "🪩", "tag": "AI CONFIG", "label": "AI tooling & config",        "hex": "#202024", "hex_light": "#f2f2f5"},
+    "silver": {"dot": "🎨", "tag": "DESIGN",    "label": "design",                     "hex": "#303033", "hex_light": "#eeeef0"},
     "gold":   {"dot": "🟨", "tag": "GOLD",      "label": "reserved",                   "hex": "#3a3520", "hex_light": "#f5f0d8"},
     "brown":  {"dot": "🟤", "tag": "DATABASE", "label": "database",                     "hex": "#332a23", "hex_light": "#f0e9e0"},
 }
 DEFAULT = "black"
+
+# The canonical per-slot emoji, captured from the shipped defaults BEFORE any user
+# override mutates CATEGORIES — this is the source of truth an override inherits
+# from when it omits `dot` (see _apply_overrides).
+SLOT_DOTS = {key: meta["dot"] for key, meta in CATEGORIES.items()}
+
+# --- Active (enabled) categories & presets -----------------------------------
+# A seeded-but-removable set of "on" slots, persisted in config.json as
+# `enabled_categories`. Unconfigured ⇒ the full set (back-compat). ⚫ GENERAL is
+# PERMANENT: always enabled, never disable-able. Universal core (seeded in every
+# preset, removable except GENERAL): BUG · AI CONFIG · PERSONAL · GENERAL.
+PERMANENT = "black"
+CORE = ("red", "white", "pink", "black")  # BUG · AI CONFIG · PERSONAL · GENERAL
+PRESETS = {
+    "minimal": list(CORE),
+    "web":     list(CORE) + ["green", "silver", "blue", "orange", "yellow"],
+    "data":    list(CORE) + ["brown", "green", "blue", "orange"],
+    "ops":     list(CORE) + ["blue", "brown", "orange", "yellow", "purple"],
+    "full":    list(CATEGORIES),
+}
+
 _TAG_WIDTH = max(len(m["tag"]) for m in CATEGORIES.values()) + 2  # +2 for "[]"
 
 # Skill (slash-command) → category, applied IMMEDIATELY on prompt-submit so the
@@ -71,8 +102,15 @@ def _apply_overrides():
         cats = _config.get("categories")
         if isinstance(cats, dict):
             for key, meta in cats.items():
-                if isinstance(meta, dict) and {"dot", "tag", "label"} <= set(meta):
-                    CATEGORIES[key] = meta
+                # Slot-determines-emoji: an override needs only {tag,label}. Missing
+                # fields (dot, hex, hex_light) are inherited from the slot's shipped
+                # default; an explicit `dot` still wins. Brand-new keys with no slot
+                # fall back to the GENERAL dot.
+                if isinstance(meta, dict) and {"tag", "label"} <= set(meta):
+                    merged = dict(CATEGORIES.get(key, {}))
+                    merged.update(meta)
+                    merged.setdefault("dot", SLOT_DOTS.get(key, CATEGORIES[DEFAULT]["dot"]))
+                    CATEGORIES[key] = merged
         if _config.get("tint_terminal") is not None:
             TINT_TERMINAL = bool(_config.get("tint_terminal"))
         sc = _config.get("skill_colors")
@@ -211,6 +249,48 @@ def is_known(color):
     return resolve(color) is not None
 
 
+def all_keys():
+    """Every defined slot key, in canonical order (enabled or not)."""
+    return list(CATEGORIES)
+
+
+def enabled_keys():
+    """The active category keys, in canonical CATEGORIES order.
+
+    Reads `enabled_categories` from config live (no module reload needed). An
+    absent/empty/invalid value ⇒ the FULL set (back-compat: today all 12 show).
+    ⚫ GENERAL (black) is PERMANENT — always present even if config omits it."""
+    raw = None
+    try:
+        import config as _config
+        raw = _config.get("enabled_categories")
+    except Exception:
+        raw = None
+    if isinstance(raw, list) and raw:
+        sel = {k for k in raw if k in CATEGORIES}
+    else:
+        sel = set(CATEGORIES)
+    sel.add(PERMANENT)
+    return [k for k in CATEGORIES if k in sel]
+
+
+def is_enabled(color):
+    """True when `color` resolves to a currently-enabled category."""
+    key = resolve(color)
+    return bool(key) and key in enabled_keys()
+
+
+def preset_keys(name):
+    """Canonical-order enabled set for a named preset, or None if unknown.
+    GENERAL is always forced in (permanent)."""
+    keys = PRESETS.get(name)
+    if keys is None:
+        return None
+    sel = {k for k in keys if k in CATEGORIES}
+    sel.add(PERMANENT)
+    return [k for k in CATEGORIES if k in sel]
+
+
 def normalize(color):
     """Map a category key, emoji dot, [TAG], or label to a known category key;
     fall back to DEFAULT for anything unrecognized."""
@@ -246,24 +326,32 @@ def tint_command(color):
     return "zsh -ic '%s'" % normalize(color)
 
 
+def _enabled_items():
+    """(key, meta) pairs for the enabled slots, in canonical order."""
+    ek = set(enabled_keys())
+    return [(c, CATEGORIES[c]) for c in CATEGORIES if c in ek]
+
+
 def legend():
-    """Compact one-line legend of the assigned (non-reserved) categories."""
+    """Compact one-line legend of the enabled, assigned (non-reserved) categories."""
     parts = ["%s %s" % (tag(c), m["label"])
-             for c, m in CATEGORIES.items() if m["label"] != "reserved"]
+             for c, m in _enabled_items() if m["label"] != "reserved"]
     return "Legend: " + "  ·  ".join(parts)
 
 
 def compact_legend():
-    """Minimal key=dot+TAG legend for the per-prompt hook (token-lean)."""
+    """Minimal key=dot+TAG legend for the per-prompt hook (token-lean).
+    Only enabled, non-reserved categories appear."""
     return " ".join("%s=%s%s" % (c, m["dot"], m["tag"])
-                    for c, m in CATEGORIES.items() if m["label"] != "reserved")
+                    for c, m in _enabled_items() if m["label"] != "reserved")
 
 
 def picker_lines():
-    """Guidance lines for the UserPromptSubmit hook: how to choose a colour."""
+    """Guidance lines for the UserPromptSubmit hook: how to choose a colour.
+    Scoped to the enabled categories only."""
     lines = ["Pick a category COLOR for the task from its context (see CATEGORIES.md):",
              "  " + legend()]
-    reserved = [c for c, m in CATEGORIES.items() if m["label"] == "reserved"]
+    reserved = [c for c, m in _enabled_items() if m["label"] == "reserved"]
     if reserved:
         lines.append("  (reserved / unassigned: " + ", ".join(reserved) + ")")
     return lines
