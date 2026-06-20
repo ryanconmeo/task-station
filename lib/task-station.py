@@ -2335,6 +2335,9 @@ def main():
     sp.add_argument("--title-get", dest="title_get", action="store_true")
     sp.add_argument("--policy", nargs="?", choices=["on", "off"], const="on", default=None)
     sp.add_argument("--tint-profiles", dest="tint_profiles", action="store_true")
+    sp.add_argument("--desktop-bridge", dest="desktop_bridge", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="wire the dependency-free MCP server into Claude Desktop (on) / remove it (off)")
     sp.set_defaults(fn=lambda a: __import__("config").cmd_config(a))
 
     a = p.parse_args()

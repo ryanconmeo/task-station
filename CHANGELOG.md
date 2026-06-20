@@ -3,6 +3,33 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.6.0] — 2026-06-20
+
+### Changed
+- **The Desktop bridge is now DEPENDENCY-FREE and self-installing.** `lib/mcp_server.py`
+  no longer needs the `mcp`/FastMCP SDK (which required Python 3.10+ and a
+  `pip install`). The MCP protocol is hand-rolled in the standard library
+  (`json` + `sys` only): a minimal **stdio JSON-RPC 2.0 server** that runs on the
+  **system `python3` (3.9+)** with zero install. It handles `initialize`
+  (advertising `tools`/`prompts`/`resources` + `protocolVersion` + `serverInfo`),
+  `notifications/initialized`, `ping`, `tools/list`, `tools/call`, `prompts/list`
+  + `prompts/get` (the `todo` board), and `resources/list` + `resources/read`
+  (`task://<seq>` → full detail); unknown methods return JSON-RPC `-32601` and a
+  malformed line never crashes the loop. The five stdlib logic fns
+  (`_list_tasks`/`_create_task`/`_get_task`/`_set_status`/`_add_note`) are reused
+  verbatim — only the FastMCP transport was replaced. There is **no `mcp` import
+  anywhere** in the codebase.
+
+### Added
+- **`task-station config --desktop-bridge on|off`** — a self-installer that wires
+  the bridge into Claude Desktop with no manual JSON. `on` locates (or creates)
+  `~/Library/Application Support/Claude/claude_desktop_config.json`, backs it up
+  (`.bak-desktop-bridge`), and **merges** a `task-station` server entry
+  (`command: python3`, `args: [<~/.claude/task-station-engine/mcp_server.py>]`)
+  without clobbering other servers — idempotent, then prompts to restart Desktop.
+  `off` removes only our entry. The no-arg `config` view shows the bridge status
+  (installed? path?).
+
 ## [1.5.0] — 2026-06-20
 
 ### Added

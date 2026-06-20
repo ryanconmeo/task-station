@@ -140,6 +140,16 @@ def _enabled_summary():
                 break
     return "%d/%d (%s)" % (len(enabled), total, name)
 
+def _desktop_bridge_summary():
+    """`installed` / `off` for the no-arg config board (lazy import — setup imports
+    config, so keep this out of module scope)."""
+    try:
+        import setup
+        installed, _ = setup.desktop_bridge_status()
+        return "installed" if installed else "off"
+    except Exception:
+        return "off"
+
 def render_board():
     import term
     ws = ":".join(get("workspace_dirs") or []) or "(unset — use --repo)"
@@ -161,6 +171,8 @@ def render_board():
         % tint_theme(),
         "  --title           %-34s auto terminal title '#<seq>: <title>' on attach  on · off"
         % ("on" if title_enabled() else "off"),
+        "  --desktop-bridge  %-34s wire the dependency-free MCP server into Claude Desktop  on · off"
+        % _desktop_bridge_summary(),
         "",
         "  read-only",
         "  --data-dir        %-34s (set via $TASK_STATION_HOME)" % paths.data_dir(),
@@ -276,6 +288,9 @@ def cmd_config(a):
         print(setup.set_policy(a.policy == "on")); return
     if getattr(a, "tint_profiles", False):
         print(setup.install_tint_profiles()); return
+    if getattr(a, "desktop_bridge", None) is not None:
+        print(setup.install_desktop_bridge() if a.desktop_bridge == "on"
+              else setup.remove_desktop_bridge()); return
     # No flags: the unified settings + doctor/status view.
     print(render_board())
     print("")

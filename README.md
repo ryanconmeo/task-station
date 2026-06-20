@@ -354,40 +354,34 @@ update tasks in the **same local store the CLI uses** — one `tasks.db`, two fr
 in a Desktop conversation and it shows up in `/todo` in Claude Code, and vice-versa. WAL is already
 on, so concurrent Desktop + CLI access is safe.
 
-The `mcp` SDK is an **optional, server-only dependency**: the core plugin, the hooks, and the whole
-test suite stay stdlib-only. You only need it to *run* the bridge.
+The bridge is **dependency-free**: the MCP protocol is hand-rolled in the Python standard library
+(`json` + `sys`), so the server runs on the **system `python3`** (3.9+) with **no `pip install`** and
+no Python 3.10+ requirement. The core plugin, the hooks, and the whole test suite stay stdlib-only.
 
-**One-time setup**
+**One-time setup** — zero manual JSON:
 
-1. Install the SDK (the only extra dependency):
+```bash
+task-station config --desktop-bridge on
+```
 
-   ```
-   pip install mcp
-   ```
+This locates (or creates) Claude Desktop's `claude_desktop_config.json`
+(`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS), backs it up, and
+**merges** a `task-station` server entry — pointed at the **stable engine symlink**
+`~/.claude/task-station-engine/mcp_server.py` (which always tracks the active install, so the wiring
+survives `/plugin update`). Other MCP servers in the file are left untouched, and re-running just
+updates the entry. **Restart Claude Desktop** to load it.
 
-2. Add the server to your Claude Desktop config
-   (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS). Point it at the
-   **stable engine symlink** — `~/.claude/task-station-engine` always tracks the active install, so
-   the path survives `/plugin update`:
+To remove the wiring later (leaving any other servers in place):
 
-   ```json
-   {
-     "mcpServers": {
-       "task-station": {
-         "command": "python3",
-         "args": ["/Users/YOU/.claude/task-station-engine/mcp_server.py"]
-       }
-     }
-   }
-   ```
+```bash
+task-station config --desktop-bridge off
+```
 
-   Replace `/Users/YOU` with your home directory — Claude Desktop does **not** expand `~` in `args`,
-   so use the absolute path. (A ready-to-edit snippet lives at
-   [`claude_desktop_config.json`](claude_desktop_config.json).) Restart Claude Desktop to load it.
+The current state (installed? path?) also shows in the no-arg `task-station config` view.
 
-   The bridge writes where the CLI reads automatically — it honors `TASK_STATION_HOME` /
-   `CLAUDE_CONFIG_DIR` exactly like the CLI. To point Desktop at a non-default store, add
-   `"env": { "TASK_STATION_HOME": "/path/to/store" }` to the server block.
+The bridge writes where the CLI reads automatically — it honors `TASK_STATION_HOME` /
+`CLAUDE_CONFIG_DIR` exactly like the CLI. To point Desktop at a non-default store, add
+`"env": { "TASK_STATION_HOME": "/path/to/store" }` to the `task-station` server block by hand.
 
 **What it exposes**
 
