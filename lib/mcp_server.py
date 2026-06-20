@@ -6,23 +6,24 @@ Claude Desktop (or any MCP client) can create / read / update tasks in the very
 same local store the Claude Code CLI uses: one `tasks.db`, two front doors. This
 is the Desktop ↔ Code bridge.
 
-Design — the `mcp` SDK is an OPTIONAL, server-only dependency:
+Design — DEPENDENCY-FREE, stdlib only:
 
   * The tool LOGIC is plain-stdlib functions (`_list_tasks`, `_create_task`,
     `_get_task`, `_set_status`, `_add_note`) that drive the existing engine
     (`task-station.py`, which itself sits on `paths.py` + `store.py`). They
-    return plain strings / dicts and need NOTHING beyond the stdlib — so the
-    test suite and the core plugin stay stdlib-only.
+    return plain strings / dicts and need NOTHING beyond the stdlib.
 
-  * The `mcp` import (FastMCP) lives behind a lazy import inside `main()` /
-    `__main__`. Importing THIS module never imports `mcp`; you only need
-    `pip install mcp` to actually *run* the server.
+  * The MCP protocol itself is hand-rolled: a minimal stdio JSON-RPC 2.0 server
+    (`serve`/`handle`/`dispatch`) built on `json` + `sys` ONLY — no `mcp` SDK,
+    no `pip install`, runs on the system `python3` (3.9+). Newline-delimited
+    JSON on stdin/stdout; stderr for logs.
 
 The engine reads `TASK_STATION_HOME` / `CLAUDE_CONFIG_DIR` exactly as the CLI
 does, so the bridge writes where the CLI reads with zero extra config. WAL is
 already on, so concurrent Desktop + CLI access is safe.
 """
 import importlib.util
+import json
 import os
 import sys
 
@@ -192,74 +193,298 @@ def _add_note(ref, text):
     return ts.load_task(task["id"])
 
 
-# ------------------------------------------------------- FastMCP server (opt) ---
+# ---------------------------------------------- tool / prompt / resource wiring ---
+#
+# The five logic fns above are the WHOLE behaviour. Everything below is a
+# hand-rolled MCP stdio JSON-RPC 2.0 server (stdlib `json` + `sys` ONLY — no
+# `mcp` SDK, runs on the system `python3` 3.9+) that advertises them and
+# dispatches calls. The tool handlers return the same plain strings the FastMCP
+# wrappers used to; only the transport changed.
+
+PROTOCOL_VERSION = "2024-11-05"
+
+
+def _server_version():
+    """The plugin's version string for `serverInfo` (best-effort; never raises)."""
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(_LIB)
+    try:
+        import json as _json
+        with open(os.path.join(root, ".claude-plugin", "plugin.json")) as f:
+            return _json.load(f).get("version", "0")
+    except Exception:
+        return "0"
+
+
+# Each tool: its JSON-Schema input contract + a handler that returns the text the
+# client sees. Handlers reuse the stdlib logic fns verbatim — no forked logic.
+
+def _tool_list_tasks(args):
+    return _list_tasks(args.get("status", "all-open"))
+
+
+def _tool_create_task(args):
+    return _create_confirmation(_create_task(
+        args.get("title", ""), args.get("summary", ""),
+        args.get("category"), args.get("effort"), args.get("source")))
+
+
+def _tool_get_task(args):
+    ref = args.get("ref")
+    detail = _get_task(ref)
+    return detail if detail is not None else "No task matching %r." % ref
+
+
+def _tool_set_status(args):
+    ref = args.get("ref")
+    task = _set_status(ref, args.get("status"))
+    if task is None:
+        return "No task matching %r." % ref
+    return "Task #%s → %s." % (task.get("seq"), _engine().task_status(task))
+
+
+def _tool_add_note(args):
+    ref = args.get("ref")
+    task = _add_note(ref, args.get("text"))
+    if task is None:
+        return "No task matching %r." % ref
+    return "Noted on task #%s." % task.get("seq")
+
+
+TOOLS = [
+    {
+        "name": "list_tasks",
+        "description": ("The task board as Markdown (the Desktop analog of "
+                        "/todo). `status`: all-open (default, open+active) | "
+                        "open | active | closed | all."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "default": "all-open",
+                           "description": "all-open | open | active | closed | all"},
+            },
+        },
+        "handler": _tool_list_tasks,
+    },
+    {
+        "name": "create_task",
+        "description": ("Create an open(◦) task. `category` = a category "
+                        "key/emoji/[TAG]; `effort` = xs/s/m/l/xl; `source` = the "
+                        "originating Desktop conversation ref/URL (stored on the "
+                        "task, surfaced in get_task)."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "summary": {"type": "string"},
+                "category": {"type": "string"},
+                "effort": {"type": "string"},
+                "source": {"type": "string"},
+            },
+            "required": ["title"],
+        },
+        "handler": _tool_create_task,
+    },
+    {
+        "name": "get_task",
+        "description": ("Full detail (status, category, effort, source, activity "
+                        "log) for a task by its number or id."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"ref": {"type": "string"}},
+            "required": ["ref"],
+        },
+        "handler": _tool_get_task,
+    },
+    {
+        "name": "set_status",
+        "description": "Move a task to open / active / closed.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string"},
+                "status": {"type": "string", "enum": ["open", "active", "closed"]},
+            },
+            "required": ["ref", "status"],
+        },
+        "handler": _tool_set_status,
+    },
+    {
+        "name": "add_note",
+        "description": "Append a timestamped note to a task's activity log.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string"},
+                "text": {"type": "string"},
+            },
+            "required": ["ref", "text"],
+        },
+        "handler": _tool_add_note,
+    },
+]
+_TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}
+
+
+# ------------------------------------------------------------ JSON-RPC plumbing ---
+
+class _RpcError(Exception):
+    """A JSON-RPC error to surface as an `error` member (code + message)."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _result(mid, payload):
+    return {"jsonrpc": "2.0", "id": mid, "result": payload}
+
+
+def _error(mid, code, message):
+    return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
+
+
+def _text_content(text):
+    """An MCP `content` list holding one text block."""
+    return [{"type": "text", "text": text}]
+
+
+def _handle_tools_call(params):
+    name = params.get("name")
+    args = params.get("arguments") or {}
+    tool = _TOOLS_BY_NAME.get(name)
+    if tool is None:
+        # A bad tool name is a tool-execution error (reported in the result with
+        # isError) rather than a transport-level JSON-RPC error.
+        return {"content": _text_content("Unknown tool: %s" % name), "isError": True}
+    try:
+        text = tool["handler"](args)
+    except Exception as e:                       # bad args, ValueError, etc.
+        return {"content": _text_content("%s: %s" % (type(e).__name__, e)),
+                "isError": True}
+    return {"content": _text_content(text)}
+
+
+def _handle_prompts_get(params):
+    name = params.get("name")
+    if name != "todo":
+        raise _RpcError(-32602, "Unknown prompt: %s" % name)
+    return {
+        "description": "The current task board, rendered as Markdown (the Desktop /todo).",
+        "messages": [{"role": "user",
+                      "content": {"type": "text", "text": _list_tasks("all-open")}}],
+    }
+
+
+def _handle_resources_read(params):
+    uri = params.get("uri", "")
+    if not uri.startswith("task://"):
+        raise _RpcError(-32602, "Unknown resource: %s" % uri)
+    seq = uri[len("task://"):]
+    detail = _get_task(seq)
+    text = detail if detail is not None else "No task #%s." % seq
+    return {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": text}]}
+
+
+def _resource_list():
+    ts = _engine()
+    out = []
+    for task in ts.all_tasks():
+        seq = task.get("seq")
+        if seq is None:
+            continue
+        out.append({
+            "uri": "task://%s" % seq,
+            "name": "#%s %s" % (seq, task.get("title", "Untitled")),
+            "description": task.get("summary", "") or "",
+            "mimeType": "text/markdown",
+        })
+    return out
+
+
+def dispatch(method, params):
+    """Map an MCP method to its result payload. Raises `_RpcError` for protocol
+    errors (e.g. unknown method → -32601)."""
+    if method == "initialize":
+        return {
+            "protocolVersion": PROTOCOL_VERSION,
+            "serverInfo": {"name": "task-station", "version": _server_version()},
+            "capabilities": {"tools": {}, "prompts": {}, "resources": {}},
+        }
+    if method == "ping":
+        return {}
+    if method == "tools/list":
+        return {"tools": [{k: t[k] for k in ("name", "description", "inputSchema")}
+                          for t in TOOLS]}
+    if method == "tools/call":
+        return _handle_tools_call(params)
+    if method == "prompts/list":
+        return {"prompts": [{"name": "todo",
+                             "description": "The rendered task board (Desktop /todo)."}]}
+    if method == "prompts/get":
+        return _handle_prompts_get(params)
+    if method == "resources/list":
+        return {"resources": _resource_list()}
+    if method == "resources/read":
+        return _handle_resources_read(params)
+    raise _RpcError(-32601, "Method not found: %s" % method)
+
+
+def handle(msg):
+    """Process one parsed JSON-RPC message; return a response dict, or None for
+    notifications (no `id`) which the protocol says get no reply."""
+    mid = msg.get("id")
+    method = msg.get("method")
+    is_notification = "id" not in msg
+    if method is None:
+        return None if is_notification else _error(mid, -32600, "Invalid Request: no method")
+    # Notifications (incl. notifications/initialized) are fire-and-forget.
+    if is_notification:
+        return None
+    params = msg.get("params") or {}
+    try:
+        return _result(mid, dispatch(method, params))
+    except _RpcError as e:
+        return _error(mid, e.code, e.message)
+    except Exception as e:                       # never crash the loop
+        sys.stderr.write("task-station MCP: error handling %r: %s\n" % (method, e))
+        return _error(mid, -32603, "Internal error: %s" % e)
+
+
+def serve(stdin=None, stdout=None):
+    """The stdio transport: read newline-delimited JSON-RPC from `stdin`, write
+    one-object-per-line responses to `stdout`, flushing after each. A malformed
+    line is answered with a parse error but never crashes the loop."""
+    stdin = stdin if stdin is not None else sys.stdin
+    stdout = stdout if stdout is not None else sys.stdout
+    for line in stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except Exception as e:
+            _write(stdout, _error(None, -32700, "Parse error: %s" % e))
+            continue
+        try:
+            resp = handle(msg)
+        except Exception as e:                   # belt-and-suspenders
+            sys.stderr.write("task-station MCP: unhandled: %s\n" % e)
+            resp = _error(msg.get("id") if isinstance(msg, dict) else None,
+                          -32603, "Internal error: %s" % e)
+        if resp is not None:
+            _write(stdout, resp)
+
+
+def _write(stdout, obj):
+    """One JSON object per line, no embedded newlines, flushed immediately."""
+    stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    stdout.flush()
+
 
 def main():
-    """Run the MCP server over stdio. Imports the optional `mcp` SDK lazily — so
-    this is the ONLY place that needs `pip install mcp`."""
-    from typing import Optional
-
-    try:
-        from mcp.server.fastmcp import FastMCP
-    except ImportError:
-        sys.stderr.write(
-            "task-station MCP bridge needs the `mcp` SDK. Install it with:\n"
-            "    pip install mcp\n")
-        raise
-
-    server = FastMCP("task-station")
-
-    @server.tool()
-    def list_tasks(status: str = "all-open") -> str:
-        """The task board as Markdown (the Desktop analog of /todo). `status`:
-        all-open (default, open+active) | open | active | closed | all."""
-        return _list_tasks(status)
-
-    @server.tool()
-    def create_task(title: str, summary: str = "",
-                    category: Optional[str] = None, effort: Optional[str] = None,
-                    source: Optional[str] = None) -> str:
-        """Create an open(◦) task. `category` = a category key/emoji/[TAG];
-        `effort` = xs/s/m/l/xl; `source` = the originating Desktop conversation
-        ref/URL (stored on the task, surfaced in get_task)."""
-        return _create_confirmation(
-            _create_task(title, summary, category, effort, source))
-
-    @server.tool()
-    def get_task(ref: str) -> str:
-        """Full detail (status, category, effort, source, activity log) for a
-        task by its number or id."""
-        detail = _get_task(ref)
-        return detail if detail is not None else "No task matching %r." % ref
-
-    @server.tool()
-    def set_status(ref: str, status: str) -> str:
-        """Move a task to open / active / closed."""
-        task = _set_status(ref, status)
-        if task is None:
-            return "No task matching %r." % ref
-        return "Task #%s → %s." % (task.get("seq"), _engine().task_status(task))
-
-    @server.tool()
-    def add_note(ref: str, text: str) -> str:
-        """Append a timestamped note to a task's activity log."""
-        task = _add_note(ref, text)
-        if task is None:
-            return "No task matching %r." % ref
-        return "Noted on task #%s." % task.get("seq")
-
-    @server.prompt()
-    def todo() -> str:
-        """The current task board, rendered as Markdown (the Desktop /todo)."""
-        return _list_tasks("all-open")
-
-    @server.resource("task://{seq}")
-    def task_resource(seq: str) -> str:
-        """A single task's full detail — attach one to a Desktop conversation."""
-        detail = _get_task(seq)
-        return detail if detail is not None else "No task #%s." % seq
-
-    server.run()
+    """Run the dependency-free MCP server over stdio (system `python3`, no SDK)."""
+    serve(sys.stdin, sys.stdout)
 
 
 if __name__ == "__main__":
