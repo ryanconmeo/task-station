@@ -11,6 +11,8 @@ The block above is the live output of the task tracker.
 
 Each task is colour-coded by category (an `<emoji> [TAG]` after the title — the emoji dot carries the colour, the tag names it). The categories map to zsh aliases that tint the Terminal.app profile — see `$CLAUDE_PLUGIN_ROOT/CATEGORIES.md` for the full taxonomy; customize colours without touching that file via `task-station-data/categories.json`.
 
+A task's lifecycle is **one field, `status`, with three values: open (`◦`) → active (`●`) → closed**. Each not-closed row carries a leading **glyph** before the number — `◦` **open** (a topic merely raised) or `●` **active** (work has actually started); closed tasks live in their own section with no glyph. A task auto-promotes `◦ open → ● active` when you delegate `--worktree` for it, edit a file in an attached session, or set it manually with `status --task <ref> active`. New tasks start `◦ open` (or `● active` via `create --active`); `/done` closes them, and reopening a closed task returns it to `◦ open`.
+
 - If it is a **list**, the tracker has already rendered it as GitHub-flavored Markdown — two tables (Open then Closed), the `#`/`Task`/`Category`/`Effort`/`Activity` columns, any "… older closed …" note, and a `**Commands:**` bullet list. **Print that block verbatim** to the user — do not re-transcribe it, rebuild the tables, renumber rows, or reword the commands. Do not take any other action.
 - If it is a **task detail**, this session has just been attached to that task (reopened if it was closed). Do all of the following, in order:
   1. The detail prints the task's category and a `zsh -ic '<color>'` line — **run that command** to tint this terminal to the task's colour.
@@ -27,6 +29,8 @@ Each task is colour-coded by category (an `<emoji> [TAG]` after the title — th
   - For **each** block that does **not** contain `[JUMP-WINDOW-OPENED]` (auto-open failed, or there's no recorded session yet): surface that task's one-liner **verbatim in a copyable code block** — either `cd … && claude --resume …` (resuming the working session) or `cd … && claude --session-id …` (fresh-starting a clean, auto-attaching session when there's no valid session to resume) — so the user can run it themselves, note in one line what it does, and stop. Do not attempt to open a window yourself. (A `No task matching '…'.` line for a bad ref should be surfaced verbatim too.)
 
   Either way, **skip the recap** — that's the whole point of `-s`. Treat this task as the active context for the rest of the session.
+
+**Tracking & grouping (fold, don't fork).** Every topic is tracked from the first prompt — even a plain question becomes an `◦ open` task (it auto-promotes to `● active` when work starts). Before creating a NEW task, scan the board (open + active): if the prompt continues an existing task, **attach to it and append the prompt as a note** (`attach --session <id> --task <ref> --note '<prompt>'`) rather than spawning a sibling — so related questions across sessions accumulate under one task. Only a genuinely new topic creates a task. A skipped session stays silent.
 
 After any mutation (closing, attaching, creating, pinning, updating a task), confirm with the tool's result line(s) **only** — do **not** re-render this full `/todo` list unless the user explicitly asks to see it.
 

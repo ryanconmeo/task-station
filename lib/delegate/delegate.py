@@ -425,6 +425,14 @@ def cmd_run(a):
                            capture_output=True, text=True, timeout=20)
         except Exception:
             pass
+        # Write work (--worktree) means this task's work has actually started —
+        # promote it from open (◦) to active (●). Idempotent on the tracker side.
+        if a.worktree:
+            try:
+                subprocess.run(["python3", TASK_STATION_PY, "status", "--task", str(seq), "active"],
+                               capture_output=True, text=True, timeout=20)
+            except Exception:
+                pass
 
     print(result_text)
     foot = "— worker '%s'  dir: %s" % (key, dirpath)

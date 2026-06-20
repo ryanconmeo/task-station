@@ -35,8 +35,11 @@ Run `/todo` and Claude renders your board as two tables — **open** first, then
 
 Effort runs `▰▱▱▱▱` XS → `▰▰▰▰▰` XL, and each task is colour-tinted by category ([see the taxonomy](CATEGORIES.md)).
 
+A task's lifecycle is **one `status` field with three values: open (`◦`) → active (`●`) → closed**. Each not-closed row leads with a status glyph — `◦` **open** (a topic merely raised) or `●` **active** (work has started); a topic shows up the moment you raise it and auto-promotes `◦ → ●` when you act on it. Closed tasks move to their own section.
+
 ## Key Features
 
+- **Three-state status — open (`◦`) → active (`●`) → closed** — a topic you merely raise is tracked immediately as `open`; it graduates to `active` when work actually starts (you delegate `--worktree`, edit a file in the session, or set it manually), and `/done` closes it. Status is a single field (no separate open/closed flag), renders as a leading glyph on every not-closed row, and replaces the old "pure Q&A → stay silent" behaviour. Related questions across sessions **fold into one task** instead of forking siblings.
 - **Persistent, cross-session tasks** — a `/todo` board that survives restarts; each task carries a stable number, summary, activity log, and effort estimate.
 - **Resumable, re-pinnable sessions** — every task pins to a Claude session you can reopen, or **re-pin a fresh session to save tokens** when context grows bloated.
 - **Big-picture context for Claude** — running `/todo` pulls your whole board into the session, so Claude can reason across *all* your tracked tasks at once. That cross-project view is the leverage behind large, multi-domain work — e.g. migrating data or wiring separate domains/systems together.
@@ -89,7 +92,7 @@ into your global `~/.claude/CLAUDE.md` and customize the workspace paths.
 
 Every command works in two forms: the namespaced `/task-station:todo` / `/task-station:done` (registered automatically, always available) and the bare `/todo` / `/done` aliases (**opt-in** — `task-station config --bare-cmds on`).
 
-- **`/todo`** — list all tasks (open first, then by recent activity) as two Markdown tables, rendered directly by the engine (`render --format md`). Each row shows the task's stable number, category `<emoji> [TAG]`, effort gauge, last activity, and a `⧉N` marker when more than one live session is attached to the same task.
+- **`/todo`** — list all tasks (not-closed first, then by recent activity) as two Markdown tables, rendered directly by the engine (`render --format md`). Each not-closed row leads with the **status glyph** (`◦` open / `●` active) before the number, then the task's stable number, category `<emoji> [TAG]`, effort gauge, last activity, and a `⧉N` marker when more than one live session is attached to the same task. Closed tasks fill the second table.
 - **`/todo <n>`** — open a task by its stable number (or an id prefix) and **resume it into the current session**; your next message continues it. Reopens the task if it was closed.
 - **`/todo <n> -s`** — same attach/reopen, but jump **straight into the task's pinned session in a fresh Terminal window** (no recap; the window you typed in is left untouched). The `-s` may sit on either side of the number (`/todo -s <n>` works too). **Never taints the wrong conversation:** the session you typed `-s` in and any **skipped** sessions are excluded as resume targets — if no valid session remains, `-s` **fresh-starts** a clean, auto-attaching session (`claude --session-id <uuid>`, pre-bound to the task) rather than resuming the conversation you jumped from.
 - **`/todo 1,2,5 -s`** — **multi-jump**: a comma-separated list jumps into several tasks at once, opening **one window per task**. A bad ref in the list is reported but doesn't abort the others.
@@ -99,6 +102,15 @@ Every command works in two forms: the namespaced `/task-station:todo` / `/task-s
 - **`/done 1,2,5`** — **multi-close**: a comma-separated list closes several tasks at once, printing **one result line per task**. A bad ref is reported but doesn't abort the others.
 - **`/repos`** / **`/repos show`** — print the hub **repo index** (one block per repo under your workspace roots). **`/repos <term>`** ranks repos by relevance to route a fuzzy task; **`/repos --refresh`** rescans; **`/repos --json`** emits the structured list. See [Repo index for routing](#repo-index-for-routing). (Bare `/repos` is part of the same opt-in as `/todo`/`/done`.)
 - **`/task-station:config`** — view or change settings; run one-time setup (tint profiles, delegation policy, bare-command install). See [Configure](#configure).
+
+### Status controls
+
+A task's **status** moves through `open (◦) → active (●) → closed`; these set the board states explicitly (closing goes through `/done`):
+
+- **`status --task <ref> [open|active]`** — show or set a task's status. With no value it reports the current status; `open`/`active` sets it (idempotent). Closing is via `/done`, not here.
+- **`create --active`** — start a task `active` (`●`) instead of the default `open` (`◦`) — for when work has already begun.
+- **`attach --note '<text>'`** — append a timestamped note to the task's activity log while (re)attaching. This is how the **fold, don't fork** rule works: a follow-up question on a task already on the board attaches with `--note` instead of spawning a sibling task.
+- **Auto-promotion** `open → active` happens (idempotently) on: `delegate … --worktree` for the task, a **file edit** in an attached session (`PostToolUse`), or the manual `status`/`create --active` above. A closed task is never resurrected by an edit; `/done` closes from open or active, and reopening a closed task returns it to `open`.
 
 ### Session & resume controls
 
@@ -394,21 +406,24 @@ Declared in `hooks/hooks.json`, run at your trust level:
 
 - **`SessionStart`** (`hooks/on_session_start.sh`) — maintains the `~/.claude/task-station-engine` symlink; self-registers a status-line segment at `~/.claude/statusline.d/50-task-station.sh`; sets the session name `#<seq>: <title>` for attached sessions; shows a one-time setup nudge on first run; and — **only if you have opted in** — installs bare command aliases under `~/.claude/commands/`.
 - **`UserPromptSubmit`** (`hooks/on_user_prompt.sh`) — re-points the engine symlink at the active install (so the bare `/todo`/`/done` follow `/plugin update` without a restart), applies the per-category terminal tint (when enabled), auto-sets the terminal tab/window title to `#<seq>: <title>` for attached sessions (when enabled), and injects compact task-tracking guidance into each prompt so Claude knows to attach or create a task.
-- **`PostToolUse`** on `Write|Edit|NotebookEdit` (`hooks/on_post_tool.sh`) — fires a one-shot reminder the first time an untracked session edits a file. Part of the optional enforcement gate.
+- **`PostToolUse`** on `Write|Edit|NotebookEdit` (`hooks/on_post_tool.sh`) — for an **attached** session, a file edit auto-promotes an open task to active (work has started); for an **untracked** session it fires a one-shot reminder the first time it edits a file (part of the optional enforcement gate).
 - **`Stop`** (`hooks/on_stop.sh`) — refuses to end the turn while a session has edited files but tracked no task (self-healing, capped at two blocks). The other half of the optional enforcement gate.
 
 ### Tracking, gating, and tasks
 
-- **Auto-attach.** On each user message, a `UserPromptSubmit` hook injects
-  guidance telling Claude to either **attach** the session to a matching open
-  task or **create** a new one. The per-prompt nudge is deliberately **compact**
-  (open-task list, a one-line trackability test — concrete work that edits files /
-  spans multiple steps, not a question or one-line fix — the attach/create
-  commands, and a one-line colour legend); the full rules, TRACK/SKIP examples,
-  and colour-picker guidance live in `task-station.py guidance`, fetched on demand, to
-  keep the recurring token cost low. When Claude attaches or creates a task it
-  announces it in one short line (e.g. "📋 Tracking this as a new task: …");
-  after that the nudge goes silent.
+- **Auto-track as open, fold don't fork.** On each user message, a
+  `UserPromptSubmit` hook injects guidance telling Claude to track the topic from
+  the **first prompt** — even a plain question becomes an `◦ open` task (it
+  auto-promotes to `● active` when work starts). Before creating, Claude scans the
+  board: if the prompt continues an existing task it **attaches and appends the
+  prompt as a note** (`attach --note`) rather than spawning a sibling, so related
+  questions accumulate under one task. Only a genuinely new topic creates a task;
+  a **skipped** session stays silent. The per-prompt nudge is deliberately
+  **compact** (on-board task list, the track-as-open + fold rule, the attach/create
+  commands, a one-line colour legend); the full rules and colour-picker guidance
+  live in `task-station.py guidance`, fetched on demand, to keep the recurring
+  token cost low. When Claude attaches or creates a task it announces it in one
+  short line (e.g. "📋 Tracking this as a new task: …").
 - **Miss escalation.** Each message that goes by without the session attaching
   bumps a per-session counter; after a few unattached messages the nudge
   escalates ("N messages in and still untracked — attach now, or `skip`"). This
