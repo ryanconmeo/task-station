@@ -3,6 +3,22 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.6.3] — 2026-06-20
+
+### Added
+- **Claude Desktop now auto-tracks substantive topics as tasks — the Desktop
+  analog of the CLI's prompt-context auto-track.** Desktop has no
+  `UserPromptSubmit` hook, so the CLI's "track every substantive topic as an
+  open(◦) task" can't fire there. The MCP `initialize` response now carries an
+  **`instructions`** string (which clients fold into the model's context)
+  telling Desktop's Claude: when the user raises substantive work, first
+  `list_tasks` and `add_note` onto a matching open task (fold — don't
+  duplicate), else `create_task` with a clear title, 1–3 sentence summary,
+  category, and a `source` identifying the Desktop conversation; skip trivial
+  one-offs and casual chat. It's a model-driven nudge, not a hard hook, and
+  only fires on substantive work — so the board doesn't flood. Tools, prompts,
+  and resources are unchanged.
+
 ## [1.6.2] — 2026-06-20
 
 ### Changed
