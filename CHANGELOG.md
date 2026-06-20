@@ -6,32 +6,40 @@ All notable changes to Task Station are documented here. This project adheres to
 ## [1.4.0] — 2026-06-20
 
 ### Added
-- **Task lifecycle PHASE — `◦ inquiry` → `● active`.** Every task now carries a
-  `phase` (default `inquiry`), independent of its open/closed `status`. A topic you
-  merely raise shows on the board immediately as `◦`; it graduates to `●` when work
-  actually starts. A leading single-width glyph renders at the very front of every
+- **Three-state task `status` — `open (◦)` → `active (●)` → `closed`.** The lifecycle
+  is now ONE field: a topic you merely raise starts `open` and shows on the board
+  immediately as `◦`; it graduates to `active` (`●`) when work actually starts; `/done`
+  closes it. A leading single-width glyph renders at the very front of every not-closed
   `/todo` row — ASCII list, Markdown table (`#` cell), and the detail view — distinct
-  from the category emoji, with a `◦ inquiry · ● active` legend. Closed rows mute the
-  glyph (phase matters mainly for open work).
-- **Auto-promote `◦ → ●` when work begins** (idempotent), on any of:
+  from the category emoji, with a `◦ open · ● active` legend. Closed tasks keep their
+  own section and mute the glyph. `sorted_tasks` lists not-closed (open + active) first
+  by recent activity, then closed.
+- **Auto-promote `open → active` when work begins** (idempotent; never resurrects a
+  closed task), on any of:
   - `delegate … --worktree` for the task (write work starts);
   - a **file edit** in an attached session — `hooks/on_post_tool.sh` (PostToolUse)
-    flips an attached inquiry task to active;
-  - manual **`phase --task <ref> [active|inquiry]`** (no value → report the phase);
+    flips an attached open task to active;
+  - manual **`status --task <ref> [open|active]`** (no value → report the status;
+    closing is via `/done`);
   - **`create --active`** to start a task active.
-- **Auto-track as inquiry from the first prompt** — replaces the old "pure Q&A → stay
+- **Auto-track as `open` from the first prompt** — replaces the old "pure Q&A → stay
   silent" behaviour. For an unattached, non-skipped session the model now creates an
-  `inquiry` task for the topic (model-driven: good title + category). Skipped sessions
+  `open` task for the topic (model-driven: good title + category). Skipped sessions
   still stay silent.
-- **Grouping — "fold, don't fork".** Before creating a new inquiry task the model
-  scans the open board and, if the prompt continues an existing open task, **attaches
-  and appends the prompt as a note** instead of spawning a sibling — so related
-  questions across sessions accumulate under one task. New **`attach --note '<text>'`**
-  appends a timestamped entry to the task's activity log.
+- **Grouping — "fold, don't fork".** Before creating a new task the model scans the
+  board (open + active) and, if the prompt continues an existing task, **attaches and
+  appends the prompt as a note** instead of spawning a sibling — so related questions
+  across sessions accumulate under one task. New **`attach --note '<text>'`** appends a
+  timestamped entry to the task's activity log.
 
 ### Changed
+- **`status` is a single three-value field** (`open`/`active`/`closed`); everywhere the
+  code treated `status == "open"` as "on the board / not done" now means "not closed"
+  (`open` or `active`). `/done` closes from open or active; reopening a closed task
+  returns it to `open`. Back-compat: pre-existing `open`/`closed` tasks read unchanged
+  (a missing status reads as `open`); no data migration.
 - `cmd_prompt_context` / `commands/todo.md` / `guidance` guidance rewritten around
-  track-as-inquiry + fold-don't-fork (was: attach only on concrete work, else silent).
+  track-as-open + fold-don't-fork (was: attach only on concrete work, else silent).
 
 ## [1.3.0] — 2026-06-20
 

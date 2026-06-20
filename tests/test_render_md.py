@@ -63,7 +63,7 @@ class RenderMarkdownTest(unittest.TestCase):
         self.assertIn("| # | Task | Category | Effort | Activity |", out)
         self.assertIn("|--:|", out)
         # Stable seq numbers appear verbatim in their rows; the open row carries
-        # the leading inquiry glyph in its `#` cell, the closed row mutes it.
+        # the leading open glyph (◦) in its `#` cell, the closed row mutes it.
         self.assertIn("| ◦ %d | Open one" % a["seq"], out)
         self.assertIn("| %d | Closed one" % b["seq"], out)
         # Effort gauge rendered in the cell.

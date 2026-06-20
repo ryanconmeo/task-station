@@ -106,13 +106,18 @@ class SortedTasksTest(unittest.TestCase):
         ts.save_task(t)
         return t
 
-    def test_open_before_closed_then_recent_first(self):
+    def test_not_closed_before_closed_then_recent_first(self):
+        # open + active share the "not-closed" group, ordered by recent activity;
+        # closed comes after (also recent-first).
         self._mk("old-open", "open", 100.0)
+        self._mk("mid-active", "active", 200.0)
         self._mk("new-open", "open", 300.0)
         self._mk("newest-closed", "closed", 400.0)
         self._mk("old-closed", "closed", 50.0)
         order = [t["title"] for t in ts.sorted_tasks()]
-        self.assertEqual(order, ["new-open", "old-open", "newest-closed", "old-closed"])
+        self.assertEqual(
+            order,
+            ["new-open", "mid-active", "old-open", "newest-closed", "old-closed"])
 
     def test_max_seq(self):
         a = self._mk("a", "open", 1.0); a["seq"] = 3; ts.save_task(a)

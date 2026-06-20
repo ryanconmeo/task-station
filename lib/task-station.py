@@ -50,16 +50,21 @@ SKIP_SENTINEL = "__skip__"  # link value marking a session intentionally untrack
 MAX_CLOSED_IN_LIST = 5  # closed tasks shown in the /todo list (most recent first)
 SUBSTANCE_FLOOR = 3     # min user messages for a session to count as "real working" work
 
-# Task lifecycle PHASE — independent of status (open/closed). A topic merely
-# *raised* is an "inquiry" (◦) and shows on the board immediately; it graduates
-# to "active" (●) when work actually starts (delegate --worktree, a file edit in
-# an attached session, manual `phase`, or `create --active`). A missing/unknown
-# phase reads as inquiry (back-compat for tasks written before phases existed).
-PHASE_INQUIRY = "inquiry"
-PHASE_ACTIVE = "active"
-PHASE_DEFAULT = PHASE_INQUIRY
-PHASE_VALUES = (PHASE_INQUIRY, PHASE_ACTIVE)
-PHASE_GLYPH = {PHASE_INQUIRY: "◦", PHASE_ACTIVE: "●"}
+# Task lifecycle is ONE field — `status` — with three values:
+#   open (◦)  →  active (●)  →  closed
+# A topic merely *raised* starts `open` and shows on the board immediately; it
+# graduates to `active` when work actually starts (delegate --worktree, a file
+# edit in an attached session, the manual `status` command, or `create --active`);
+# /done closes it. "On the board / not done" means status in {open, active};
+# "is closed" stays status == "closed". A missing/unknown status reads as open
+# (back-compat — pre-existing tasks were open/closed only).
+STATUS_OPEN = "open"
+STATUS_ACTIVE = "active"
+STATUS_CLOSED = "closed"
+STATUS_DEFAULT = STATUS_OPEN
+STATUS_BOARD = (STATUS_OPEN, STATUS_ACTIVE)   # "not closed" — on the board
+STATUS_SETTABLE = (STATUS_OPEN, STATUS_ACTIVE)  # the manual `status` command's range
+STATUS_GLYPH = {STATUS_OPEN: "◦", STATUS_ACTIVE: "●"}
 
 # Categories / colours are an OPTIONAL plugin: all of that logic lives in
 # categories.py. If it's absent (or fails to import), `cats` is None and the
@@ -81,25 +86,37 @@ def cat_tag(color, pad=False):
     return cats.tag(color, pad=pad) if cats else ""
 
 
-def task_phase(task):
-    """A task's lifecycle phase, defaulting a missing/unknown value to inquiry —
-    so tasks written before phases existed read as inquiry (back-compat)."""
-    p = (task or {}).get("phase")
-    return p if p in PHASE_VALUES else PHASE_DEFAULT
+def task_status(task):
+    """A task's lifecycle status, defaulting a missing/unknown value to open —
+    so tasks written before this field existed read as open (back-compat)."""
+    s = (task or {}).get("status")
+    return s if s in (STATUS_OPEN, STATUS_ACTIVE, STATUS_CLOSED) else STATUS_DEFAULT
 
 
-def phase_glyph(task, muted_closed=True):
-    """Leading lifecycle glyph for a row: `◦` inquiry / `●` active. Single-width,
+def is_closed(task):
+    """True iff the task is done (status == closed)."""
+    return task_status(task) == STATUS_CLOSED
+
+
+def is_on_board(task):
+    """True iff the task is still on the board (not closed — open or active)."""
+    return not is_closed(task)
+
+
+def status_glyph(task, muted_closed=True):
+    """Leading lifecycle glyph for a row: `◦` open / `●` active. Single-width,
     ASCII-safe. Closed tasks mute to a blank placeholder (single space) so the
-    column still aligns — phase matters mainly for OPEN work."""
-    if muted_closed and (task or {}).get("status") == "closed":
+    column still aligns — closed tasks live in their own section."""
+    if muted_closed and is_closed(task):
         return " "
-    return PHASE_GLYPH[task_phase(task)]
+    s = task_status(task)
+    return STATUS_GLYPH.get(s, STATUS_GLYPH[STATUS_OPEN])
 
 
-def phase_legend():
-    """One-line legend explaining the leading glyphs."""
-    return "Phase:   %s inquiry · %s active" % (PHASE_GLYPH[PHASE_INQUIRY], PHASE_GLYPH[PHASE_ACTIVE])
+def status_legend():
+    """One-line legend explaining the leading glyphs (closed shown separately)."""
+    return "Status:  %s open · %s active  (closed shown separately)" % (
+        STATUS_GLYPH[STATUS_OPEN], STATUS_GLYPH[STATUS_ACTIVE])
 
 
 def statusline_segment(task, width=0):
@@ -276,10 +293,11 @@ def all_tasks():
 
 
 def sorted_tasks():
-    """Open before closed; within each, most recent activity first."""
+    """Not-closed (open + active) before closed; within each, most recent
+    activity first."""
     return sorted(
         all_tasks(),
-        key=lambda t: (0 if t.get("status") == "open" else 1, -t.get("updated_ts", 0)),
+        key=lambda t: (1 if is_closed(t) else 0, -t.get("updated_ts", 0)),
     )
 
 
@@ -455,7 +473,7 @@ def similar_open_task(title):
     want_nums = _norm_nums(title)
     best, best_score = None, 0.0
     for t in sorted_tasks():
-        if t.get("status") != "open":
+        if is_closed(t):
             continue
         cand_title = t.get("title", "")
         # A numbered new title only matches a candidate sharing one of its numbers.
@@ -483,8 +501,8 @@ def add_log(task, note):
 
 def touch(task, session=None, note=None, reopen=False):
     task["updated_ts"] = _now()
-    if reopen and task.get("status") == "closed":
-        task["status"] = "open"
+    if reopen and is_closed(task):
+        task["status"] = STATUS_OPEN          # reopening a closed task → open
     if session:
         if session not in task.get("sessions", []):
             task.setdefault("sessions", []).append(session)
@@ -494,24 +512,28 @@ def touch(task, session=None, note=None, reopen=False):
     add_log(task, note)
 
 
-def set_phase(task, phase, note=None):
-    """Set a task's lifecycle phase (idempotent). Returns True only if it changed,
-    logging the transition so the activity trail shows when work began. An unknown
-    phase is refused (returns False) so a typo never mislabels a task."""
-    if phase not in PHASE_VALUES:
+def set_status(task, status, note=None):
+    """Move a task between the settable board states (open ⇄ active). Idempotent —
+    returns True only if it changed, logging the transition so the activity trail
+    shows when work began. Refuses anything outside open/active (returns False) —
+    closing goes through /done, not here — so a typo never mislabels a task."""
+    if status not in STATUS_SETTABLE:
         return False
-    if task_phase(task) == phase:
+    if task_status(task) == status:
         return False
-    task["phase"] = phase
-    add_log(task, note or ("phase → %s" % phase))
+    task["status"] = status
+    add_log(task, note or ("status → %s" % status))
     return True
 
 
 def promote_active(task, note=None):
-    """Flip an inquiry task to active because work has started. Idempotent — a
-    no-op (returns False) when the task is already active."""
-    return set_phase(task, PHASE_ACTIVE,
-                     note=note or "auto-promoted to active (work started)")
+    """Promote an OPEN task to active because work has started. Idempotent — a
+    no-op (returns False) when the task is already active or closed (an edit never
+    resurrects a closed task)."""
+    if task_status(task) != STATUS_OPEN:
+        return False
+    return set_status(task, STATUS_ACTIVE,
+                      note=note or "auto-promoted to active (work started)")
 
 
 def _project_dir_for(cwd):
@@ -774,14 +796,13 @@ def resume_command(task, current_session=None):
     return None
 
 
-def new_task(title, summary, color=None, effort=None, phase=PHASE_DEFAULT):
+def new_task(title, summary, color=None, effort=None, status=STATUS_DEFAULT):
     ts = _now()
     t = {
         "id": str(uuid.uuid4()),
         "title": title.strip() or "Untitled task",
         "summary": summary.strip(),
-        "status": "open",
-        "phase": phase if phase in PHASE_VALUES else PHASE_DEFAULT,
+        "status": status if status in STATUS_BOARD else STATUS_DEFAULT,
         "created_ts": ts,
         "created_at": _iso(ts),
         "updated_ts": ts,
@@ -834,8 +855,8 @@ def cmd_create(a):
     if getattr(a, "effort", None) and not normalize_effort(a.effort):
         print("⚠ --effort '%s' is not a known size; leaving it unset. "
               "Use xs/s/m/l/xl (or 1–5)." % a.effort)
-    phase = PHASE_ACTIVE if getattr(a, "active", False) else PHASE_DEFAULT
-    task = new_task(a.title, a.summary, requested, getattr(a, "effort", None), phase=phase)
+    status = STATUS_ACTIVE if getattr(a, "active", False) else STATUS_DEFAULT
+    task = new_task(a.title, a.summary, requested, getattr(a, "effort", None), status=status)
     ensure_seqs()                      # number any pre-seq tasks before we pick ours
     task["seq"] = _max_seq() + 1       # stable number, never reused even after /done
 
@@ -976,8 +997,8 @@ def cmd_detach(a):
 
 
 def _open_tasks_brief(limit=8):
-    """A compact 'OPEN tasks you might attach to' list for hook reasons."""
-    rows = [t for t in sorted_tasks() if t.get("status") == "open"][:limit]
+    """A compact 'tasks on the board you might attach to' list for hook reasons."""
+    rows = [t for t in sorted_tasks() if is_on_board(t)][:limit]
     return "\n".join("  - [%s] %s" % (t["id"][:8], t["title"]) for t in rows)
 
 
@@ -991,7 +1012,7 @@ def cmd_mark_edited(a):
     if link == SKIP_SENTINEL:      # session deliberately untracked — stay silent
         return
     if link:                       # attached to a real task — editing means work
-        # has started, so promote an inquiry task to active (idempotent), then
+        # has started, so promote an open task to active (idempotent), then
         # we're done (tracked sessions get no nudge).
         task = load_task(link)
         if task and promote_active(task):
@@ -1065,9 +1086,9 @@ def _close_one(ref, session):
     task = resolve_ref(ref) or load_task(ref)
     if not task:
         return "No task matching '%s'." % ref
-    if task.get("status") == "closed":
+    if is_closed(task):
         return "Task [%s] %s is already closed." % (task["id"][:8], task["title"])
-    task["status"] = "closed"
+    task["status"] = STATUS_CLOSED              # close from open OR active
     touch(task, session=session, note="closed (by id)")
     save_task(task)
     # Detach EVERY session linked to this task so none can silently reopen it.
@@ -1106,7 +1127,7 @@ def cmd_done(a):
     if not task:
         print("No task is attached to this session. Nothing to close.")
         return
-    task["status"] = "closed"
+    task["status"] = STATUS_CLOSED          # close from open OR active
     touch(task, session=a.session, note="closed")
     save_task(task)
     clear_link(a.session)   # detach so a later message can't silently reopen it
@@ -1135,28 +1156,30 @@ def _format_list(closed_limit=MAX_CLOSED_IN_LIST):
         return ("No tasks yet. One will be tracked automatically once the work "
                 "in a session becomes clear, or say so explicitly.")
     lines = []
-    closed_total = sum(1 for t in listing if t["status"] != "open")
+    closed_total = sum(1 for t in listing if is_closed(t))
     capped = closed_limit is not None and closed_total > closed_limit
     if capped:
         shown = 0
         trimmed = []
         for t in listing:
-            if t["status"] != "open":
+            if is_closed(t):
                 shown += 1
                 if shown > closed_limit:
                     continue
             trimmed.append(t)
         listing = trimmed
-    last_status = None
+    # Two sections: the board (open + active, glyph-distinguished) then closed.
+    last_section = None
     for t in listing:
-        if t["status"] != last_status:
+        section = "CLOSED" if is_closed(t) else "OPEN"
+        if section != last_section:
             lines.append("")
-            lines.append("OPEN" if t["status"] == "open" else "CLOSED")
-            last_status = t["status"]
+            lines.append(section)
+            last_section = section
         tag = cat_tag(t.get("color"), pad=True)
         eff = effort_cell(t.get("effort"))
         marker = _live_marker(t)
-        g = phase_glyph(t)             # leading lifecycle glyph, before the number
+        g = status_glyph(t)            # leading lifecycle glyph, before the number
         if tag:
             lines.append("%s %3d  %-40.40s  %s  %s  %s%s"
                          % (g, t["seq"], t["title"], tag, eff, rel_time(t.get("updated_ts")), marker))
@@ -1168,12 +1191,12 @@ def _format_list(closed_limit=MAX_CLOSED_IN_LIST):
                      "or /todo all  ·  reachable by number: /todo <n> or /done <n>"
                      % (closed_total - closed_limit))
     lines.append("")
-    lines.append(phase_legend())
+    lines.append(status_legend())
     lines.append(effort_legend())
     if cats:
         lines.append(cats.legend())
     lines.append(commands_footer())
-    return ("Tasks (open first, then by recent activity):\n"
+    return ("Tasks (not-closed first, then by recent activity):\n"
             + "\n".join(lines))
 
 
@@ -1194,7 +1217,7 @@ def _md_task_row(task):
     muted to bare seq on closed tasks). The Task cell carries the ` ⧉N`
     live-session marker (when >1), mirroring the ASCII list; the Category cell
     keeps the `<emoji> [TAG]` intact."""
-    seq_cell = ("%s %s" % (phase_glyph(task), task.get("seq", ""))).strip()
+    seq_cell = ("%s %s" % (status_glyph(task), task.get("seq", ""))).strip()
     return "| %s | %s | %s | %s | %s |" % (
         seq_cell,
         _md_escape(task["title"]) + _live_marker(task),
@@ -1221,17 +1244,17 @@ def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
     if not listing:
         return ("No tasks yet. One will be tracked automatically once the work "
                 "in a session becomes clear, or say so explicitly.")
-    open_tasks = [t for t in listing if t["status"] == "open"]
-    closed_tasks = [t for t in listing if t["status"] != "open"]
+    board_tasks = [t for t in listing if is_on_board(t)]   # open + active
+    closed_tasks = [t for t in listing if is_closed(t)]
     closed_total = len(closed_tasks)
     capped = closed_limit is not None and closed_total > closed_limit
     shown_closed = closed_tasks[:closed_limit] if capped else closed_tasks
 
     out = []
-    if open_tasks:
+    if board_tasks:
         out.append("### Open")
         out.append(_MD_HEADER)
-        out.extend(_md_task_row(t) for t in open_tasks)
+        out.extend(_md_task_row(t) for t in board_tasks)
     if shown_closed:
         if out:
             out.append("")
@@ -1243,17 +1266,18 @@ def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
         out.append("… %d older closed task(s) hidden — show more with `/todo closed N` "
                    "or `/todo all`." % (closed_total - closed_limit))
     out.append("")
-    out.append("_%s inquiry · %s active_" % (PHASE_GLYPH[PHASE_INQUIRY], PHASE_GLYPH[PHASE_ACTIVE]))
+    out.append("_%s open · %s active · closed below_" % (STATUS_GLYPH[STATUS_OPEN], STATUS_GLYPH[STATUS_ACTIVE]))
     out.append(commands_footer_md())
     return "\n".join(out)
 
 
 def _format_detail(task, session):
     out = []
-    out.append("Task [%s]  —  %s" % (task["id"][:8], task["status"].upper()))
+    cur = task_status(task)
+    # Header carries the glyph for board tasks (◦ open / ● active); closed has none.
+    glyph = (STATUS_GLYPH[cur] + " ") if cur in STATUS_GLYPH else ""
+    out.append("Task [%s]  —  %s%s" % (task["id"][:8], glyph, cur.upper()))
     out.append("Title:   %s" % task["title"])
-    cur_phase = task_phase(task)
-    out.append("Phase:   %s %s" % (PHASE_GLYPH[cur_phase], cur_phase))
     if cats:
         out.append(cats.summary(task.get("color")))
     eff = task.get("effort")
@@ -1504,31 +1528,41 @@ def cmd_add_project(a):
             sys.stderr.write(err + "\n")
 
 
-def cmd_phase(a):
-    """Show or set a task's lifecycle phase (◦ inquiry / ● active), independent of
-    open/closed status. `phase --task <ref>` with no value reports the current
-    phase; `phase --task <ref> active|inquiry` sets it (idempotent)."""
+def cmd_status(a):
+    """Show or set a task's lifecycle status between the board states (◦ open /
+    ● active). `status --task <ref>` with no value reports the current status;
+    `status --task <ref> open|active` sets it (idempotent). Closing goes through
+    /done, not here — a closed task is reported but not settable from here."""
     task = resolve_ref(a.task) or load_task(a.task)
     if not task:
         print("No task matching '%s'." % a.task)
         return
     value = getattr(a, "value", None)
+    cur = task_status(task)
     if not value:
-        cur = task_phase(task)
-        print("Task [%s] %s — phase: %s %s"
-              % (task["id"][:8], task["title"], PHASE_GLYPH[cur], cur))
+        glyph = STATUS_GLYPH.get(cur, "")
+        print("Task [%s] %s — status: %s %s"
+              % (task["id"][:8], task["title"], glyph, cur))
         return
     value = value.strip().lower()
-    if value not in PHASE_VALUES:
-        print("phase: unknown phase '%s' — use 'inquiry' or 'active'." % value)
+    if value not in STATUS_SETTABLE:
+        if value == STATUS_CLOSED:
+            print("status: close a task with /done (or `done --task %s`), not `status`."
+                  % task.get("seq", task["id"][:8]))
+        else:
+            print("status: unknown status '%s' — use 'open' or 'active'." % value)
         return
-    if set_phase(task, value, note="phase set to %s (manual)" % value):
+    if is_closed(task):
+        print("Task [%s] %s is closed — reopen it via /todo %s first."
+              % (task["id"][:8], task["title"], task.get("seq", task["id"][:8])))
+        return
+    if set_status(task, value, note="status set to %s (manual)" % value):
         save_task(task)
-        print("Task [%s] %s → phase %s %s"
-              % (task["id"][:8], task["title"], PHASE_GLYPH[value], value))
+        print("Task [%s] %s → %s %s"
+              % (task["id"][:8], task["title"], STATUS_GLYPH[value], value))
     else:
         print("Task [%s] %s already %s %s."
-              % (task["id"][:8], task["title"], PHASE_GLYPH[value], value))
+              % (task["id"][:8], task["title"], STATUS_GLYPH[value], value))
 
 
 def cmd_session_title(a):
@@ -1802,7 +1836,7 @@ def cmd_prompt_context(a):
         else:  # attach
             dlines.append("  attach: python3 %s/task-station.py attach --session %s --task <task-id> [--color <color>]"
                           % (BASE, a.session))
-            opens = [t for t in sorted_tasks() if t["status"] == "open"]
+            opens = [t for t in sorted_tasks() if is_on_board(t)]
             if opens:
                 dlines.append("Open tasks you can attach to:")
                 for t in opens[:8]:
@@ -1836,8 +1870,8 @@ def cmd_prompt_context(a):
     # message just burns tokens. The first miss and the escalation still get the
     # full block (below).
     if 1 < n < NUDGE_ESCALATE_AFTER:
-        line = ("[task-station] Still untracked (msg %d). Track the topic as an inquiry "
-                "(◦) — or fold it into an open task above with `attach --note` — else skip." % n)
+        line = ("[task-station] Still untracked (msg %d). Track the topic as an OPEN task "
+                "(◦) — or fold it into a task above with `attach --note` — else skip." % n)
         # Category auto-detection is a compiled-regex + dict lookup — effectively
         # free — so it keeps running on EVERY prompt, even the collapsed nudge. If
         # this prompt maps to a category, carry just that one hint (no legend) so a
@@ -1850,7 +1884,7 @@ def cmd_prompt_context(a):
         print(line)
         return
 
-    opens = [t for t in sorted_tasks() if t["status"] == "open"]
+    opens = [t for t in sorted_tasks() if is_on_board(t)]
     lines = ["[task-station] This session is not attached to a tracked task yet."]
     if opens:
         lines.append("Open tasks that may match what the user wants:")
@@ -1866,9 +1900,9 @@ def cmd_prompt_context(a):
 
     # Compact form: full rules/examples live in `task-station.py guidance` (and the
     # SessionStart injection points there) — keep the per-prompt cost minimal.
-    lines.append("Track this topic NOW as an INQUIRY task (◦) — even a question counts; it "
+    lines.append("Track this topic NOW as an OPEN task (◦) — even a question counts; it "
                  "shows on the board immediately and AUTO-PROMOTES to active (●) when you act "
-                 "on it (edit a file, delegate, multi-step). FIRST scan the open tasks above: if "
+                 "on it (edit a file, delegate, multi-step). FIRST scan the tasks above: if "
                  "this prompt continues one of them, FOLD INTO IT — `attach --session %s --task "
                  "<id> --note '<this prompt>'` — don't create a sibling. Only a genuinely new "
                  "topic creates a task. (Skip only if it's truly throwaway/meta.)" % a.session)
@@ -1902,23 +1936,24 @@ def cmd_guidance(a):
     """Full attach/create how-to, fetched on demand (kept out of the per-prompt
     injection for token economy — `prompt-context` points here)."""
     lines = ["[task-station] Every topic gets tracked from the first prompt — TRACK, don't stay silent:",
-             "  - PHASE: a topic you merely raise is an INQUIRY (◦) — track it now, even a plain question.",
+             "  - STATUS: a topic you merely raise starts OPEN (◦) — track it now, even a plain question.",
              "    It shows on the board immediately and AUTO-PROMOTES to ACTIVE (●) when work starts",
              "    (you edit a file in this session, delegate --worktree, or run a multi-step process).",
-             "  - FOLD, DON'T FORK: before creating, scan the OPEN board. If this prompt continues an",
-             "    existing open task, ATTACH to it and append the prompt as a note — don't make a sibling.",
+             "    /done then closes it. Status is one field: open (◦) → active (●) → closed.",
+             "  - FOLD, DON'T FORK: before creating, scan the board (open + active). If this prompt",
+             "    continues an existing task, ATTACH to it and append the prompt as a note — no sibling.",
              "  - write a one-line title good enough to recognise the topic later.",
-             'TRACK examples:  "how does X work?" (inquiry), "add dark mode", "fix the auth bug"',
-             "FOLD example:    a follow-up question about an open task → attach --note, not a new task",
+             'TRACK examples:  "how does X work?" (open), "add dark mode", "fix the auth bug"',
+             "FOLD example:    a follow-up question about a task on the board → attach --note, not a new task",
              "SKIP only genuinely throwaway/meta chatter: python3 %s/task-station.py skip --session <session-id>" % BASE]
     if cats:
         lines.extend(cats.picker_lines())
-        lines.append("  • Matches an open task → attach (FOLD IN; --note appends this prompt to its log; "
+        lines.append("  • Matches a task on the board → attach (FOLD IN; --note appends this prompt to its log; "
                      "--color sets/recategorizes — a key, emoji, or [TAG]):")
         lines.append("      python3 %s/task-station.py attach --session <session-id> --task <task-id> [--note '<prompt>'] [--color <color>]" % BASE)
         lines.append("  • Otherwise → create with its colour and an effort estimate "
                      "(xs/s/m/l/xl — your read of the task's complexity & scope). New tasks "
-                     "start as inquiry (◦); add --active to start active (●) when work has already begun:")
+                     "start open (◦); add --active to start active (●) when work has already begun:")
         lines.append("      python3 %s/task-station.py create --session <session-id> --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>' [--active]"
                      % BASE)
         if cats.TINT_TERMINAL:
@@ -2145,7 +2180,7 @@ def cmd_session_start(a):
         msg.extend(cat_lines(task.get("color")))
         print("\n".join(msg))
         return
-    opens = [t for t in sorted_tasks() if t["status"] == "open"]
+    opens = [t for t in sorted_tasks() if is_on_board(t)]
     if not opens:
         return
     lines = ["[task-station] You have %d open task(s). If the user's request matches one, attach to it "
@@ -2171,7 +2206,7 @@ def main():
     sp.add_argument("--attach", action="store_true",
                     help="force-bind --session even if it's a substantive tracked session")
     sp.add_argument("--active", action="store_true",
-                    help="start the task in the active (●) phase instead of inquiry (◦)")
+                    help="start the task active (●) instead of the default open (◦)")
     sp.set_defaults(fn=cmd_create)
 
     sp = sub.add_parser("attach"); sp.add_argument("--session", required=True)
@@ -2210,10 +2245,10 @@ def main():
     sp = sub.add_parser("add-project"); sp.add_argument("--task", required=True)
     sp.add_argument("--project", required=True); sp.set_defaults(fn=cmd_add_project)
 
-    sp = sub.add_parser("phase"); sp.add_argument("--task", required=True)
+    sp = sub.add_parser("status"); sp.add_argument("--task", required=True)
     sp.add_argument("value", nargs="?", default=None,
-                    help="active|inquiry to set; omit to report the current phase")
-    sp.set_defaults(fn=cmd_phase)
+                    help="open|active to set; omit to report the current status (close via /done)")
+    sp.set_defaults(fn=cmd_status)
 
     sp = sub.add_parser("session-title"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_session_title)
