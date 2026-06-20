@@ -91,7 +91,7 @@ Every command works in two forms: the namespaced `/task-station:todo` / `/task-s
 
 - **`/todo`** — list all tasks (open first, then by recent activity) as two Markdown tables, rendered directly by the engine (`render --format md`). Each row shows the task's stable number, category `<emoji> [TAG]`, effort gauge, last activity, and a `⧉N` marker when more than one live session is attached to the same task.
 - **`/todo <n>`** — open a task by its stable number (or an id prefix) and **resume it into the current session**; your next message continues it. Reopens the task if it was closed.
-- **`/todo <n> -s`** — same attach/reopen, but jump **straight into the task's pinned session in a fresh Terminal window** (no recap; the window you typed in is left untouched). The `-s` may sit on either side of the number (`/todo -s <n>` works too).
+- **`/todo <n> -s`** — same attach/reopen, but jump **straight into the task's pinned session in a fresh Terminal window** (no recap; the window you typed in is left untouched). The `-s` may sit on either side of the number (`/todo -s <n>` works too). **Never taints the wrong conversation:** the session you typed `-s` in and any **skipped** sessions are excluded as resume targets — if no valid session remains, `-s` **fresh-starts** a clean, auto-attaching session (`claude --session-id <uuid>`, pre-bound to the task) rather than resuming the conversation you jumped from.
 - **`/todo 1,2,5 -s`** — **multi-jump**: a comma-separated list jumps into several tasks at once, opening **one window per task**. A bad ref in the list is reported but doesn't abort the others.
 - **`/todo closed [N]`** / **`/todo all`** — page through closed tasks: `closed` shows the 20 most recent, `closed N` shows N, `all` shows every closed task.
 - **`/done`** — close the task **this session** is working on and detach it; the session's terminal window auto-closes ~1s later.
@@ -99,6 +99,15 @@ Every command works in two forms: the namespaced `/task-station:todo` / `/task-s
 - **`/done 1,2,5`** — **multi-close**: a comma-separated list closes several tasks at once, printing **one result line per task**. A bad ref is reported but doesn't abort the others.
 - **`/repos`** / **`/repos show`** — print the hub **repo index** (one block per repo under your workspace roots). **`/repos <term>`** ranks repos by relevance to route a fuzzy task; **`/repos --refresh`** rescans; **`/repos --json`** emits the structured list. See [Repo index for routing](#repo-index-for-routing). (Bare `/repos` is part of the same opt-in as `/todo`/`/done`.)
 - **`/task-station:config`** — view or change settings; run one-time setup (tint profiles, delegation policy, bare-command install). See [Configure](#configure).
+
+### Session & resume controls
+
+Claude attaches/creates tasks through the engine; these flags govern **which session a task resumes into** so `/todo <n> -s` always lands in the right place:
+
+- **`create --no-attach`** — create a task with **empty sessions** and no session→task link. The supported "spin off a task for later" primitive: `/todo <n> -s` later **fresh-starts** a clean session. (`--session` is optional here.)
+- **`create … --session <busy-session>`** — when the session is itself a **substantive tracked** conversation (≥ 3 messages, linked to a task), `create` **defaults to no-attach** and warns, so a busy parent conversation is never silently made the new task's resume target. Pass **`--attach`** to force binding it.
+- **`detach --session <s> [--task <t>]`** — remove a session from a task's resume candidates: drops it from `sessions[]`/`session_meta`, clears `pinned_session` if it pointed there, and clears the session→task link. `--task` selects the task; without it, the session's linked task is used. Idempotent.
+- **`pin --new [--task <t>]`** — pin an **unborn** session: mints a fresh uuid and records it so `/todo` emits `claude --session-id <uuid>` — opening it *becomes* the task's pinned session. Use it to deliberately start the task in a clean session next time (re-pin a fresh session to save tokens) without first having that session exist.
 
 ## Categories & terminal tint
 

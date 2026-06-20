@@ -7,7 +7,7 @@
       "name": "task-station",
       "source": "./",
       "description": "A persistent task hub for Claude Code — every task is a resumable, re-pinnable session, auto-categorised and colour-tinted, with in-project worker delegation.",
-      "version": "1.2.2",
+      "version": "1.3.0",
       "license": "MIT"
     }
   ]
