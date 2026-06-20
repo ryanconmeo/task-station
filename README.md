@@ -403,13 +403,17 @@ The bridge writes where the CLI reads automatically — it honors `TASK_STATION_
 
 | Kind | Name | What it does |
 |------|------|--------------|
-| Tool | `list_tasks(status="all-open")` | The Markdown board (byte-for-byte the CLI's `--format md`). `status`: `all-open` (default, open+active) · `open` · `active` · `closed` · `all`. |
+| Tool | `list_tasks(status="all-open")` | The Markdown board (byte-for-byte the CLI's `--format md`), prefixed with a one-line instruction telling Chat to render the tables verbatim. `status`: `all-open` (default, open+active) · `open` · `active` · `closed` · `all`. |
 | Tool | `create_task(title, summary, category?, effort?, source?)` | Creates an `open (◦)` task. `source` records the originating Desktop conversation ref/URL (surfaced in `get_task`). |
 | Tool | `get_task(ref)` | Full detail by task number or id: status, category, effort, **source link**, and activity log. |
 | Tool | `set_status(ref, status)` | Moves a task along `open → active → closed`. |
 | Tool | `add_note(ref, text)` | Appends a timestamped note to the task's activity log. |
-| Prompt | `todo` | The rendered board — the Desktop analog of `/todo`. |
+| Prompt | `todo` | The rendered board — the Desktop analog of `/todo`. Titled **"Task Station: todo"** with a description in Desktop's prompt picker, so it's easy to find; its content carries the same verbatim-render instruction + board. |
 | Resource | `task://<seq>` | A single task's full detail; attach one to a Desktop conversation via the **+** menu. |
+
+**In Chat:** just ask ("show my tasks") or pick the **`todo`** prompt from Desktop's prompt picker — the
+board renders as a **table** (the same ◦/● tables as the CLI), not a paraphrase, because the bridge
+tells Chat to display it verbatim.
 
 ## Configure
 

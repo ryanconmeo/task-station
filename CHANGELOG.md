@@ -3,6 +3,27 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.6.2] — 2026-06-20
+
+### Changed
+- **In Claude Desktop Chat, the task board now renders verbatim as a table.**
+  Previously, when `list_tasks` / the `todo` prompt returned the Markdown board,
+  Chat paraphrased it into prose (nothing told it otherwise — unlike the CLI
+  `/todo` skill, which says "print verbatim"). The `list_tasks` tool result and
+  the `todo` prompt content now **prepend a short instruction line** — `Display
+  this task board to the user EXACTLY as written below … render the tables
+  verbatim, do not summarize, reword, or re-rank.` — ahead of the board, so Chat
+  shows the same ◦/● tables as the CLI. The board BODY is unchanged: still
+  byte-equal to the CLI `render --format md`.
+
+### Added
+- **The `todo` prompt is discoverable in Desktop's prompt picker.** `prompts/list`
+  now gives `todo` a human title ("Task Station: todo") and description ("Show
+  your task-station board (open · active · closed)"). Each tool also carries a
+  crisp, action-leading description (`list_tasks` "Show the user's task board",
+  `create_task` "Create / track a new open(◦) task", …) so Claude picks the right
+  one from natural language.
+
 ## [1.6.1] — 2026-06-20
 
 ### Changed
