@@ -50,6 +50,17 @@ SKIP_SENTINEL = "__skip__"  # link value marking a session intentionally untrack
 MAX_CLOSED_IN_LIST = 5  # closed tasks shown in the /todo list (most recent first)
 SUBSTANCE_FLOOR = 3     # min user messages for a session to count as "real working" work
 
+# Task lifecycle PHASE — independent of status (open/closed). A topic merely
+# *raised* is an "inquiry" (◦) and shows on the board immediately; it graduates
+# to "active" (●) when work actually starts (delegate --worktree, a file edit in
+# an attached session, manual `phase`, or `create --active`). A missing/unknown
+# phase reads as inquiry (back-compat for tasks written before phases existed).
+PHASE_INQUIRY = "inquiry"
+PHASE_ACTIVE = "active"
+PHASE_DEFAULT = PHASE_INQUIRY
+PHASE_VALUES = (PHASE_INQUIRY, PHASE_ACTIVE)
+PHASE_GLYPH = {PHASE_INQUIRY: "◦", PHASE_ACTIVE: "●"}
+
 # Categories / colours are an OPTIONAL plugin: all of that logic lives in
 # categories.py. If it's absent (or fails to import), `cats` is None and the
 # tracker runs plain and colourless — no tags, no --color, no tint hints. See
@@ -68,6 +79,27 @@ def cat_color(color):
 def cat_tag(color, pad=False):
     """`<emoji> [TAG]` for the list, or "" when categories are off."""
     return cats.tag(color, pad=pad) if cats else ""
+
+
+def task_phase(task):
+    """A task's lifecycle phase, defaulting a missing/unknown value to inquiry —
+    so tasks written before phases existed read as inquiry (back-compat)."""
+    p = (task or {}).get("phase")
+    return p if p in PHASE_VALUES else PHASE_DEFAULT
+
+
+def phase_glyph(task, muted_closed=True):
+    """Leading lifecycle glyph for a row: `◦` inquiry / `●` active. Single-width,
+    ASCII-safe. Closed tasks mute to a blank placeholder (single space) so the
+    column still aligns — phase matters mainly for OPEN work."""
+    if muted_closed and (task or {}).get("status") == "closed":
+        return " "
+    return PHASE_GLYPH[task_phase(task)]
+
+
+def phase_legend():
+    """One-line legend explaining the leading glyphs."""
+    return "Phase:   %s inquiry · %s active" % (PHASE_GLYPH[PHASE_INQUIRY], PHASE_GLYPH[PHASE_ACTIVE])
 
 
 def statusline_segment(task, width=0):
@@ -462,6 +494,26 @@ def touch(task, session=None, note=None, reopen=False):
     add_log(task, note)
 
 
+def set_phase(task, phase, note=None):
+    """Set a task's lifecycle phase (idempotent). Returns True only if it changed,
+    logging the transition so the activity trail shows when work began. An unknown
+    phase is refused (returns False) so a typo never mislabels a task."""
+    if phase not in PHASE_VALUES:
+        return False
+    if task_phase(task) == phase:
+        return False
+    task["phase"] = phase
+    add_log(task, note or ("phase → %s" % phase))
+    return True
+
+
+def promote_active(task, note=None):
+    """Flip an inquiry task to active because work has started. Idempotent — a
+    no-op (returns False) when the task is already active."""
+    return set_phase(task, PHASE_ACTIVE,
+                     note=note or "auto-promoted to active (work started)")
+
+
 def _project_dir_for(cwd):
     """The session-transcript bucket Claude Code uses for a given launch cwd."""
     return os.path.join(PROJECTS_ROOT, cwd.replace("/", "-"))
@@ -722,13 +774,14 @@ def resume_command(task, current_session=None):
     return None
 
 
-def new_task(title, summary, color=None, effort=None):
+def new_task(title, summary, color=None, effort=None, phase=PHASE_DEFAULT):
     ts = _now()
     t = {
         "id": str(uuid.uuid4()),
         "title": title.strip() or "Untitled task",
         "summary": summary.strip(),
         "status": "open",
+        "phase": phase if phase in PHASE_VALUES else PHASE_DEFAULT,
         "created_ts": ts,
         "created_at": _iso(ts),
         "updated_ts": ts,
@@ -781,7 +834,8 @@ def cmd_create(a):
     if getattr(a, "effort", None) and not normalize_effort(a.effort):
         print("⚠ --effort '%s' is not a known size; leaving it unset. "
               "Use xs/s/m/l/xl (or 1–5)." % a.effort)
-    task = new_task(a.title, a.summary, requested, getattr(a, "effort", None))
+    phase = PHASE_ACTIVE if getattr(a, "active", False) else PHASE_DEFAULT
+    task = new_task(a.title, a.summary, requested, getattr(a, "effort", None), phase=phase)
     ensure_seqs()                      # number any pre-seq tasks before we pick ours
     task["seq"] = _max_seq() + 1       # stable number, never reused even after /done
 
@@ -844,11 +898,17 @@ def cmd_attach(a):
         elif not task.get("color"):
             task["color"] = cats.DEFAULT
     touch(task, session=a.session, note="attached", reopen=True)
+    # --note folds a cross-session prompt into this task's activity log instead of
+    # spawning a sibling task ("fold don't fork" — see commands/todo.md §grouping).
+    note = getattr(a, "note", None)
+    if note and note.strip():
+        add_log(task, note.strip())
     save_task(task)
     set_link(a.session, task["id"])
     clear_count(a.session)
-    print("Attached to task [%s] %s%s"
-          % (task["id"][:8], task["title"], " (reopened)" if reopened else ""))
+    print("Attached to task [%s] %s%s%s"
+          % (task["id"][:8], task["title"], " (reopened)" if reopened else "",
+             " (note appended)" if note and note.strip() else ""))
     for line in cat_lines(task.get("color")):
         print(line)
 
@@ -928,7 +988,14 @@ def cmd_mark_edited(a):
     if os.environ.get("TASK_STATION_GATE") == "off":
         return
     link = get_link(a.session)
-    if link:                       # already attached to a task, or skipped — fine
+    if link == SKIP_SENTINEL:      # session deliberately untracked — stay silent
+        return
+    if link:                       # attached to a real task — editing means work
+        # has started, so promote an inquiry task to active (idempotent), then
+        # we're done (tracked sessions get no nudge).
+        task = load_task(link)
+        if task and promote_active(task):
+            save_task(task)
         return
     if not mark_edited(a.session):  # one-shot: the reminder already fired
         return
@@ -1089,17 +1156,19 @@ def _format_list(closed_limit=MAX_CLOSED_IN_LIST):
         tag = cat_tag(t.get("color"), pad=True)
         eff = effort_cell(t.get("effort"))
         marker = _live_marker(t)
+        g = phase_glyph(t)             # leading lifecycle glyph, before the number
         if tag:
-            lines.append("%3d  %-40.40s  %s  %s  %s%s"
-                         % (t["seq"], t["title"], tag, eff, rel_time(t.get("updated_ts")), marker))
+            lines.append("%s %3d  %-40.40s  %s  %s  %s%s"
+                         % (g, t["seq"], t["title"], tag, eff, rel_time(t.get("updated_ts")), marker))
         else:
-            lines.append("%3d  %-40.40s  %s  %s%s"
-                         % (t["seq"], t["title"], eff, rel_time(t.get("updated_ts")), marker))
+            lines.append("%s %3d  %-40.40s  %s  %s%s"
+                         % (g, t["seq"], t["title"], eff, rel_time(t.get("updated_ts")), marker))
     if capped:
         lines.append("     … %d older closed task(s) hidden  ·  show more with /todo closed N "
                      "or /todo all  ·  reachable by number: /todo <n> or /done <n>"
                      % (closed_total - closed_limit))
     lines.append("")
+    lines.append(phase_legend())
     lines.append(effort_legend())
     if cats:
         lines.append(cats.legend())
@@ -1121,10 +1190,13 @@ def _md_effort(effort):
 
 def _md_task_row(task):
     """One GitHub-table row: `| # | Task | Category | Effort | Activity |`.
-    The Task cell carries the ` ⧉N` live-session marker (when >1), mirroring the
-    ASCII list; the Category cell keeps the `<emoji> [TAG]` intact."""
+    The `#` cell is prefixed with the leading lifecycle glyph (`◦ 312` / `● 285`;
+    muted to bare seq on closed tasks). The Task cell carries the ` ⧉N`
+    live-session marker (when >1), mirroring the ASCII list; the Category cell
+    keeps the `<emoji> [TAG]` intact."""
+    seq_cell = ("%s %s" % (phase_glyph(task), task.get("seq", ""))).strip()
     return "| %s | %s | %s | %s | %s |" % (
-        task.get("seq", ""),
+        seq_cell,
         _md_escape(task["title"]) + _live_marker(task),
         cat_tag(task.get("color")),
         _md_effort(task.get("effort")),
@@ -1171,6 +1243,7 @@ def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
         out.append("… %d older closed task(s) hidden — show more with `/todo closed N` "
                    "or `/todo all`." % (closed_total - closed_limit))
     out.append("")
+    out.append("_%s inquiry · %s active_" % (PHASE_GLYPH[PHASE_INQUIRY], PHASE_GLYPH[PHASE_ACTIVE]))
     out.append(commands_footer_md())
     return "\n".join(out)
 
@@ -1179,6 +1252,8 @@ def _format_detail(task, session):
     out = []
     out.append("Task [%s]  —  %s" % (task["id"][:8], task["status"].upper()))
     out.append("Title:   %s" % task["title"])
+    cur_phase = task_phase(task)
+    out.append("Phase:   %s %s" % (PHASE_GLYPH[cur_phase], cur_phase))
     if cats:
         out.append(cats.summary(task.get("color")))
     eff = task.get("effort")
@@ -1427,6 +1502,33 @@ def cmd_add_project(a):
         err = _add_project_one(r, a.project)
         if err:
             sys.stderr.write(err + "\n")
+
+
+def cmd_phase(a):
+    """Show or set a task's lifecycle phase (◦ inquiry / ● active), independent of
+    open/closed status. `phase --task <ref>` with no value reports the current
+    phase; `phase --task <ref> active|inquiry` sets it (idempotent)."""
+    task = resolve_ref(a.task) or load_task(a.task)
+    if not task:
+        print("No task matching '%s'." % a.task)
+        return
+    value = getattr(a, "value", None)
+    if not value:
+        cur = task_phase(task)
+        print("Task [%s] %s — phase: %s %s"
+              % (task["id"][:8], task["title"], PHASE_GLYPH[cur], cur))
+        return
+    value = value.strip().lower()
+    if value not in PHASE_VALUES:
+        print("phase: unknown phase '%s' — use 'inquiry' or 'active'." % value)
+        return
+    if set_phase(task, value, note="phase set to %s (manual)" % value):
+        save_task(task)
+        print("Task [%s] %s → phase %s %s"
+              % (task["id"][:8], task["title"], PHASE_GLYPH[value], value))
+    else:
+        print("Task [%s] %s already %s %s."
+              % (task["id"][:8], task["title"], PHASE_GLYPH[value], value))
 
 
 def cmd_session_title(a):
@@ -1734,8 +1836,8 @@ def cmd_prompt_context(a):
     # message just burns tokens. The first miss and the escalation still get the
     # full block (below).
     if 1 < n < NUDGE_ESCALATE_AFTER:
-        line = ("[task-station] Still untracked (msg %d). Attach/create when it's "
-                "real work, or skip." % n)
+        line = ("[task-station] Still untracked (msg %d). Track the topic as an inquiry "
+                "(◦) — or fold it into an open task above with `attach --note` — else skip." % n)
         # Category auto-detection is a compiled-regex + dict lookup — effectively
         # free — so it keeps running on EVERY prompt, even the collapsed nudge. If
         # this prompt maps to a category, carry just that one hint (no legend) so a
@@ -1764,8 +1866,12 @@ def cmd_prompt_context(a):
 
     # Compact form: full rules/examples live in `task-station.py guidance` (and the
     # SessionStart injection points there) — keep the per-prompt cost minimal.
-    lines.append("Attach/create the moment this is concrete work (edits files, multi-step, or >2-3 "
-                 "tool calls — not a question/discussion). Pure Q&A → stay silent.")
+    lines.append("Track this topic NOW as an INQUIRY task (◦) — even a question counts; it "
+                 "shows on the board immediately and AUTO-PROMOTES to active (●) when you act "
+                 "on it (edit a file, delegate, multi-step). FIRST scan the open tasks above: if "
+                 "this prompt continues one of them, FOLD INTO IT — `attach --session %s --task "
+                 "<id> --note '<this prompt>'` — don't create a sibling. Only a genuinely new "
+                 "topic creates a task. (Skip only if it's truly throwaway/meta.)" % a.session)
     if cats:
         skill_color = (cats.color_for_prompt(os.environ.get("TASK_STATION_PROMPT", ""))
                        if hasattr(cats, "color_for_prompt") else None)
@@ -1795,21 +1901,25 @@ def cmd_prompt_context(a):
 def cmd_guidance(a):
     """Full attach/create how-to, fetched on demand (kept out of the per-prompt
     injection for token economy — `prompt-context` points here)."""
-    lines = ["[task-station] Track a session (attach or create) the moment ALL of these hold:",
-             "  - it is a concrete task, not a question / explanation / discussion",
-             "  - acting on it will edit files, run a multi-step process, or take more than ~2-3 tool calls",
-             "  - you understand it well enough to write a one-line title",
-             'TRACK examples:  "duplicate the review skills", "add dark mode", "fix the auth bug"',
-             'SKIP examples:   "what does this do?", "when is X true?", "reword this", a one-line typo fix',
-             "If you have already started editing files and still are not attached — attach now.",
-             "Q&A-only session → silence the nudge: python3 %s/task-station.py skip --session <session-id>" % BASE]
+    lines = ["[task-station] Every topic gets tracked from the first prompt — TRACK, don't stay silent:",
+             "  - PHASE: a topic you merely raise is an INQUIRY (◦) — track it now, even a plain question.",
+             "    It shows on the board immediately and AUTO-PROMOTES to ACTIVE (●) when work starts",
+             "    (you edit a file in this session, delegate --worktree, or run a multi-step process).",
+             "  - FOLD, DON'T FORK: before creating, scan the OPEN board. If this prompt continues an",
+             "    existing open task, ATTACH to it and append the prompt as a note — don't make a sibling.",
+             "  - write a one-line title good enough to recognise the topic later.",
+             'TRACK examples:  "how does X work?" (inquiry), "add dark mode", "fix the auth bug"',
+             "FOLD example:    a follow-up question about an open task → attach --note, not a new task",
+             "SKIP only genuinely throwaway/meta chatter: python3 %s/task-station.py skip --session <session-id>" % BASE]
     if cats:
         lines.extend(cats.picker_lines())
-        lines.append("  • Matches an open task → attach (pass --color to set OR recategorize; accepts a key, emoji, or [TAG]):")
-        lines.append("      python3 %s/task-station.py attach --session <session-id> --task <task-id> [--color <color>]" % BASE)
+        lines.append("  • Matches an open task → attach (FOLD IN; --note appends this prompt to its log; "
+                     "--color sets/recategorizes — a key, emoji, or [TAG]):")
+        lines.append("      python3 %s/task-station.py attach --session <session-id> --task <task-id> [--note '<prompt>'] [--color <color>]" % BASE)
         lines.append("  • Otherwise → create with its colour and an effort estimate "
-                     "(xs/s/m/l/xl — your read of the task's complexity & scope):")
-        lines.append("      python3 %s/task-station.py create --session <session-id> --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'"
+                     "(xs/s/m/l/xl — your read of the task's complexity & scope). New tasks "
+                     "start as inquiry (◦); add --active to start active (●) when work has already begun:")
+        lines.append("      python3 %s/task-station.py create --session <session-id> --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>' [--active]"
                      % BASE)
         if cats.TINT_TERMINAL:
             lines.append("The command prints the category and a `zsh -ic '<color>'` line — RUN that "
@@ -2060,10 +2170,14 @@ def main():
                     help="create unattached (empty sessions) — /todo <n> -s fresh-starts")
     sp.add_argument("--attach", action="store_true",
                     help="force-bind --session even if it's a substantive tracked session")
+    sp.add_argument("--active", action="store_true",
+                    help="start the task in the active (●) phase instead of inquiry (◦)")
     sp.set_defaults(fn=cmd_create)
 
     sp = sub.add_parser("attach"); sp.add_argument("--session", required=True)
     sp.add_argument("--task", required=True); sp.add_argument("--color", default=None)
+    sp.add_argument("--note", default=None,
+                    help="append this text to the task's activity log (fold a prompt in)")
     sp.set_defaults(fn=cmd_attach)
 
     sp = sub.add_parser("detach"); sp.add_argument("--session", required=True)
@@ -2095,6 +2209,11 @@ def main():
 
     sp = sub.add_parser("add-project"); sp.add_argument("--task", required=True)
     sp.add_argument("--project", required=True); sp.set_defaults(fn=cmd_add_project)
+
+    sp = sub.add_parser("phase"); sp.add_argument("--task", required=True)
+    sp.add_argument("value", nargs="?", default=None,
+                    help="active|inquiry to set; omit to report the current phase")
+    sp.set_defaults(fn=cmd_phase)
 
     sp = sub.add_parser("session-title"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_session_title)
