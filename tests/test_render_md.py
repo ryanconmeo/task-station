@@ -62,8 +62,9 @@ class RenderMarkdownTest(unittest.TestCase):
         # Exact header row + right-aligned separator.
         self.assertIn("| # | Task | Category | Effort | Activity |", out)
         self.assertIn("|--:|", out)
-        # Stable seq numbers appear verbatim in their rows.
-        self.assertIn("| %d | Open one" % a["seq"], out)
+        # Stable seq numbers appear verbatim in their rows; the open row carries
+        # the leading inquiry glyph in its `#` cell, the closed row mutes it.
+        self.assertIn("| ◦ %d | Open one" % a["seq"], out)
         self.assertIn("| %d | Closed one" % b["seq"], out)
         # Effort gauge rendered in the cell.
         self.assertIn("▰", out)
