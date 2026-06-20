@@ -359,6 +359,7 @@ These are on by default. Each has a hidden env escape to turn it off — no conf
 |---|---|---|
 | Enforcement gate (file-edit → track-or-block) | on | `TASK_STATION_GATE=off` |
 | Per-category terminal tint | on | `TASK_STATION_TINT=off` |
+| Auto terminal title `#<seq>: <title>` on attach | on | `TASK_STATION_TITLE=off` (or `config --title off`) |
 | Bare `/todo` + `/done` install | **off** (opt-in) | `TASK_STATION_BARE_CMDS=on` to enable |
 
 **Terminal tint — two modes:**
@@ -366,7 +367,7 @@ These are on by default. Each has a hidden env escape to turn it off — no conf
 - **auto** *(default, zero-setup)* — writes a direct escape sequence to set the background colour: iTerm2 uses `SetColors`, Terminal.app uses OSC 11. Works out of the box; no profiles or aliases needed.
 - **profile** — runs `zsh -ic '<color>'` to switch Terminal.app profiles via named aliases. Enable with `task-station config --tint-profiles` (iTerm2: no-op, already zero-setup).
 
-Tinting is auto-detected: the engine reads `$TERM_PROGRAM` / `$ITERM_SESSION_ID` to pick iTerm2 vs Terminal.app vs none. The window title `task-station-<seq> · <title>` and `/todo <n> -s` new-window jump are on by default on macOS (auto-detected).
+Tinting is auto-detected: the engine reads `$TERM_PROGRAM` / `$ITERM_SESSION_ID` to pick iTerm2 vs Terminal.app vs none. Once a session is attached, the terminal tab/window title is auto-set to `#<seq>: <title>` (the same string feeds the Claude session name at start); the `/todo <n> -s` new-window jump is on by default on macOS (auto-detected). Disable the title with `task-station config --title off` (or `TASK_STATION_TITLE=off`).
 
 **Bare commands:** `/todo` and `/done` are marker-guarded user-level commands that forward to the engine. They are **not installed by default** — run `task-station config --bare-cmds on` (or set `TASK_STATION_BARE_CMDS=on`) to opt in. The namespaced form `/task-station:todo` and `/task-station:done` always exist regardless and work out of the box.
 
@@ -382,8 +383,8 @@ Tinting is auto-detected: the engine reads `$TERM_PROGRAM` / `$ITERM_SESSION_ID`
 
 Declared in `hooks/hooks.json`, run at your trust level:
 
-- **`SessionStart`** (`hooks/on_session_start.sh`) — maintains the `~/.claude/task-station-engine` symlink; self-registers a status-line segment at `~/.claude/statusline.d/50-task-station.sh`; sets the window title for attached sessions; shows a one-time setup nudge on first run; and — **only if you have opted in** — installs bare command aliases under `~/.claude/commands/`.
-- **`UserPromptSubmit`** (`hooks/on_user_prompt.sh`) — re-points the engine symlink at the active install (so the bare `/todo`/`/done` follow `/plugin update` without a restart), applies the per-category terminal tint (when enabled), and injects compact task-tracking guidance into each prompt so Claude knows to attach or create a task.
+- **`SessionStart`** (`hooks/on_session_start.sh`) — maintains the `~/.claude/task-station-engine` symlink; self-registers a status-line segment at `~/.claude/statusline.d/50-task-station.sh`; sets the session name `#<seq>: <title>` for attached sessions; shows a one-time setup nudge on first run; and — **only if you have opted in** — installs bare command aliases under `~/.claude/commands/`.
+- **`UserPromptSubmit`** (`hooks/on_user_prompt.sh`) — re-points the engine symlink at the active install (so the bare `/todo`/`/done` follow `/plugin update` without a restart), applies the per-category terminal tint (when enabled), auto-sets the terminal tab/window title to `#<seq>: <title>` for attached sessions (when enabled), and injects compact task-tracking guidance into each prompt so Claude knows to attach or create a task.
 - **`PostToolUse`** on `Write|Edit|NotebookEdit` (`hooks/on_post_tool.sh`) — fires a one-shot reminder the first time an untracked session edits a file. Part of the optional enforcement gate.
 - **`Stop`** (`hooks/on_stop.sh`) — refuses to end the turn while a session has edited files but tracked no task (self-healing, capped at two blocks). The other half of the optional enforcement gate.
 
@@ -568,9 +569,9 @@ To show the current task in the Claude Code status bar, add one line to `setting
 
 **`lib/repo_index.py`** — the hub [repo index](#repo-index-for-routing): deterministic discovery (name/path/remote/`ado_project`/`stack`/`status`), hand-authored overrides merge, the relevance ranker, and `build_index` (writes `<data_dir>/repos.{md,json}`). Powers the `repos` subcommand and the `delegating-work` routing step.
 
-**`hooks/on_session_start.sh`** — `SessionStart` hook. Surfaces open tasks (or the attached one) and auto-sets the window title to `task-station-<seq> · <title>`.
+**`hooks/on_session_start.sh`** — `SessionStart` hook. Surfaces open tasks (or the attached one) and auto-sets the session name to `#<seq>: <title>`.
 
-**`hooks/on_user_prompt.sh`** — `UserPromptSubmit` hook. Re-points the engine symlink, attaches/nudges the session, and tints the terminal for skill-mapped prompts.
+**`hooks/on_user_prompt.sh`** — `UserPromptSubmit` hook. Re-points the engine symlink, attaches/nudges the session, tints the terminal for skill-mapped prompts, and auto-sets the terminal tab/window title to `#<seq>: <title>` once attached.
 
 **`hooks/on_post_tool.sh`** — `PostToolUse(Write|Edit|NotebookEdit)` hook. Fires a one-shot reminder the first time an untracked session edits a file. Half of the optional enforcement gate.
 

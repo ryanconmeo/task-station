@@ -3,6 +3,24 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.2.2] — 2026-06-20
+
+### Added
+- **Auto terminal title `#<seq>: <title>` on attach.** Once a session is attached to
+  a task, the terminal tab/window title is set to `#<seq>: <title>` (e.g.
+  `#214: task-station: token-efficiency + SQLite store`) — a literal `#`, no
+  `task-station` prefix. A new `prompt-title` emitter (run by the `UserPromptSubmit`
+  hook every prompt) writes the OSC title escape (`\033]0;…\007`) to the originating
+  TTY via the same `origin-tty.sh` rail the tint uses, so the title sets on the first
+  prompt after attaching and self-heals each prompt. Unattached / skipped sessions
+  are left untouched.
+- **`config --title on|off`** (default on) toggles the auto title, mirroring the tint's
+  env escape — `TASK_STATION_TITLE=off` (or `config --title off`) suppresses it.
+
+### Changed
+- **SessionStart session name reformatted to `#<seq>: <title>`** (was
+  `task-station-<seq> · <title>`), matching the new terminal title.
+
 ## [1.2.1] — 2026-06-20
 
 ### Changed
