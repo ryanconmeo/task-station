@@ -1,5 +1,13 @@
 # Task categories & terminal colours
 
+> **Phase glyph vs category emoji.** Each `/todo` row leads with a single-width
+> **phase glyph** — `◦` **inquiry** (a topic merely raised) or `●` **active** (work
+> has started) — *before* the task number. This is distinct from the category
+> **emoji** documented here, which stays in its own `<emoji> [TAG]` column after the
+> title. Phase tracks the task's lifecycle (independent of open/closed status); the
+> emoji/colour names its category. See the `phase` field, `phase --task <ref>
+> [active|inquiry]`, and `create --active` in the README.
+
 Every task carries a `color` — one of the keys below. The colour does two jobs:
 
 1. **List rendering.** `/todo` appends the category's `<emoji> [TAG]` after each

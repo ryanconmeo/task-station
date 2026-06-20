@@ -3,6 +3,36 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.4.0] — 2026-06-20
+
+### Added
+- **Task lifecycle PHASE — `◦ inquiry` → `● active`.** Every task now carries a
+  `phase` (default `inquiry`), independent of its open/closed `status`. A topic you
+  merely raise shows on the board immediately as `◦`; it graduates to `●` when work
+  actually starts. A leading single-width glyph renders at the very front of every
+  `/todo` row — ASCII list, Markdown table (`#` cell), and the detail view — distinct
+  from the category emoji, with a `◦ inquiry · ● active` legend. Closed rows mute the
+  glyph (phase matters mainly for open work).
+- **Auto-promote `◦ → ●` when work begins** (idempotent), on any of:
+  - `delegate … --worktree` for the task (write work starts);
+  - a **file edit** in an attached session — `hooks/on_post_tool.sh` (PostToolUse)
+    flips an attached inquiry task to active;
+  - manual **`phase --task <ref> [active|inquiry]`** (no value → report the phase);
+  - **`create --active`** to start a task active.
+- **Auto-track as inquiry from the first prompt** — replaces the old "pure Q&A → stay
+  silent" behaviour. For an unattached, non-skipped session the model now creates an
+  `inquiry` task for the topic (model-driven: good title + category). Skipped sessions
+  still stay silent.
+- **Grouping — "fold, don't fork".** Before creating a new inquiry task the model
+  scans the open board and, if the prompt continues an existing open task, **attaches
+  and appends the prompt as a note** instead of spawning a sibling — so related
+  questions across sessions accumulate under one task. New **`attach --note '<text>'`**
+  appends a timestamped entry to the task's activity log.
+
+### Changed
+- `cmd_prompt_context` / `commands/todo.md` / `guidance` guidance rewritten around
+  track-as-inquiry + fold-don't-fork (was: attach only on concrete work, else silent).
+
 ## [1.3.0] — 2026-06-20
 
 ### Fixed
