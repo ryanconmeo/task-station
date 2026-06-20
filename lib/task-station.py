@@ -48,6 +48,7 @@ NUDGE_PROMPT_MAX = 120  # chars of the prompt stored in the activity log
 NUDGE_ESCALATE_AFTER = 4   # unattached prompts before the nudge escalates
 SKIP_SENTINEL = "__skip__"  # link value marking a session intentionally untracked
 MAX_CLOSED_IN_LIST = 5  # closed tasks shown in the /todo list (most recent first)
+SUBSTANCE_FLOOR = 3     # min user messages for a session to count as "real working" work
 
 # Categories / colours are an OPTIONAL plugin: all of that logic lives in
 # categories.py. If it's absent (or fails to import), `cats` is None and the
@@ -580,6 +581,57 @@ def worker_lines(task):
     return out
 
 
+def _tint_prefix(task):
+    """The `<color> 2>/dev/null; ` shell prefix that re-tints the terminal to the
+    task's category before launching claude (empty when tinting is off). Joined
+    with `;` not `&&` so a missing colour alias never blocks the resume."""
+    tint = (cats.tint_command(task.get("color")) if cats else None)
+    return ("%s 2>/dev/null; " % cats.normalize(task.get("color"))) if tint else ""
+
+
+def _is_resumable(cmd):
+    """True when `cmd` already targets a CONCRETE session — a live `--resume` or a
+    pre-bound `--session-id`. The jump path uses this to decide whether to use the
+    command as-is or mint a fresh session; a descriptive "start fresh" line (bare
+    `claude`) or None is NOT resumable."""
+    return bool(cmd) and ("--resume " in cmd or "--session-id " in cmd)
+
+
+def _fresh_session_cwd(meta):
+    """Best cwd for a freshly minted session: the most recently recorded session's
+    cwd (so the new window opens where the work lives), else the process cwd."""
+    for m in sorted((meta or {}).values(), key=lambda m: m.get("ts", 0), reverse=True):
+        if m.get("cwd"):
+            return m["cwd"]
+    return os.getcwd()
+
+
+def fresh_resume_command(task, preborn=False):
+    """Mint a brand-new session id, pre-bind it to `task`, and return
+    `(sid, "cd <cwd> && claude --session-id <sid>")`.
+
+    Pre-binding = a hub `session_meta` entry + a session→task link, so when the
+    emitted command launches the window, SessionStart sees the link and
+    auto-attaches it. This MINTS a uuid, so it is called ONLY from paths that
+    actually open a window (the `-s` jump, `pin --new`) — never from the pure
+    display path (`resume_command`), which must not mint on every render.
+
+    `preborn=True` marks the meta entry so `resume_command` will emit
+    `--session-id <sid>` for it (used by `pin --new`) until its transcript exists."""
+    new_sid = str(uuid.uuid4())
+    meta = task.setdefault("session_meta", {})
+    cwd = _fresh_session_cwd(meta)
+    entry = {"cwd": cwd, "ts": _now(), "role": "hub"}
+    if preborn:
+        entry["preborn"] = True
+    meta[new_sid] = entry
+    if new_sid not in task.setdefault("sessions", []):
+        task["sessions"].append(new_sid)
+    save_task(task)
+    set_link(new_sid, task["id"])
+    return new_sid, "%scd %s && claude --session-id %s" % (_tint_prefix(task), cwd, new_sid)
+
+
 def resume_command(task, current_session=None):
     """`cd <dir> && claude …` for the HUB session that holds this task's context.
 
@@ -610,8 +662,7 @@ def resume_command(task, current_session=None):
     # but `2>/dev/null` swallows the "command not found" and `;` lets the resume run
     # regardless. So the line tints when aliases exist and is a silent no-op when they
     # don't; the cd + claude --resume always executes either way.
-    tint = (cats.tint_command(task.get("color")) if cats else None)
-    pfx = ("%s 2>/dev/null; " % cats.normalize(task.get("color"))) if tint else ""
+    pfx = _tint_prefix(task)
     # An explicit pin wins (PK-style): always resume that exact session, with the cwd
     # self-corrected from its transcript. Falls through to the heuristic only if the
     # pinned session has no findable live transcript (so a stale pin can't strand you).
@@ -622,12 +673,24 @@ def resume_command(task, current_session=None):
             cwd = _session_cwd(path) or (meta.get(pin) or {}).get("cwd")
             if cwd:
                 return "%scd %s && claude --resume %s" % (pfx, cwd, pin)
+        # A pin deliberately pre-bound to an UNBORN session (`pin --new`) has no
+        # transcript yet. Honour it anyway by emitting `--session-id <pin>` so the
+        # window that opens BECOMES that session — stays PURE (the uuid already
+        # exists; nothing is minted here). Once it's born, the branch above wins.
+        pm = meta.get(pin) or {}
+        if pm.get("preborn"):
+            cwd = pm.get("cwd") or os.getcwd()
+            return "%scd %s && claude --session-id %s" % (pfx, cwd, pin)
     hubs = [(sid, m) for sid, m in meta.items() if m.get("role") == "hub"]
     pool = hubs or list(meta.items())
     # For each of THIS task's sessions, find its transcript ANYWHERE and read the
     # cwd from the transcript — independent of the (possibly wrong) recorded cwd.
+    # SKIPPED sessions (link == SKIP_SENTINEL) are deliberately untracked and must
+    # NEVER be a resume target, even with a live transcript.
     live = []
     for sid, m in pool:
+        if get_link(sid) == SKIP_SENTINEL:
+            continue
         path = _find_session_path(sid)
         if not path:
             continue
@@ -636,14 +699,16 @@ def resume_command(task, current_session=None):
             cwd = _session_cwd(path) or m.get("cwd")
             if cwd:
                 live.append((sid, cwd, os.path.getmtime(path), msgs))
+    # The current session is NEVER a valid `-s` target: resuming the very
+    # conversation you jumped from is the tainting bug. Exclude it HARD (no
+    # fallback to it) — if nothing else remains, fall through to fresh-start.
+    live = [x for x in live if x[0] != current_session]
     if live:
         # Prefer SUBSTANTIVE sessions: a session that merely ran `/todo <n>` to look
         # has 1-2 messages and must not displace the real working session. Among
         # sessions past a small substance floor, take the most recent; only if none
         # clear the floor do we fall back to the most recent of any.
-        SUBSTANCE_FLOOR = 3
         cands = [x for x in live if x[3] >= SUBSTANCE_FLOOR] or live
-        cands = [x for x in cands if x[0] != current_session] or cands
         cands.sort(key=lambda x: x[2], reverse=True)   # newest transcript first
         sid, cwd, _, _ = cands[0]
         return "%scd %s && claude --resume %s" % (pfx, cwd, sid)
@@ -682,14 +747,31 @@ def new_task(title, summary, color=None, effort=None):
 
 # ------------------------------------------------------------- subcommands ----
 
+def _is_substantive_tracked(session):
+    """True when `session` is itself a real, tracked working conversation — linked
+    to a live task (not unlinked, not skipped) AND past the substance floor. Used
+    by `create` to avoid binding a busy parent conversation as a NEW task's resume
+    target (the spun-off-task tainting bug)."""
+    if not session:
+        return False
+    link = get_link(session)
+    if not link or link == SKIP_SENTINEL:
+        return False
+    path = _find_session_path(session)
+    return bool(path) and _session_msgcount(path) >= SUBSTANCE_FLOOR
+
+
 def cmd_create(a):
     if not getattr(a, "force", False):
         dup = similar_open_task(a.title)
         if dup:
+            attach_hint = ("attach --session %s --task %s" % (a.session, dup["id"][:8])
+                           if getattr(a, "session", None)
+                           else "attach --session <session-id> --task %s" % dup["id"][:8])
             print("Not created — likely a duplicate of open task [%s] %s.\n"
-                  "Attach instead:  python3 %s/task-station.py attach --session %s --task %s\n"
+                  "Attach instead:  python3 %s/task-station.py %s\n"
                   "Or re-run create with --force to make a separate task."
-                  % (dup["id"][:8], dup["title"], BASE, a.session, dup["id"][:8]))
+                  % (dup["id"][:8], dup["title"], BASE, attach_hint))
             return
     requested = getattr(a, "color", None)
     if cats and requested and not cats.is_known(requested):
@@ -702,10 +784,37 @@ def cmd_create(a):
     task = new_task(a.title, a.summary, requested, getattr(a, "effort", None))
     ensure_seqs()                      # number any pre-seq tasks before we pick ours
     task["seq"] = _max_seq() + 1       # stable number, never reused even after /done
-    touch(task, session=a.session, note="created")
+
+    session = getattr(a, "session", None)
+    no_attach = getattr(a, "no_attach", False)
+    # #6: creating from a SUBSTANTIVE tracked conversation defaults to no-attach so
+    # the busy parent session isn't silently made the new task's resume target.
+    # `--attach` forces the old bind-this-session behaviour; `--no-attach` is explicit.
+    substantive = (not no_attach and not getattr(a, "attach", False)
+                   and _is_substantive_tracked(session))
+    if substantive:
+        no_attach = True
+
+    if no_attach or not session:
+        # Unattached create: empty sessions[]/session_meta, no session→task link.
+        # `/todo <n> -s` then has no recorded session and fresh-starts a clean one.
+        touch(task, note="created (no-attach)")
+        save_task(task)
+        if substantive:
+            print("⚠ Created from a substantive tracked session — NOT binding this "
+                  "conversation as the new task's resume target (use --attach to "
+                  "override). /todo %s -s starts a fresh session." % task["seq"])
+        else:
+            print("Created task [%s] %s (unattached). /todo %s -s starts a fresh "
+                  "session." % (task["id"][:8], task["title"], task["seq"]))
+        for line in cat_lines(task.get("color")):
+            print(line)
+        return
+
+    touch(task, session=session, note="created")
     save_task(task)
-    set_link(a.session, task["id"])
-    clear_count(a.session)
+    set_link(session, task["id"])
+    clear_count(session)
     print("Created and attached to task [%s] %s" % (task["id"][:8], task["title"]))
     for line in cat_lines(task.get("color")):
         print(line)
@@ -761,6 +870,49 @@ def cmd_skip(a):
     clear_edit_markers(a.session)   # skip is a deliberate opt-out — stop the gate nagging
     print("This session is marked untracked — the [task-station] nudge will stay silent. "
           "Attaching to or creating a task later resumes tracking.")
+
+
+def cmd_detach(a):
+    """Remove a session from a task's resume candidates.
+
+    Drops `<session>` from the task's `sessions[]` and `session_meta`, clears
+    `pinned_session` if it pointed at this session, and clears the session→task
+    link if it still points here. `--task` selects the task; without it, the
+    session's currently-linked task is used. Idempotent — a missing reference just
+    reports "nothing to detach"."""
+    session = a.session
+    task = resolve_ref(a.task) or load_task(a.task) if getattr(a, "task", None) else None
+    if not task:
+        link = get_link(session)
+        if link and link != SKIP_SENTINEL:
+            task = load_task(link)
+    if not task:
+        print("detach: no task for session %s — pass --task <id-or-number>." % session[:8])
+        return
+    label = task.get("seq", task["id"][:8])
+    cleared = []
+    if session in task.get("sessions", []):
+        task["sessions"].remove(session)
+        cleared.append("sessions[]")
+    meta = task.get("session_meta") or {}
+    if session in meta:
+        del meta[session]
+        cleared.append("session_meta")
+    if task.get("pinned_session") == session:
+        task.pop("pinned_session", None)
+        cleared.append("pin")
+    if not cleared:
+        print("Session %s was not attached to task %s — nothing to detach."
+              % (session[:8], label))
+        return
+    touch(task, note="detached session %s" % session[:8])
+    save_task(task)
+    if get_link(session) == task["id"]:
+        clear_link(session)
+        clear_count(session)
+        cleared.append("link")
+    print("Detached session %s from task %s (cleared: %s)."
+          % (session[:8], label, ", ".join(cleared)))
 
 
 def _open_tasks_brief(limit=8):
@@ -1107,17 +1259,21 @@ def _format_detail_session(task, session, resume=None, opened=False):
     out.append("")
     if resume is None:
         resume = resume_command(task, session)
+    fresh = bool(resume) and "--session-id " in resume
+    verb = "starting a fresh session for" if fresh else "resuming"
     if resume and opened:
-        out.append("Opened a NEW Terminal window resuming this task's working session "
-                   "(this window is left as-is). Resume command now running there:")
+        out.append("Opened a NEW Terminal window %s this task's working session "
+                   "(this window is left as-is). Command now running there:" % verb)
         out.append("    %s" % resume)
         out.append("")
-        out.append("[JUMP-WINDOW-OPENED] The jump window is already running the resume "
+        out.append("[JUMP-WINDOW-OPENED] The jump window is already running the "
                    "command. Reply with EXACTLY this one line and nothing else (no "
                    "preamble, recap, or extra words); do not run the command yourself:")
         out.append("    ↪ " + task_oneline(task))
     elif resume:
-        out.append("Resume the main connected session (cd + resume, one command):")
+        label = ("Start a fresh session for this task (cd + new session, one command):"
+                 if fresh else "Resume the main connected session (cd + resume, one command):")
+        out.append(label)
         out.append("    %s" % resume)
     else:
         out.append("No recorded working session to resume yet — start one in the "
@@ -1141,6 +1297,11 @@ def _jump_one(ref, session):
     set_link(session, task["id"])
     clear_count(session)
     resume = resume_command(task, session)
+    # No concrete session to resume (no recorded one, or the only candidate was
+    # THIS session) → mint + pre-bind a fresh one so the jump window auto-attaches
+    # to a clean session instead of tainting into the current conversation.
+    if not _is_resumable(resume):
+        _sid, resume = fresh_resume_command(task)
     opened = _open_jump_window(resume) if resume else False
     return _format_detail_session(task, session, resume=resume, opened=opened)
 
@@ -1383,6 +1544,20 @@ def _pin_one(ref, a):
     task = resolve_ref(ref) or load_task(ref)
     if not task:
         return "pin: no task matching %r" % ref
+    # `pin --new`: pre-bind an UNBORN session as the pin. Mints a uuid, records it
+    # (preborn) + links it, and emits `claude --session-id <uuid>` so opening it
+    # BECOMES the task's session — bypassing the stale-pin "no transcript" guard
+    # for this intentional case.
+    if getattr(a, "new", False):
+        sid, cmd = fresh_resume_command(task, preborn=True)
+        task["pinned_session"] = sid
+        touch(task, note="pinned a fresh (unborn) session %s" % sid[:8])
+        save_task(task)
+        label = task.get("seq", task["id"][:8])
+        return ("Pinned task %s → fresh session %s (unborn — opens on first launch)\n"
+                "  resume: %s" % (label, sid[:8], cmd))
+    if not a.session:
+        return "pin: task %s needs --session <id> or --new" % task.get("seq", task["id"][:8])
     task["pinned_session"] = a.session
     meta = task.setdefault("session_meta", {})
     if a.session not in meta:
@@ -1877,14 +2052,24 @@ def main():
     p = argparse.ArgumentParser(prog="task-station")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("create"); sp.add_argument("--session", required=True)
+    sp = sub.add_parser("create"); sp.add_argument("--session", default=None)
     sp.add_argument("--title", required=True); sp.add_argument("--summary", default="")
     sp.add_argument("--color", default=None); sp.add_argument("--effort", default=None)
-    sp.add_argument("--force", action="store_true"); sp.set_defaults(fn=cmd_create)
+    sp.add_argument("--force", action="store_true")
+    sp.add_argument("--no-attach", dest="no_attach", action="store_true",
+                    help="create unattached (empty sessions) — /todo <n> -s fresh-starts")
+    sp.add_argument("--attach", action="store_true",
+                    help="force-bind --session even if it's a substantive tracked session")
+    sp.set_defaults(fn=cmd_create)
 
     sp = sub.add_parser("attach"); sp.add_argument("--session", required=True)
     sp.add_argument("--task", required=True); sp.add_argument("--color", default=None)
     sp.set_defaults(fn=cmd_attach)
+
+    sp = sub.add_parser("detach"); sp.add_argument("--session", required=True)
+    sp.add_argument("--task", default=None,
+                    help="task to detach from (default: the session's linked task)")
+    sp.set_defaults(fn=cmd_detach)
 
     sp = sub.add_parser("bump"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_bump)
@@ -1930,7 +2115,10 @@ def main():
     sp.set_defaults(fn=cmd_update)
 
     sp = sub.add_parser("pin"); sp.add_argument("--task", required=True)
-    sp.add_argument("--session", required=True); sp.set_defaults(fn=cmd_pin)
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--new", action="store_true",
+                    help="pin a freshly-minted unborn session (claude --session-id <uuid>)")
+    sp.set_defaults(fn=cmd_pin)
 
     sp = sub.add_parser("unpin"); sp.add_argument("--task", required=True)
     sp.set_defaults(fn=cmd_unpin)

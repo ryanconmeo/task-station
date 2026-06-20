@@ -3,6 +3,45 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.3.0] — 2026-06-20
+
+### Fixed
+- **`-s` no longer resumes the wrong conversation.** When a task was spun off from a
+  busy session — or you jumped into it from the very session it was created in — the
+  most-recent-substantive heuristic could pick **the current conversation** as the
+  resume target (the `cands = … or cands` fallback re-added the session that had just
+  been excluded). The current session is now excluded **hard**: if no other live
+  candidate remains, `-s` **fresh-starts** instead of tainting into the conversation
+  you jumped from.
+- **Skipped sessions are excluded from `-s` candidacy.** A session marked untracked
+  (`skip`, link `__skip__`) is never offered as a resume target, even with a live
+  transcript.
+
+### Added
+- **`-s` fresh-start auto-attaches.** When there's no valid session to resume, the
+  jump path mints a brand-new session id, pre-binds it to the task (link + hub
+  `session_meta`), and emits `cd <dir> && claude --session-id <uuid>` — so the new
+  window **auto-attaches** to the task on launch (SessionStart sees the link) rather
+  than opening a bare, untracked `claude`. `resume_command` stays **pure** for the
+  `/todo <n>` display render (no uuid minted per render); the mint happens only in the
+  jump / pin paths via `fresh_resume_command(task)`.
+- **`create --no-attach`** — create a task with **empty `sessions[]`** and no
+  session→task link (the clean "spin off a task for later" primitive). `/todo <n> -s`
+  then fresh-starts a clean session. `--session` is now optional.
+- **`create` from a substantive tracked session defaults to `--no-attach`.** Running
+  `create` with a `--session` that is itself a real, tracked working conversation
+  (≥ 3 messages) no longer binds that busy conversation as the new task's resume
+  target — it defaults to no-attach and warns. Pass **`--attach`** to force the old
+  bind-this-session behaviour.
+- **`detach --session <s> [--task <t>]`** — remove a session from a task's
+  `sessions[]`/`session_meta`, clear `pinned_session` if it pointed at it, and clear
+  the session→task link. `--task` selects the task; without it, the session's linked
+  task is used. Idempotent.
+- **`pin --new [--task <t>]`** — pin an **unborn** session: mints a uuid, records it
+  (and links it), and `/todo` emits `claude --session-id <uuid>` so opening it
+  *becomes* the task's pinned session — bypassing the stale-pin "ignored when no live
+  transcript" guard for this intentional case.
+
 ## [1.2.2] — 2026-06-20
 
 ### Added
