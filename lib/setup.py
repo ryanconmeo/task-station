@@ -1,7 +1,7 @@
 """task-station config: doctor + consented installers. This module owns the
 100%-reversible CLAUDE.md managed-block engine. Kept as an internal module
 (imported by config.py); its flags are surfaced under `task-station config`."""
-import hashlib, json, os
+import hashlib, json, os, shutil
 import paths
 import term, config
 
@@ -153,6 +153,10 @@ def status():
     lines.append("  workspace   %s" % (":".join(ws) if ws else "unset — task-station config --workspace-dirs <dirs>"))
     lines.append("  policy      %s" % ("installed in CLAUDE.md — remove: task-station config --policy off"
                  if has_policy else "not installed — task-station config --policy on"))
+    installed, server_path = desktop_bridge_status()
+    lines.append("  desktop-bridge %s" % (
+        "installed → %s  (restart Desktop after changes)" % server_path if installed
+        else "not installed — task-station config --desktop-bridge on"))
     return "\n".join(lines)
 
 
@@ -164,6 +168,101 @@ def set_policy(on):
     ok = _remove_block(md)
     return ("Removed delegation policy from %s." % md) if ok else \
            ("Left %s unchanged — the managed block was hand-edited; remove it manually." % md)
+
+
+# --------------------------------------------------- Desktop bridge (MCP) ----
+#
+# Self-installer for the dependency-free stdlib MCP server: merge a `task-station`
+# entry into Claude Desktop's `claude_desktop_config.json` so Desktop and the CLI
+# share one task store. Mirrors the consented-installer shape of the other flags.
+
+BRIDGE_SERVER = "task-station"          # the mcpServers key we own
+BRIDGE_BACKUP_SUFFIX = ".bak-desktop-bridge"
+
+
+def desktop_config_path():
+    """Claude Desktop's MCP config (macOS). The dir/file may not exist yet."""
+    return os.path.expanduser(
+        "~/Library/Application Support/Claude/claude_desktop_config.json")
+
+
+def engine_mcp_server_path():
+    """Abs path to the STABLE engine-symlink `mcp_server.py`
+    (`~/.claude/task-station-engine/mcp_server.py`) — survives `/plugin update`."""
+    cfg = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
+    return os.path.join(cfg, "task-station-engine", "mcp_server.py")
+
+
+def _read_desktop_config(path):
+    """Parse the Desktop config, or {} when missing/empty/invalid (never raises)."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            body = f.read().strip()
+        return json.loads(body) if body else {}
+    except Exception:
+        return {}
+
+
+def _write_desktop_config(path, data):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def _backup_desktop_config(path):
+    """Snapshot the current file (if any) before we modify it. Idempotent."""
+    if os.path.exists(path):
+        shutil.copyfile(path, path + BRIDGE_BACKUP_SUFFIX)
+
+
+def install_desktop_bridge(path=None):
+    """Create/locate the Desktop config, back it up, and MERGE our `task-station`
+    server entry without clobbering other servers. Idempotent."""
+    path = path or desktop_config_path()
+    server_path = engine_mcp_server_path()
+    _backup_desktop_config(path)
+    data = _read_desktop_config(path)
+    if not isinstance(data.get("mcpServers"), dict):
+        data["mcpServers"] = {}
+    data["mcpServers"][BRIDGE_SERVER] = {
+        "command": "python3",
+        "args": [server_path],
+    }
+    _write_desktop_config(path, data)
+    return ("Wired the task-station MCP bridge into %s\n"
+            "  command: python3 %s\n"
+            "Restart Claude Desktop to apply." % (path, server_path))
+
+
+def remove_desktop_bridge(path=None):
+    """Remove ONLY our `task-station` server entry (leave any others). No-op when
+    nothing is installed."""
+    path = path or desktop_config_path()
+    if not os.path.exists(path):
+        return "No Claude Desktop config at %s — nothing to remove." % path
+    data = _read_desktop_config(path)
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict) or BRIDGE_SERVER not in servers:
+        return "task-station bridge not present in %s — nothing to remove." % path
+    _backup_desktop_config(path)
+    del servers[BRIDGE_SERVER]
+    _write_desktop_config(path, data)
+    return ("Removed the task-station MCP bridge from %s.\n"
+            "Restart Claude Desktop to apply." % path)
+
+
+def desktop_bridge_status(path=None):
+    """(installed?, engine_mcp_server_path) — for the no-arg config view."""
+    path = path or desktop_config_path()
+    data = _read_desktop_config(path)
+    servers = data.get("mcpServers")
+    installed = isinstance(servers, dict) and BRIDGE_SERVER in servers
+    return installed, engine_mcp_server_path()
 
 
 def install_tint_profiles():
