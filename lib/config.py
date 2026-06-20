@@ -91,6 +91,14 @@ def update_check_enabled():
     """True only if the user opted in (config flag). Default off — no network."""
     return bool(get("update_check", False))
 
+def title_enabled():
+    """True unless explicitly disabled — default ON. Mirrors TASK_STATION_TINT's
+    env escape: `TASK_STATION_TITLE=off` (or `config --title off`) suppresses the
+    auto terminal title."""
+    if os.environ.get("TASK_STATION_TITLE") == "off":
+        return False
+    return bool(get("title", True))
+
 def enabled_categories():
     """The configured active-category key list, or None when unconfigured
     (categories.enabled_keys() then defaults to the full set)."""
@@ -151,6 +159,8 @@ def render_board():
         % ("on" if update_check_enabled() else "off"),
         "  --tint-theme      %-34s tint palette; auto follows OS appearance  auto · dark · light"
         % tint_theme(),
+        "  --title           %-34s auto terminal title '#<seq>: <title>' on attach  on · off"
+        % ("on" if title_enabled() else "off"),
         "",
         "  read-only",
         "  --data-dir        %-34s (set via $TASK_STATION_HOME)" % paths.data_dir(),
@@ -250,6 +260,11 @@ def cmd_config(a):
         print("tint_theme = %s" % tint_theme()); return
     if getattr(a, "tint_theme_get", False):
         print(tint_theme()); return
+    if getattr(a, "title", None) is not None:
+        set("title", a.title == "on")
+        print("title = %s" % ("on" if get("title") else "off")); return
+    if getattr(a, "title_get", False):
+        print("on" if title_enabled() else "off"); return
     if getattr(a, "categories", None) is not None:
         return cmd_categories(a.categories);
     if getattr(a, "enable", None) is not None:

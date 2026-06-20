@@ -26,4 +26,20 @@ class Config(unittest.TestCase):
         config.set("tint_mode", "profile"); config.unset("tint_mode")
         self.assertEqual(config.get("tint_mode", "auto"), "auto")
 
+    def test_title_enabled_default_on(self):
+        os.environ.pop("TASK_STATION_TITLE", None)
+        self.assertTrue(config.title_enabled())
+
+    def test_title_disabled_via_config(self):
+        config.set("title", False)
+        self.assertFalse(config.title_enabled())
+
+    def test_title_disabled_via_env(self):
+        config.set("title", True)
+        os.environ["TASK_STATION_TITLE"] = "off"
+        try:
+            self.assertFalse(config.title_enabled())
+        finally:
+            os.environ.pop("TASK_STATION_TITLE", None)
+
 if __name__=="__main__": unittest.main()

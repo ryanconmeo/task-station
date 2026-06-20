@@ -31,4 +31,12 @@ if [ -n "$tint" ]; then
   esac
 fi
 
+# Auto-set the tab/window title to '#<seq>: <title>' once attached — write the OSC
+# escape to the originating TTY (same rail as the tint; reuse _dev if resolved above).
+title=$(python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" prompt-title --session "$session_id" 2>/dev/null)
+if [ -n "$title" ]; then
+  _dev=${_dev:-$(bash "${CLAUDE_PLUGIN_ROOT}/lib/origin-tty.sh" 2>/dev/null)}
+  printf '%s' "$title" > "${_dev:-/dev/tty}" 2>/dev/null
+fi
+
 TASK_STATION_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" prompt-context --session "$session_id"

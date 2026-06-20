@@ -1272,7 +1272,7 @@ def cmd_session_title(a):
     """Print the window/title-bar label for an attached session (or nothing).
 
     The SessionStart hook puts this in hookSpecificOutput.sessionTitle so the
-    terminal reads `task-station-<seq> · <title>` — the closest we get to auto-labelling
+    terminal reads `#<seq>: <title>` — the closest we get to auto-labelling
     the hub (the resume-NAME can't be set programmatically on a running session)."""
     task_id = get_link(a.session)
     if not task_id or task_id == SKIP_SENTINEL:
@@ -1281,7 +1281,7 @@ def cmd_session_title(a):
     if not task:
         return
     ensure_seqs()
-    print("task-station-%s · %s" % (task.get("seq", "?"), task["title"]))
+    print("#%s: %s" % (task.get("seq", "?"), task["title"]))
 
 
 def cmd_whoami(a):
@@ -1474,6 +1474,26 @@ def cmd_prompt_tint(a):
     esc = cats.tint_escape(color, config.tint_mode(), term.detect())
     if esc:
         sys.stdout.write(esc)
+
+
+def cmd_prompt_title(a):
+    """Emit an OSC title escape that labels the terminal tab/window `#<seq>: <title>`
+    for an attached session — the on-attach surface, run by UserPromptSubmit every
+    prompt. Pure stdout (like prompt-tint); the hook delivers the bytes to the real
+    terminal. Emits NOTHING when the title feature is off (config / `TASK_STATION_TITLE=off`)
+    or the session is unattached/skipped, so the user's own title is left untouched."""
+    import config
+    if not config.title_enabled():
+        return
+    task_id = get_link(a.session)
+    if not task_id or task_id == SKIP_SENTINEL:
+        return
+    task = load_task(task_id)
+    if not task:
+        return
+    ensure_seqs()
+    # OSC 0 sets both tab and window title (Terminal.app + iTerm2); \033]0; … \007.
+    sys.stdout.write("\033]0;#%s: %s\007" % (task.get("seq", "?"), task["title"]))
 
 
 def cmd_prompt_context(a):
@@ -1921,6 +1941,9 @@ def main():
     sp = sub.add_parser("prompt-tint"); sp.add_argument("--session", default=None)
     sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_tint)
 
+    sp = sub.add_parser("prompt-title"); sp.add_argument("--session", default=None)
+    sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_title)
+
     sp = sub.add_parser("prompt-context"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_prompt_context)
 
@@ -1966,6 +1989,8 @@ def main():
     sp.add_argument("--update-check-get", dest="update_check_get", action="store_true")
     sp.add_argument("--tint-theme", dest="tint_theme", nargs="?", choices=["auto","dark","light"], const="auto", default=None)
     sp.add_argument("--tint-theme-get", dest="tint_theme_get", action="store_true")
+    sp.add_argument("--title", dest="title", nargs="?", choices=["on","off"], const="on", default=None)
+    sp.add_argument("--title-get", dest="title_get", action="store_true")
     sp.add_argument("--policy", nargs="?", choices=["on", "off"], const="on", default=None)
     sp.add_argument("--tint-profiles", dest="tint_profiles", action="store_true")
     sp.set_defaults(fn=lambda a: __import__("config").cmd_config(a))
