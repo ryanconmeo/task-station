@@ -41,8 +41,8 @@ Every task carries a `color` — one of the keys below. The colour does two jobs
 | purple | 🟣  | `[SPECIAL]`   | special                           |
 | black  | ⚫  | `[GENERAL]`   | general (the default, permanent)  |
 | pink   | 🩷  | `[PERSONAL]`  | personal projects                 |
-| white  | 🪩  | `[AI CONFIG]` | AI tooling & config               |
-| silver | 🎨  | `[DESIGN]`    | design                            |
+| white  | 🎨  | `[DESIGN]`    | design                            |
+| silver | 🪩  | `[AI CONFIG]` | AI tooling & config               |
 | gold   | 🟨  | `[GOLD]`      | reserved (unassigned)             |
 | brown  | 🟤  | `[DATABASE]` | database                          |
 
@@ -70,9 +70,9 @@ Pick from the *nature of the work*, not the surface keywords:
 - **yellow** — fixing PR *review feedback* on your own PR (addressing threads, pushing fixes, replying/resolving).
 - **green** — feature / product coding.
 - **blue** — infra, deploys, DNS, domains, CI, environment setup.
-- **silver** — UI/UX, theming, dark mode, layout, visual design (🎨).
+- **white** — UI/UX, theming, dark mode, layout, visual design (🎨).
 - **pink** — personal projects / side work (🩷).
-- **white** — AI tooling & config: skills, slash commands, hooks, memory, this task-station system (🪩).
+- **silver** — AI tooling & config: skills, slash commands, hooks, memory, this task-station system (🪩).
 - **brown** — database work: schema, queries, SQL, DB tuning, **and data migrations** (moving/transforming data between systems counts as database work).
 - **purple** — anything genuinely special / one-off that warrants standing out.
 - **black** — general / catch-all when nothing above fits.
@@ -91,7 +91,7 @@ preset or toggle slots.
 ### Presets
 
 `task-station config --categories preset <name>` sets `enabled_categories` to a
-named preset. The **universal core** — `red BUG`, `white AI CONFIG`,
+named preset. The **universal core** — `red BUG`, `silver AI CONFIG`,
 `pink PERSONAL`, `black GENERAL` — is seeded in **every** preset (removable except
 GENERAL):
 
@@ -123,7 +123,7 @@ skill matches patterns against the full `plugin:name` string. The hook then runs
 |-----------------------------------------------------|--------|-------------------------------------------------|
 | `fix-pr`                                            | yellow | `my-fix-pr` (fixing PR review feedback)         |
 | `review`, `security-review`                         | orange | any review skill — e.g. `review`, `security-review`, `code-review`, or any plugin-namespaced `<plugin>:review-*` |
-| tooling: `update-config`, `keybindings`, `permission`, `schedule`, `statusline`, `init`, `claude-api`, `loop`, `deep-research`, `simplify`, `verify` | white  | `update-config`, `keybindings-help`             |
+| tooling: `update-config`, `keybindings`, `permission`, `schedule`, `statusline`, `init`, `claude-api`, `loop`, `deep-research`, `simplify`, `verify` | silver | `update-config`, `keybindings-help`             |
 
 Order matters: more specific patterns should be listed before broader ones so the
 right rule wins. A `<plugin>:review-*` skill matches `review` and stays **orange**

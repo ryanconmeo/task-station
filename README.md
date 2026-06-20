@@ -40,7 +40,7 @@ Effort runs `▰▱▱▱▱` XS → `▰▰▰▰▰` XL, and each task is colo
 - **Persistent, cross-session tasks** — a `/todo` board that survives restarts; each task carries a stable number, summary, activity log, and effort estimate.
 - **Resumable, re-pinnable sessions** — every task pins to a Claude session you can reopen, or **re-pin a fresh session to save tokens** when context grows bloated.
 - **Big-picture context for Claude** — running `/todo` pulls your whole board into the session, so Claude can reason across *all* your tracked tasks at once. That cross-project view is the leverage behind large, multi-domain work — e.g. migrating data or wiring separate domains/systems together.
-- **Auto-categorised + colour-tinted** — tasks are tagged by category (bug/red, devops/blue, design/silver, personal/pink, …) and the terminal tints to match. The active set is presettable (`minimal`/`web`/`data`/`ops`/`full`).
+- **Auto-categorised + colour-tinted** — tasks are tagged by category (bug/red, devops/blue, design/white, personal/pink, …) and the terminal tints to match. The active set is presettable (`minimal`/`web`/`data`/`ops`/`full`).
 - **Closed-task listing** — `/todo closed [N]` and `/todo all` page through your history.
 - **Multi-task `/done` and `/todo -s`** — close or jump into several tasks at once with a comma-separated list (`/done 1,2,5`, `/todo 1,2,5 -s`).
 - **Optional enforcement gate** — a file edit in an untracked session can be made to block the turn from ending until work is tracked (self-healing, opt-out).
@@ -102,7 +102,7 @@ Every command works in two forms: the namespaced `/task-station:todo` / `/task-s
 
 ## Categories & terminal tint
 
-If `categories.py` is present (it ships with the plugin), every task carries a `color` from a taxonomy (bug/red, code-review/orange, devops/blue, design/silver, personal/pink, AI-config/white, …); `/todo` appends a `<emoji> [TAG]` after each task and prints a legend. Each colour name is also a zsh alias that switches the Terminal.app profile, so on attach / create / resume Claude runs `zsh -ic '<color>'` to tint the terminal to the task's category.
+If `categories.py` is present (it ships with the plugin), every task carries a `color` from a taxonomy (bug/red, code-review/orange, devops/blue, design/white, personal/pink, AI-config/silver, …); `/todo` appends a `<emoji> [TAG]` after each task and prints a legend. Each colour name is also a zsh alias that switches the Terminal.app profile, so on attach / create / resume Claude runs `zsh -ic '<color>'` to tint the terminal to the task's category.
 
 **The dot is slot-canonical** — each colour slot owns its emoji, so a custom category (or an override) supplies only `tag` + `label`; the icon follows from the colour. **Presets & enabled set:** the active categories are seeded-but-removable — `config --categories preset <minimal|web|data|ops|full>` switches the set, and `config --enable/--disable <key>` toggles individual slots. Every preset keeps the universal core (BUG · AI CONFIG · PERSONAL · GENERAL); `⚫ GENERAL` is permanent. See [`CATEGORIES.md`](CATEGORIES.md).
 

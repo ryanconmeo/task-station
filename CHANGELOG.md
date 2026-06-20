@@ -3,6 +3,21 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.2.1] — 2026-06-20
+
+### Changed
+- **Swapped the `white` ↔ `silver` category slots.** 🎨 **DESIGN** now lives on the
+  `white` slot (→ **White Sands** profile + white hex) and 🪩 **AI CONFIG** on the
+  `silver` slot (→ **Silver Sands** profile + silver hex). Each slot keeps its own
+  `key`/alias/profile and tint hex; only the dot/tag/label moved between them, so
+  the two categories simply trade profiles — no `tint`-override field. `CORE` and
+  the `web` preset were re-pointed (`white`↔`silver`) so AI CONFIG stays core and
+  both AI CONFIG + DESIGN stay in `web`. The Claude-tooling `SKILL_COLORS` entry
+  now maps to `silver`, so those skills keep tinting AI CONFIG (Silver Sands).
+  - **Stored tasks are re-keyed `white`↔`silver` on upgrade** so they follow their
+    category to the new slot (a live-data migration handled separately from this
+    change, which ships only the new defaults, tests, and docs).
+
 ## [1.2.0] — 2026-06-20
 
 ### Changed
