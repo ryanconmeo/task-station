@@ -91,6 +91,22 @@ def update_check_enabled():
     """True only if the user opted in (config flag). Default off — no network."""
     return bool(get("update_check", False))
 
+def enabled_categories():
+    """The configured active-category key list, or None when unconfigured
+    (categories.enabled_keys() then defaults to the full set)."""
+    raw = get("enabled_categories")
+    return raw if isinstance(raw, list) else None
+
+def set_enabled_categories(keys):
+    set("enabled_categories", list(keys))
+
+def _categories_module():
+    try:
+        import categories as _c
+        return _c
+    except Exception:
+        return None
+
 def tint_mode():
     return get("tint_mode", "auto")
 
@@ -98,6 +114,23 @@ def tint_theme():
     """Configured palette: "auto" (follow OS appearance), "dark", or "light"."""
     val = get("tint_theme", "auto")
     return val if val in ("auto", "dark", "light") else "auto"
+
+def _enabled_summary():
+    """`9/12 (preset web)`-style summary of the active category set, or
+    `12/12 (full — default)` when unconfigured."""
+    cats = _categories_module()
+    if cats is None:
+        return "n/a"
+    enabled = cats.enabled_keys()
+    total = len(cats.all_keys())
+    raw = enabled_categories()
+    name = "full — default" if raw is None else "custom"
+    if raw is not None:
+        for pname in cats.PRESETS:
+            if cats.preset_keys(pname) == enabled:   # both canonical order
+                name = "preset %s" % pname
+                break
+    return "%d/%d (%s)" % (len(enabled), total, name)
 
 def render_board():
     import term
@@ -108,7 +141,9 @@ def render_board():
         "                          set: task-station config --<flag> <value>   ·   reset: <flag> default",
         "",
         "  --workspace-dirs  %-34s repo roots for delegate --project" % ws,
-        "  --categories      %-34s custom tags/labels + skill auto-tint  (task-station config --categories edit)"
+        "  --categories      %-34s enabled set + presets/toggles  (--categories edit · preset <name> · --enable/--disable <key>)"
+        % _enabled_summary(),
+        "  category overrides %-33s custom tags/labels + skill auto-tint  (--categories edit)"
         % ("%d override(s)" % n_cat if n_cat else "defaults"),
         "  --bare-cmds        %-33s install bare /todo + /done (else /task-station:todo)  on · off"
         % ("on" if bare_commands() else "off"),
@@ -122,6 +157,77 @@ def render_board():
         "  tint mode: %s · terminal: %s" % (tint_mode(), term.detect()),
     ]
     return "\n".join(lines)
+
+def _categories_status(cats):
+    enabled = cats.enabled_keys()
+    lines = ["Enabled categories (%d/%d):" % (len(enabled), len(cats.all_keys()))]
+    for k in enabled:
+        m = cats.CATEGORIES[k]
+        perm = "   (permanent)" if k == cats.PERMANENT else ""
+        lines.append("  %-7s %s %-11s %s%s" % (k, m["dot"], "[%s]" % m["tag"], m["label"], perm))
+    disabled = [k for k in cats.all_keys() if k not in enabled]
+    if disabled:
+        lines.append("  off: " + ", ".join(disabled))
+    lines.append("")
+    lines.append("Presets  (config --categories preset <name>):")
+    for name in cats.PRESETS:
+        lines.append("  %-8s %s" % (name, " ".join(cats.preset_keys(name))))
+    lines.append("")
+    lines.append("Toggle individual slots: config --enable <key> · config --disable <key>")
+    lines.append("(⚫ GENERAL is permanent — always on, cannot be disabled.)")
+    return "\n".join(lines)
+
+
+def cmd_categories(arg):
+    """Handle `config --categories [...]`:
+      (no arg)        → show the enabled set + available presets
+      edit            → print the config.json path (legacy behaviour)
+      preset <name>   → set enabled_categories to that preset (GENERAL forced in)
+    """
+    if arg == ["edit"]:
+        print(_path()); return
+    cats = _categories_module()
+    if cats is None:
+        print("categories plugin not available (lib/categories.py missing)"); return
+    if arg and arg[0] == "preset":
+        if len(arg) < 2:
+            print("usage: config --categories preset <%s>" % "|".join(cats.PRESETS)); return
+        name = arg[1]
+        keys = cats.preset_keys(name)
+        if keys is None:
+            print("Unknown preset '%s'. Available: %s" % (name, ", ".join(cats.PRESETS))); return
+        set_enabled_categories(keys)
+        print("enabled_categories = preset '%s' → %s" % (name, " ".join(keys))); return
+    if arg:
+        print("usage: config --categories [edit | preset <name>]"); return
+    print(_categories_status(cats))
+
+
+def toggle_category(color, on):
+    """Enable/disable a single slot. Refuses to disable ⚫ GENERAL (permanent).
+    Materializes the current effective set first, so toggling from the
+    unconfigured (full) default behaves intuitively."""
+    cats = _categories_module()
+    if cats is None:
+        print("categories plugin not available (lib/categories.py missing)"); return
+    key = cats.resolve(color)
+    if key is None:
+        print("Unknown category '%s'. Use a key, emoji, or [TAG]." % color); return
+    m = cats.CATEGORIES[key]
+    if not on and key == cats.PERMANENT:
+        print("Refusing to disable %s [%s] — GENERAL is permanent." % (m["dot"], m["tag"])); return
+    cur = list(cats.enabled_keys())
+    if on and key not in cur:
+        cur.append(key)
+    elif not on:
+        cur = [k for k in cur if k != key]
+    if cats.PERMANENT not in cur:
+        cur.append(cats.PERMANENT)
+    keys = [k for k in cats.all_keys() if k in cur]
+    set_enabled_categories(keys)
+    print("%s %s [%s] — enabled set now: %s"
+          % ("enabled" if on else "disabled", m["dot"], m["tag"], " ".join(keys)))
+
 
 def cmd_config(a):
     if getattr(a, "workspace_dirs_get", False):
@@ -144,8 +250,12 @@ def cmd_config(a):
         print("tint_theme = %s" % tint_theme()); return
     if getattr(a, "tint_theme_get", False):
         print(tint_theme()); return
-    if a.categories == "edit":
-        print(_path()); return
+    if getattr(a, "categories", None) is not None:
+        return cmd_categories(a.categories);
+    if getattr(a, "enable", None) is not None:
+        return toggle_category(a.enable, True)
+    if getattr(a, "disable", None) is not None:
+        return toggle_category(a.disable, False)
     import setup
     if getattr(a, "policy", None) is not None:
         print(setup.set_policy(a.policy == "on")); return
