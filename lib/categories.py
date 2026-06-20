@@ -36,9 +36,11 @@ TINT_TERMINAL = True
 # slot automatically (an explicit `dot` is still allowed for power users). See
 # `_apply_overrides` and SLOT_DOTS below, and CATEGORIES.md.
 #
-# Hex choice: the tint `hex`/`hex_light` are kept BY SLOT through the pink↔silver
-# role swap — pink keeps its pink tint (suits 🩷 PERSONAL) and silver keeps its
-# neutral grey (fine for 🎨 DESIGN), so existing tints stay sensible.
+# Hex choice & profile: the `key` (== zsh alias / Terminal profile) and tint
+# `hex`/`hex_light` are kept BY SLOT through the white↔silver category swap — the
+# `white` slot keeps White Sands + its hex (now home to 🎨 DESIGN) and `silver`
+# keeps Silver Sands + its hex (now home to 🪩 AI CONFIG). Only the dot/tag/label
+# move between the two slots; each category thus lands on the intended profile.
 CATEGORIES = {
     "red":    {"dot": "🔴", "tag": "BUG",       "label": "bug",                        "hex": "#3a2323", "hex_light": "#f7e6e6"},
     "orange": {"dot": "🟠", "tag": "REVIEW",    "label": "code review",                "hex": "#3a3023", "hex_light": "#f7eede"},
@@ -48,8 +50,8 @@ CATEGORIES = {
     "purple": {"dot": "🟣", "tag": "SPECIAL",   "label": "special",                    "hex": "#2e233a", "hex_light": "#ece4f5"},
     "black":  {"dot": "⚫", "tag": "GENERAL",   "label": "general",                    "hex": "#262626", "hex_light": "#ececec"},
     "pink":   {"dot": "🩷", "tag": "PERSONAL",  "label": "personal projects",          "hex": "#3a2333", "hex_light": "#f7e4ef"},
-    "white":  {"dot": "🪩", "tag": "AI CONFIG", "label": "AI tooling & config",        "hex": "#202024", "hex_light": "#f2f2f5"},
-    "silver": {"dot": "🎨", "tag": "DESIGN",    "label": "design",                     "hex": "#303033", "hex_light": "#eeeef0"},
+    "white":  {"dot": "🎨", "tag": "DESIGN",    "label": "design",                     "hex": "#202024", "hex_light": "#f2f2f5"},
+    "silver": {"dot": "🪩", "tag": "AI CONFIG", "label": "AI tooling & config",        "hex": "#303033", "hex_light": "#eeeef0"},
     "gold":   {"dot": "🟨", "tag": "GOLD",      "label": "reserved",                   "hex": "#3a3520", "hex_light": "#f5f0d8"},
     "brown":  {"dot": "🟤", "tag": "DATABASE", "label": "database",                     "hex": "#332a23", "hex_light": "#f0e9e0"},
 }
@@ -66,10 +68,10 @@ SLOT_DOTS = {key: meta["dot"] for key, meta in CATEGORIES.items()}
 # PERMANENT: always enabled, never disable-able. Universal core (seeded in every
 # preset, removable except GENERAL): BUG · AI CONFIG · PERSONAL · GENERAL.
 PERMANENT = "black"
-CORE = ("red", "white", "pink", "black")  # BUG · AI CONFIG · PERSONAL · GENERAL
+CORE = ("red", "silver", "pink", "black")  # BUG · AI CONFIG · PERSONAL · GENERAL
 PRESETS = {
     "minimal": list(CORE),
-    "web":     list(CORE) + ["green", "silver", "blue", "orange", "yellow"],
+    "web":     list(CORE) + ["green", "white", "blue", "orange", "yellow"],
     "data":    list(CORE) + ["brown", "green", "blue", "orange"],
     "ops":     list(CORE) + ["blue", "brown", "orange", "yellow", "purple"],
     "full":    list(CATEGORIES),
@@ -87,7 +89,7 @@ SKILL_COLORS = [
     (r"fix-pr",                                                    "yellow"),  # fixing PR review feedback
     (r"review|security-review",                                    "orange"),  # PR / code review
     (r"update-config|keybindings|permission|schedule|statusline|"
-     r"\binit\b|claude-api|\bloop\b|deep-research|simplify|verify", "white"),   # Claude tooling skills
+     r"\binit\b|claude-api|\bloop\b|deep-research|simplify|verify", "silver"),  # Claude tooling skills → AI CONFIG (silver slot)
 ]
 
 def _apply_overrides():

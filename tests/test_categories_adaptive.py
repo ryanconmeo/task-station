@@ -32,11 +32,14 @@ class NewDefaults(_Base):
         self.assertEqual(c.CATEGORIES["yellow"]["tag"], "FIX")
         self.assertEqual(c.CATEGORIES["yellow"]["dot"], "🟡")
 
-    def test_white_is_ai_config_disco(self):
+    def test_white_is_design_palette(self):
+        # DESIGN now occupies the white slot → White Sands profile, white hex kept.
         c = self._reload()
-        self.assertEqual(c.CATEGORIES["white"]["tag"], "AI CONFIG")
-        self.assertEqual(c.CATEGORIES["white"]["dot"], "🪩")
-        self.assertEqual(c.CATEGORIES["white"]["label"], "AI tooling & config")
+        self.assertEqual(c.CATEGORIES["white"]["tag"], "DESIGN")
+        self.assertEqual(c.CATEGORIES["white"]["dot"], "🎨")
+        self.assertEqual(c.CATEGORIES["white"]["label"], "design")
+        self.assertEqual(c.CATEGORIES["white"]["hex"], "#202024")        # hex unchanged
+        self.assertEqual(c.CATEGORIES["white"]["hex_light"], "#f2f2f5")  # hex unchanged
 
     def test_pink_is_personal_heart(self):
         c = self._reload()
@@ -44,18 +47,45 @@ class NewDefaults(_Base):
         self.assertEqual(c.CATEGORIES["pink"]["dot"], "🩷")
         self.assertEqual(c.CATEGORIES["pink"]["label"], "personal projects")
 
-    def test_silver_is_design_palette(self):
+    def test_silver_is_ai_config_disco(self):
+        # AI CONFIG now occupies the silver slot → Silver Sands profile, silver hex kept.
         c = self._reload()
-        self.assertEqual(c.CATEGORIES["silver"]["tag"], "DESIGN")
-        self.assertEqual(c.CATEGORIES["silver"]["dot"], "🎨")
-        self.assertEqual(c.CATEGORIES["silver"]["label"], "design")
+        self.assertEqual(c.CATEGORIES["silver"]["tag"], "AI CONFIG")
+        self.assertEqual(c.CATEGORIES["silver"]["dot"], "🪩")
+        self.assertEqual(c.CATEGORIES["silver"]["label"], "AI tooling & config")
+        self.assertEqual(c.CATEGORIES["silver"]["hex"], "#303033")        # hex unchanged
+        self.assertEqual(c.CATEGORIES["silver"]["hex_light"], "#eeeef0")  # hex unchanged
 
     def test_resolve_new_tags(self):
         c = self._reload()
-        self.assertEqual(c.resolve("AI CONFIG"), "white")
+        self.assertEqual(c.resolve("AI CONFIG"), "silver")
         self.assertEqual(c.resolve("PERSONAL"), "pink")
-        self.assertEqual(c.resolve("DESIGN"), "silver")
+        self.assertEqual(c.resolve("DESIGN"), "white")
         self.assertEqual(c.resolve("FIX"), "yellow")
+
+    def test_tint_command_follows_swapped_slots(self):
+        # tint_command logic is unchanged: it emits `zsh -ic '<key>'`. Since the
+        # categories moved slots, white→White Sands now carries DESIGN and
+        # silver→Silver Sands now carries AI CONFIG.
+        c = self._reload()
+        c._sys.platform = "darwin"; c.TINT_TERMINAL = True   # pin the tint gate
+        self.assertEqual(c.tint_command("white"), "zsh -ic 'white'")    # DESIGN / White Sands
+        self.assertEqual(c.tint_command("silver"), "zsh -ic 'silver'")  # AI CONFIG / Silver Sands
+        # resolving by the category's tag lands on the swapped key, then the alias
+        self.assertEqual(c.tint_command("DESIGN"), "zsh -ic 'white'")
+        self.assertEqual(c.tint_command("AI CONFIG"), "zsh -ic 'silver'")
+
+
+class SkillColorRedirect(_Base):
+    """A'. Claude-tooling skills tint AI CONFIG, which now lives on the silver slot."""
+    def test_tooling_skill_tints_silver(self):
+        c = self._reload()
+        self.assertEqual(c.color_for_prompt("/update-config"), "silver")
+        self.assertEqual(c.color_for_prompt("/keybindings-help"), "silver")
+
+    def test_review_skill_still_orange(self):
+        c = self._reload()
+        self.assertEqual(c.color_for_prompt("/review"), "orange")
 
 
 class SlotDeterminesEmoji(_Base):
@@ -119,7 +149,7 @@ class EnabledSet(_Base):
 
 class Presets(_Base):
     """D. Presets, with the universal core in every one."""
-    CORE = {"red", "white", "pink", "black"}
+    CORE = {"red", "silver", "pink", "black"}   # AI CONFIG now on the silver slot
 
     def test_minimal_is_core_only(self):
         c = self._reload()
@@ -144,7 +174,10 @@ class Presets(_Base):
     def test_web_preset_contents(self):
         c = self._reload()
         self.assertEqual(set(c.preset_keys("web")),
-                         self.CORE | {"green", "silver", "blue", "orange", "yellow"})
+                         self.CORE | {"green", "white", "blue", "orange", "yellow"})
+        # web still contains both AI CONFIG (silver, via core) and DESIGN (white)
+        self.assertIn("silver", c.preset_keys("web"))
+        self.assertIn("white", c.preset_keys("web"))
 
     def test_data_preset_contents(self):
         c = self._reload()
@@ -178,7 +211,7 @@ class ConfigCommands(_Base):
         cfg = self._reload_config()
         cfg.cmd_categories(["preset", "minimal"])
         c = self._reload()
-        self.assertEqual(set(c.enabled_keys()), {"red", "white", "pink", "black"})
+        self.assertEqual(set(c.enabled_keys()), {"red", "silver", "pink", "black"})
 
     def test_disable_general_refused(self):
         cfg = self._reload_config()
