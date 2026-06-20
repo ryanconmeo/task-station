@@ -178,19 +178,40 @@ def set_policy(on):
 
 BRIDGE_SERVER = "task-station"          # the mcpServers key we own
 BRIDGE_BACKUP_SUFFIX = ".bak-desktop-bridge"
+BRIDGE_LAUNCHER_NAME = "mcp-launcher.py"   # generated under the (stable) data dir
 
 
 def desktop_config_path():
-    """Claude Desktop's MCP config (macOS). The dir/file may not exist yet."""
+    """Claude Desktop's MCP config. Honors `TASK_STATION_DESKTOP_CONFIG` (set by
+    tests / safe manual checks to target a temp file) before falling back to the
+    real macOS path. The dir/file may not exist yet."""
+    override = os.environ.get("TASK_STATION_DESKTOP_CONFIG")
+    if override:
+        return os.path.expanduser(override)
     return os.path.expanduser(
         "~/Library/Application Support/Claude/claude_desktop_config.json")
 
 
-def engine_mcp_server_path():
-    """Abs path to the STABLE engine-symlink `mcp_server.py`
-    (`~/.claude/task-station-engine/mcp_server.py`) — survives `/plugin update`."""
-    cfg = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
-    return os.path.join(cfg, "task-station-engine", "mcp_server.py")
+def launcher_path():
+    """Abs path to the STABLE self-resolving launcher
+    (`<data_dir>/mcp-launcher.py`). The data dir is version-independent, so this
+    path survives `/plugin update` and the volatile engine symlink alike."""
+    return os.path.join(paths.data_dir(), BRIDGE_LAUNCHER_NAME)
+
+
+def _launcher_source():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_launcher.py")
+
+
+def write_launcher():
+    """(Re)generate the launcher at the stable data-dir path and return it. A plain
+    copy of the bundled stdlib `mcp_launcher.py` — self-contained, so the generated
+    file resolves the installed `mcp_server.py` at run time independent of which
+    plugin version wrote it. Idempotent (overwrites)."""
+    dest = launcher_path()
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copyfile(_launcher_source(), dest)
+    return dest
 
 
 def _read_desktop_config(path):
@@ -222,9 +243,11 @@ def _backup_desktop_config(path):
 
 def install_desktop_bridge(path=None):
     """Create/locate the Desktop config, back it up, and MERGE our `task-station`
-    server entry without clobbering other servers. Idempotent."""
+    server entry without clobbering other servers. Points Desktop at the STABLE
+    self-resolving launcher (regenerated here) — not the volatile engine symlink.
+    Idempotent."""
     path = path or desktop_config_path()
-    server_path = engine_mcp_server_path()
+    server_path = write_launcher()
     _backup_desktop_config(path)
     data = _read_desktop_config(path)
     if not isinstance(data.get("mcpServers"), dict):
@@ -241,7 +264,9 @@ def install_desktop_bridge(path=None):
 
 def remove_desktop_bridge(path=None):
     """Remove ONLY our `task-station` server entry (leave any others). No-op when
-    nothing is installed."""
+    nothing is installed. The generated launcher file is left in place — it is
+    inert without the config entry and lets a later `on` re-wire instantly; it is
+    harmless to delete by hand."""
     path = path or desktop_config_path()
     if not os.path.exists(path):
         return "No Claude Desktop config at %s — nothing to remove." % path
@@ -257,12 +282,12 @@ def remove_desktop_bridge(path=None):
 
 
 def desktop_bridge_status(path=None):
-    """(installed?, engine_mcp_server_path) — for the no-arg config view."""
+    """(installed?, launcher_path) — for the no-arg config view."""
     path = path or desktop_config_path()
     data = _read_desktop_config(path)
     servers = data.get("mcpServers")
     installed = isinstance(servers, dict) and BRIDGE_SERVER in servers
-    return installed, engine_mcp_server_path()
+    return installed, launcher_path()
 
 
 def install_tint_profiles():
