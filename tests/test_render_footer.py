@@ -25,34 +25,45 @@ class RenderFooterTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_footer_lists_all_commands(self):
+        # The ASCII list footer is now the aligned help block (no fence).
         ts.save_task(ts.new_task("First task", "do the thing"))
         ts.save_task(ts.new_task("Second task", "do another thing"))
         out = ts._format_list()
-        self.assertIn("Commands:", out)
-        self.assertIn("/todo <n[,n…]> -s", out)
-        self.assertIn("/done <n[,n…]>", out)
-        self.assertIn("/task-station:config", out)
+        self.assertIn("/todo                   show the board", out)
+        self.assertIn("/todo <n1, n2, …> -s    jump into task session(s), in a new window", out)
+        self.assertIn("/done <n1, n2, …>       close tasks by number", out)
+        self.assertIn("/task-station:config    open settings", out)
+        self.assertIn("<n> a task number  ·  <n1, n2, …> one or more  ·  [N] optional count", out)
 
-    def test_commands_footer_md_is_verbatim_table(self):
-        # The Markdown footer is now a fixed Commands mini-table, decoupled from
-        # the ASCII commands_footer() (no longer derived by splitting it).
+    def test_commands_footer_md_is_verbatim_fenced_block(self):
+        # The Markdown footer is the aligned help block under a **Commands**
+        # heading, wrapped in a ``` fence so it renders monospace verbatim.
         expected = (
             "**Commands**\n"
             "\n"
-            "| Command | Action |\n"
-            "|---|---|\n"
-            "| `/todo [<n>]` | list board / open & resume a task |\n"
-            "| `/todo <n> -s` | jump into the task's session (new window) |\n"
-            "| `/todo closed [N]` · `all` | list closed tasks |\n"
-            "| `/done [<n,…>]` | close current / by number |\n"
-            "| `/task-station:config` | settings |"
+            "```\n"
+            "/todo                   show the board\n"
+            "/todo <n>               open & resume a task\n"
+            "/todo <n1, n2, …> -s    jump into task session(s), in a new window\n"
+            "/todo closed [N]        list recent closed (default 20)\n"
+            "/todo all               show every task (all open + closed)\n"
+            "/done                   close the current task\n"
+            "/done <n1, n2, …>       close tasks by number\n"
+            "/task-station:config    open settings\n"
+            "\n"
+            "<n> a task number  ·  <n1, n2, …> one or more  ·  [N] optional count\n"
+            "```"
         )
         self.assertEqual(ts.commands_footer_md(), expected)
 
-    def test_commands_footer_md_decoupled_from_ascii(self):
-        # It does not contain the ASCII one-liner's dense `·`-separated body.
-        self.assertNotIn("Commands:  /todo", ts.commands_footer_md())
-        self.assertNotIn("\n- ", ts.commands_footer_md())
+    def test_commands_footer_md_decoupled_and_consistent(self):
+        md = ts.commands_footer_md()
+        # No bullets, no old dense one-liner.
+        self.assertNotIn("\n- ", md)
+        self.assertNotIn("Commands:  /todo", md)
+        # The fenced body is exactly the ASCII footer (one source of truth).
+        body = md.split("```\n", 1)[1].rsplit("\n```", 1)[0]
+        self.assertEqual(body, ts.commands_footer())
 
 
 if __name__ == "__main__":

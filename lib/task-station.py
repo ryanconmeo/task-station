@@ -227,32 +227,43 @@ def effort_legend():
     return "Effort:  " + "  ".join("%s %s" % (EFFORT_GAUGE[s], s) for s in EFFORT_ORDER)
 
 
+# Authoritative command help — git/fd/gh style aligned block. ONE source of truth
+# for both surfaces: the ASCII list footer (commands_footer) and the Markdown
+# board footer (commands_footer_md, which fences it so it stays monospace). The
+# description column is auto-aligned to the widest command + a 4-space gutter.
+_COMMANDS_HELP = [
+    ("/todo",                "show the board"),
+    ("/todo <n>",            "open & resume a task"),
+    ("/todo <n1, n2, …> -s", "jump into task session(s), in a new window"),
+    ("/todo closed [N]",     "list recent closed (default 20)"),
+    ("/todo all",            "show every task (all open + closed)"),
+    ("/done",                "close the current task"),
+    ("/done <n1, n2, …>",    "close tasks by number"),
+    ("/task-station:config", "open settings"),
+]
+_COMMANDS_LEGEND = "<n> a task number  ·  <n1, n2, …> one or more  ·  [N] optional count"
+
+
+def _commands_help():
+    """The aligned command/description lines + the notation legend (no code fence).
+    Column auto-sized to the widest command so the descriptions line up."""
+    w = max(len(cmd) for cmd, _ in _COMMANDS_HELP) + 4
+    lines = ["%s%s" % (cmd.ljust(w), desc) for cmd, desc in _COMMANDS_HELP]
+    return "\n".join(lines) + "\n\n" + _COMMANDS_LEGEND
+
+
 def commands_footer():
-    """The authoritative one-line `/todo` command list — the single source of
-    truth that commands/todo.md relays. Dense `·`-separated style matching the
-    Effort:/Legend: lines; lists every command with a short label."""
-    return ("Commands:  /todo <n> (open & resume)  ·  /todo <n[,n…]> -s (jump to pinned "
-            "session, new window — comma list jumps several)  ·  /todo closed [N] · /todo all "
-            "(more closed)  ·  /done (close current)  ·  /done <n[,n…]> (close by number; "
-            "comma list closes several)  ·  /task-station:config (settings)")
+    """The authoritative `/todo` command help as an aligned block (ASCII list
+    footer). Same content as commands_footer_md(), minus the Markdown code fence."""
+    return _commands_help()
 
 
 def commands_footer_md():
-    """The command list as a self-contained Markdown mini-table, emitted verbatim
-    under the `/todo` board. Deliberately DECOUPLED from the ASCII
-    `commands_footer()` one-liner (no longer derived by splitting it) so the
-    Markdown surface can have its own two-column `Command | Action` shape."""
-    return (
-        "**Commands**\n"
-        "\n"
-        "| Command | Action |\n"
-        "|---|---|\n"
-        "| `/todo [<n>]` | list board / open & resume a task |\n"
-        "| `/todo <n> -s` | jump into the task's session (new window) |\n"
-        "| `/todo closed [N]` · `all` | list closed tasks |\n"
-        "| `/done [<n,…>]` | close current / by number |\n"
-        "| `/task-station:config` | settings |"
-    )
+    """The same aligned command help, under a **Commands** heading and wrapped in a
+    fenced code block so it renders verbatim/monospace in the Markdown `/todo`
+    board and the README. Decoupled from the ASCII one-liner — built from the
+    shared _COMMANDS_HELP source, not by splitting commands_footer()."""
+    return "**Commands**\n\n```\n" + _commands_help() + "\n```"
 
 
 # ---------------------------------------------------------------- storage ----

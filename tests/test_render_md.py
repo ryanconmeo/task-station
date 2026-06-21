@@ -1,7 +1,7 @@
 """render --format md emits two GitHub tables (Open then Closed) with a leading
 centered STATUS column, the bare seq in the `#` cell, closed-limit handling +
-hidden-older note, and the Commands footer as a Markdown mini-table — printed
-verbatim by the skill."""
+hidden-older note, and the Commands footer as a fenced aligned help block —
+printed verbatim by the skill."""
 import importlib.util
 import io
 import os
@@ -82,15 +82,17 @@ class RenderMarkdownTest(unittest.TestCase):
         out = ts._format_list_md()
         self.assertIn("_● active · ○ open · ✕ closed_", out)
 
-    def test_commands_footer_as_table(self):
+    def test_commands_footer_as_fenced_help_block(self):
         self._seed("Some task")
         out = ts._format_list_md()
-        # Footer is a Markdown mini-table now, not bullets or the ASCII one-liner.
+        # Footer is an aligned help block under **Commands**, fenced for monospace.
         self.assertIn("**Commands**", out)
-        self.assertIn("| Command | Action |", out)
-        self.assertIn("| `/todo [<n>]` | list board / open & resume a task |", out)
+        self.assertIn("```\n/todo                   show the board", out)
+        self.assertIn("/task-station:config    open settings", out)
+        self.assertIn("<n> a task number  ·  <n1, n2, …> one or more  ·  [N] optional count", out)
+        # Not the old mini-table or bullets.
+        self.assertNotIn("| Command | Action |", out)
         self.assertNotIn("\n- /todo", out)
-        self.assertNotIn("Commands:  /todo", out)
 
     def test_closed_limit_and_hidden_note(self):
         # 7 closed tasks, default cap is MAX_CLOSED_IN_LIST.

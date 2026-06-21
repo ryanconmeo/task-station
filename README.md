@@ -41,13 +41,18 @@ Running `/todo` prints your board — rendered exactly as it appears in the term
 
 **Commands**
 
-| Command | Action |
-|---|---|
-| `/todo [<n>]` | list board / open & resume a task |
-| `/todo <n> -s` | jump into the task's session (new window) |
-| `/todo closed [N]` · `all` | list closed tasks |
-| `/done [<n,…>]` | close current / by number |
-| `/task-station:config` | settings |
+```
+/todo                   show the board
+/todo <n>               open & resume a task
+/todo <n1, n2, …> -s    jump into task session(s), in a new window
+/todo closed [N]        list recent closed (default 20)
+/todo all               show every task (all open + closed)
+/done                   close the current task
+/done <n1, n2, …>       close tasks by number
+/task-station:config    open settings
+
+<n> a task number  ·  <n1, n2, …> one or more  ·  [N] optional count
+```
 
 ## Why Task Station
 
