@@ -58,7 +58,7 @@ A task's lifecycle is **one `status` field with three values: open (`◦`) → a
 - [Commands](#commands)
 - [Categories & terminal tint](#categories--terminal-tint)
 - [Delegate — in-project workers](#delegate--in-project-workers)
-- [Desktop bridge (MCP)](#desktop-bridge-mcp)
+- [Claude Desktop (plugin + connector)](#claude-desktop-plugin--connector)
 - [Configure](#configure)
 - [Data & privacy](#data--privacy)
 - [How it works](#how-it-works)
@@ -347,14 +347,37 @@ under your control:
 > still reaches the model when you route work. To keep a repo **fully** off the model, `exclude` it
 > (`index:false`) or drop a `.task-station-ignore` marker — then it never enters the index at all.
 
-## Desktop bridge (MCP)
+## Claude Desktop (plugin + connector)
 
-Task Station ships an **MCP server** so **Claude Desktop** (or any MCP client) can create, read, and
-update tasks in the **same local store the CLI uses** — one `tasks.db`, two front doors. Raise a task
-in a Desktop conversation and it shows up in `/todo` in Claude Code, and vice-versa. WAL is already
-on, so concurrent Desktop + CLI access is safe.
+Task Station works in **Claude Desktop** two complementary ways — and both write the **same local
+store the CLI uses** (one `tasks.db`; WAL is on, so concurrent Desktop + CLI access is safe), so a
+task raised in Desktop shows up in `/todo` in Claude Code and vice-versa.
 
-The bridge is **dependency-free**: the MCP protocol is hand-rolled in the Python standard library
+1. **As a plugin** — gives the **slash commands** in Desktop **Chat**. Install in Desktop:
+   *Customize → Personal plugins → **+** → Create plugin → **Add marketplace** → `ryanconmeo/task-station`
+   → install*. You then get `/todo`, `/done`, `/repos`, and `/task-station:config` in Chat.
+2. **As a connector (MCP server)** — `task-station config --desktop-bridge on` wires it as an MCP
+   connector, giving Claude **conversational** access: the `create_task` / `list_tasks` / `get_task` /
+   `set_status` / `add_note` tools (so "track this" / "show my board" just work), the `todo` prompt,
+   and tasks as attachable resources. Setup is below.
+
+**Auto-track is CLI/Code only.** Desktop runs the plugin's **commands** but **not its hooks**, so the
+CLI/Code hub's "auto-track every substantive topic" behavior does **not** run in Desktop. Desktop
+tracking is **on-demand**: type `/todo`, or say "track this" / "show my board" to invoke the connector
+tools. It does not silently create tasks from the conversation.
+
+| Surface | Slash commands | Conversational tools | Auto-track |
+|---|---|---|---|
+| CLI / Code | ✅ | (plugin) | ✅ automatic (hooks) |
+| Desktop Chat | ✅ (plugin) | ✅ (connector) | ❌ on-demand only |
+
+The one proactive lever in Desktop is your own **Custom/Project Instructions** — Desktop drops MCP
+server `instructions`, so a "track substantive work in Task Station" directive there is the only
+reliable way to nudge Desktop's Claude to track without you asking each time.
+
+### Connector setup (MCP)
+
+The connector is **dependency-free**: the MCP protocol is hand-rolled in the Python standard library
 (`json` + `sys`), so the server runs on the **system `python3`** (3.9+) with **no `pip install`** and
 no Python 3.10+ requirement. The core plugin, the hooks, and the whole test suite stay stdlib-only.
 
@@ -412,17 +435,10 @@ The bridge writes where the CLI reads automatically — it honors `TASK_STATION_
 | Resource | `task://<seq>` | A single task's full detail; attach one to a Desktop conversation via the **+** menu. |
 
 **In Chat:** just ask ("show my tasks") or pick the **`todo`** prompt from Desktop's prompt picker — the
-board renders as a **table** (the same ◦/● tables as the CLI), not a paraphrase, because the bridge
-tells Chat to display it verbatim.
-
-**Desktop auto-track.** Desktop has no `UserPromptSubmit` hook, so the CLI's "auto-track every
-substantive topic as an open(◦) task" can't run there. Instead the bridge's MCP `initialize`
-response carries an **`instructions`** string (which clients fold into the model's context) nudging
-Desktop's Claude to track substantive work itself: when you raise real work, it first `list_tasks`
-and folds onto a matching open task with `add_note` (no duplicates), else `create_task` with a title,
-1–3 sentence summary, category, and a `source` identifying the conversation — those tasks show up in
-your `/todo`. It's a **model-driven nudge, not a hard hook**, and only fires on substantive work, so
-trivial one-off questions and casual chat stay off the board.
+board renders as a **table** (the same ◦/● tables as the CLI), not a paraphrase, because the connector
+tells Chat to display it verbatim. Tracking stays **on-demand** (see the matrix above): Desktop runs
+plugin commands but not hooks, so it won't auto-create tasks — ask it to ("track this"), or set a
+directive in Desktop's Custom Instructions for proactive-ish tracking.
 
 ## Configure
 
@@ -665,7 +681,7 @@ To show the current task in the Claude Code status bar, add one line to `setting
 
 **`lib/task-station.py`** — the engine: task storage, `/todo` and `/done`, the hooks' logic, plus the `whoami` (incl. the `--statusline` segment provider) and `update` commands.
 
-**`lib/mcp_server.py`** — the [Desktop bridge (MCP)](#desktop-bridge-mcp): an MCP server exposing the task store to Claude Desktop / any MCP client over the *same* `tasks.db` the CLI uses. Stdlib tool logic drives the engine and the MCP protocol is hand-rolled (`json` + `sys` only), so it runs on the system `python3` (3.9+) with no `pip install`. Reached by Desktop through the launcher below, never wired directly.
+**`lib/mcp_server.py`** — the [Claude Desktop connector](#claude-desktop-plugin--connector): an MCP server exposing the task store to Claude Desktop / any MCP client over the *same* `tasks.db` the CLI uses. Stdlib tool logic drives the engine and the MCP protocol is hand-rolled (`json` + `sys` only), so it runs on the system `python3` (3.9+) with no `pip install`. Reached by Desktop through the launcher below, never wired directly.
 
 **`lib/mcp_launcher.py`** — the **stable, self-resolving launcher** copied to `<data_dir>/mcp-launcher.py` by `config --desktop-bridge on`. Desktop is pointed at *this* (a version-independent path), not the volatile engine symlink; at run time it resolves the installed `mcp_server.py` (`installed_plugins.json` → `installPath`, else the highest cache version) and `exec`s it. Stdlib only.
 

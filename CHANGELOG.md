@@ -3,6 +3,25 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.6.4] — 2026-06-20
+
+### Changed
+- **Accurate Claude Desktop docs — plugin commands + connector tools, on-demand
+  only.** The README now states the confirmed reality: Task Station works in
+  Desktop two ways — as a **plugin** (slash commands like `/todo` in Chat) and
+  as a **connector** (`config --desktop-bridge on` → conversational
+  create/list/track tools + the `todo` prompt + task resources). Desktop runs
+  plugin *commands* but **not** *hooks*, so Desktop tracking is **on-demand**
+  (type `/todo` or say "track this"), **not** automatic; added a
+  surface×capability matrix and noted Desktop Custom Instructions as the only
+  proactive lever.
+
+### Removed
+- **The inert `initialize` `instructions` field (added in 1.6.3).** Claude
+  Desktop silently drops MCP server `instructions`, so the 1.6.3 auto-track
+  nudge never reached the model. Removed it; `capabilities` / `serverInfo` /
+  `protocolVersion` and all tools/prompts/resources are unchanged.
+
 ## [1.6.3] — 2026-06-20
 
 ### Added

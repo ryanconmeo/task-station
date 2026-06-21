@@ -223,23 +223,11 @@ def _add_note(ref, text):
 PROTOCOL_VERSION = "2024-11-05"
 
 
-# Claude Desktop has no UserPromptSubmit hook, so the CLI's "auto-track every
-# substantive topic as an open(◦) task" can't run there. The MCP `initialize`
-# response carries an `instructions` string that clients fold into the model's
-# context — so this is the Desktop-side analog of that prompt-context nudge.
-# Kept concise and calibrated (substantive-only + fold-don't-fork) so it tracks
-# real work without flooding the board with trivial one-offs.
-INITIALIZE_INSTRUCTIONS = (
-    "This conversation has Task Station — a persistent task board shared with "
-    "the user's Claude Code hub. When the user raises SUBSTANTIVE work they may "
-    "act on later, track it: first call `list_tasks`; if it matches an existing "
-    "open task, `add_note` to that task (fold — don't create duplicates); "
-    "otherwise `create_task` with a clear title, a 1–3 sentence summary of the "
-    "discussion, the right category, and a `source` identifying this Desktop "
-    "conversation. New tasks start as open (◦) and become active (●) when worked "
-    "in the hub. Do NOT create tasks for trivial one-off questions or casual "
-    "chat. Tasks created here appear in the user's `/todo`."
-)
+# Desktop runs the plugin's COMMANDS but not its HOOKS, and it silently drops the
+# MCP `initialize` `instructions` field — so there's no transport-level lever to
+# make Desktop auto-track. Tracking in Desktop is on-demand (the `/todo` command
+# or "track this" invoking the conversational tools); see the README's Desktop
+# matrix. (The one proactive lever is the user's own Desktop Custom Instructions.)
 
 
 def _server_version():
@@ -455,7 +443,6 @@ def dispatch(method, params):
             "protocolVersion": PROTOCOL_VERSION,
             "serverInfo": {"name": "task-station", "version": _server_version()},
             "capabilities": {"tools": {}, "prompts": {}, "resources": {}},
-            "instructions": INITIALIZE_INSTRUCTIONS,
         }
     if method == "ping":
         return {}
