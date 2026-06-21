@@ -1,4 +1,4 @@
-"""Task lifecycle as ONE field — `status` with three values: open (◦) → active
+"""Task lifecycle as ONE field — `status` with three values: open (○) → active
 (●) → closed. Covers the default, `create --active`, glyph rendering in every
 view, auto-promotion (manual `status` cmd, PostToolUse edit, idempotence, no
 closed-resurrection), done→closed / reopen→open, `attach --note`, and back-compat
@@ -71,7 +71,7 @@ class StatusTest(unittest.TestCase):
         reloaded = ts.load_task(t["id"])
         self.assertNotIn("status", reloaded)
         self.assertEqual(ts.task_status(reloaded), "open")
-        self.assertEqual(ts.status_glyph(reloaded), "◦")
+        self.assertEqual(ts.status_glyph(reloaded), "○")
 
     def test_legacy_open_and_closed_still_read(self):
         o = self._seed("legacy open")           # status open
@@ -96,7 +96,7 @@ class StatusTest(unittest.TestCase):
 
     # ------------------------------------------------------------ glyph: helpers
     def test_status_glyph_board(self):
-        self.assertEqual(ts.status_glyph(self._seed("q")), "◦")
+        self.assertEqual(ts.status_glyph(self._seed("q")), "○")
         self.assertEqual(ts.status_glyph(self._seed("d", status="active")), "●")
 
     def test_status_glyph_closed_muted(self):
@@ -109,12 +109,12 @@ class StatusTest(unittest.TestCase):
         self._seed("Open one")
         self._seed("Active one", status="active")
         out = ts._format_list()
-        self.assertIn("◦", out)
+        self.assertIn("○", out)
         self.assertIn("●", out)
-        self.assertIn("◦ open · ● active", out)
+        self.assertIn("○ open · ● active", out)
         for line in out.splitlines():
             if "Open one" in line:
-                self.assertTrue(line.lstrip().startswith("◦"))
+                self.assertTrue(line.lstrip().startswith("○"))
             if "Active one" in line:
                 self.assertTrue(line.lstrip().startswith("●"))
 
@@ -136,9 +136,9 @@ class StatusTest(unittest.TestCase):
         a = self._seed("MD active", status="active")
         out = ts._format_list_md()
         # The glyph lives in the leading STATUS column; the `#` cell is bare seq.
-        self.assertIn("| ◦ | %d | MD open" % o["seq"], out)
+        self.assertIn("| ○ | %d | MD open" % o["seq"], out)
         self.assertIn("| ● | %d | MD active" % a["seq"], out)
-        self.assertIn("_● active · ◦ open · (closed below)_", out)
+        self.assertIn("_● active · ○ open · (closed below)_", out)
 
     def test_md_active_in_open_section(self):
         self._seed("MD active2", status="active")
@@ -149,14 +149,14 @@ class StatusTest(unittest.TestCase):
     def test_glyph_in_detail(self):
         o = self._seed("Detail open")
         a = self._seed("Detail active", status="active")
-        self.assertIn("◦ OPEN", ts._format_detail(o, "sx"))
+        self.assertIn("○ OPEN", ts._format_detail(o, "sx"))
         self.assertIn("● ACTIVE", ts._format_detail(a, "sx"))
 
     def test_detail_closed_has_no_glyph(self):
         c = self._seed("Detail closed"); c["status"] = "closed"; ts.save_task(c)
         det = ts._format_detail(ts.load_task(c["id"]), "sx")
         self.assertIn("CLOSED", det)
-        self.assertNotIn("◦ CLOSED", det)
+        self.assertNotIn("○ CLOSED", det)
         self.assertNotIn("● CLOSED", det)
 
     # -------------------------------------------------------- auto-promote: edit
@@ -221,7 +221,7 @@ class StatusTest(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             ts.cmd_status(_Args(task=str(t["seq"]), value=None))
-        self.assertIn("status: ◦ open", buf.getvalue())
+        self.assertIn("status: ○ open", buf.getvalue())
         self.assertEqual(ts.task_status(ts.load_task(t["id"])), "open")
 
     def test_status_command_closed_value_points_to_done(self):

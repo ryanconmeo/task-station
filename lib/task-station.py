@@ -51,7 +51,7 @@ MAX_CLOSED_IN_LIST = 5  # closed tasks shown in the /todo list (most recent firs
 SUBSTANCE_FLOOR = 3     # min user messages for a session to count as "real working" work
 
 # Task lifecycle is ONE field — `status` — with three values:
-#   open (◦)  →  active (●)  →  closed
+#   open (○)  →  active (●)  →  closed
 # A topic merely *raised* starts `open` and shows on the board immediately; it
 # graduates to `active` when work actually starts (delegate --worktree, a file
 # edit in an attached session, the manual `status` command, or `create --active`);
@@ -64,7 +64,7 @@ STATUS_CLOSED = "closed"
 STATUS_DEFAULT = STATUS_OPEN
 STATUS_BOARD = (STATUS_OPEN, STATUS_ACTIVE)   # "not closed" — on the board
 STATUS_SETTABLE = (STATUS_OPEN, STATUS_ACTIVE)  # the manual `status` command's range
-STATUS_GLYPH = {STATUS_OPEN: "◦", STATUS_ACTIVE: "●"}
+STATUS_GLYPH = {STATUS_OPEN: "○", STATUS_ACTIVE: "●"}
 
 # Categories / colours are an OPTIONAL plugin: all of that logic lives in
 # categories.py. If it's absent (or fails to import), `cats` is None and the
@@ -104,7 +104,7 @@ def is_on_board(task):
 
 
 def status_glyph(task, muted_closed=True):
-    """Leading lifecycle glyph for a row: `◦` open / `●` active. Single-width,
+    """Leading lifecycle glyph for a row: `○` open / `●` active. Single-width,
     ASCII-safe. Closed tasks mute to a blank placeholder (single space) so the
     column still aligns — closed tasks live in their own section."""
     if muted_closed and is_closed(task):
@@ -1201,7 +1201,7 @@ def _md_effort(effort):
 
 def _md_task_row(task):
     """One GitHub-table row: `|  | # | Task | Category | Effort | Activity |`.
-    The leading STATUS column holds the lifecycle glyph (`●` active / `◦` open),
+    The leading STATUS column holds the lifecycle glyph (`●` active / `○` open),
     EMPTY for closed tasks; the `#` cell holds the bare seq number only. The Task
     cell carries the ` ⧉N` live-session marker (when >1), mirroring the ASCII
     list; the Category cell keeps the `<emoji> [TAG]` intact."""
@@ -1263,7 +1263,7 @@ def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
 def _format_detail(task, session):
     out = []
     cur = task_status(task)
-    # Header carries the glyph for board tasks (◦ open / ● active); closed has none.
+    # Header carries the glyph for board tasks (○ open / ● active); closed has none.
     glyph = (STATUS_GLYPH[cur] + " ") if cur in STATUS_GLYPH else ""
     out.append("Task [%s]  —  %s%s" % (task["id"][:8], glyph, cur.upper()))
     out.append("Title:   %s" % task["title"])
@@ -1514,7 +1514,7 @@ def cmd_add_project(a):
 
 
 def cmd_status(a):
-    """Show or set a task's lifecycle status between the board states (◦ open /
+    """Show or set a task's lifecycle status between the board states (○ open /
     ● active). `status --task <ref>` with no value reports the current status;
     `status --task <ref> open|active` sets it (idempotent). Closing goes through
     /done, not here — a closed task is reported but not settable from here."""
@@ -1877,7 +1877,7 @@ def cmd_prompt_context(a):
     # full block (below).
     if 1 < n < NUDGE_ESCALATE_AFTER:
         line = ("[task-station] Still untracked (msg %d). Track the topic as an OPEN task "
-                "(◦) — or fold it into a task above with `attach --note` — else skip." % n)
+                "(○) — or fold it into a task above with `attach --note` — else skip." % n)
         # Category auto-detection is a compiled-regex + dict lookup — effectively
         # free — so it keeps running on EVERY prompt, even the collapsed nudge. If
         # this prompt maps to a category, carry just that one hint (no legend) so a
@@ -1906,7 +1906,7 @@ def cmd_prompt_context(a):
 
     # Compact form: full rules/examples live in `task-station.py guidance` (and the
     # SessionStart injection points there) — keep the per-prompt cost minimal.
-    lines.append("Track this topic NOW as an OPEN task (◦) — even a question counts; it "
+    lines.append("Track this topic NOW as an OPEN task (○) — even a question counts; it "
                  "shows on the board immediately and AUTO-PROMOTES to active (●) when you act "
                  "on it (edit a file, delegate, multi-step). FIRST scan the tasks above: if "
                  "this prompt continues one of them, FOLD INTO IT — `attach --session %s --task "
@@ -1941,10 +1941,10 @@ def cmd_guidance(a):
     """Full attach/create how-to, fetched on demand (kept out of the per-prompt
     injection for token economy — `prompt-context` points here)."""
     lines = ["[task-station] Every topic gets tracked from the first prompt — TRACK, don't stay silent:",
-             "  - STATUS: a topic you merely raise starts OPEN (◦) — track it now, even a plain question.",
+             "  - STATUS: a topic you merely raise starts OPEN (○) — track it now, even a plain question.",
              "    It shows on the board immediately and AUTO-PROMOTES to ACTIVE (●) when work starts",
              "    (you edit a file in this session, delegate --worktree, or run a multi-step process).",
-             "    /done then closes it. Status is one field: open (◦) → active (●) → closed.",
+             "    /done then closes it. Status is one field: open (○) → active (●) → closed.",
              "  - FOLD, DON'T FORK: before creating, scan the board (open + active). If this prompt",
              "    continues an existing task, ATTACH to it and append the prompt as a note — no sibling.",
              "  - write a one-line title good enough to recognise the topic later.",
@@ -1958,7 +1958,7 @@ def cmd_guidance(a):
         lines.append("      python3 %s/task-station.py attach --session <session-id> --task <task-id> [--note '<prompt>'] [--color <color>]" % BASE)
         lines.append("  • Otherwise → create with its colour and an effort estimate "
                      "(xs/s/m/l/xl — your read of the task's complexity & scope). New tasks "
-                     "start open (◦); add --active to start active (●) when work has already begun:")
+                     "start open (○); add --active to start active (●) when work has already begun:")
         lines.append("      python3 %s/task-station.py create --session <session-id> --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>' [--active]"
                      % BASE)
         if cats.TINT_TERMINAL:
@@ -2211,7 +2211,7 @@ def main():
     sp.add_argument("--attach", action="store_true",
                     help="force-bind --session even if it's a substantive tracked session")
     sp.add_argument("--active", action="store_true",
-                    help="start the task active (●) instead of the default open (◦)")
+                    help="start the task active (●) instead of the default open (○)")
     sp.set_defaults(fn=cmd_create)
 
     sp = sub.add_parser("attach"); sp.add_argument("--session", required=True)

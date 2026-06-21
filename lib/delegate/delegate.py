@@ -426,7 +426,7 @@ def cmd_run(a):
         except Exception:
             pass
         # Write work (--worktree) means this task's work has actually started —
-        # promote it from open (◦) to active (●). Idempotent on the tracker side.
+        # promote it from open (○) to active (●). Idempotent on the tracker side.
         if a.worktree:
             try:
                 subprocess.run(["python3", TASK_STATION_PY, "status", "--task", str(seq), "active"],

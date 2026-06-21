@@ -69,18 +69,18 @@ class RenderMarkdownTest(unittest.TestCase):
         self.assertIn("|:-:|--:|------|----------|--------|----------|", out)
         # STATUS is its own leading column: glyph for board rows, EMPTY for closed.
         # The `#` cell now holds the bare seq number only.
-        self.assertIn("| ◦ | %d | Open one" % a["seq"], out)
+        self.assertIn("| ○ | %d | Open one" % a["seq"], out)
         self.assertIn("| ● | %d | Active one" % act["seq"], out)
         self.assertIn("|  | %d | Closed one" % b["seq"], out)
         # The glyph no longer rides inside the `#` cell.
-        self.assertNotIn("| ◦ %d |" % a["seq"], out)
+        self.assertNotIn("| ○ %d |" % a["seq"], out)
         # Effort gauge rendered in the cell.
         self.assertIn("▰", out)
 
     def test_legend_line(self):
         self._seed("Some task")
         out = ts._format_list_md()
-        self.assertIn("_● active · ◦ open · (closed below)_", out)
+        self.assertIn("_● active · ○ open · (closed below)_", out)
 
     def test_commands_footer_as_table(self):
         self._seed("Some task")

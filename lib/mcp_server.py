@@ -92,7 +92,7 @@ def _list_tasks(status="all-open"):
 
 
 def _create_task(title, summary="", category=None, effort=None, source=None):
-    """Create an OPEN (◦) task in the shared store and return the stored dict.
+    """Create an OPEN (○) task in the shared store and return the stored dict.
 
     `category`/`effort` honor the same taxonomy/sizes as the CLI (unknown values
     are dropped by the engine, never guessed). `source` records the originating
@@ -294,7 +294,7 @@ TOOLS = [
     },
     {
         "name": "create_task",
-        "description": ("Create / track a new open(◦) task. `category` = a "
+        "description": ("Create / track a new open(○) task. `category` = a "
                         "category key/emoji/[TAG]; `effort` = xs/s/m/l/xl; "
                         "`source` = the originating Desktop conversation ref/URL "
                         "(stored on the task, surfaced in get_task)."),
