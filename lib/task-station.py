@@ -1738,25 +1738,13 @@ def cmd_unpin(a):
         print(_unpin_one(r))
 
 
-def cmd_prompt_color(a):
-    """Print the category colour a skill-invocation prompt maps to (or nothing).
-
-    The UserPromptSubmit hook calls this FIRST and, if it prints a colour, tints
-    the terminal straight away — so a skill like /review tints the terminal the
-    instant it's run, before Claude responds. Silent (prints nothing) when
-    categories are off, the prompt isn't a skill, or the skill has no mapping."""
-    if not cats or not hasattr(cats, "color_for_prompt"):
-        return
-    prompt = a.prompt if getattr(a, "prompt", None) is not None else os.environ.get("TASK_STATION_PROMPT", "")
-    color = cats.color_for_prompt(prompt)
-    if color:
-        print(color)
-
-
 def cmd_prompt_tint(a):
-    """Like prompt-color, but emit the actual full-palette tint escape for the
-    detected terminal (zero-setup OSC; see categories.tint_escape). The
-    UserPromptSubmit hook writes whatever this prints to the originating TTY."""
+    """Emit the full-palette tint escape for the skill a prompt invokes (or
+    nothing), for the detected terminal (zero-setup OSC; see
+    categories.tint_escape). The UserPromptSubmit hook calls this and writes
+    whatever it prints to the originating TTY — so a skill like /review tints the
+    terminal the instant it's run, before Claude responds. Silent when tinting is
+    off, categories are off, the prompt isn't a skill, or the skill has no mapping."""
     if os.environ.get("TASK_STATION_TINT") == "off":
         return
     if not cats or not hasattr(cats, "color_for_prompt") or not cats.TINT_TERMINAL:
@@ -2052,7 +2040,7 @@ def _repos_manifest_action(repo_index, data_dir, action, terms):
 
 def cmd_repos(a):
     """Hub repo index: `repos [show]` prints repos.md (building it if missing),
-    `repos --refresh [--force] [--quiet] [--dry-run] [--re-summarize]` rescans +
+    `repos --refresh [--quiet] [--dry-run] [--re-summarize]` rescans +
     rewrites the index, `repos <term...>` ranks matches, `--json` emits the
     structured list. Include/exclude surface: `repos config` lists the manifest;
     `repos include/exclude <name>` and `repos enrich <name> [on|off]` flip flags.
@@ -2098,7 +2086,7 @@ def cmd_repos(a):
     # --- First-run onboarding: no roots configured and no manifest yet ---
     if (not config.repo_roots_configured()
             and not os.path.exists(os.path.join(data_dir, "repos.config.json"))
-            and not (a.refresh or a.force) and not terms and not a.json):
+            and not a.refresh and not terms and not a.json):
         found = repo_index.detect_roots()
         print("repos: first-run setup — no workspace roots configured yet.")
         print("")
@@ -2117,7 +2105,7 @@ def cmd_repos(a):
         return
 
     repos = None
-    if a.refresh or a.force:
+    if a.refresh:
         # Rescan + rewrite. Enrichment is OPT-IN: a model call fires ONLY for
         # `enrich:true` repos (and only when new/changed). A normal refresh sends
         # NOTHING off-machine. --no-llm (or the repo_enrich config gate) forces the
@@ -2282,9 +2270,6 @@ def main():
     sp = sub.add_parser("unpin"); sp.add_argument("--task", required=True)
     sp.set_defaults(fn=cmd_unpin)
 
-    sp = sub.add_parser("prompt-color"); sp.add_argument("--session", default=None)
-    sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_color)
-
     sp = sub.add_parser("prompt-tint"); sp.add_argument("--session", default=None)
     sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_tint)
 
@@ -2308,8 +2293,6 @@ def main():
                     help="terms to rank repos by; omit (or 'show') to print the index. "
                          "Also: include/exclude/enrich <name>, config")
     sp.add_argument("--refresh", action="store_true", help="rescan roots + rewrite the index")
-    sp.add_argument("--force", action="store_true",
-                    help="reserved: bypass the future refresh debounce (today == --refresh)")
     sp.add_argument("--json", action="store_true", help="emit the structured list for the skill")
     sp.add_argument("--quiet", action="store_true", help="with --refresh, print only a one-line summary")
     sp.add_argument("--no-llm", dest="no_llm", action="store_true",
