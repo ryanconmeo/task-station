@@ -180,7 +180,15 @@ def _apply_overrides():
             TINT_TERMINAL = bool(_config.get("tint_terminal"))
         sc = _config.get("skill_colors")
         if isinstance(sc, list):
-            SKILL_COLORS = [tuple(x) for x in sc] + SKILL_COLORS
+            # Accept ONLY well-formed 2-element [pattern, color] string pairs;
+            # silently skip anything malformed. A bad entry must never reach
+            # color_for_prompt's `for pat, color in SKILL_COLORS` unpack (that
+            # would raise ValueError outside this import-time guard) — nor should
+            # one bad entry discard the good ones.
+            valid = [(x[0], x[1]) for x in sc
+                     if isinstance(x, (list, tuple)) and len(x) == 2
+                     and isinstance(x[0], str) and isinstance(x[1], str)]
+            SKILL_COLORS = valid + SKILL_COLORS
         _TAG_WIDTH = max(len(m["tag"]) for m in CATEGORIES.values()) + 2
     except Exception:
         CATEGORIES.clear(); CATEGORIES.update(cat_snapshot)

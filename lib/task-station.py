@@ -950,7 +950,7 @@ def cmd_detach(a):
     session's currently-linked task is used. Idempotent — a missing reference just
     reports "nothing to detach"."""
     session = a.session
-    task = resolve_ref(a.task) or load_task(a.task) if getattr(a, "task", None) else None
+    task = (resolve_ref(a.task) or load_task(a.task)) if getattr(a, "task", None) else None
     if not task:
         link = get_link(session)
         if link and link != SKIP_SENTINEL:

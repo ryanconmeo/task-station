@@ -2,11 +2,13 @@
 the task (append-only `sessions` over-reports), and the ` ⧉N` list marker /
 `Live sessions:` detail line that surface it."""
 import importlib.util
+import io
 import os
 import shutil
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 
 LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
 sys.path.insert(0, LIB)
@@ -93,6 +95,58 @@ class LiveSessionCountTest(unittest.TestCase):
         detail = ts._format_detail(ts.load_task(a["id"]), "d1")
         self.assertIn("Live sessions: 1", detail)
         self.assertIn("of 2 ever attached", detail)
+
+
+class DetachTest(unittest.TestCase):
+    """cmd_detach resolves its target task (the parenthesized
+    `(resolve_ref(a.task) or load_task(a.task)) if a.task else None`) and drops the
+    session from the task's resume candidates."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        os.environ["TASK_STATION_HOME"] = self.tmp
+        ts.DATA = self.tmp
+        ts.STORE = os.path.join(self.tmp, "store")
+        ts.TASKS_DIR = os.path.join(ts.STORE, "tasks")
+        ts.LINKS_DIR = os.path.join(ts.STORE, "links")
+
+    def tearDown(self):
+        os.environ.pop("TASK_STATION_HOME", None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _seed(self, title):
+        t = ts.new_task(title, "summary")
+        ts.save_task(t)
+        ts.ensure_seqs()
+        return ts.load_task(t["id"])
+
+    def test_detach_by_task_ref(self):
+        # --task given → resolve it by seq, detach the session from THAT task.
+        a = self._seed("Detachable")
+        a.setdefault("sessions", []).append("sX")
+        ts.save_task(a)
+        ts.set_link("sX", a["id"])
+        with redirect_stdout(io.StringIO()):
+            ts.cmd_detach(_Args(session="sX", task=str(a["seq"])))
+        reloaded = ts.load_task(a["id"])
+        self.assertNotIn("sX", reloaded.get("sessions", []))
+        self.assertIsNone(ts.get_link("sX"))
+
+    def test_detach_without_task_uses_linked(self):
+        # No --task → fall back to the session's currently-linked task.
+        a = self._seed("Linked")
+        a.setdefault("sessions", []).append("sY")
+        ts.save_task(a)
+        ts.set_link("sY", a["id"])
+        with redirect_stdout(io.StringIO()):
+            ts.cmd_detach(_Args(session="sY", task=None))
+        self.assertNotIn("sY", ts.load_task(a["id"]).get("sessions", []))
+
+    def test_detach_nothing_attached_is_graceful(self):
+        a = self._seed("Untouched")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ts.cmd_detach(_Args(session="ghost", task=str(a["seq"])))
+        self.assertIn("nothing to detach", buf.getvalue())
 
 
 if __name__ == "__main__":
