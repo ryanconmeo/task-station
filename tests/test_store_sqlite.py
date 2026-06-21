@@ -273,5 +273,107 @@ class JsonFallbackTest(unittest.TestCase):
         self.assertFalse(ts.has_edited("s9"))
 
 
+# -------------------------------------------------------- JSON→SQLite migrate ---
+
+class MigrationTest(unittest.TestCase):
+    """One-time, idempotent, non-destructive import of a legacy file-per-task JSON
+    store into a fresh SQLite DB on first init."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.store_dir = os.path.join(self.tmp, "store")
+        os.makedirs(self.store_dir)
+        store.reset_cache()
+
+    def tearDown(self):
+        store.reset_cache()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _seed_legacy(self):
+        """Write a populated legacy JSON store directly via JsonBackend."""
+        j = store.JsonBackend(self.store_dir)
+        j.save_task({"id": "t1", "seq": 1, "title": "Legacy one", "status": "open",
+                     "created_ts": 1.0, "updated_ts": 1.0, "sessions": ["s1"],
+                     "log": [{"note": "hi"}], "pinned_session": "s1"})
+        j.save_task({"id": "t2", "seq": 2, "title": "Legacy two", "status": "closed",
+                     "created_ts": 2.0, "updated_ts": 2.0, "sessions": [], "log": []})
+        j.set_link("s1", "t1")
+        j.bump_count("s1"); j.bump_count("s1")     # n = 2
+        j.mark_edited("s1")                          # edited = 1
+        j.bump_blocked("s1")                         # blocked = 1
+        return j
+
+    # (a) populated legacy store → migrated; tasks + links round-trip; pin survives.
+    def test_legacy_json_migrated_on_first_init(self):
+        self._seed_legacy()
+        b = store.SqliteBackend(self.store_dir)
+        tasks = {t["id"]: t for t in b.all_tasks()}
+        self.assertEqual(set(tasks), {"t1", "t2"})
+        self.assertEqual(tasks["t1"]["title"], "Legacy one")
+        self.assertEqual(tasks["t1"]["status"], "open")
+        self.assertEqual(tasks["t2"]["status"], "closed")
+        # pinned_session (the real pin feature) rides in the data blob and survives.
+        self.assertEqual(tasks["t1"]["pinned_session"], "s1")
+        # links + miss counter + edit/blocked markers all round-trip.
+        self.assertEqual(b.get_link("s1"), "t1")
+        self.assertEqual(b.get_count("s1"), 2)
+        self.assertTrue(b.has_edited("s1"))
+        self.assertEqual(b.get_blocked("s1"), 1)
+        # NON-DESTRUCTIVE: the legacy JSON files are left in place.
+        self.assertTrue(os.path.exists(os.path.join(self.store_dir, "tasks", "t1.json")))
+        self.assertTrue(os.path.exists(os.path.join(self.store_dir, "links", "s1")))
+
+    # (b) idempotent — re-init adds no duplicates, never re-imports.
+    def test_migration_idempotent(self):
+        self._seed_legacy()
+        b1 = store.SqliteBackend(self.store_dir)
+        self.assertEqual(len(b1.all_tasks()), 2)
+        store.reset_cache()
+        b2 = store.SqliteBackend(self.store_dir)
+        self.assertEqual(len(b2.all_tasks()), 2)        # no duplicates on 2nd init
+        # A native add then re-init keeps 3 — the 2 legacy rows are never re-imported.
+        b2.save_task({"id": "t3", "title": "native", "status": "open",
+                      "created_ts": 3.0, "updated_ts": 3.0, "sessions": [], "log": []})
+        store.reset_cache()
+        b3 = store.SqliteBackend(self.store_dir)
+        self.assertEqual(len(b3.all_tasks()), 3)
+
+    # (c) no legacy store → clean no-op (no crash, no tasks/ dir created).
+    def test_no_legacy_store_is_clean_noop(self):
+        b = store.SqliteBackend(self.store_dir)
+        self.assertEqual(b.all_tasks(), [])
+        self.assertFalse(os.path.isdir(os.path.join(self.store_dir, "tasks")))
+
+    # (d) backward-compat: a DB that still carries the dropped `pinned` column
+    #     keeps reading + writing after the column is gone from the code.
+    def test_legacy_pinned_column_still_reads_and_writes(self):
+        db = os.path.join(self.store_dir, "tasks.db")
+        conn = store.sqlite3.connect(db)
+        conn.executescript(
+            "CREATE TABLE tasks (id TEXT PRIMARY KEY, seq INTEGER, title TEXT, "
+            "summary TEXT, status TEXT, color TEXT, effort TEXT, created_ts REAL, "
+            "updated_ts REAL, pinned INTEGER, sessions TEXT, session_meta TEXT, "
+            "log TEXT, data TEXT NOT NULL);"
+            "CREATE TABLE links (session TEXT PRIMARY KEY, task_id TEXT, "
+            "n INTEGER NOT NULL DEFAULT 0, edited INTEGER NOT NULL DEFAULT 0, "
+            "blocked INTEGER NOT NULL DEFAULT 0);")
+        conn.execute(
+            "INSERT INTO tasks (id, seq, title, status, pinned, data) VALUES (?,?,?,?,?,?)",
+            ("old", 1, "Old row", "open", 1,
+             json.dumps({"id": "old", "title": "Old row", "status": "open"})))
+        conn.commit(); conn.close()
+        store.reset_cache()
+        b = store.SqliteBackend(self.store_dir)
+        # reads the legacy row (which has a `pinned` column the code no longer names)
+        self.assertIn("old", {t["id"] for t in b.all_tasks()})
+        # writes a brand-new row though save_task no longer lists `pinned`
+        b.save_task({"id": "new", "title": "New row", "status": "open",
+                     "created_ts": 1.0, "updated_ts": 1.0, "sessions": [], "log": []})
+        self.assertEqual(b.load_task("new")["title"], "New row")
+        # upsert path also works on the legacy row
+        old = b.load_task("old"); old["title"] = "Updated"; b.save_task(old)
+        self.assertEqual(b.load_task("old")["title"], "Updated")
+
+
 if __name__ == "__main__":
     unittest.main()

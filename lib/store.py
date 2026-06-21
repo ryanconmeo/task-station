@@ -191,7 +191,6 @@ class SqliteBackend:
         effort       TEXT,
         created_ts   REAL,
         updated_ts   REAL,
-        pinned       INTEGER,
         sessions     TEXT,
         session_meta TEXT,
         log          TEXT,
@@ -225,8 +224,9 @@ class SqliteBackend:
 
     def _connect(self):
         """Open the connection + ensure schema. Uses an existing tasks.db or
-        creates a fresh empty one (new install) — there is no migration of any
-        prior store, ever."""
+        creates a fresh empty one (new install). On a FRESH/empty DB it performs a
+        one-time, idempotent, non-destructive import of any legacy file-per-task
+        JSON store sitting in the same dir (see _maybe_migrate_json)."""
         if self._conn is not None:
             return self._conn
         os.makedirs(self.store_dir, exist_ok=True)
@@ -239,8 +239,79 @@ class SqliteBackend:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript(self._SCHEMA)
         conn.commit()
-        self._conn = conn
+        self._conn = conn          # set BEFORE migrating so save_task/set_link reuse it
+        self._maybe_migrate_json(conn)
         return conn
+
+    # Marker dropped beside the DB once migration has been considered, so the
+    # legacy scan never runs twice (belt-and-suspenders with the emptiness check).
+    _MIGRATION_MARKER = ".sqlite-migrated"
+
+    def _maybe_migrate_json(self, conn):
+        """One-time import of a legacy JSON store (tasks/<id>.json + links/<sid>
+        and the .n/.edited/.blocked sidecars) into this fresh SQLite DB.
+
+        Runs ONLY when the marker is absent AND the tasks table is empty AND a
+        legacy `tasks/` dir exists. Idempotent (marker + emptiness guard),
+        NON-DESTRUCTIVE (the JSON files are left untouched), a silent no-op when
+        there's no legacy store, and fully defensive — it never raises out of init."""
+        marker = os.path.join(self.store_dir, self._MIGRATION_MARKER)
+        try:
+            if os.path.exists(marker):
+                return
+            row = conn.execute("SELECT COUNT(*) AS c FROM tasks").fetchone()
+            if row and row["c"]:
+                self._write_marker(marker)        # existing DB has data → never scan
+                return
+            tasks_dir = os.path.join(self.store_dir, "tasks")
+            if not os.path.isdir(tasks_dir):
+                self._write_marker(marker)        # no legacy store → clean no-op
+                return
+            legacy = JsonBackend(self.store_dir)
+            for task in legacy.all_tasks():        # full dict → data blob (pin survives)
+                try:
+                    self.save_task(task)
+                except Exception:
+                    pass
+            self._migrate_links(conn, legacy)
+            self._write_marker(marker)
+        except Exception:
+            # Migration is best-effort; a fresh empty SQLite store is still usable.
+            pass
+
+    def _migrate_links(self, conn, legacy):
+        """Fold the legacy per-session link files + .n/.edited/.blocked sidecars
+        into the `links` table. A session is any base name under links/ (sidecars
+        stripped); each row captures pointer + counter + markers in one upsert."""
+        links_dir = os.path.join(self.store_dir, "links")
+        if not os.path.isdir(links_dir):
+            return
+        sessions = set()
+        for name in os.listdir(links_dir):
+            if ".tmp" in name:
+                continue
+            for suf in (".n", ".edited", ".blocked"):
+                if name.endswith(suf):
+                    name = name[: -len(suf)]
+                    break
+            sessions.add(name)
+        for sid in sessions:
+            conn.execute(
+                """INSERT INTO links (session, task_id, n, edited, blocked)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(session) DO UPDATE SET
+                     task_id=excluded.task_id, n=excluded.n,
+                     edited=excluded.edited, blocked=excluded.blocked""",
+                (sid, legacy.get_link(sid), legacy.get_count(sid),
+                 1 if legacy.has_edited(sid) else 0, legacy.get_blocked(sid)))
+        conn.commit()
+
+    def _write_marker(self, marker):
+        try:
+            with open(marker, "w") as f:
+                f.write("1")
+        except Exception:
+            pass
 
     def ensure(self):
         self._connect()
@@ -256,20 +327,19 @@ class SqliteBackend:
         conn.execute(
             """INSERT INTO tasks
                  (id, seq, title, summary, status, color, effort,
-                  created_ts, updated_ts, pinned, sessions, session_meta, log, data)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  created_ts, updated_ts, sessions, session_meta, log, data)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  seq=excluded.seq, title=excluded.title, summary=excluded.summary,
                  status=excluded.status, color=excluded.color, effort=excluded.effort,
                  created_ts=excluded.created_ts, updated_ts=excluded.updated_ts,
-                 pinned=excluded.pinned, sessions=excluded.sessions,
+                 sessions=excluded.sessions,
                  session_meta=excluded.session_meta, log=excluded.log,
                  data=excluded.data""",
             (
                 task["id"], task.get("seq"), task.get("title"), task.get("summary"),
                 task.get("status"), task.get("color"), task.get("effort"),
                 task.get("created_ts"), task.get("updated_ts"),
-                1 if task.get("pinned") else 0,
                 json.dumps(task.get("sessions", [])),
                 json.dumps(task.get("session_meta", {})),
                 json.dumps(task.get("log", [])),
