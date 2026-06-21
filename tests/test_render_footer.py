@@ -33,6 +33,27 @@ class RenderFooterTest(unittest.TestCase):
         self.assertIn("/done <n[,n…]>", out)
         self.assertIn("/task-station:config", out)
 
+    def test_commands_footer_md_is_verbatim_table(self):
+        # The Markdown footer is now a fixed Commands mini-table, decoupled from
+        # the ASCII commands_footer() (no longer derived by splitting it).
+        expected = (
+            "**Commands**\n"
+            "\n"
+            "| Command | Action |\n"
+            "|---|---|\n"
+            "| `/todo [<n>]` | list board / open & resume a task |\n"
+            "| `/todo <n> -s` | jump into the task's session (new window) |\n"
+            "| `/todo closed [N]` · `all` | list closed tasks |\n"
+            "| `/done [<n,…>]` | close current / by number |\n"
+            "| `/task-station:config` | settings |"
+        )
+        self.assertEqual(ts.commands_footer_md(), expected)
+
+    def test_commands_footer_md_decoupled_from_ascii(self):
+        # It does not contain the ASCII one-liner's dense `·`-separated body.
+        self.assertNotIn("Commands:  /todo", ts.commands_footer_md())
+        self.assertNotIn("\n- ", ts.commands_footer_md())
+
 
 if __name__ == "__main__":
     unittest.main()

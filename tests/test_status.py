@@ -135,9 +135,10 @@ class StatusTest(unittest.TestCase):
         o = self._seed("MD open")
         a = self._seed("MD active", status="active")
         out = ts._format_list_md()
-        self.assertIn("| ◦ %d | MD open" % o["seq"], out)
-        self.assertIn("| ● %d | MD active" % a["seq"], out)
-        self.assertIn("_◦ open · ● active", out)
+        # The glyph lives in the leading STATUS column; the `#` cell is bare seq.
+        self.assertIn("| ◦ | %d | MD open" % o["seq"], out)
+        self.assertIn("| ● | %d | MD active" % a["seq"], out)
+        self.assertIn("_● active · ◦ open · (closed below)_", out)
 
     def test_md_active_in_open_section(self):
         self._seed("MD active2", status="active")

@@ -75,7 +75,8 @@ class McpServerTest(unittest.TestCase):
         # both sides read/write one shared store.
         cli_md = self.ts._format_list_md()
         self.assertIn("Desktop-born task", cli_md)
-        self.assertIn("◦ %d" % t["seq"], cli_md)
+        # Leading STATUS column glyph + bare seq in the `#` cell.
+        self.assertIn("| ◦ | %d |" % t["seq"], cli_md)
         # And it is a genuine row in all_tasks(), the listing the CLI builds on.
         ids = [x["id"] for x in self.ts.all_tasks()]
         self.assertIn(t["id"], ids)

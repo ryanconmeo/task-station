@@ -234,13 +234,21 @@ def commands_footer():
 
 
 def commands_footer_md():
-    """The authoritative command list as a Markdown bullet list, derived from the
-    same single source of truth as the ASCII `commands_footer()` — split its
-    `·`-separated body into one bullet per command so the Markdown `/todo` output
-    can emit it verbatim."""
-    _, _, body = commands_footer().partition(":")
-    items = [c.strip() for c in body.split("·") if c.strip()]
-    return "\n".join(["**Commands:**"] + ["- " + c for c in items])
+    """The command list as a self-contained Markdown mini-table, emitted verbatim
+    under the `/todo` board. Deliberately DECOUPLED from the ASCII
+    `commands_footer()` one-liner (no longer derived by splitting it) so the
+    Markdown surface can have its own two-column `Command | Action` shape."""
+    return (
+        "**Commands**\n"
+        "\n"
+        "| Command | Action |\n"
+        "|---|---|\n"
+        "| `/todo [<n>]` | list board / open & resume a task |\n"
+        "| `/todo <n> -s` | jump into the task's session (new window) |\n"
+        "| `/todo closed [N]` · `all` | list closed tasks |\n"
+        "| `/done [<n,…>]` | close current / by number |\n"
+        "| `/task-station:config` | settings |"
+    )
 
 
 # ---------------------------------------------------------------- storage ----
@@ -1192,14 +1200,15 @@ def _md_effort(effort):
 
 
 def _md_task_row(task):
-    """One GitHub-table row: `| # | Task | Category | Effort | Activity |`.
-    The `#` cell is prefixed with the leading lifecycle glyph (`◦ 312` / `● 285`;
-    muted to bare seq on closed tasks). The Task cell carries the ` ⧉N`
-    live-session marker (when >1), mirroring the ASCII list; the Category cell
-    keeps the `<emoji> [TAG]` intact."""
-    seq_cell = ("%s %s" % (status_glyph(task), task.get("seq", ""))).strip()
-    return "| %s | %s | %s | %s | %s |" % (
-        seq_cell,
+    """One GitHub-table row: `|  | # | Task | Category | Effort | Activity |`.
+    The leading STATUS column holds the lifecycle glyph (`●` active / `◦` open),
+    EMPTY for closed tasks; the `#` cell holds the bare seq number only. The Task
+    cell carries the ` ⧉N` live-session marker (when >1), mirroring the ASCII
+    list; the Category cell keeps the `<emoji> [TAG]` intact."""
+    status_cell = STATUS_GLYPH.get(task_status(task), "")   # "" for closed
+    return "| %s | %s | %s | %s | %s | %s |" % (
+        status_cell,
+        task.get("seq", ""),
         _md_escape(task["title"]) + _live_marker(task),
         cat_tag(task.get("color")),
         _md_effort(task.get("effort")),
@@ -1207,18 +1216,18 @@ def _md_task_row(task):
     )
 
 
-_MD_HEADER = ("| # | Task | Category | Effort | Activity |\n"
-              "|--:|------|----------|--------|----------|")
+_MD_HEADER = ("|  | # | Task | Category | Effort | Activity |\n"
+              "|:-:|--:|------|----------|--------|----------|")
 
 
 def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
     """Markdown form of the /todo list — what the skill now prints VERBATIM (no
     hand-transcription). Two GitHub tables, Open first then Closed, preserving the
-    tracker's ordering; columns are # (stable seq, right-aligned) · Task ·
-    Category (`<emoji> [TAG]`) · Effort (`▰▱` bar + size) · Activity (relative
-    time). Honors the same closed-limit logic as the ASCII list (default
-    MAX_CLOSED_IN_LIST, `all`, or N) and repeats the hidden-older note after the
-    Closed table, then the Commands footer as a bullet list."""
+    tracker's ordering; columns are a centered STATUS glyph · # (stable seq,
+    right-aligned) · Task · Category (`<emoji> [TAG]`) · Effort (`▰▱` bar + size)
+    · Activity (relative time). Honors the same closed-limit logic as the ASCII
+    list (default MAX_CLOSED_IN_LIST, `all`, or N) and repeats the hidden-older
+    note after the Closed table, then the Commands footer mini-table."""
     ensure_seqs()
     listing = sorted_tasks()
     if not listing:
@@ -1246,7 +1255,7 @@ def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
         out.append("… %d older closed task(s) hidden — show more with `/todo closed N` "
                    "or `/todo all`." % (closed_total - closed_limit))
     out.append("")
-    out.append("_%s open · %s active · closed below_" % (STATUS_GLYPH[STATUS_OPEN], STATUS_GLYPH[STATUS_ACTIVE]))
+    out.append("_%s active · %s open · (closed below)_" % (STATUS_GLYPH[STATUS_ACTIVE], STATUS_GLYPH[STATUS_OPEN]))
     out.append(commands_footer_md())
     return "\n".join(out)
 
