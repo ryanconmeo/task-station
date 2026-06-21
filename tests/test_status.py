@@ -138,7 +138,7 @@ class StatusTest(unittest.TestCase):
         # The glyph lives in the leading STATUS column; the `#` cell is bare seq.
         self.assertIn("| ○ | %d | MD open" % o["seq"], out)
         self.assertIn("| ● | %d | MD active" % a["seq"], out)
-        self.assertIn("_● active · ○ open · (closed below)_", out)
+        self.assertIn("_● active · ○ open · ✕ closed_", out)
 
     def test_md_active_in_open_section(self):
         self._seed("MD active2", status="active")

@@ -65,6 +65,10 @@ STATUS_DEFAULT = STATUS_OPEN
 STATUS_BOARD = (STATUS_OPEN, STATUS_ACTIVE)   # "not closed" — on the board
 STATUS_SETTABLE = (STATUS_OPEN, STATUS_ACTIVE)  # the manual `status` command's range
 STATUS_GLYPH = {STATUS_OPEN: "○", STATUS_ACTIVE: "●"}
+# Closed marker for the Markdown board's status column (✕ U+2715). The ASCII list
+# still mutes closed to a blank placeholder via status_glyph(); this is the
+# Markdown-table mapping only: ● active · ○ open · ✕ closed.
+STATUS_GLYPH_CLOSED = "✕"
 
 # Categories / colours are an OPTIONAL plugin: all of that logic lives in
 # categories.py. If it's absent (or fails to import), `cats` is None and the
@@ -1201,11 +1205,12 @@ def _md_effort(effort):
 
 def _md_task_row(task):
     """One GitHub-table row: `|  | # | Task | Category | Effort | Activity |`.
-    The leading STATUS column holds the lifecycle glyph (`●` active / `○` open),
-    EMPTY for closed tasks; the `#` cell holds the bare seq number only. The Task
-    cell carries the ` ⧉N` live-session marker (when >1), mirroring the ASCII
-    list; the Category cell keeps the `<emoji> [TAG]` intact."""
-    status_cell = STATUS_GLYPH.get(task_status(task), "")   # "" for closed
+    The leading STATUS column holds the lifecycle glyph (`●` active / `○` open /
+    `✕` closed); the `#` cell holds the bare seq number only. The Task cell carries
+    the ` ⧉N` live-session marker (when >1), mirroring the ASCII list; the Category
+    cell keeps the `<emoji> [TAG]` intact."""
+    st = task_status(task)
+    status_cell = STATUS_GLYPH_CLOSED if st == STATUS_CLOSED else STATUS_GLYPH.get(st, "")
     return "| %s | %s | %s | %s | %s | %s |" % (
         status_cell,
         task.get("seq", ""),
@@ -1255,7 +1260,8 @@ def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
         out.append("… %d older closed task(s) hidden — show more with `/todo closed N` "
                    "or `/todo all`." % (closed_total - closed_limit))
     out.append("")
-    out.append("_%s active · %s open · (closed below)_" % (STATUS_GLYPH[STATUS_ACTIVE], STATUS_GLYPH[STATUS_OPEN]))
+    out.append("_%s active · %s open · %s closed_" % (
+        STATUS_GLYPH[STATUS_ACTIVE], STATUS_GLYPH[STATUS_OPEN], STATUS_GLYPH_CLOSED))
     out.append(commands_footer_md())
     return "\n".join(out)
 

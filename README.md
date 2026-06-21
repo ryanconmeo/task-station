@@ -22,22 +22,22 @@ Running `/todo` prints your board — rendered exactly as it appears in the term
 
 |  | # | Task | Category | Effort | Activity |
 |:-:|--:|------|----------|--------|----------|
-| ● | 142 | Fix OAuth redirect loop on Safari | 🔴 [BUG] | ▰▰▱▱▱ S | just now |
-| ○ | 138 | Ship the dark-mode toggle ⧉2 | 🟢 [FEATURE] | ▰▰▰▱▱ M | 2h ago |
-| ○ | 131 | Address review feedback on PR 284 | 🟡 [FIX] | ▰▰▱▱▱ S | 5h ago |
-| ○ | 119 | Migrate billing schema to Postgres | 🟤 [DATABASE] | ▰▰▰▰▱ L | 1d ago |
-| ○ | 88 | Publish task-station to the marketplace | 🪩 [AI CONFIG] | ▱▱▱▱▱ -- | 3d ago |
+| ● | 142 | Fix OAuth redirect loop on Safari | 🔴 [BUG] | `▰▰▱▱▱ S` | just now |
+| ○ | 138 | Ship the dark-mode toggle ⧉2 | 🟢 [FEATURE] | `▰▰▰▱▱ M` | 2h ago |
+| ○ | 131 | Address review feedback on PR 284 | 🟡 [FIX] | `▰▰▱▱▱ S` | 5h ago |
+| ○ | 119 | Migrate billing schema to Postgres | 🟤 [DATABASE] | `▰▰▰▰▱ L` | 1d ago |
+| ○ | 88 | Publish task-station to the marketplace | 🪩 [AI CONFIG] | `▰▰▰▱▱ M` | 3d ago |
 
 **Closed**
 
 |  | # | Task | Category | Effort | Activity |
 |:-:|--:|------|----------|--------|----------|
-|  | 134 | Add retry/backoff to webhook dispatch | 🔵 [DEVOPS] | ▰▰▱▱▱ S | 1d ago |
-|  | 127 | Rework the settings page layout | 🎨 [DESIGN] | ▰▰▰▱▱ M | 2d ago |
+| ✕ | 134 | Add retry/backoff to webhook dispatch | 🔵 [DEVOPS] | `▰▰▱▱▱ S` | 1d ago |
+| ✕ | 127 | Rework the settings page layout | 🎨 [DESIGN] | `▰▰▰▱▱ M` | 2d ago |
 
 *… 42 older closed task(s) hidden — show more with `/todo closed N` or `/todo all`.*
 
-*● active · ○ open · (closed below)*
+*● active · ○ open · ✕ closed*
 
 **Commands**
 
