@@ -33,13 +33,13 @@ class NewDefaults(_Base):
         self.assertEqual(c.CATEGORIES["yellow"]["dot"], "🟡")
 
     def test_white_is_design_palette(self):
-        # DESIGN now occupies the white slot → White Sands profile, white hex kept.
+        # DESIGN occupies the white slot → White Sands palette (theme-independent).
         c = self._reload()
         self.assertEqual(c.CATEGORIES["white"]["tag"], "DESIGN")
         self.assertEqual(c.CATEGORIES["white"]["dot"], "🎨")
         self.assertEqual(c.CATEGORIES["white"]["label"], "design")
-        self.assertEqual(c.CATEGORIES["white"]["hex"], "#202024")        # hex unchanged
-        self.assertEqual(c.CATEGORIES["white"]["hex_light"], "#f2f2f5")  # hex unchanged
+        self.assertEqual(c.CATEGORIES["white"]["hex"], "#ffffff")        # White Sands bg
+        self.assertEqual(c.CATEGORIES["white"]["hex_light"], "#ffffff")  # same in both themes
 
     def test_pink_is_personal_heart(self):
         c = self._reload()
@@ -48,13 +48,13 @@ class NewDefaults(_Base):
         self.assertEqual(c.CATEGORIES["pink"]["label"], "personal projects")
 
     def test_silver_is_ai_config_disco(self):
-        # AI CONFIG now occupies the silver slot → Silver Sands profile, silver hex kept.
+        # AI CONFIG occupies the silver slot → Silver Sands palette (theme-independent).
         c = self._reload()
         self.assertEqual(c.CATEGORIES["silver"]["tag"], "AI CONFIG")
         self.assertEqual(c.CATEGORIES["silver"]["dot"], "🪩")
         self.assertEqual(c.CATEGORIES["silver"]["label"], "AI tooling & config")
-        self.assertEqual(c.CATEGORIES["silver"]["hex"], "#303033")        # hex unchanged
-        self.assertEqual(c.CATEGORIES["silver"]["hex_light"], "#eeeef0")  # hex unchanged
+        self.assertEqual(c.CATEGORIES["silver"]["hex"], "#191d27")        # Silver Sands bg
+        self.assertEqual(c.CATEGORIES["silver"]["hex_light"], "#191d27")  # same in both themes
 
     def test_resolve_new_tags(self):
         c = self._reload()
@@ -63,17 +63,17 @@ class NewDefaults(_Base):
         self.assertEqual(c.resolve("DESIGN"), "white")
         self.assertEqual(c.resolve("FIX"), "yellow")
 
-    def test_tint_command_follows_swapped_slots(self):
-        # tint_command logic is unchanged: it emits `zsh -ic '<key>'`. Since the
-        # categories moved slots, white→White Sands now carries DESIGN and
-        # silver→Silver Sands now carries AI CONFIG.
+    def test_palette_follows_swapped_slots(self):
+        # The palette is a property of the SLOT: white→White Sands carries DESIGN,
+        # silver→Silver Sands carries AI CONFIG. tint_escape emits the slot's bg
+        # (OSC 11) whether addressed by key or by the category's [TAG]/label.
         c = self._reload()
-        c._sys.platform = "darwin"; c.TINT_TERMINAL = True   # pin the tint gate
-        self.assertEqual(c.tint_command("white"), "zsh -ic 'white'")    # DESIGN / White Sands
-        self.assertEqual(c.tint_command("silver"), "zsh -ic 'silver'")  # AI CONFIG / Silver Sands
-        # resolving by the category's tag lands on the swapped key, then the alias
-        self.assertEqual(c.tint_command("DESIGN"), "zsh -ic 'white'")
-        self.assertEqual(c.tint_command("AI CONFIG"), "zsh -ic 'silver'")
+        white_bg = "\033]11;%s\007" % c.CATEGORIES["white"]["hex"]
+        silver_bg = "\033]11;%s\007" % c.CATEGORIES["silver"]["hex"]
+        self.assertIn(white_bg, c.tint_escape("white", "auto", "iterm"))
+        self.assertIn(silver_bg, c.tint_escape("silver", "auto", "iterm"))
+        self.assertIn(white_bg, c.tint_escape("DESIGN", "auto", "iterm"))
+        self.assertIn(silver_bg, c.tint_escape("AI CONFIG", "auto", "iterm"))
 
 
 class SkillColorRedirect(_Base):
@@ -95,7 +95,22 @@ class SlotDeterminesEmoji(_Base):
         c = self._reload()
         self.assertEqual(c.CATEGORIES["green"]["tag"], "VOLT")
         self.assertEqual(c.CATEGORIES["green"]["dot"], "🟢")           # inherited slot dot
-        self.assertEqual(c.CATEGORIES["green"]["hex"], "#233a2b")      # slot hex kept
+        self.assertEqual(c.CATEGORIES["green"]["hex"], "#2e381a")      # slot hex kept (Green Sands)
+
+    def test_override_inherits_full_palette(self):
+        # An override that sets only {tag,label} must still inherit the slot's
+        # baked palette (fg / bold / ansi), so tint_escape stays full-palette.
+        self._write_config({"categories": {"green": {"tag": "VOLT", "label": "volt work"}}})
+        c = self._reload()
+        ship = {  # the shipped green (Green Sands) palette fields
+            "fg": "#f3e2b2", "bold": "#d7f528",
+        }
+        self.assertEqual(c.CATEGORIES["green"]["fg"], ship["fg"])
+        self.assertEqual(c.CATEGORIES["green"]["bold"], ship["bold"])
+        self.assertEqual(len(c.CATEGORIES["green"]["ansi"]), 16)
+        out = c.tint_escape("green", "auto", "iterm")
+        self.assertIn("\033]10;%s\007" % ship["fg"], out)                       # fg survives
+        self.assertIn("\033]1337;SetColors=bold=%s\007" % ship["bold"].lstrip("#"), out)
 
     def test_explicit_dot_still_honored(self):
         self._write_config({"categories": {"green": {"dot": "⚡", "tag": "VOLT", "label": "volt"}}})

@@ -24,11 +24,9 @@ prompt=$(echo "$input" | jq -r '.prompt // ""')
 
 tint=$(TASK_STATION_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" prompt-tint 2>/dev/null)
 if [ -n "$tint" ]; then
-  case "$tint" in
-    "zsh -ic "*) eval "$tint" >/dev/null 2>&1 ;;          # profile mode: run the user's alias
-    *) _dev=$(bash "${CLAUDE_PLUGIN_ROOT}/lib/origin-tty.sh" 2>/dev/null)
-       printf '%s' "$tint" > "${_dev:-/dev/tty}" 2>/dev/null ;;   # auto: originating window (task 119)
-  esac
+  # Full-palette escape → write it straight to the originating window (task 119).
+  _dev=$(bash "${CLAUDE_PLUGIN_ROOT}/lib/origin-tty.sh" 2>/dev/null)
+  printf '%s' "$tint" > "${_dev:-/dev/tty}" 2>/dev/null
 fi
 
 # Auto-set the tab/window title to '#<seq>: <title>' once attached — write the OSC

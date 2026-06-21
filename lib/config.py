@@ -232,10 +232,8 @@ def render_board():
     has_policy = ("policy" in setup._manifest())
     installed, _server = setup.desktop_bridge_status()
     st = [
-        ("tint", "mode %s · terminal %s%s" % (
-            tint_mode(), t, "" if t != "none" else "  (no supported terminal → no-op)")),
-        ("tint-profiles", "installed (profile mode)" if tint_mode() == "profile"
-         else "off — richer tint: --tint-profiles"),
+        ("tint", "escape (full palette) · terminal %s%s" % (
+            t, "" if t != "none" else "  (no supported terminal → no-op)")),
         ("policy", "installed in CLAUDE.md — remove: --policy off" if has_policy
          else "off — install: --policy on"),
         ("desktop-bridge", "installed — remove: --desktop-bridge off" if installed
@@ -355,8 +353,6 @@ def cmd_config(a):
     import setup
     if getattr(a, "policy", None) is not None:
         print(setup.set_policy(a.policy == "on")); return
-    if getattr(a, "tint_profiles", False):
-        print(setup.install_tint_profiles()); return
     if getattr(a, "desktop_bridge", None) is not None:
         print(setup.install_desktop_bridge() if a.desktop_bridge == "on"
               else setup.remove_desktop_bridge()); return

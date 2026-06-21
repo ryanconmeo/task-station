@@ -124,7 +124,7 @@ Claude attaches/creates tasks through the engine; these flags govern **which ses
 
 ## Categories & terminal tint
 
-If `categories.py` is present (it ships with the plugin), every task carries a `color` from a taxonomy (bug/red, code-review/orange, devops/blue, design/white, personal/pink, AI-config/silver, …); `/todo` appends a `<emoji> [TAG]` after each task and prints a legend. Each colour name is also a zsh alias that switches the Terminal.app profile, so on attach / create / resume Claude runs `zsh -ic '<color>'` to tint the terminal to the task's category.
+If `categories.py` is present (it ships with the plugin), every task carries a `color` from a taxonomy (bug/red, code-review/orange, devops/blue, design/white, personal/pink, AI-config/silver, …); `/todo` appends a `<emoji> [TAG]` after each task and prints a legend. Each category ships a full **Sands** palette — background, foreground, bold, cursor, and all 16 ANSI colors — that the hooks apply to your terminal automatically via standard escape sequences (OSC 11/10/12/4, plus an iTerm-only bold), so on attach / create / resume the terminal tints to the task's category. **Zero-setup:** iTerm2 and Terminal.app both honor it; there are no Terminal profiles or shell aliases to install.
 
 **The dot is slot-canonical** — each colour slot owns its emoji, so a custom category (or an override) supplies only `tag` + `label`; the icon follows from the colour. **Presets & enabled set:** the active categories are seeded-but-removable — `config --categories preset <minimal|web|data|ops|full>` switches the set, and `config --enable/--disable <key>` toggles individual slots. Every preset keeps the universal core (BUG · AI CONFIG · PERSONAL · GENERAL); `⚫ GENERAL` is permanent. See [`CATEGORIES.md`](CATEGORIES.md).
 
@@ -456,14 +456,15 @@ python3 "$HOME/.claude/task-station-engine/task-station.py" config     # same as
 
 ### `task-station config`
 
-With no arguments, prints the unified board: current settings plus a status/doctor report (tint mode + detected terminal, tint-profiles, workspace dirs, whether the delegation policy is installed). Flags:
+With no arguments, prints the unified board: current settings plus a status/doctor report (tint + detected terminal, workspace dirs, whether the delegation policy is installed, the Desktop bridge). Flags:
 
 - `--workspace-dirs <a:b>` — set repo-root directories (`:` separated) for delegate's `--project` shorthand.
 - `--categories` — show the current enabled category set + available presets. `--categories preset <minimal|web|data|ops|full>` switches the active set; `--categories edit` prints the `config.json` path so you can open it and customize categories, `skill_colors`, etc.
 - `--enable <key>` / `--disable <key>` — toggle a single category slot on/off (accepts a key, emoji, or `[TAG]`). Disabling `⚫ GENERAL` is refused — it's permanent.
 - `--bare-cmds on|off` — install or remove the bare `/todo` + `/done` aliases.
+- `--tint-theme auto|dark|light` — choose the tint palette appearance (`auto` follows the OS). The Sands palettes ship theme-independent, so this mainly affects custom `hex_light` overrides.
 - `--policy on|off` — adds or removes a 100%-reversible delegation-policy block in your `~/.claude/CLAUDE.md` (fenced, idempotent, hash-checked; `off` refuses if the block was hand-edited).
-- `--tint-profiles` — **Terminal.app:** sets profile mode, appends per-category zsh aliases to `~/.zshrc`, and prints the manual steps to create matching Terminal.app profiles. **iTerm2:** no-op (prints "already zero-setup").
+- `--desktop-bridge on|off` — wire the dependency-free MCP server into Claude Desktop (or remove it).
 - `--data-dir` *(read-only)* — shows the data directory (set via `$TASK_STATION_HOME`).
 
 ### Baked defaults and env escapes
@@ -477,10 +478,9 @@ These are on by default. Each has a hidden env escape to turn it off — no conf
 | Auto terminal title `#<seq>: <title>` on attach | on | `TASK_STATION_TITLE=off` (or `config --title off`) |
 | Bare `/todo` + `/done` install | **off** (opt-in) | `TASK_STATION_BARE_CMDS=on` to enable |
 
-**Terminal tint — two modes:**
+**Terminal tint — full-palette escape (zero-setup):**
 
-- **auto** *(default, zero-setup)* — writes a direct escape sequence to set the background colour: iTerm2 uses `SetColors`, Terminal.app uses OSC 11. Works out of the box; no profiles or aliases needed.
-- **profile** — runs `zsh -ic '<color>'` to switch Terminal.app profiles via named aliases. Enable with `task-station config --tint-profiles` (iTerm2: no-op, already zero-setup).
+Each category ships a complete **Sands** palette and the engine writes it to your terminal as standard escape sequences — background (OSC 11), foreground (OSC 10), cursor (OSC 12), all 16 ANSI colors (OSC 4), selection (OSC 17), plus an iTerm-only bold colour (`1337;SetColors=bold`). iTerm2 and Terminal.app both honor it out of the box; there are **no Terminal profiles or shell aliases to install**. (The pre-1.7.0 profile-switching mode — `zsh -ic '<color>'` aliases via `--tint-profiles` — was **removed**.)
 
 Tinting is auto-detected: the engine reads `$TERM_PROGRAM` / `$ITERM_SESSION_ID` to pick iTerm2 vs Terminal.app vs none. Once a session is attached, the terminal tab/window title is auto-set to `#<seq>: <title>` (the same string feeds the Claude session name at start); the `/todo <n> -s` new-window jump is on by default on macOS (auto-detected). Disable the title with `task-station config --title off` (or `TASK_STATION_TITLE=off`).
 
@@ -641,7 +641,6 @@ All paths are under your config dir (`${CLAUDE_CONFIG_DIR:-~/.claude}`) unless n
 | `~/.claude/statusline.d/50-task-station.sh` | Self-registered status-line segment (harmless if unused) |
 | `~/.claude/commands/{todo,done,repos}.md` | **Only if you run `task-station config --bare-cmds on`** (opt-in; marker-guarded, never clobbers a pre-existing command) |
 | `<data_dir>/repos.{md,json}` + `.repos-cache.json` | Hub repo index + enrichment cache, written on demand by `/repos --refresh`; `repos.overrides.json` (hand-authored, never written by discovery) is read if present |
-| `~/.zshrc` (tint aliases) | **Only via the explicit `task-station config --tint-profiles` command you run** |
 | `~/.claude/CLAUDE.md` (delegation policy block) | **Only via the explicit `task-station config --policy on` command you run** (fenced, 100% reversible with `--policy off`) |
 
 The namespaced `/task-station:todo` and `/task-station:done` commands are registered by the plugin system automatically and always work out of the box. The bare `/todo` and `/done` aliases are **opt-in** — run `task-station config --bare-cmds on` to install them.

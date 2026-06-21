@@ -146,10 +146,8 @@ def status():
     ws = config.workspace_dirs()
     has_policy = ("policy" in _manifest())
     lines = ["task-station config — status", ""]
-    lines.append("  tint        baked on · mode %s · terminal %s%s" % (
-        config.tint_mode(), t, "" if t != "none" else "  (no supported terminal detected → no-op)"))
-    lines.append("  tint-profiles  %s" % ("installed (profile mode)" if config.tint_mode() == "profile"
-                 else "not installed — richer tint: task-station config --tint-profiles"))
+    lines.append("  tint        full-palette escape · terminal %s%s" % (
+        t, "" if t != "none" else "  (no supported terminal detected → no-op)"))
     lines.append("  workspace   %s" % (":".join(ws) if ws else "unset — task-station config --workspace-dirs <dirs>"))
     lines.append("  policy      %s" % ("installed in CLAUDE.md — remove: task-station config --policy off"
                  if has_policy else "not installed — task-station config --policy on"))
@@ -290,19 +288,9 @@ def desktop_bridge_status(path=None):
     return installed, launcher_path()
 
 
-def install_tint_profiles():
-    if term.detect() == "iterm":
-        return "iTerm detected — tinting is already zero-setup (auto mode). Nothing to install."
-    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "install-tint-profiles.sh")
-    config.set("tint_mode", "profile")
-    return "Profile mode set. Run the bundled installer to create Terminal.app profiles + aliases:\n  bash %s" % helper
-
-
 def cmd_setup(a):
     if a.policy is not None:
         print(set_policy(a.policy == "on")); return
-    if a.tint_profiles:
-        print(install_tint_profiles()); return
     if a.workspace_dirs is not None:
         config.set("workspace_dirs", [p for p in a.workspace_dirs.split(os.pathsep) if p])
         print("workspace_dirs = %s" % ":".join(config.workspace_dirs())); return

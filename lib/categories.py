@@ -2,58 +2,121 @@
 
 If this module is importable, `task-station.py` tags each task with a category — an
 emoji dot + `[TAG]` after the title, a legend under the list — and, when
-TINT_TERMINAL is on, suggests a zsh alias that tints the terminal to match.
-It also maps skill (slash-command) invocations to a category so the
-UserPromptSubmit hook can tint the terminal the instant a skill runs (see
-SKILL_COLORS / color_for_prompt and on_user_prompt.sh).
+TINT_TERMINAL is on, tints the terminal to the category's full Sands palette via
+standard terminal escapes (zero-setup; no profiles or shell aliases needed). It
+also maps skill (slash-command) invocations to a category so the UserPromptSubmit
+hook can tint the terminal the instant a skill runs (see SKILL_COLORS /
+color_for_prompt, tint_escape, and on_user_prompt.sh).
 
 This file is the ONLY place the colour taxonomy and the terminal-tinting live.
 `task-station.py` imports it defensively, so the tracker degrades gracefully:
 
   • Delete / rename this file        → a plain, colourless tracker.
-  • Keep it, set TINT_TERMINAL=False → tags + labels, but no tint suggestions
-                                        (for anyone who lacks the zsh aliases).
+  • Keep it, set TINT_TERMINAL=False → tags + labels, but no terminal tinting.
 
-The colour KEYS double as zsh alias names: `zsh -ic '<key>'` is expected to
-switch the Terminal.app profile (the author's aliases map e.g. `green` →
-`Green Sands`). Edit CATEGORIES to your own taxonomy; the keys only need to be
-valid alias names if you leave TINT_TERMINAL on.
+Each slot ships a full baked palette (see CATEGORIES); tint_escape emits it as
+OSC escapes that iTerm and Terminal.app both honor. Edit CATEGORIES to your own
+taxonomy — keys are just identifiers now (no alias/profile coupling).
 """
 
 import os
 import re
 import sys as _sys
 
-# Turn OFF if you don't have <Color>-named Terminal profiles + matching zsh
-# aliases. Tags/labels still render; only the `zsh -ic '<color>'` hints vanish.
+# Master switch for terminal tinting. Tags/labels always render; OFF just stops
+# tint_escape from being emitted (see cmd_prompt_tint / cmd_session_tint).
 TINT_TERMINAL = True
 
-# key (== zsh alias name) → {emoji dot, short [TAG], human label}
+# key → {emoji dot, short [TAG], human label, + baked palette}
 #
 # The dot is SLOT-CANONICAL: each colour slot OWNS an emoji. You pick the colour;
 # the colour determines the icon. A category override / new category therefore
-# needs only `tag` + `label` — the dot (and tint hexes) are inherited from the
-# slot automatically (an explicit `dot` is still allowed for power users). See
+# needs only `tag` + `label` — the dot (and the baked palette) are inherited from
+# the slot automatically (an explicit `dot` is still allowed for power users). See
 # `_apply_overrides` and SLOT_DOTS below, and CATEGORIES.md.
 #
-# Hex choice & profile: the `key` (== zsh alias / Terminal profile) and tint
-# `hex`/`hex_light` are kept BY SLOT through the white↔silver category swap — the
-# `white` slot keeps White Sands + its hex (now home to 🎨 DESIGN) and `silver`
-# keeps Silver Sands + its hex (now home to 🪩 AI CONFIG). Only the dot/tag/label
-# move between the two slots; each category thus lands on the intended profile.
+# Palette by slot: the per-slot palette is kept BY SLOT through the white↔silver
+# category swap — the `white` slot keeps White Sands (now home to 🎨 DESIGN) and
+# `silver` keeps Silver Sands (now home to 🪩 AI CONFIG). Only the dot/tag/label
+# move between the two slots; each category thus lands on the intended palette.
+# Each slot bakes in a full "Sands" palette (background/foreground/bold/cursor +
+# 16 ANSI colors + selection), emitted as terminal escapes by tint_escape. The
+# look is theme-INDEPENDENT: `hex` and `hex_light` are the same value, so the
+# Sands background applies in both OS appearances. A user override that sets only
+# {tag,label} still inherits the full palette from its slot (see _apply_overrides).
 CATEGORIES = {
-    "red":    {"dot": "🔴", "tag": "BUG",       "label": "bug",                        "hex": "#3a2323", "hex_light": "#f7e6e6"},
-    "orange": {"dot": "🟠", "tag": "REVIEW",    "label": "code review",                "hex": "#3a3023", "hex_light": "#f7eede"},
-    "yellow": {"dot": "🟡", "tag": "FIX",       "label": "fixing PR review feedback",  "hex": "#3a3823", "hex_light": "#f6f3da"},
-    "green":  {"dot": "🟢", "tag": "FEATURE",   "label": "feature work",               "hex": "#233a2b", "hex_light": "#e4f3e8"},
-    "blue":   {"dot": "🔵", "tag": "DEVOPS",    "label": "devops",                     "hex": "#23303a", "hex_light": "#e4eef6"},
-    "purple": {"dot": "🟣", "tag": "SPECIAL",   "label": "special",                    "hex": "#2e233a", "hex_light": "#ece4f5"},
-    "black":  {"dot": "⚫", "tag": "GENERAL",   "label": "general",                    "hex": "#262626", "hex_light": "#ececec"},
-    "pink":   {"dot": "🩷", "tag": "PERSONAL",  "label": "personal projects",          "hex": "#3a2333", "hex_light": "#f7e4ef"},
-    "white":  {"dot": "🎨", "tag": "DESIGN",    "label": "design",                     "hex": "#202024", "hex_light": "#f2f2f5"},
-    "silver": {"dot": "🪩", "tag": "AI CONFIG", "label": "AI tooling & config",        "hex": "#303033", "hex_light": "#eeeef0"},
-    "gold":   {"dot": "🟨", "tag": "GOLD",      "label": "reserved",                   "hex": "#3a3520", "hex_light": "#f5f0d8"},
-    "brown":  {"dot": "🟤", "tag": "DATABASE", "label": "database",                     "hex": "#332a23", "hex_light": "#f0e9e0"},
+    "red": {
+        "dot": "🔴", "tag": "BUG", "label": "bug",
+        "hex": "#7a251e", "hex_light": "#7a251e",
+        "fg": "#d7c9a7", "bold": "#dfbd22", "cursor": "#ffffff", "selbg": "#5ac39d",
+        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
+    },
+    "orange": {
+        "dot": "🟠", "tag": "REVIEW", "label": "code review",
+        "hex": "#753300", "hex_light": "#753300",
+        "fg": "#ffaf1f", "bold": "#ffd63a", "cursor": "#ffffff", "selbg": "#5ac396",
+        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
+    },
+    "yellow": {
+        "dot": "🟡", "tag": "FIX", "label": "fixing PR review feedback",
+        "hex": "#564e00", "hex_light": "#564e00",
+        "fg": "#fff127", "bold": "#ffff4e", "cursor": "#ffffff", "selbg": "#5ac3b5",
+        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
+    },
+    "green": {
+        "dot": "🟢", "tag": "FEATURE", "label": "feature work",
+        "hex": "#2e381a", "hex_light": "#2e381a",
+        "fg": "#f3e2b2", "bold": "#d7f528", "cursor": "#ffffff", "selbg": "#5ac3a0",
+        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
+    },
+    "blue": {
+        "dot": "🔵", "tag": "DEVOPS", "label": "devops",
+        "hex": "#0d1b4b", "hex_light": "#0d1b4b",
+        "fg": "#c0d8f0", "bold": "#5bc8f5", "cursor": "#ffffff", "selbg": "#c35a96",
+        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
+    },
+    "purple": {
+        "dot": "🟣", "tag": "SPECIAL", "label": "special",
+        "hex": "#330056", "hex_light": "#330056",
+        "fg": "#ca75ff", "bold": "#e9afff", "cursor": "#ffffff", "selbg": "#c3945a",
+        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
+    },
+    "black": {
+        "dot": "⚫", "tag": "GENERAL", "label": "general",
+        "hex": "#000000", "hex_light": "#000000",
+        "fg": "#e6c55e", "bold": "#00d6e2", "cursor": "#ffffff", "selbg": "#5ac3a3",
+        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
+    },
+    "pink": {
+        "dot": "🩷", "tag": "PERSONAL", "label": "personal projects",
+        "hex": "#320b1b", "hex_light": "#320b1b",
+        "fg": "#f4db9b", "bold": "#ff40ac", "cursor": "#ffffff", "selbg": "#5ac39f",
+        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
+    },
+    "white": {
+        "dot": "🎨", "tag": "DESIGN", "label": "design",
+        "hex": "#ffffff", "hex_light": "#ffffff",
+        "fg": "#2d3840", "bold": "#a82d6a", "cursor": "#b3377b", "selbg": "#c35a9f",
+        "ansi": ["#2d3840", "#b45648", "#6caa71", "#c4ac62", "#5685a8", "#ad64be", "#69c6c9", "#c1c8cc", "#506573", "#df6c5a", "#79be7e", "#e5c872", "#49a2e1", "#d389e5", "#77e1e5", "#d8e1e7"],
+    },
+    "silver": {
+        "dot": "🪩", "tag": "AI CONFIG", "label": "AI tooling & config",
+        "hex": "#191d27", "hex_light": "#191d27",
+        "fg": "#e0e0e0", "bold": "#ea7ba5", "cursor": "#e6709e", "selbg": "#c35a7f",
+        "ansi": ["#35424c", "#b45648", "#6caa71", "#c4ac62", "#6d96b4", "#bd7bcd", "#7ccbcd", "#dee5eb", "#465c6d", "#df6c5a", "#79be7e", "#e5c872", "#67b5ed", "#d389e5", "#84dde0", "#e5eff5"],
+    },
+    "gold": {
+        "dot": "🟨", "tag": "GOLD", "label": "reserved",
+        "hex": "#4e3507", "hex_light": "#4e3507",
+        "fg": "#f8eaa5", "bold": "#ffdb00", "cursor": "#ffffff", "selbg": "#5ac3aa",
+        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
+    },
+    "brown": {
+        "dot": "🟤", "tag": "DATABASE", "label": "database",
+        "hex": "#22140c", "hex_light": "#22140c",
+        "fg": "#f4bf7f", "bold": "#ef7300", "cursor": "#ffffff", "selbg": "#5ac38d",
+        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
+    },
 }
 DEFAULT = "black"
 
@@ -320,14 +383,6 @@ def summary(color):
     return "Category: %s %s (%s)" % (tag(c), label(c), c)
 
 
-def tint_command(color):
-    """The shell command that tints the terminal to `color`, or None when
-    terminal tinting is disabled or the platform isn't macOS."""
-    if not (TINT_TERMINAL and _sys.platform == "darwin"):
-        return None
-    return "zsh -ic '%s'" % normalize(color)
-
-
 def _enabled_items():
     """(key, meta) pairs for the enabled slots, in canonical order."""
     ek = set(enabled_keys())
@@ -416,17 +471,41 @@ def hex_for(color, theme=None):
 
 
 def tint_escape(color, mode, term):
-    """Return the string to print/run to tint the terminal, or '' for no-op.
-    profile -> `zsh -ic '<color>'` (user aliases); auto -> direct escape (zero-setup)."""
-    if mode == "profile":
-        return "zsh -ic '%s'" % normalize(color)
+    """The terminal escape string that tints the window to `color`'s full Sands
+    palette, or '' for a no-op. Zero-setup: standard OSC so iTerm AND Terminal.app
+    both honor most of it, plus one iTerm-only extra for the bold color.
+
+      bg      OSC 11   \\033]11;<hex>\\007
+      fg      OSC 10   \\033]10;<hex>\\007
+      cursor  OSC 12   \\033]12;<hex>\\007
+      ANSI n  OSC 4    \\033]4;<n>;<hex>\\007   for n in 0..15 (when 'ansi' present)
+      selbg   OSC 17   \\033]17;<hex>\\007      (when 'selbg' present)
+      bold    iTerm    \\033]1337;SetColors=bold=<hexNoHash>\\007  (skipped on Terminal.app)
+
+    A slot that defines ONLY a bg (no fg/bold/ansi) still emits just the bg, so a
+    minimal public taxonomy keeps working. `term == 'none'` or an unknown color
+    yields ''. `mode` is accepted for back-compat (profile mode was removed) and
+    ignored — tinting is always the direct escape now."""
     if term == "none":
         return ""
-    hx = hex_for(color)  # picks dark/light by resolved OS theme
-    if not hx:
+    key = resolve(color)
+    m = CATEGORIES.get(key) if key else None
+    if not m:
         return ""
-    if term == "iterm":
-        return "\033]1337;SetColors=bg=%s\007" % hx.lstrip("#")
-    if term == "terminal":
-        return "\033]11;%s\007" % hx
-    return ""
+    bg = hex_for(color)  # theme-aware, but Sands is theme-independent (hex==hex_light)
+    if not bg:
+        return ""
+    parts = ["\033]11;%s\007" % bg]
+    if m.get("fg"):
+        parts.append("\033]10;%s\007" % m["fg"])
+    if m.get("cursor"):
+        parts.append("\033]12;%s\007" % m["cursor"])
+    ansi = m.get("ansi")
+    if isinstance(ansi, (list, tuple)):
+        for n, ah in enumerate(ansi):
+            parts.append("\033]4;%d;%s\007" % (n, ah))
+    if m.get("selbg"):
+        parts.append("\033]17;%s\007" % m["selbg"])
+    if term == "iterm" and m.get("bold"):
+        parts.append("\033]1337;SetColors=bold=%s\007" % m["bold"].lstrip("#"))
+    return "".join(parts)

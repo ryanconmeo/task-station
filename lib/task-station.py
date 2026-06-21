@@ -166,14 +166,11 @@ def task_oneline(task):
 
 
 def cat_lines(color):
-    """Category summary + (optional) tint-command lines, or [] when off."""
+    """Category summary line(s), or [] when categories are off. The terminal is
+    tinted automatically by the hooks (tint_escape) — nothing to run by hand."""
     if not cats:
         return []
-    out = [cats.summary(color)]
-    cmd = cats.tint_command(color)
-    if cmd:
-        out.append("Tint this terminal to match — run:  " + cmd)
-    return out
+    return [cats.summary(color)]
 
 
 # ----------------------------------------------------------------- effort ----
@@ -655,14 +652,6 @@ def worker_lines(task):
     return out
 
 
-def _tint_prefix(task):
-    """The `<color> 2>/dev/null; ` shell prefix that re-tints the terminal to the
-    task's category before launching claude (empty when tinting is off). Joined
-    with `;` not `&&` so a missing colour alias never blocks the resume."""
-    tint = (cats.tint_command(task.get("color")) if cats else None)
-    return ("%s 2>/dev/null; " % cats.normalize(task.get("color"))) if tint else ""
-
-
 def _is_resumable(cmd):
     """True when `cmd` already targets a CONCRETE session — a live `--resume` or a
     pre-bound `--session-id`. The jump path uses this to decide whether to use the
@@ -703,7 +692,7 @@ def fresh_resume_command(task, preborn=False):
         task["sessions"].append(new_sid)
     save_task(task)
     set_link(new_sid, task["id"])
-    return new_sid, "%scd %s && claude --session-id %s" % (_tint_prefix(task), cwd, new_sid)
+    return new_sid, "cd %s && claude --session-id %s" % (cwd, new_sid)
 
 
 def resume_command(task, current_session=None):
@@ -725,18 +714,9 @@ def resume_command(task, current_session=None):
     meta = task.get("session_meta") or {}
     if not meta:
         return None
-    # Prepend the category's tint alias so resuming in a fresh interactive zsh
-    # re-tints the terminal to the task's colour before launching claude. The bare
-    # alias (e.g. `green`) is expanded by the user's interactive shell; we gate on
-    # tint_command() so the prefix vanishes when TINT_TERMINAL is off. The earlier
-    # `return None` (no sessions) needs no tint — there's nothing to resume.
-    #
-    # SAFE WITHOUT THE ALIASES: we join with `; 2>/dev/null`, NOT `&&`. If the user
-    # hasn't installed the `~/.zshrc` colour aliases, `green` is an unknown command —
-    # but `2>/dev/null` swallows the "command not found" and `;` lets the resume run
-    # regardless. So the line tints when aliases exist and is a silent no-op when they
-    # don't; the cd + claude --resume always executes either way.
-    pfx = _tint_prefix(task)
+    # The resumed window tints itself on attach via the SessionStart hook
+    # (cmd_session_tint → tint_escape), so the resume command stays a clean
+    # `cd … && claude …` with no tint prefix.
     # An explicit pin wins (PK-style): always resume that exact session, with the cwd
     # self-corrected from its transcript. Falls through to the heuristic only if the
     # pinned session has no findable live transcript (so a stale pin can't strand you).
@@ -746,7 +726,7 @@ def resume_command(task, current_session=None):
         if path and _session_msgcount(path) >= 1:
             cwd = _session_cwd(path) or (meta.get(pin) or {}).get("cwd")
             if cwd:
-                return "%scd %s && claude --resume %s" % (pfx, cwd, pin)
+                return "cd %s && claude --resume %s" % (cwd, pin)
         # A pin deliberately pre-bound to an UNBORN session (`pin --new`) has no
         # transcript yet. Honour it anyway by emitting `--session-id <pin>` so the
         # window that opens BECOMES that session — stays PURE (the uuid already
@@ -754,7 +734,7 @@ def resume_command(task, current_session=None):
         pm = meta.get(pin) or {}
         if pm.get("preborn"):
             cwd = pm.get("cwd") or os.getcwd()
-            return "%scd %s && claude --session-id %s" % (pfx, cwd, pin)
+            return "cd %s && claude --session-id %s" % (cwd, pin)
     hubs = [(sid, m) for sid, m in meta.items() if m.get("role") == "hub"]
     pool = hubs or list(meta.items())
     # For each of THIS task's sessions, find its transcript ANYWHERE and read the
@@ -785,14 +765,14 @@ def resume_command(task, current_session=None):
         cands = [x for x in live if x[3] >= SUBSTANCE_FLOOR] or live
         cands.sort(key=lambda x: x[2], reverse=True)   # newest transcript first
         sid, cwd, _, _ = cands[0]
-        return "%scd %s && claude --resume %s" % (pfx, cwd, sid)
+        return "cd %s && claude --resume %s" % (cwd, sid)
     # No findable live transcript for any recorded session → fresh start
     # (NEVER --continue, which in the shared home bucket could resume a different task).
     pool.sort(key=lambda kv: kv[1].get("ts", 0), reverse=True)
     for sid, m in pool:
         if m.get("cwd"):
-            return ("%scd %s && claude   # no live session found — starting fresh; "
-                    "re-attach with /todo %s" % (pfx, m["cwd"], task.get("seq", "")))
+            return ("cd %s && claude   # no live session found — starting fresh; "
+                    "re-attach with /todo %s" % (m["cwd"], task.get("seq", "")))
     return None
 
 
@@ -1303,10 +1283,6 @@ def _format_detail(task, session):
     out.append("This session is now ATTACHED to this task (id %s). Continue the work "
                "described above; the user's next message resumes it. To close it, use /done."
                % task["id"])
-    if cats:
-        cmd = cats.tint_command(task.get("color"))
-        if cmd:
-            out.append("Tint this terminal to match the category — run:  " + cmd)
     resume = resume_command(task, session)
     workers = worker_lines(task)
     if resume or workers:
@@ -1756,11 +1732,10 @@ def cmd_unpin(a):
 def cmd_prompt_color(a):
     """Print the category colour a skill-invocation prompt maps to (or nothing).
 
-    The UserPromptSubmit hook calls this FIRST and, if it prints a colour, runs
-    `zsh -ic '<colour>'` straight away — so a skill like /review
-    tints the terminal the instant it's run, before Claude responds. Silent
-    (prints nothing) when categories are off, the prompt isn't a skill, or the
-    skill has no mapping."""
+    The UserPromptSubmit hook calls this FIRST and, if it prints a colour, tints
+    the terminal straight away — so a skill like /review tints the terminal the
+    instant it's run, before Claude responds. Silent (prints nothing) when
+    categories are off, the prompt isn't a skill, or the skill has no mapping."""
     if not cats or not hasattr(cats, "color_for_prompt"):
         return
     prompt = a.prompt if getattr(a, "prompt", None) is not None else os.environ.get("TASK_STATION_PROMPT", "")
@@ -1770,9 +1745,9 @@ def cmd_prompt_color(a):
 
 
 def cmd_prompt_tint(a):
-    """Like prompt-color, but emit the actual tint for the current mode + terminal:
-    auto -> an OSC/iTerm background escape (zero-setup); profile -> `zsh -ic '<color>'`.
-    The UserPromptSubmit hook executes whatever this prints."""
+    """Like prompt-color, but emit the actual full-palette tint escape for the
+    detected terminal (zero-setup OSC; see categories.tint_escape). The
+    UserPromptSubmit hook writes whatever this prints to the originating TTY."""
     if os.environ.get("TASK_STATION_TINT") == "off":
         return
     if not cats or not hasattr(cats, "color_for_prompt") or not cats.TINT_TERMINAL:
@@ -1783,6 +1758,28 @@ def cmd_prompt_tint(a):
         return
     import config, term
     esc = cats.tint_escape(color, config.tint_mode(), term.detect())
+    if esc:
+        sys.stdout.write(esc)
+
+
+def cmd_session_tint(a):
+    """Emit the full-palette tint escape for the ATTACHED task's category, so the
+    terminal tints on attach/resume (not only on the first prompt). Mirrors
+    prompt-tint but resolves the colour from the session's task instead of the
+    prompt. Silent when tinting is off, the session is unattached/skipped, or the
+    task carries no colour; the SessionStart hook writes the bytes to the TTY."""
+    if os.environ.get("TASK_STATION_TINT") == "off":
+        return
+    if not cats or not getattr(cats, "TINT_TERMINAL", False):
+        return
+    task_id = get_link(a.session)
+    if not task_id or task_id == SKIP_SENTINEL:
+        return
+    task = load_task(task_id)
+    if not task or not task.get("color"):
+        return
+    import config, term
+    esc = cats.tint_escape(task.get("color"), config.tint_mode(), term.detect())
     if esc:
         sys.stdout.write(esc)
 
@@ -1911,7 +1908,7 @@ def cmd_prompt_context(a):
                        if hasattr(cats, "color_for_prompt") else None)
         if skill_color:
             lines.append("This prompt's skill maps to category '%s' (%s); terminal already tinted — "
-                         "use --color %s and DON'T re-run the tint alias."
+                         "use --color %s."
                          % (skill_color, cats.label(skill_color), skill_color))
         lines.append("  attach: python3 %s/task-station.py attach --session %s --task <task-id> [--color <color>]" % (BASE, a.session))
         lines.append("  create: python3 %s/task-station.py create --session %s --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'"
@@ -1919,10 +1916,9 @@ def cmd_prompt_context(a):
         legend = cats.compact_legend() if hasattr(cats, "compact_legend") else ""
         if legend:
             lines.append("Colors: " + legend)
-        tint = ("; RUN the `zsh -ic '<color>'` line the command prints"
-                if cats.TINT_TERMINAL and not skill_color else "")
-        lines.append("Tell the user in one short line (\"📋 Tracking: <title>\")%s. "
-                     "Full rules: python3 %s/task-station.py guidance" % (tint, BASE))
+        lines.append("Tell the user in one short line (\"📋 Tracking: <title>\"). "
+                     "The terminal tints to the category automatically. "
+                     "Full rules: python3 %s/task-station.py guidance" % BASE)
     else:
         lines.append("  attach: python3 %s/task-station.py attach --session %s --task <task-id>" % (BASE, a.session))
         lines.append("  create: python3 %s/task-station.py create --session %s --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'"
@@ -1957,8 +1953,8 @@ def cmd_guidance(a):
         lines.append("      python3 %s/task-station.py create --session <session-id> --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>' [--active]"
                      % BASE)
         if cats.TINT_TERMINAL:
-            lines.append("The command prints the category and a `zsh -ic '<color>'` line — RUN that "
-                         "alias to tint this terminal to the task's colour.")
+            lines.append("The terminal is tinted to the task's category automatically "
+                         "(full palette via terminal escapes) — nothing to run by hand.")
     else:
         lines.append("  • attach: python3 %s/task-station.py attach --session <session-id> --task <task-id>" % BASE)
         lines.append("  • create: python3 %s/task-station.py create --session <session-id> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'" % BASE)
@@ -2283,6 +2279,9 @@ def main():
     sp = sub.add_parser("prompt-tint"); sp.add_argument("--session", default=None)
     sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_tint)
 
+    sp = sub.add_parser("session-tint"); sp.add_argument("--session", required=True)
+    sp.set_defaults(fn=cmd_session_tint)
+
     sp = sub.add_parser("prompt-title"); sp.add_argument("--session", default=None)
     sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_title)
 
@@ -2334,7 +2333,6 @@ def main():
     sp.add_argument("--title", dest="title", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--title-get", dest="title_get", action="store_true")
     sp.add_argument("--policy", nargs="?", choices=["on", "off"], const="on", default=None)
-    sp.add_argument("--tint-profiles", dest="tint_profiles", action="store_true")
     sp.add_argument("--desktop-bridge", dest="desktop_bridge", nargs="?",
                     choices=["on", "off"], const="on", default=None,
                     help="wire the dependency-free MCP server into Claude Desktop (on) / remove it (off)")

@@ -49,6 +49,15 @@ if [ ! -e "$_seen" ] && [ -n "$CLAUDE_PLUGIN_ROOT" ]; then
 fi
 [ -n "$nudge" ] && ctx="${ctx}${ctx:+$'\n'}$nudge"
 
+# Tint the originating window to the attached task's category on attach/resume —
+# the full-palette escape, written to the real TTY (same rail as the title; not
+# stdout, which carries the SessionStart JSON). No-op when unattached or no tint.
+tint=$(python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" session-tint --session "$session_id" 2>/dev/null)
+if [ -n "$tint" ]; then
+  _dev=$(bash "${CLAUDE_PLUGIN_ROOT}/lib/origin-tty.sh" 2>/dev/null)
+  printf '%s' "$tint" > "${_dev:-/dev/tty}" 2>/dev/null
+fi
+
 # Auto-label the window for an attached task (task-station-<seq> · <title>) — the hub can't
 # be programmatically renamed, but its title CAN be set via the SessionStart hook.
 title=$(python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" session-title --session "$session_id")

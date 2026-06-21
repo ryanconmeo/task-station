@@ -3,9 +3,23 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
-## [1.6.5] — 2026-06-21
+## [1.7.0] — 2026-06-21
 
-### Changed
+### Added
+- **Full-palette escape tint — every category now tints the WHOLE terminal, not
+  just the background.** Each of the 12 category slots bakes in a complete
+  **Sands** palette (background, foreground, bold, cursor, selection, and all 16
+  ANSI colors), shipped as the new defaults. `categories.tint_escape` emits it as
+  standard OSC escapes — background (OSC 11), foreground (OSC 10), cursor
+  (OSC 12), the 16 ANSI colors (OSC 4), selection (OSC 17) — plus one iTerm-only
+  extra for the bold colour (`1337;SetColors=bold`). iTerm2 and Terminal.app both
+  honor it; still zero-setup, no profiles or shell aliases. A category that
+  defines only a background still emits just that (back-compat for minimal
+  taxonomies), and a user override that sets only `{tag,label}` inherits the full
+  palette from its slot.
+- **Tint on attach/resume, not just first prompt.** The SessionStart hook now
+  emits the tint escape for the attached task's category (new `session-tint`
+  command), so a resumed/attached window tints immediately.
 - **Width-aware, wrap-safe `task-station config` board (release prep).** The
   no-arg board is now a single unified view: short-valued settings render as a
   4-column aligned grid (SETTING / VALUE / OPTIONS / WHAT IT DOES) whose first
@@ -15,16 +29,26 @@ All notable changes to Task Station are documented here. This project adheres to
   settings (`--workspace-dirs`, `--data-dir`) print as their own full-width
   two-line blocks below the grid, and the store path drops to its own line when
   it would overflow. Alignment holds at COLUMNS=60/80/120.
-- **One board, no duplication.** The separate `setup.status()` block printed
-  after the board for the no-arg case is gone; its facts (tint mode + terminal,
-  tint-profiles, policy, desktop-bridge) are folded into a compact `status`
-  section at the bottom of the same board, keeping the actionable hints
-  (`--policy on`, `--tint-profiles`, …). `setup.status()` itself is unchanged and
-  still used by the install flow.
-
-### Added
 - **`term.width()`** — terminal columns via `shutil.get_terminal_size()` (honors
   `$COLUMNS`, falls back to 80, clamped to a minimum of 60). Pure stdlib.
+
+### Changed
+- **One config board, no duplication.** The separate `setup.status()` block
+  printed after the no-arg board is gone; its facts (tint + terminal, policy,
+  desktop-bridge) are folded into a compact `status` section at the bottom of the
+  same board, keeping the actionable hints (`--policy on`, …). The tint line now
+  reads `escape (full palette) · terminal <iterm|terminal|none>`. `setup.status()`
+  itself is unchanged and still used by the install flow.
+
+### Removed (breaking)
+- **Profile-switching tint mode is gone.** `task-station config --tint-profiles`,
+  the `tint_mode == "profile"` path, `setup.install_tint_profiles()`,
+  `categories.tint_command()`, the bundled `lib/install-tint-profiles.sh`, and the
+  `zsh -ic '<color>'` alias hints (resume-command prefix, task-detail line,
+  prompt-context/guidance) are all removed. Tinting is now always the direct
+  full-palette escape. No `~/.zshrc` aliases or Terminal.app profiles are written
+  or referenced anymore. If you previously ran `--tint-profiles`, the generated
+  aliases are now inert and can be deleted by hand.
 
 ## [1.6.4] — 2026-06-20
 

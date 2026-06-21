@@ -17,10 +17,10 @@ class Config(unittest.TestCase):
         os.environ.pop("TASK_STATION_HOME", None); shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_set_get_roundtrip(self):
-        config.set("tint_mode", "profile")
-        self.assertEqual(config.get("tint_mode"), "profile")
+        config.set("tint_theme", "dark")
+        self.assertEqual(config.get("tint_theme"), "dark")
         with open(os.path.join(self.tmp, "config.json")) as f:
-            self.assertEqual(json.load(f)["tint_mode"], "profile")
+            self.assertEqual(json.load(f)["tint_theme"], "dark")
 
     def test_get_default_when_absent(self):
         self.assertEqual(config.get("tint_mode", "auto"), "auto")
@@ -31,8 +31,8 @@ class Config(unittest.TestCase):
                          [os.path.expanduser("~/a"), os.path.expanduser("~/b")])
 
     def test_unset_restores_default(self):
-        config.set("tint_mode", "profile"); config.unset("tint_mode")
-        self.assertEqual(config.get("tint_mode", "auto"), "auto")
+        config.set("tint_theme", "dark"); config.unset("tint_theme")
+        self.assertEqual(config.get("tint_theme", "auto"), "auto")
 
     def test_title_enabled_default_on(self):
         os.environ.pop("TASK_STATION_TITLE", None)
@@ -132,7 +132,9 @@ class Board(unittest.TestCase):
         self.assertIn("tint", board)
         # actionable hints survive the fold-in.
         self.assertIn("--policy on", board)
-        self.assertIn("--tint-profiles", board)
+        # tint now describes the full-palette escape; no profile mechanism remains.
+        self.assertIn("escape (full palette)", board)
+        self.assertNotIn("tint-profiles", board)
 
     def test_columns_align_across_widths(self):
         # The WHAT IT DOES column starts at the same offset for the header and

@@ -9,13 +9,13 @@ disable-model-invocation: true
 
 The block above is the live output of the task tracker.
 
-Each task is colour-coded by category (an `<emoji> [TAG]` after the title — the emoji dot carries the colour, the tag names it). The categories map to zsh aliases that tint the Terminal.app profile — see `$CLAUDE_PLUGIN_ROOT/CATEGORIES.md` for the full taxonomy; customize colours without touching that file via `task-station-data/categories.json`.
+Each task is colour-coded by category (an `<emoji> [TAG]` after the title — the emoji dot carries the colour, the tag names it). Each category ships a full **Sands** palette that the hooks apply to your terminal automatically via standard escape sequences (zero-setup; iTerm2 and Terminal.app both honored) — see `$CLAUDE_PLUGIN_ROOT/CATEGORIES.md` for the full taxonomy; customize colours without touching that file via `task-station-data/categories.json`.
 
 A task's lifecycle is **one field, `status`, with three values: open (`◦`) → active (`●`) → closed**. Each not-closed row carries a leading **glyph** before the number — `◦` **open** (a topic merely raised) or `●` **active** (work has actually started); closed tasks live in their own section with no glyph. A task auto-promotes `◦ open → ● active` when you delegate `--worktree` for it, edit a file in an attached session, or set it manually with `status --task <ref> active`. New tasks start `◦ open` (or `● active` via `create --active`); `/done` closes them, and reopening a closed task returns it to `◦ open`.
 
 - If it is a **list**, the tracker has already rendered it as GitHub-flavored Markdown — two tables (Open then Closed), the `#`/`Task`/`Category`/`Effort`/`Activity` columns, any "… older closed …" note, and a `**Commands:**` bullet list. **Print that block verbatim** to the user — do not re-transcribe it, rebuild the tables, renumber rows, or reword the commands. Do not take any other action.
 - If it is a **task detail**, this session has just been attached to that task (reopened if it was closed). Do all of the following, in order:
-  1. The detail prints the task's category and a `zsh -ic '<color>'` line — **run that command** to tint this terminal to the task's colour.
+  1. The terminal is tinted to the task's category automatically (full Sands palette via the hooks) — nothing to run by hand.
   2. Give the user a **detailed recap** — not a one-liner. Draw on the full summary and the recent-activity log:
      - State the overall **goal** in a sentence.
      - Break the summary's specific sub-items / acceptance criteria into a **bullet list** so nothing is buried.
