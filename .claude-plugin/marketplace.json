@@ -6,8 +6,9 @@
     {
       "name": "task-station",
       "source": "./",
-      "description": "A persistent task hub for Claude Code — every task is a resumable, re-pinnable session, auto-categorised and colour-tinted, with in-project worker delegation.",
-      "version": "1.6.0",
+      "category": "productivity",
+      "description": "An automatic, persistent task hub for Claude Code: every task is a resumable, re-pinnable Claude session — auto-categorised, colour-tinted, with parallel in-project worker delegation. The human-facing console alongside Claude's native Tasks.",
+      "version": "1.7.0",
       "license": "MIT"
     }
   ]
