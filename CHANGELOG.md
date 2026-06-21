@@ -3,6 +3,29 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.6.5] — 2026-06-21
+
+### Changed
+- **Width-aware, wrap-safe `task-station config` board (release prep).** The
+  no-arg board is now a single unified view: short-valued settings render as a
+  4-column aligned grid (SETTING / VALUE / OPTIONS / WHAT IT DOES) whose first
+  three columns are sized to their widest cell per render, while the description
+  column takes the remaining terminal width and wraps with a hanging indent under
+  WHAT IT DOES — so long descriptions never break the grid. Long PATH-valued
+  settings (`--workspace-dirs`, `--data-dir`) print as their own full-width
+  two-line blocks below the grid, and the store path drops to its own line when
+  it would overflow. Alignment holds at COLUMNS=60/80/120.
+- **One board, no duplication.** The separate `setup.status()` block printed
+  after the board for the no-arg case is gone; its facts (tint mode + terminal,
+  tint-profiles, policy, desktop-bridge) are folded into a compact `status`
+  section at the bottom of the same board, keeping the actionable hints
+  (`--policy on`, `--tint-profiles`, …). `setup.status()` itself is unchanged and
+  still used by the install flow.
+
+### Added
+- **`term.width()`** — terminal columns via `shutil.get_terminal_size()` (honors
+  `$COLUMNS`, falls back to 80, clamped to a minimum of 60). Pure stdlib.
+
 ## [1.6.4] — 2026-06-20
 
 ### Changed

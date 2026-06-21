@@ -151,33 +151,102 @@ def _desktop_bridge_summary():
         return "off"
 
 def render_board():
+    """The unified, width-aware `task-station config` board (no-arg view).
+
+    Short-valued settings render as a 4-column aligned grid (SETTING / VALUE /
+    OPTIONS / WHAT IT DOES); the first three columns are sized to their widest cell
+    per render, and the description column takes the remaining terminal width,
+    wrapping with a hanging indent under WHAT IT DOES so long text never breaks the
+    grid. Long PATH-valued settings print as their own full-width two-line blocks
+    below the grid. The status facts that used to live in a separate
+    setup.status() block are folded into a compact `status` section at the bottom —
+    one board, nothing duplicated."""
+    import textwrap
     import term
-    ws = ":".join(get("workspace_dirs") or []) or "(unset — use --repo)"
+    width = term.width()
+    indent = "  "
+    gutter = "  "
+
     cats = get("categories"); n_cat = len(cats) if isinstance(cats, dict) else 0
-    lines = [
-        "task-station config       store: %s" % _path(),
-        "                          set: task-station config --<flag> <value>   ·   reset: <flag> default",
-        "",
-        "  --workspace-dirs  %-34s repo roots for delegate --project" % ws,
-        "  --categories      %-34s enabled set + presets/toggles  (--categories edit · preset <name> · --enable/--disable <key>)"
-        % _enabled_summary(),
-        "  category overrides %-33s custom tags/labels + skill auto-tint  (--categories edit)"
-        % ("%d override(s)" % n_cat if n_cat else "defaults"),
-        "  --bare-cmds        %-33s install bare /todo + /done (else /task-station:todo)  on · off"
-        % ("on" if bare_commands() else "off"),
-        "  --update-check     %-33s opt-in /todo footer when a newer version ships  on · off"
-        % ("on" if update_check_enabled() else "off"),
-        "  --tint-theme      %-34s tint palette; auto follows OS appearance  auto · dark · light"
-        % tint_theme(),
-        "  --title           %-34s auto terminal title '#<seq>: <title>' on attach  on · off"
-        % ("on" if title_enabled() else "off"),
-        "  --desktop-bridge  %-34s wire the dependency-free MCP server into Claude Desktop  on · off"
-        % _desktop_bridge_summary(),
-        "",
-        "  read-only",
-        "  --data-dir        %-34s (set via $TASK_STATION_HOME)" % paths.data_dir(),
-        "  tint mode: %s · terminal: %s" % (tint_mode(), term.detect()),
+    lines = []
+
+    # --- top header: store path (+ set/reset hint); store breaks to its own line
+    #     rather than overflow the terminal width.
+    store_line = "task-station config       store: %s" % _path()
+    if len(store_line) <= width:
+        lines.append(store_line)
+    else:
+        lines.append("task-station config")
+        lines.append(indent + "store: %s" % _path())
+    lines.append(indent + "set: task-station config --<flag> <value>   ·   reset: <flag> default")
+    lines.append("")
+
+    # --- toggle grid (short values only) ----------------------------------------
+    header = ("SETTING", "VALUE", "OPTIONS", "WHAT IT DOES")
+    rows = [
+        ("--categories", _enabled_summary(), "edit·preset·toggle",
+         "enabled set + presets/toggles"),
+        ("category overrides", "%d override(s)" % n_cat if n_cat else "defaults", "edit",
+         "custom tags/labels + skill auto-tint"),
+        ("--bare-cmds", "on" if bare_commands() else "off", "on · off",
+         "install bare /todo + /done (else /task-station:todo)"),
+        ("--update-check", "on" if update_check_enabled() else "off", "on · off",
+         "opt-in /todo footer when a newer version ships"),
+        ("--tint-theme", tint_theme(), "auto · dark · light",
+         "tint palette; auto follows OS appearance"),
+        ("--title", "on" if title_enabled() else "off", "on · off",
+         "auto terminal title '#<seq>: <title>' on attach"),
+        ("--desktop-bridge", _desktop_bridge_summary(), "on · off",
+         "wire the dependency-free MCP server into Claude Desktop"),
     ]
+    w_set = max(len(header[0]), *(len(r[0]) for r in rows))
+    w_val = max(len(header[1]), *(len(r[1]) for r in rows))
+    w_opt = max(len(header[2]), *(len(r[2]) for r in rows))
+    fixed = len(indent) + w_set + len(gutter) + w_val + len(gutter) + w_opt + len(gutter)
+    w_desc = max(24, width - fixed)
+
+    def _grid_row(setting, value, options, desc):
+        prefix = (indent + setting.ljust(w_set) + gutter
+                  + value.ljust(w_val) + gutter + options.ljust(w_opt) + gutter)
+        wrapped = textwrap.wrap(desc, w_desc) or [""]
+        out = [prefix + wrapped[0]]
+        hang = " " * len(prefix)         # aligns continuations under WHAT IT DOES
+        out += [hang + cont for cont in wrapped[1:]]
+        return out
+
+    lines += _grid_row(*header)
+    for r in rows:
+        lines += _grid_row(*r)
+
+    # --- long PATH-valued settings: own full-width two-line blocks (never gridded)
+    ws = ":".join(get("workspace_dirs") or []) or "(unset — use --repo)"
+    lines.append("")
+    lines.append(indent + "--workspace-dirs  (repo roots for delegate --project)")
+    lines.append(indent + "    " + ws)
+    lines.append(indent + "--data-dir        (read-only · $TASK_STATION_HOME)")
+    lines.append(indent + "    " + paths.data_dir())
+
+    # --- status: facts folded in from setup.status() (reusing its helpers) -------
+    import setup
+    t = term.detect()
+    has_policy = ("policy" in setup._manifest())
+    installed, _server = setup.desktop_bridge_status()
+    st = [
+        ("tint", "mode %s · terminal %s%s" % (
+            tint_mode(), t, "" if t != "none" else "  (no supported terminal → no-op)")),
+        ("tint-profiles", "installed (profile mode)" if tint_mode() == "profile"
+         else "off — richer tint: --tint-profiles"),
+        ("policy", "installed in CLAUDE.md — remove: --policy off" if has_policy
+         else "off — install: --policy on"),
+        ("desktop-bridge", "installed — remove: --desktop-bridge off" if installed
+         else "off — install: --desktop-bridge on"),
+    ]
+    w_label = max(len(s[0]) for s in st)
+    lines.append("")
+    lines.append(indent + "status")
+    for label, val in st:
+        lines.append(indent + "  " + label.ljust(w_label) + "  " + val)
+
     return "\n".join(lines)
 
 def _categories_status(cats):
@@ -291,7 +360,7 @@ def cmd_config(a):
     if getattr(a, "desktop_bridge", None) is not None:
         print(setup.install_desktop_bridge() if a.desktop_bridge == "on"
               else setup.remove_desktop_bridge()); return
-    # No flags: the unified settings + doctor/status view.
+    # No flags: the single unified settings + status board. The status facts are
+    # folded into render_board() now, so we no longer print setup.status() here
+    # (setup.status() is unchanged and still used by the install flow).
     print(render_board())
-    print("")
-    print(setup.status())
