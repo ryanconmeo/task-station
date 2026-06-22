@@ -1,6 +1,7 @@
-"""render --format md emits two GitHub tables (Open then Closed) with the exact
-columns, stable seq numbers, closed-limit handling + hidden-older note, and the
-Commands footer as a Markdown bullet list — printed verbatim by the skill."""
+"""render --format md emits two GitHub tables (Open then Closed) with a leading
+centered STATUS column, the bare seq in the `#` cell, closed-limit handling +
+hidden-older note, and the Commands footer as a fenced aligned help block —
+printed verbatim by the skill."""
 import importlib.util
 import io
 import os
@@ -36,13 +37,16 @@ class RenderMarkdownTest(unittest.TestCase):
         os.environ.pop("TASK_STATION_HOME", None)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _seed(self, title, effort=None, color=None, closed=False):
+    def _seed(self, title, effort=None, color=None, closed=False, status=None):
         t = ts.new_task(title, "summary for " + title, color=color, effort=effort)
         ts.save_task(t)
         ts.ensure_seqs()
         t = ts.load_task(t["id"])
         if closed:
             t["status"] = "closed"
+            ts.save_task(t)
+        elif status:
+            t["status"] = status
             ts.save_task(t)
         return ts.load_task(t["id"])
 
@@ -53,29 +57,42 @@ class RenderMarkdownTest(unittest.TestCase):
 
     def test_two_tables_columns_and_seq(self):
         a = self._seed("Open one", effort="m")
+        act = self._seed("Active one", effort="s", status="active")
         b = self._seed("Closed one", effort="xl", closed=True)
         out = ts._format_list_md()
         # Section headers, Open before Closed.
         self.assertIn("### Open", out)
         self.assertIn("### Closed", out)
         self.assertLess(out.index("### Open"), out.index("### Closed"))
-        # Exact header row + right-aligned separator.
-        self.assertIn("| # | Task | Category | Effort | Activity |", out)
-        self.assertIn("|--:|", out)
-        # Stable seq numbers appear verbatim in their rows; the open row carries
-        # the leading open glyph (◦) in its `#` cell, the closed row mutes it.
-        self.assertIn("| ◦ %d | Open one" % a["seq"], out)
-        self.assertIn("| %d | Closed one" % b["seq"], out)
+        # Exact header row (blank leading STATUS column) + centered/right separator.
+        self.assertIn("|  | # | Task | Category | Effort | Activity |", out)
+        self.assertIn("|:-:|--:|------|----------|--------|----------|", out)
+        # STATUS is its own leading column: ● active · ○ open · ✕ closed.
+        # The `#` cell now holds the bare seq number only.
+        self.assertIn("| ○ | %d | Open one" % a["seq"], out)
+        self.assertIn("| ● | %d | Active one" % act["seq"], out)
+        self.assertIn("| ✕ | %d | Closed one" % b["seq"], out)
+        # The glyph no longer rides inside the `#` cell.
+        self.assertNotIn("| ○ %d |" % a["seq"], out)
         # Effort gauge rendered in the cell.
         self.assertIn("▰", out)
 
-    def test_commands_footer_as_bullets(self):
+    def test_legend_line(self):
         self._seed("Some task")
         out = ts._format_list_md()
-        self.assertIn("**Commands:**", out)
-        # Footer rendered as bullets, not the dense `·`-separated ASCII line.
-        self.assertIn("\n- /todo", out)
-        self.assertNotIn("Commands:  /todo", out)
+        self.assertIn("_● active · ○ open · ✕ closed_", out)
+
+    def test_commands_footer_as_fenced_help_block(self):
+        self._seed("Some task")
+        out = ts._format_list_md()
+        # Footer is an aligned help block under **Commands**, fenced for monospace.
+        self.assertIn("**Commands**", out)
+        self.assertIn("```\n/todo                   show the board", out)
+        self.assertIn("/task-station:config    open settings", out)
+        self.assertIn("<n> a task number  ·  <n1, n2, …> one or more  ·  [N] optional count", out)
+        # Not the old mini-table or bullets.
+        self.assertNotIn("| Command | Action |", out)
+        self.assertNotIn("\n- /todo", out)
 
     def test_closed_limit_and_hidden_note(self):
         # 7 closed tasks, default cap is MAX_CLOSED_IN_LIST.
@@ -95,7 +112,7 @@ class RenderMarkdownTest(unittest.TestCase):
             ts.cmd_render(_Args(session="sess", arg="", format="md"))
         out = buf.getvalue()
         self.assertIn("### Open", out)
-        self.assertIn("| # | Task | Category | Effort | Activity |", out)
+        self.assertIn("|  | # | Task | Category | Effort | Activity |", out)
 
     def test_pipe_in_title_escaped(self):
         self._seed("Title with | pipe")

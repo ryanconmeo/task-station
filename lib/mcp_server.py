@@ -92,7 +92,7 @@ def _list_tasks(status="all-open"):
 
 
 def _create_task(title, summary="", category=None, effort=None, source=None):
-    """Create an OPEN (◦) task in the shared store and return the stored dict.
+    """Create an OPEN (○) task in the shared store and return the stored dict.
 
     `category`/`effort` honor the same taxonomy/sizes as the CLI (unknown values
     are dropped by the engine, never guessed). `source` records the originating
@@ -108,6 +108,10 @@ def _create_task(title, summary="", category=None, effort=None, source=None):
         task["source"] = str(source)
     ts.touch(task, note="created (Desktop bridge)")
     ts.save_task(task)
+    # Grow the board if this lands on a not-yet-enabled slot (auto_categories on).
+    # Persist silently — this channel is JSON-RPC, so no stdout notice here.
+    if task.get("color") and ts.cats and hasattr(ts.cats, "auto_enable"):
+        ts.cats.auto_enable(task.get("color"))
     return ts.load_task(task["id"])
 
 
@@ -294,7 +298,7 @@ TOOLS = [
     },
     {
         "name": "create_task",
-        "description": ("Create / track a new open(◦) task. `category` = a "
+        "description": ("Create / track a new open(○) task. `category` = a "
                         "category key/emoji/[TAG]; `effort` = xs/s/m/l/xl; "
                         "`source` = the originating Desktop conversation ref/URL "
                         "(stored on the task, surfaced in get_task)."),

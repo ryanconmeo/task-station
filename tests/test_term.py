@@ -26,4 +26,20 @@ class Detect(unittest.TestCase):
         os.environ["TERM_PROGRAM"]="vscode"
         self.assertEqual(term.detect(), "none")
 
+class Width(unittest.TestCase):
+    def setUp(self):
+        self._cols = os.environ.get("COLUMNS")
+    def tearDown(self):
+        if self._cols is None: os.environ.pop("COLUMNS", None)
+        else: os.environ["COLUMNS"] = self._cols
+    def test_honors_columns_env(self):
+        os.environ["COLUMNS"] = "123"
+        self.assertEqual(term.width(), 123)
+    def test_clamps_to_minimum_60(self):
+        os.environ["COLUMNS"] = "40"
+        self.assertEqual(term.width(), 60)
+    def test_wide_columns_passthrough(self):
+        os.environ["COLUMNS"] = "200"
+        self.assertEqual(term.width(), 200)
+
 if __name__=="__main__": unittest.main()

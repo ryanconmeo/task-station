@@ -51,7 +51,7 @@ MAX_CLOSED_IN_LIST = 5  # closed tasks shown in the /todo list (most recent firs
 SUBSTANCE_FLOOR = 3     # min user messages for a session to count as "real working" work
 
 # Task lifecycle is ONE field — `status` — with three values:
-#   open (◦)  →  active (●)  →  closed
+#   open (○)  →  active (●)  →  closed
 # A topic merely *raised* starts `open` and shows on the board immediately; it
 # graduates to `active` when work actually starts (delegate --worktree, a file
 # edit in an attached session, the manual `status` command, or `create --active`);
@@ -64,7 +64,11 @@ STATUS_CLOSED = "closed"
 STATUS_DEFAULT = STATUS_OPEN
 STATUS_BOARD = (STATUS_OPEN, STATUS_ACTIVE)   # "not closed" — on the board
 STATUS_SETTABLE = (STATUS_OPEN, STATUS_ACTIVE)  # the manual `status` command's range
-STATUS_GLYPH = {STATUS_OPEN: "◦", STATUS_ACTIVE: "●"}
+STATUS_GLYPH = {STATUS_OPEN: "○", STATUS_ACTIVE: "●"}
+# Closed marker for the Markdown board's status column (✕ U+2715). The ASCII list
+# still mutes closed to a blank placeholder via status_glyph(); this is the
+# Markdown-table mapping only: ● active · ○ open · ✕ closed.
+STATUS_GLYPH_CLOSED = "✕"
 
 # Categories / colours are an OPTIONAL plugin: all of that logic lives in
 # categories.py. If it's absent (or fails to import), `cats` is None and the
@@ -104,7 +108,7 @@ def is_on_board(task):
 
 
 def status_glyph(task, muted_closed=True):
-    """Leading lifecycle glyph for a row: `◦` open / `●` active. Single-width,
+    """Leading lifecycle glyph for a row: `○` open / `●` active. Single-width,
     ASCII-safe. Closed tasks mute to a blank placeholder (single space) so the
     column still aligns — closed tasks live in their own section."""
     if muted_closed and is_closed(task):
@@ -166,14 +170,22 @@ def task_oneline(task):
 
 
 def cat_lines(color):
-    """Category summary + (optional) tint-command lines, or [] when off."""
+    """Category summary line(s), or [] when categories are off. The terminal is
+    tinted automatically by the hooks (tint_escape) — nothing to run by hand."""
     if not cats:
         return []
-    out = [cats.summary(color)]
-    cmd = cats.tint_command(color)
-    if cmd:
-        out.append("Tint this terminal to match — run:  " + cmd)
-    return out
+    return [cats.summary(color)]
+
+
+def auto_enable_category(color):
+    """If `color` is a real category not yet on the board and auto_categories is on,
+    enable it and print a one-line notice (so the board grows as tasks are
+    categorised). No-op when categories are off / the helper is unavailable."""
+    if not cats or not color or not hasattr(cats, "auto_enable"):
+        return
+    msg = cats.auto_enable(color)
+    if msg:
+        print(msg)
 
 
 # ----------------------------------------------------------------- effort ----
@@ -226,24 +238,43 @@ def effort_legend():
     return "Effort:  " + "  ".join("%s %s" % (EFFORT_GAUGE[s], s) for s in EFFORT_ORDER)
 
 
+# Authoritative command help — git/fd/gh style aligned block. ONE source of truth
+# for both surfaces: the ASCII list footer (commands_footer) and the Markdown
+# board footer (commands_footer_md, which fences it so it stays monospace). The
+# description column is auto-aligned to the widest command + a 4-space gutter.
+_COMMANDS_HELP = [
+    ("/todo",                "show the board"),
+    ("/todo <n>",            "open & resume a task"),
+    ("/todo <n1, n2, …> -s", "jump into task session(s), in a new window"),
+    ("/todo closed [N]",     "list recent closed (default 20)"),
+    ("/todo all",            "show every task (all open + closed)"),
+    ("/done",                "close the current task"),
+    ("/done <n1, n2, …>",    "close tasks by number"),
+    ("/task-station:config", "open settings"),
+]
+_COMMANDS_LEGEND = "<n> a task number  ·  <n1, n2, …> one or more  ·  [N] optional count"
+
+
+def _commands_help():
+    """The aligned command/description lines + the notation legend (no code fence).
+    Column auto-sized to the widest command so the descriptions line up."""
+    w = max(len(cmd) for cmd, _ in _COMMANDS_HELP) + 4
+    lines = ["%s%s" % (cmd.ljust(w), desc) for cmd, desc in _COMMANDS_HELP]
+    return "\n".join(lines) + "\n\n" + _COMMANDS_LEGEND
+
+
 def commands_footer():
-    """The authoritative one-line `/todo` command list — the single source of
-    truth that commands/todo.md relays. Dense `·`-separated style matching the
-    Effort:/Legend: lines; lists every command with a short label."""
-    return ("Commands:  /todo <n> (open & resume)  ·  /todo <n[,n…]> -s (jump to pinned "
-            "session, new window — comma list jumps several)  ·  /todo closed [N] · /todo all "
-            "(more closed)  ·  /done (close current)  ·  /done <n[,n…]> (close by number; "
-            "comma list closes several)  ·  /task-station:config (settings)")
+    """The authoritative `/todo` command help as an aligned block (ASCII list
+    footer). Same content as commands_footer_md(), minus the Markdown code fence."""
+    return _commands_help()
 
 
 def commands_footer_md():
-    """The authoritative command list as a Markdown bullet list, derived from the
-    same single source of truth as the ASCII `commands_footer()` — split its
-    `·`-separated body into one bullet per command so the Markdown `/todo` output
-    can emit it verbatim."""
-    _, _, body = commands_footer().partition(":")
-    items = [c.strip() for c in body.split("·") if c.strip()]
-    return "\n".join(["**Commands:**"] + ["- " + c for c in items])
+    """The same aligned command help, under a **Commands** heading and wrapped in a
+    fenced code block so it renders verbatim/monospace in the Markdown `/todo`
+    board and the README. Decoupled from the ASCII one-liner — built from the
+    shared _COMMANDS_HELP source, not by splitting commands_footer()."""
+    return "**Commands**\n\n```\n" + _commands_help() + "\n```"
 
 
 # ---------------------------------------------------------------- storage ----
@@ -655,14 +686,6 @@ def worker_lines(task):
     return out
 
 
-def _tint_prefix(task):
-    """The `<color> 2>/dev/null; ` shell prefix that re-tints the terminal to the
-    task's category before launching claude (empty when tinting is off). Joined
-    with `;` not `&&` so a missing colour alias never blocks the resume."""
-    tint = (cats.tint_command(task.get("color")) if cats else None)
-    return ("%s 2>/dev/null; " % cats.normalize(task.get("color"))) if tint else ""
-
-
 def _is_resumable(cmd):
     """True when `cmd` already targets a CONCRETE session — a live `--resume` or a
     pre-bound `--session-id`. The jump path uses this to decide whether to use the
@@ -703,7 +726,7 @@ def fresh_resume_command(task, preborn=False):
         task["sessions"].append(new_sid)
     save_task(task)
     set_link(new_sid, task["id"])
-    return new_sid, "%scd %s && claude --session-id %s" % (_tint_prefix(task), cwd, new_sid)
+    return new_sid, "cd %s && claude --session-id %s" % (cwd, new_sid)
 
 
 def resume_command(task, current_session=None):
@@ -725,18 +748,9 @@ def resume_command(task, current_session=None):
     meta = task.get("session_meta") or {}
     if not meta:
         return None
-    # Prepend the category's tint alias so resuming in a fresh interactive zsh
-    # re-tints the terminal to the task's colour before launching claude. The bare
-    # alias (e.g. `green`) is expanded by the user's interactive shell; we gate on
-    # tint_command() so the prefix vanishes when TINT_TERMINAL is off. The earlier
-    # `return None` (no sessions) needs no tint — there's nothing to resume.
-    #
-    # SAFE WITHOUT THE ALIASES: we join with `; 2>/dev/null`, NOT `&&`. If the user
-    # hasn't installed the `~/.zshrc` colour aliases, `green` is an unknown command —
-    # but `2>/dev/null` swallows the "command not found" and `;` lets the resume run
-    # regardless. So the line tints when aliases exist and is a silent no-op when they
-    # don't; the cd + claude --resume always executes either way.
-    pfx = _tint_prefix(task)
+    # The resumed window tints itself on attach via the SessionStart hook
+    # (cmd_session_tint → tint_escape), so the resume command stays a clean
+    # `cd … && claude …` with no tint prefix.
     # An explicit pin wins (PK-style): always resume that exact session, with the cwd
     # self-corrected from its transcript. Falls through to the heuristic only if the
     # pinned session has no findable live transcript (so a stale pin can't strand you).
@@ -746,7 +760,7 @@ def resume_command(task, current_session=None):
         if path and _session_msgcount(path) >= 1:
             cwd = _session_cwd(path) or (meta.get(pin) or {}).get("cwd")
             if cwd:
-                return "%scd %s && claude --resume %s" % (pfx, cwd, pin)
+                return "cd %s && claude --resume %s" % (cwd, pin)
         # A pin deliberately pre-bound to an UNBORN session (`pin --new`) has no
         # transcript yet. Honour it anyway by emitting `--session-id <pin>` so the
         # window that opens BECOMES that session — stays PURE (the uuid already
@@ -754,7 +768,7 @@ def resume_command(task, current_session=None):
         pm = meta.get(pin) or {}
         if pm.get("preborn"):
             cwd = pm.get("cwd") or os.getcwd()
-            return "%scd %s && claude --session-id %s" % (pfx, cwd, pin)
+            return "cd %s && claude --session-id %s" % (cwd, pin)
     hubs = [(sid, m) for sid, m in meta.items() if m.get("role") == "hub"]
     pool = hubs or list(meta.items())
     # For each of THIS task's sessions, find its transcript ANYWHERE and read the
@@ -785,14 +799,14 @@ def resume_command(task, current_session=None):
         cands = [x for x in live if x[3] >= SUBSTANCE_FLOOR] or live
         cands.sort(key=lambda x: x[2], reverse=True)   # newest transcript first
         sid, cwd, _, _ = cands[0]
-        return "%scd %s && claude --resume %s" % (pfx, cwd, sid)
+        return "cd %s && claude --resume %s" % (cwd, sid)
     # No findable live transcript for any recorded session → fresh start
     # (NEVER --continue, which in the shared home bucket could resume a different task).
     pool.sort(key=lambda kv: kv[1].get("ts", 0), reverse=True)
     for sid, m in pool:
         if m.get("cwd"):
-            return ("%scd %s && claude   # no live session found — starting fresh; "
-                    "re-attach with /todo %s" % (pfx, m["cwd"], task.get("seq", "")))
+            return ("cd %s && claude   # no live session found — starting fresh; "
+                    "re-attach with /todo %s" % (m["cwd"], task.get("seq", "")))
     return None
 
 
@@ -884,6 +898,7 @@ def cmd_create(a):
                   "session." % (task["id"][:8], task["title"], task["seq"]))
         for line in cat_lines(task.get("color")):
             print(line)
+        auto_enable_category(task.get("color"))
         return
 
     touch(task, session=session, note="created")
@@ -893,6 +908,7 @@ def cmd_create(a):
     print("Created and attached to task [%s] %s" % (task["id"][:8], task["title"]))
     for line in cat_lines(task.get("color")):
         print(line)
+    auto_enable_category(task.get("color"))
 
 
 def cmd_attach(a):
@@ -912,7 +928,7 @@ def cmd_attach(a):
             task["color"] = cats.normalize(requested)
         elif requested:
             print("⚠ Ignoring --color '%s': not a known category. Use a key, "
-                  "emoji, or [TAG] — e.g. brown, 🟤, or DATABASE. (Keeping %s.)"
+                  "emoji, or [TAG] — e.g. brown, 🟤, or DATA. (Keeping %s.)"
                   % (requested, task.get("color") or cats.DEFAULT))
             if not task.get("color"):
                 task["color"] = cats.DEFAULT
@@ -932,6 +948,7 @@ def cmd_attach(a):
              " (note appended)" if note and note.strip() else ""))
     for line in cat_lines(task.get("color")):
         print(line)
+    auto_enable_category(task.get("color"))
 
 
 def cmd_bump(a):
@@ -962,7 +979,7 @@ def cmd_detach(a):
     session's currently-linked task is used. Idempotent — a missing reference just
     reports "nothing to detach"."""
     session = a.session
-    task = resolve_ref(a.task) or load_task(a.task) if getattr(a, "task", None) else None
+    task = (resolve_ref(a.task) or load_task(a.task)) if getattr(a, "task", None) else None
     if not task:
         link = get_link(session)
         if link and link != SKIP_SENTINEL:
@@ -1212,14 +1229,16 @@ def _md_effort(effort):
 
 
 def _md_task_row(task):
-    """One GitHub-table row: `| # | Task | Category | Effort | Activity |`.
-    The `#` cell is prefixed with the leading lifecycle glyph (`◦ 312` / `● 285`;
-    muted to bare seq on closed tasks). The Task cell carries the ` ⧉N`
-    live-session marker (when >1), mirroring the ASCII list; the Category cell
-    keeps the `<emoji> [TAG]` intact."""
-    seq_cell = ("%s %s" % (status_glyph(task), task.get("seq", ""))).strip()
-    return "| %s | %s | %s | %s | %s |" % (
-        seq_cell,
+    """One GitHub-table row: `|  | # | Task | Category | Effort | Activity |`.
+    The leading STATUS column holds the lifecycle glyph (`●` active / `○` open /
+    `✕` closed); the `#` cell holds the bare seq number only. The Task cell carries
+    the ` ⧉N` live-session marker (when >1), mirroring the ASCII list; the Category
+    cell keeps the `<emoji> [TAG]` intact."""
+    st = task_status(task)
+    status_cell = STATUS_GLYPH_CLOSED if st == STATUS_CLOSED else STATUS_GLYPH.get(st, "")
+    return "| %s | %s | %s | %s | %s | %s |" % (
+        status_cell,
+        task.get("seq", ""),
         _md_escape(task["title"]) + _live_marker(task),
         cat_tag(task.get("color")),
         _md_effort(task.get("effort")),
@@ -1227,18 +1246,18 @@ def _md_task_row(task):
     )
 
 
-_MD_HEADER = ("| # | Task | Category | Effort | Activity |\n"
-              "|--:|------|----------|--------|----------|")
+_MD_HEADER = ("|  | # | Task | Category | Effort | Activity |\n"
+              "|:-:|--:|------|----------|--------|----------|")
 
 
 def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
     """Markdown form of the /todo list — what the skill now prints VERBATIM (no
     hand-transcription). Two GitHub tables, Open first then Closed, preserving the
-    tracker's ordering; columns are # (stable seq, right-aligned) · Task ·
-    Category (`<emoji> [TAG]`) · Effort (`▰▱` bar + size) · Activity (relative
-    time). Honors the same closed-limit logic as the ASCII list (default
-    MAX_CLOSED_IN_LIST, `all`, or N) and repeats the hidden-older note after the
-    Closed table, then the Commands footer as a bullet list."""
+    tracker's ordering; columns are a centered STATUS glyph · # (stable seq,
+    right-aligned) · Task · Category (`<emoji> [TAG]`) · Effort (`▰▱` bar + size)
+    · Activity (relative time). Honors the same closed-limit logic as the ASCII
+    list (default MAX_CLOSED_IN_LIST, `all`, or N) and repeats the hidden-older
+    note after the Closed table, then the Commands footer mini-table."""
     ensure_seqs()
     listing = sorted_tasks()
     if not listing:
@@ -1266,7 +1285,8 @@ def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
         out.append("… %d older closed task(s) hidden — show more with `/todo closed N` "
                    "or `/todo all`." % (closed_total - closed_limit))
     out.append("")
-    out.append("_%s open · %s active · closed below_" % (STATUS_GLYPH[STATUS_OPEN], STATUS_GLYPH[STATUS_ACTIVE]))
+    out.append("_%s active · %s open · %s closed_" % (
+        STATUS_GLYPH[STATUS_ACTIVE], STATUS_GLYPH[STATUS_OPEN], STATUS_GLYPH_CLOSED))
     out.append(commands_footer_md())
     return "\n".join(out)
 
@@ -1274,7 +1294,7 @@ def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
 def _format_detail(task, session):
     out = []
     cur = task_status(task)
-    # Header carries the glyph for board tasks (◦ open / ● active); closed has none.
+    # Header carries the glyph for board tasks (○ open / ● active); closed has none.
     glyph = (STATUS_GLYPH[cur] + " ") if cur in STATUS_GLYPH else ""
     out.append("Task [%s]  —  %s%s" % (task["id"][:8], glyph, cur.upper()))
     out.append("Title:   %s" % task["title"])
@@ -1303,10 +1323,6 @@ def _format_detail(task, session):
     out.append("This session is now ATTACHED to this task (id %s). Continue the work "
                "described above; the user's next message resumes it. To close it, use /done."
                % task["id"])
-    if cats:
-        cmd = cats.tint_command(task.get("color"))
-        if cmd:
-            out.append("Tint this terminal to match the category — run:  " + cmd)
     resume = resume_command(task, session)
     workers = worker_lines(task)
     if resume or workers:
@@ -1529,7 +1545,7 @@ def cmd_add_project(a):
 
 
 def cmd_status(a):
-    """Show or set a task's lifecycle status between the board states (◦ open /
+    """Show or set a task's lifecycle status between the board states (○ open /
     ● active). `status --task <ref>` with no value reports the current status;
     `status --task <ref> open|active` sets it (idempotent). Closing goes through
     /done, not here — a closed task is reported but not settable from here."""
@@ -1646,6 +1662,10 @@ def _update_one(ref, a):
     touch(task, note="scope updated: " + ", ".join(changed))
     save_task(task)
     msgs.append("updated task %s: %s" % (label, ", ".join(changed)))
+    if "color" in changed and cats and hasattr(cats, "auto_enable"):
+        notice = cats.auto_enable(task.get("color"))
+        if notice:
+            msgs.append("  ↳ " + notice)
     # A scope change is the moment effort might have grown or shrunk — prompt a
     # re-rate so the column tracks reality, but only when this update touched
     # scope WITHOUT already re-rating (so re-setting effort itself stays quiet).
@@ -1753,26 +1773,13 @@ def cmd_unpin(a):
         print(_unpin_one(r))
 
 
-def cmd_prompt_color(a):
-    """Print the category colour a skill-invocation prompt maps to (or nothing).
-
-    The UserPromptSubmit hook calls this FIRST and, if it prints a colour, runs
-    `zsh -ic '<colour>'` straight away — so a skill like /review
-    tints the terminal the instant it's run, before Claude responds. Silent
-    (prints nothing) when categories are off, the prompt isn't a skill, or the
-    skill has no mapping."""
-    if not cats or not hasattr(cats, "color_for_prompt"):
-        return
-    prompt = a.prompt if getattr(a, "prompt", None) is not None else os.environ.get("TASK_STATION_PROMPT", "")
-    color = cats.color_for_prompt(prompt)
-    if color:
-        print(color)
-
-
 def cmd_prompt_tint(a):
-    """Like prompt-color, but emit the actual tint for the current mode + terminal:
-    auto -> an OSC/iTerm background escape (zero-setup); profile -> `zsh -ic '<color>'`.
-    The UserPromptSubmit hook executes whatever this prints."""
+    """Emit the full-palette tint escape for the skill a prompt invokes (or
+    nothing), for the detected terminal (zero-setup OSC; see
+    categories.tint_escape). The UserPromptSubmit hook calls this and writes
+    whatever it prints to the originating TTY — so a skill like /review tints the
+    terminal the instant it's run, before Claude responds. Silent when tinting is
+    off, categories are off, the prompt isn't a skill, or the skill has no mapping."""
     if os.environ.get("TASK_STATION_TINT") == "off":
         return
     if not cats or not hasattr(cats, "color_for_prompt") or not cats.TINT_TERMINAL:
@@ -1783,6 +1790,28 @@ def cmd_prompt_tint(a):
         return
     import config, term
     esc = cats.tint_escape(color, config.tint_mode(), term.detect())
+    if esc:
+        sys.stdout.write(esc)
+
+
+def cmd_session_tint(a):
+    """Emit the full-palette tint escape for the ATTACHED task's category, so the
+    terminal tints on attach/resume (not only on the first prompt). Mirrors
+    prompt-tint but resolves the colour from the session's task instead of the
+    prompt. Silent when tinting is off, the session is unattached/skipped, or the
+    task carries no colour; the SessionStart hook writes the bytes to the TTY."""
+    if os.environ.get("TASK_STATION_TINT") == "off":
+        return
+    if not cats or not getattr(cats, "TINT_TERMINAL", False):
+        return
+    task_id = get_link(a.session)
+    if not task_id or task_id == SKIP_SENTINEL:
+        return
+    task = load_task(task_id)
+    if not task or not task.get("color"):
+        return
+    import config, term
+    esc = cats.tint_escape(task.get("color"), config.tint_mode(), term.detect())
     if esc:
         sys.stdout.write(esc)
 
@@ -1871,7 +1900,7 @@ def cmd_prompt_context(a):
     # full block (below).
     if 1 < n < NUDGE_ESCALATE_AFTER:
         line = ("[task-station] Still untracked (msg %d). Track the topic as an OPEN task "
-                "(◦) — or fold it into a task above with `attach --note` — else skip." % n)
+                "(○) — or fold it into a task above with `attach --note` — else skip." % n)
         # Category auto-detection is a compiled-regex + dict lookup — effectively
         # free — so it keeps running on EVERY prompt, even the collapsed nudge. If
         # this prompt maps to a category, carry just that one hint (no legend) so a
@@ -1900,7 +1929,7 @@ def cmd_prompt_context(a):
 
     # Compact form: full rules/examples live in `task-station.py guidance` (and the
     # SessionStart injection points there) — keep the per-prompt cost minimal.
-    lines.append("Track this topic NOW as an OPEN task (◦) — even a question counts; it "
+    lines.append("Track this topic NOW as an OPEN task (○) — even a question counts; it "
                  "shows on the board immediately and AUTO-PROMOTES to active (●) when you act "
                  "on it (edit a file, delegate, multi-step). FIRST scan the tasks above: if "
                  "this prompt continues one of them, FOLD INTO IT — `attach --session %s --task "
@@ -1911,7 +1940,7 @@ def cmd_prompt_context(a):
                        if hasattr(cats, "color_for_prompt") else None)
         if skill_color:
             lines.append("This prompt's skill maps to category '%s' (%s); terminal already tinted — "
-                         "use --color %s and DON'T re-run the tint alias."
+                         "use --color %s."
                          % (skill_color, cats.label(skill_color), skill_color))
         lines.append("  attach: python3 %s/task-station.py attach --session %s --task <task-id> [--color <color>]" % (BASE, a.session))
         lines.append("  create: python3 %s/task-station.py create --session %s --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'"
@@ -1919,10 +1948,9 @@ def cmd_prompt_context(a):
         legend = cats.compact_legend() if hasattr(cats, "compact_legend") else ""
         if legend:
             lines.append("Colors: " + legend)
-        tint = ("; RUN the `zsh -ic '<color>'` line the command prints"
-                if cats.TINT_TERMINAL and not skill_color else "")
-        lines.append("Tell the user in one short line (\"📋 Tracking: <title>\")%s. "
-                     "Full rules: python3 %s/task-station.py guidance" % (tint, BASE))
+        lines.append("Tell the user in one short line (\"📋 Tracking: <title>\"). "
+                     "The terminal tints to the category automatically. "
+                     "Full rules: python3 %s/task-station.py guidance" % BASE)
     else:
         lines.append("  attach: python3 %s/task-station.py attach --session %s --task <task-id>" % (BASE, a.session))
         lines.append("  create: python3 %s/task-station.py create --session %s --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'"
@@ -1936,10 +1964,10 @@ def cmd_guidance(a):
     """Full attach/create how-to, fetched on demand (kept out of the per-prompt
     injection for token economy — `prompt-context` points here)."""
     lines = ["[task-station] Every topic gets tracked from the first prompt — TRACK, don't stay silent:",
-             "  - STATUS: a topic you merely raise starts OPEN (◦) — track it now, even a plain question.",
+             "  - STATUS: a topic you merely raise starts OPEN (○) — track it now, even a plain question.",
              "    It shows on the board immediately and AUTO-PROMOTES to ACTIVE (●) when work starts",
              "    (you edit a file in this session, delegate --worktree, or run a multi-step process).",
-             "    /done then closes it. Status is one field: open (◦) → active (●) → closed.",
+             "    /done then closes it. Status is one field: open (○) → active (●) → closed.",
              "  - FOLD, DON'T FORK: before creating, scan the board (open + active). If this prompt",
              "    continues an existing task, ATTACH to it and append the prompt as a note — no sibling.",
              "  - write a one-line title good enough to recognise the topic later.",
@@ -1953,12 +1981,12 @@ def cmd_guidance(a):
         lines.append("      python3 %s/task-station.py attach --session <session-id> --task <task-id> [--note '<prompt>'] [--color <color>]" % BASE)
         lines.append("  • Otherwise → create with its colour and an effort estimate "
                      "(xs/s/m/l/xl — your read of the task's complexity & scope). New tasks "
-                     "start open (◦); add --active to start active (●) when work has already begun:")
+                     "start open (○); add --active to start active (●) when work has already begun:")
         lines.append("      python3 %s/task-station.py create --session <session-id> --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>' [--active]"
                      % BASE)
         if cats.TINT_TERMINAL:
-            lines.append("The command prints the category and a `zsh -ic '<color>'` line — RUN that "
-                         "alias to tint this terminal to the task's colour.")
+            lines.append("The terminal is tinted to the task's category automatically "
+                         "(full palette via terminal escapes) — nothing to run by hand.")
     else:
         lines.append("  • attach: python3 %s/task-station.py attach --session <session-id> --task <task-id>" % BASE)
         lines.append("  • create: python3 %s/task-station.py create --session <session-id> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'" % BASE)
@@ -2047,7 +2075,7 @@ def _repos_manifest_action(repo_index, data_dir, action, terms):
 
 def cmd_repos(a):
     """Hub repo index: `repos [show]` prints repos.md (building it if missing),
-    `repos --refresh [--force] [--quiet] [--dry-run] [--re-summarize]` rescans +
+    `repos --refresh [--quiet] [--dry-run] [--re-summarize]` rescans +
     rewrites the index, `repos <term...>` ranks matches, `--json` emits the
     structured list. Include/exclude surface: `repos config` lists the manifest;
     `repos include/exclude <name>` and `repos enrich <name> [on|off]` flip flags.
@@ -2093,7 +2121,7 @@ def cmd_repos(a):
     # --- First-run onboarding: no roots configured and no manifest yet ---
     if (not config.repo_roots_configured()
             and not os.path.exists(os.path.join(data_dir, "repos.config.json"))
-            and not (a.refresh or a.force) and not terms and not a.json):
+            and not a.refresh and not terms and not a.json):
         found = repo_index.detect_roots()
         print("repos: first-run setup — no workspace roots configured yet.")
         print("")
@@ -2112,7 +2140,7 @@ def cmd_repos(a):
         return
 
     repos = None
-    if a.refresh or a.force:
+    if a.refresh:
         # Rescan + rewrite. Enrichment is OPT-IN: a model call fires ONLY for
         # `enrich:true` repos (and only when new/changed). A normal refresh sends
         # NOTHING off-machine. --no-llm (or the repo_enrich config gate) forces the
@@ -2206,7 +2234,7 @@ def main():
     sp.add_argument("--attach", action="store_true",
                     help="force-bind --session even if it's a substantive tracked session")
     sp.add_argument("--active", action="store_true",
-                    help="start the task active (●) instead of the default open (◦)")
+                    help="start the task active (●) instead of the default open (○)")
     sp.set_defaults(fn=cmd_create)
 
     sp = sub.add_parser("attach"); sp.add_argument("--session", required=True)
@@ -2277,11 +2305,11 @@ def main():
     sp = sub.add_parser("unpin"); sp.add_argument("--task", required=True)
     sp.set_defaults(fn=cmd_unpin)
 
-    sp = sub.add_parser("prompt-color"); sp.add_argument("--session", default=None)
-    sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_color)
-
     sp = sub.add_parser("prompt-tint"); sp.add_argument("--session", default=None)
     sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_tint)
+
+    sp = sub.add_parser("session-tint"); sp.add_argument("--session", required=True)
+    sp.set_defaults(fn=cmd_session_tint)
 
     sp = sub.add_parser("prompt-title"); sp.add_argument("--session", default=None)
     sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_title)
@@ -2300,8 +2328,6 @@ def main():
                     help="terms to rank repos by; omit (or 'show') to print the index. "
                          "Also: include/exclude/enrich <name>, config")
     sp.add_argument("--refresh", action="store_true", help="rescan roots + rewrite the index")
-    sp.add_argument("--force", action="store_true",
-                    help="reserved: bypass the future refresh debounce (today == --refresh)")
     sp.add_argument("--json", action="store_true", help="emit the structured list for the skill")
     sp.add_argument("--quiet", action="store_true", help="with --refresh, print only a one-line summary")
     sp.add_argument("--no-llm", dest="no_llm", action="store_true",
@@ -2320,11 +2346,15 @@ def main():
     sp.add_argument("--workspace-dirs", dest="workspace_dirs", default=None)
     sp.add_argument("--workspace-dirs-get", dest="workspace_dirs_get", action="store_true")
     sp.add_argument("--categories", dest="categories", nargs="*", default=None,
-                    help="(no arg) show enabled set + presets · 'edit' print config path · 'preset <name>' apply a preset")
+                    help="(no arg) show enabled set + toggles · 'edit' print config path")
     sp.add_argument("--enable", dest="enable", default=None,
                     help="enable a category slot (key, emoji, or [TAG])")
     sp.add_argument("--disable", dest="disable", default=None,
                     help="disable a category slot (refuses ⚫ GENERAL — permanent)")
+    sp.add_argument("--auto-categories", dest="auto_categories", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="auto-enable a category slot the first time a task is assigned to it (default on)")
+    sp.add_argument("--auto-categories-get", dest="auto_categories_get", action="store_true")
     sp.add_argument("--bare-cmds", dest="bare_cmds", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--bare-cmds-get", dest="bare_cmds_get", action="store_true")
     sp.add_argument("--update-check", dest="update_check", nargs="?", choices=["on","off"], const="on", default=None)
@@ -2334,7 +2364,6 @@ def main():
     sp.add_argument("--title", dest="title", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--title-get", dest="title_get", action="store_true")
     sp.add_argument("--policy", nargs="?", choices=["on", "off"], const="on", default=None)
-    sp.add_argument("--tint-profiles", dest="tint_profiles", action="store_true")
     sp.add_argument("--desktop-bridge", dest="desktop_bridge", nargs="?",
                     choices=["on", "off"], const="on", default=None,
                     help="wire the dependency-free MCP server into Claude Desktop (on) / remove it (off)")

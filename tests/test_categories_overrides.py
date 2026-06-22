@@ -41,5 +41,24 @@ class Overrides(unittest.TestCase):
         importlib.reload(categories)            # must not raise
         self.assertIn("red", categories.CATEGORIES)
 
+    def test_malformed_skill_colors_skipped_good_entries_apply(self):
+        # A malformed skill_colors entry (not a 2-element [pattern, color] of
+        # strings) must NOT poison SKILL_COLORS — previously a 1- or 3-element
+        # entry slipped through and raised ValueError when color_for_prompt
+        # unpacked it (outside the import-time guard). Bad entries are skipped;
+        # well-formed ones still apply.
+        import categories
+        self._write({"skill_colors": [
+            ["only-one"],                 # malformed: len 1
+            ["myspecialcmd", "purple"],   # GOOD
+            ["a", "b", "c"],              # malformed: len 3
+            "not-a-list",                 # malformed: not a list
+            [123, "blue"],                # malformed: non-str pattern
+        ]})
+        importlib.reload(categories)            # must not raise at import
+        # The unpack site must not raise, and the good entry must win.
+        self.assertEqual(categories.color_for_prompt("/myspecialcmd"), "purple")
+        self.assertIsNone(categories.color_for_prompt("/unmapped-xyz-123"))
+
 if __name__ == "__main__":
     unittest.main()

@@ -99,9 +99,18 @@ def title_enabled():
         return False
     return bool(get("title", True))
 
+def auto_categories_enabled():
+    """True unless explicitly disabled — default ON. Mirrors TASK_STATION_TITLE's
+    env escape: `TASK_STATION_AUTO_CATEGORIES=off` (or `config --auto-categories off`)
+    freezes the enabled set — assigning a task to a disabled slot no longer
+    auto-enables it (today's restrict-to-enabled behaviour)."""
+    if os.environ.get("TASK_STATION_AUTO_CATEGORIES") == "off":
+        return False
+    return bool(get("auto_categories", True))
+
 def enabled_categories():
     """The configured active-category key list, or None when unconfigured
-    (categories.enabled_keys() then defaults to the full set)."""
+    (categories.enabled_keys() then defaults to CORE — the lean default)."""
     raw = get("enabled_categories")
     return raw if isinstance(raw, list) else None
 
@@ -124,20 +133,14 @@ def tint_theme():
     return val if val in ("auto", "dark", "light") else "auto"
 
 def _enabled_summary():
-    """`9/12 (preset web)`-style summary of the active category set, or
-    `12/12 (full — default)` when unconfigured."""
+    """`3/12 (default: CORE)`-style summary of the active category set, or
+    `N/12 (custom)` once the user has configured it."""
     cats = _categories_module()
     if cats is None:
         return "n/a"
     enabled = cats.enabled_keys()
     total = len(cats.all_keys())
-    raw = enabled_categories()
-    name = "full — default" if raw is None else "custom"
-    if raw is not None:
-        for pname in cats.PRESETS:
-            if cats.preset_keys(pname) == enabled:   # both canonical order
-                name = "preset %s" % pname
-                break
+    name = "default: CORE" if enabled_categories() is None else "custom"
     return "%d/%d (%s)" % (len(enabled), total, name)
 
 def _desktop_bridge_summary():
@@ -151,33 +154,102 @@ def _desktop_bridge_summary():
         return "off"
 
 def render_board():
+    """The unified, width-aware `task-station config` board (no-arg view).
+
+    Short-valued settings render as a 4-column aligned grid (SETTING / VALUE /
+    OPTIONS / WHAT IT DOES); the first three columns are sized to their widest cell
+    per render, and the description column takes the remaining terminal width,
+    wrapping with a hanging indent under WHAT IT DOES so long text never breaks the
+    grid. Long PATH-valued settings print as their own full-width two-line blocks
+    below the grid. The status facts that used to live in a separate
+    setup.status() block are folded into a compact `status` section at the bottom —
+    one board, nothing duplicated."""
+    import textwrap
     import term
-    ws = ":".join(get("workspace_dirs") or []) or "(unset — use --repo)"
+    width = term.width()
+    indent = "  "
+    gutter = "  "
+
     cats = get("categories"); n_cat = len(cats) if isinstance(cats, dict) else 0
-    lines = [
-        "task-station config       store: %s" % _path(),
-        "                          set: task-station config --<flag> <value>   ·   reset: <flag> default",
-        "",
-        "  --workspace-dirs  %-34s repo roots for delegate --project" % ws,
-        "  --categories      %-34s enabled set + presets/toggles  (--categories edit · preset <name> · --enable/--disable <key>)"
-        % _enabled_summary(),
-        "  category overrides %-33s custom tags/labels + skill auto-tint  (--categories edit)"
-        % ("%d override(s)" % n_cat if n_cat else "defaults"),
-        "  --bare-cmds        %-33s install bare /todo + /done (else /task-station:todo)  on · off"
-        % ("on" if bare_commands() else "off"),
-        "  --update-check     %-33s opt-in /todo footer when a newer version ships  on · off"
-        % ("on" if update_check_enabled() else "off"),
-        "  --tint-theme      %-34s tint palette; auto follows OS appearance  auto · dark · light"
-        % tint_theme(),
-        "  --title           %-34s auto terminal title '#<seq>: <title>' on attach  on · off"
-        % ("on" if title_enabled() else "off"),
-        "  --desktop-bridge  %-34s wire the dependency-free MCP server into Claude Desktop  on · off"
-        % _desktop_bridge_summary(),
-        "",
-        "  read-only",
-        "  --data-dir        %-34s (set via $TASK_STATION_HOME)" % paths.data_dir(),
-        "  tint mode: %s · terminal: %s" % (tint_mode(), term.detect()),
+    lines = []
+
+    # --- top header: store path (+ set/reset hint); store breaks to its own line
+    #     rather than overflow the terminal width.
+    store_line = "task-station config       store: %s" % _path()
+    if len(store_line) <= width:
+        lines.append(store_line)
+    else:
+        lines.append("task-station config")
+        lines.append(indent + "store: %s" % _path())
+    lines.append(indent + "set: task-station config --<flag> <value>   ·   reset: <flag> default")
+    lines.append("")
+
+    # --- toggle grid (short values only) ----------------------------------------
+    header = ("SETTING", "VALUE", "OPTIONS", "WHAT IT DOES")
+    rows = [
+        ("--categories", _enabled_summary(), "edit·toggle",
+         "enabled set (CORE default) + toggles"),
+        ("--auto-categories", "on" if auto_categories_enabled() else "off", "on · off",
+         "grow the board automatically as new categories are assigned"),
+        ("category overrides", "%d override(s)" % n_cat if n_cat else "defaults", "edit",
+         "custom tags/labels + skill auto-tint"),
+        ("--bare-cmds", "on" if bare_commands() else "off", "on · off",
+         "install bare /todo + /done (else /task-station:todo)"),
+        ("--update-check", "on" if update_check_enabled() else "off", "on · off",
+         "opt-in /todo footer when a newer version ships"),
+        ("--tint-theme", tint_theme(), "auto · dark · light",
+         "tint palette; auto follows OS appearance"),
+        ("--title", "on" if title_enabled() else "off", "on · off",
+         "auto terminal title '#<seq>: <title>' on attach"),
+        ("--desktop-bridge", _desktop_bridge_summary(), "on · off",
+         "wire the dependency-free MCP server into Claude Desktop"),
     ]
+    w_set = max(len(header[0]), *(len(r[0]) for r in rows))
+    w_val = max(len(header[1]), *(len(r[1]) for r in rows))
+    w_opt = max(len(header[2]), *(len(r[2]) for r in rows))
+    fixed = len(indent) + w_set + len(gutter) + w_val + len(gutter) + w_opt + len(gutter)
+    w_desc = max(24, width - fixed)
+
+    def _grid_row(setting, value, options, desc):
+        prefix = (indent + setting.ljust(w_set) + gutter
+                  + value.ljust(w_val) + gutter + options.ljust(w_opt) + gutter)
+        wrapped = textwrap.wrap(desc, w_desc) or [""]
+        out = [prefix + wrapped[0]]
+        hang = " " * len(prefix)         # aligns continuations under WHAT IT DOES
+        out += [hang + cont for cont in wrapped[1:]]
+        return out
+
+    lines += _grid_row(*header)
+    for r in rows:
+        lines += _grid_row(*r)
+
+    # --- long PATH-valued settings: own full-width two-line blocks (never gridded)
+    ws = ":".join(get("workspace_dirs") or []) or "(unset — use --repo)"
+    lines.append("")
+    lines.append(indent + "--workspace-dirs  (repo roots for delegate --project)")
+    lines.append(indent + "    " + ws)
+    lines.append(indent + "--data-dir        (read-only · $TASK_STATION_HOME)")
+    lines.append(indent + "    " + paths.data_dir())
+
+    # --- status: facts folded in from setup.status() (reusing its helpers) -------
+    import setup
+    t = term.detect()
+    has_policy = ("policy" in setup._manifest())
+    installed, _server = setup.desktop_bridge_status()
+    st = [
+        ("tint", "escape (full palette) · terminal %s%s" % (
+            t, "" if t != "none" else "  (no supported terminal → no-op)")),
+        ("policy", "installed in CLAUDE.md — remove: --policy off" if has_policy
+         else "off — install: --policy on"),
+        ("desktop-bridge", "installed — remove: --desktop-bridge off" if installed
+         else "off — install: --desktop-bridge on"),
+    ]
+    w_label = max(len(s[0]) for s in st)
+    lines.append("")
+    lines.append(indent + "status")
+    for label, val in st:
+        lines.append(indent + "  " + label.ljust(w_label) + "  " + val)
+
     return "\n".join(lines)
 
 def _categories_status(cats):
@@ -191,9 +263,10 @@ def _categories_status(cats):
     if disabled:
         lines.append("  off: " + ", ".join(disabled))
     lines.append("")
-    lines.append("Presets  (config --categories preset <name>):")
-    for name in cats.PRESETS:
-        lines.append("  %-8s %s" % (name, " ".join(cats.preset_keys(name))))
+    lines.append("The board starts lean at CORE (BUG · FEATURE · GENERAL) and grows on its own:")
+    lines.append("assigning a task to a new category auto-enables that slot. Freeze the set")
+    lines.append("with: config --auto-categories off  (currently %s)."
+                 % ("on" if auto_categories_enabled() else "off"))
     lines.append("")
     lines.append("Toggle individual slots: config --enable <key> · config --disable <key>")
     lines.append("(⚫ GENERAL is permanent — always on, cannot be disabled.)")
@@ -202,26 +275,16 @@ def _categories_status(cats):
 
 def cmd_categories(arg):
     """Handle `config --categories [...]`:
-      (no arg)        → show the enabled set + available presets
-      edit            → print the config.json path (legacy behaviour)
-      preset <name>   → set enabled_categories to that preset (GENERAL forced in)
+      (no arg)  → show the enabled set + how to toggle slots
+      edit      → print the config.json path (legacy behaviour)
     """
     if arg == ["edit"]:
         print(_path()); return
     cats = _categories_module()
     if cats is None:
         print("categories plugin not available (lib/categories.py missing)"); return
-    if arg and arg[0] == "preset":
-        if len(arg) < 2:
-            print("usage: config --categories preset <%s>" % "|".join(cats.PRESETS)); return
-        name = arg[1]
-        keys = cats.preset_keys(name)
-        if keys is None:
-            print("Unknown preset '%s'. Available: %s" % (name, ", ".join(cats.PRESETS))); return
-        set_enabled_categories(keys)
-        print("enabled_categories = preset '%s' → %s" % (name, " ".join(keys))); return
     if arg:
-        print("usage: config --categories [edit | preset <name>]"); return
+        print("usage: config --categories [edit]"); return
     print(_categories_status(cats))
 
 
@@ -277,6 +340,11 @@ def cmd_config(a):
         print("title = %s" % ("on" if get("title") else "off")); return
     if getattr(a, "title_get", False):
         print("on" if title_enabled() else "off"); return
+    if getattr(a, "auto_categories", None) is not None:
+        set("auto_categories", a.auto_categories == "on")
+        print("auto_categories = %s" % ("on" if get("auto_categories") else "off")); return
+    if getattr(a, "auto_categories_get", False):
+        print("on" if auto_categories_enabled() else "off"); return
     if getattr(a, "categories", None) is not None:
         return cmd_categories(a.categories);
     if getattr(a, "enable", None) is not None:
@@ -286,12 +354,10 @@ def cmd_config(a):
     import setup
     if getattr(a, "policy", None) is not None:
         print(setup.set_policy(a.policy == "on")); return
-    if getattr(a, "tint_profiles", False):
-        print(setup.install_tint_profiles()); return
     if getattr(a, "desktop_bridge", None) is not None:
         print(setup.install_desktop_bridge() if a.desktop_bridge == "on"
               else setup.remove_desktop_bridge()); return
-    # No flags: the unified settings + doctor/status view.
+    # No flags: the single unified settings + status board. The status facts are
+    # folded into render_board() now, so we no longer print setup.status() here
+    # (setup.status() is unchanged and still used by the install flow).
     print(render_board())
-    print("")
-    print(setup.status())

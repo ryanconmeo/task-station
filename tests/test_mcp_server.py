@@ -55,11 +55,11 @@ class McpServerTest(unittest.TestCase):
         t = self.mcp._create_task(
             "Wire up the deploy pipeline",
             "Set up CI for the new service.",
-            category="devops",
+            category="infra",
             effort="m",
             source="https://claude.ai/chat/abc-123",
         )
-        self.assertEqual(self.ts.task_status(t), "open")        # open(◦), not active
+        self.assertEqual(self.ts.task_status(t), "open")        # open(○), not active
         self.assertTrue(t.get("seq"))
         self.assertEqual(t.get("effort"), "M")
         self.assertEqual(t.get("source"), "https://claude.ai/chat/abc-123")
@@ -75,7 +75,8 @@ class McpServerTest(unittest.TestCase):
         # both sides read/write one shared store.
         cli_md = self.ts._format_list_md()
         self.assertIn("Desktop-born task", cli_md)
-        self.assertIn("◦ %d" % t["seq"], cli_md)
+        # Leading STATUS column glyph + bare seq in the `#` cell.
+        self.assertIn("| ○ | %d |" % t["seq"], cli_md)
         # And it is a genuine row in all_tasks(), the listing the CLI builds on.
         ids = [x["id"] for x in self.ts.all_tasks()]
         self.assertIn(t["id"], ids)
@@ -84,7 +85,7 @@ class McpServerTest(unittest.TestCase):
     def test_get_task_detail_includes_source(self):
         t = self.mcp._create_task(
             "Inspectable task", "A summary worth surfacing.",
-            category="devops", effort="l",
+            category="infra", effort="l",
             source="desktop://conversation/xyz",
         )
         self.mcp._add_note(str(t["seq"]), "looked into the logs")
@@ -93,7 +94,7 @@ class McpServerTest(unittest.TestCase):
         self.assertIn("A summary worth surfacing.", detail)
         self.assertIn("desktop://conversation/xyz", detail)   # source surfaced
         self.assertIn("looked into the logs", detail)          # activity log
-        self.assertIn("◦", detail)                             # open glyph
+        self.assertIn("○", detail)                             # open glyph
         # Unknown ref → None (caller renders a not-found line).
         self.assertIsNone(self.mcp._get_task("99999"))
 
