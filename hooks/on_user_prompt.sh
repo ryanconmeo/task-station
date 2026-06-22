@@ -22,7 +22,7 @@ _want="$CLAUDE_PLUGIN_ROOT/lib"
 session_id=$(echo "$input" | jq -r '.session_id // "unknown"')
 prompt=$(echo "$input" | jq -r '.prompt // ""')
 
-tint=$(TASK_STATION_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" prompt-tint 2>/dev/null)
+tint=$(TASK_STATION_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" prompt-tint --session "$session_id" 2>/dev/null)
 if [ -n "$tint" ]; then
   # Full-palette escape → write it straight to the originating window (task 119).
   _dev=$(bash "${CLAUDE_PLUGIN_ROOT}/lib/origin-tty.sh" 2>/dev/null)

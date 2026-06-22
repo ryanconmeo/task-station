@@ -1,5 +1,5 @@
 """Single JSON config store under the data dir, plus the `task-station config` board."""
-import json, os
+import copy, json, os, re
 import paths
 
 # Default repo roots scanned for the hub repo index (`task-station repos`) when no
@@ -128,9 +128,58 @@ def tint_mode():
     return get("tint_mode", "auto")
 
 def tint_theme():
-    """Configured palette: "auto" (follow OS appearance), "dark", or "light"."""
+    """The appearance control `tint_theme` ("auto" | "dark" | "light"), default
+    "auto". "auto" follows the OS appearance; "dark"/"light" force the variant. This
+    picks which VARIANT of the active theme renders (dark → Dark Sands, light → Light
+    Sands for the shipped `sands` theme)."""
     val = get("tint_theme", "auto")
     return val if val in ("auto", "dark", "light") else "auto"
+
+def active_theme():
+    """The active theme NAME: config `theme`, validated against the available themes
+    (shipped `sands` + any user themes), falling back to 'sands' for an absent/unknown
+    value. The active theme supplies every category's full palette in two variants —
+    the appearance (tint_theme) picks which renders. See
+    categories.effective_themes / resolve_variant / tint_escape."""
+    cats = _categories_module()
+    default = getattr(cats, "DEFAULT_THEME", "sands") if cats else "sands"
+    name = get("theme", default)
+    if cats is None:
+        return default
+    try:
+        avail = cats.available_themes()
+    except Exception:
+        return default
+    return name if name in avail else default
+
+def resolved_variant():
+    """The variant ('dark'/'light') that will actually render, given tint_theme +
+    the OS appearance. Thin wrapper over categories.resolve_variant for the board."""
+    cats = _categories_module()
+    if cats is None:
+        return "dark"
+    try:
+        return cats.resolve_variant()
+    except Exception:
+        return "dark"
+
+def _variant_label(variant, theme=None):
+    """'{Dark|Light} {ThemeDisplay}' for the active theme's variant, via
+    categories.variant_label (falls back to a bare capitalised variant)."""
+    cats = _categories_module()
+    theme = theme or active_theme()
+    if cats is not None and hasattr(cats, "variant_label"):
+        try:
+            return cats.variant_label(theme, variant)
+        except Exception:
+            pass
+    return variant.capitalize()
+
+def _theme_summary():
+    """`sands · auto → Dark Sands`-style summary for the config board: active theme,
+    the tint-theme setting, and the currently-resolved variant's display label."""
+    variant = resolved_variant()
+    return "%s · %s → %s" % (active_theme(), tint_theme(), _variant_label(variant))
 
 def _enabled_summary():
     """`3/12 (default: CORE)`-style summary of the active category set, or
@@ -197,8 +246,10 @@ def render_board():
          "install bare /todo + /done (else /task-station:todo)"),
         ("--update-check", "on" if update_check_enabled() else "off", "on · off",
          "opt-in /todo footer when a newer version ships"),
-        ("--tint-theme", tint_theme(), "auto · dark · light",
-         "tint palette; auto follows OS appearance"),
+        ("--theme", active_theme(), "sands · …",
+         "active color theme (full palette, dark+light variants)"),
+        ("--tint-theme", _theme_summary(), "auto · dark · light",
+         "appearance: which variant renders — auto follows the OS (dark=Dark Sands, light=Light Sands)"),
         ("--title", "on" if title_enabled() else "off", "on · off",
          "auto terminal title '#<seq>: <title>' on attach"),
         ("--desktop-bridge", _desktop_bridge_summary(), "on · off",
@@ -314,6 +365,139 @@ def toggle_category(color, on):
           % ("enabled" if on else "disabled", m["dot"], m["tag"], " ".join(keys)))
 
 
+# --- themes -------------------------------------------------------------------
+# A THEME is a named full-palette set (per category: bg/fg/bold/cursor/sel + 16
+# ANSI). `--theme` is verb-first: the first token is a VERB if in THEME_VERBS,
+# else a theme NAME to select. RESERVED names can never be saved.
+THEME_VERBS = {"save", "edit", "preview", "list"}
+RESERVED_THEME_NAMES = {"save", "edit", "preview", "list", "show", "default"}
+_THEME_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def _list_themes():
+    cats = _categories_module()
+    if cats is None:
+        print("categories plugin not available (lib/categories.py missing)"); return
+    active = active_theme()
+    shipped = getattr(cats, "THEMES", {}) or {}   # NB: module-level set() shadows builtin
+    variant = resolved_variant()
+    lines = ["Themes (* = active):"]
+    for name in cats.available_themes():
+        mark = "*" if name == active else " "
+        kind = "shipped" if name in shipped else "user"
+        variants = " · ".join(_variant_label(v, name) for v in getattr(cats, "VARIANTS", ("dark", "light")))
+        lines.append("  %s %-12s (%s)   %s" % (mark, name, kind, variants))
+    lines.append("")
+    lines.append("Appearance: --tint-theme %s → %s" % (tint_theme(), _variant_label(variant)))
+    lines.append("")
+    lines.append("Select:  config --theme <name>")
+    lines.append("Appearance:  config --tint-theme auto|dark|light")
+    lines.append("Save current palette as a theme:  config --theme save <name>")
+    lines.append("Edit user themes (config.json):   config --theme edit")
+    lines.append("Render a preview gallery:         config --theme preview")
+    print("\n".join(lines))
+
+
+def _theme_save(name):
+    """Snapshot BOTH variants (dark + light) of the active theme's currently-resolved
+    palette into config.json themes[<name>] — a fully self-contained copy, independent
+    of the current appearance. Each variant captures every category (resolving the
+    active theme over the shipped fallback). Refuses reserved names and names not
+    matching ^[a-z0-9][a-z0-9_-]*$."""
+    cats = _categories_module()
+    if cats is None:
+        print("categories plugin not available (lib/categories.py missing)"); return
+    if name in RESERVED_THEME_NAMES:
+        print("Refusing to save theme '%s' — reserved name (one of: %s)."
+              % (name, ", ".join(sorted(RESERVED_THEME_NAMES)))); return
+    if not _THEME_NAME_RE.match(name):
+        print("Refusing to save theme '%s' — invalid name. Use a lowercase letter or "
+              "digit, then any of [a-z0-9_-] (e.g. 'my-theme')." % name); return
+    active = active_theme()
+    entry = {}
+    for variant in getattr(cats, "VARIANTS", ("dark", "light")):
+        pals = {}
+        for key in cats.CATEGORIES:
+            try:
+                p = cats.theme_palette(active, key, variant)
+            except Exception:
+                p = None
+            if isinstance(p, dict) and p:
+                pals[key] = copy.deepcopy(p)
+        if pals:
+            entry[variant] = pals
+    if not entry:
+        print("No active theme palette to snapshot (active = '%s')." % active); return
+    d = _load()
+    themes = d.get("themes")
+    if not isinstance(themes, dict):
+        themes = {}
+    themes[name] = entry
+    d["themes"] = themes
+    _save(d)
+    labels = " + ".join(_variant_label(v, active) for v in entry)
+    counts = ", ".join("%s: %d cats" % (v, len(entry[v])) for v in entry)
+    print("saved theme '%s' — snapshot of '%s' (both variants: %s; %s) → %s"
+          % (name, active, labels, counts, _path()))
+
+
+def _theme_preview():
+    """Render the gallery for effective_themes() to <data_dir>/themes-preview.html."""
+    import sys as _sys
+    out = os.path.join(paths.data_dir(), "themes-preview.html")
+    try:
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        tools = os.path.join(here, "tools")
+        if tools not in _sys.path:
+            _sys.path.insert(0, tools)
+        import render_palettes
+        html = render_palettes.render_html()
+        os.makedirs(paths.data_dir(), exist_ok=True)
+        tmp = out + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(html)
+        os.replace(tmp, out)
+        print(out)
+    except Exception as e:
+        print("preview failed: %s" % e)
+
+
+def cmd_theme(arg):
+    """Handle `config --theme [...]` (verb-first grammar):
+      (no arg) / list   → list shipped + user themes, mark active
+      <name>            → select that theme as active
+      save <name>       → snapshot the effective active palette into config themes[<name>]
+      edit              → print the config.json path (edit user themes there)
+      preview           → render the gallery for effective_themes() to a HTML file
+    """
+    cats = _categories_module()
+    if cats is None:
+        print("categories plugin not available (lib/categories.py missing)"); return
+    if not arg:
+        return _list_themes()
+    verb, rest = arg[0], arg[1:]
+    if verb in THEME_VERBS:
+        if verb == "list":
+            return _list_themes()
+        if verb == "edit":
+            print(_path()); return
+        if verb == "preview":
+            return _theme_preview()
+        if verb == "save":
+            if len(rest) != 1:
+                print("usage: config --theme save <name>"); return
+            return _theme_save(rest[0])
+    # not a verb → a theme NAME to select
+    if len(arg) != 1:
+        print("usage: config --theme [<name> | save <name> | edit | preview | list]"); return
+    name = arg[0]
+    avail = cats.available_themes()
+    if name not in avail:
+        print("Unknown theme '%s'. Available: %s" % (name, ", ".join(avail))); return
+    set("theme", name)
+    print("theme = %s" % active_theme())
+
+
 def cmd_config(a):
     if getattr(a, "workspace_dirs_get", False):
         print(":".join(get("workspace_dirs") or "")); return
@@ -330,9 +514,11 @@ def cmd_config(a):
         print("update_check = %s" % ("on" if get("update_check") else "off")); return
     if getattr(a, "update_check_get", False):
         print("on" if update_check_enabled() else "off"); return
+    if getattr(a, "theme", None) is not None:
+        return cmd_theme(a.theme)
     if getattr(a, "tint_theme", None) is not None:
         set("tint_theme", a.tint_theme)
-        print("tint_theme = %s" % tint_theme()); return
+        print("tint_theme = %s   (variant: %s)" % (tint_theme(), resolved_variant())); return
     if getattr(a, "tint_theme_get", False):
         print(tint_theme()); return
     if getattr(a, "title", None) is not None:

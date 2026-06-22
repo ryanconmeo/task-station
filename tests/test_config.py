@@ -86,7 +86,8 @@ class Board(unittest.TestCase):
         os.environ["COLUMNS"] = "120"
         board = config.render_board()
         self.assertIn("OPTIONS", board)
-        self.assertIn("auto · dark · light", board)
+        self.assertIn("auto · dark · light", board)   # --tint-theme options
+        self.assertIn("sands", board)                 # --theme active value
         self.assertIn("on · off", board)
         self.assertIn("edit·toggle", board)
 
@@ -146,7 +147,7 @@ class Board(unittest.TestCase):
             col = header.index("WHAT IT DOES")
             # prefixes that survive textwrap at every width (each starts its desc).
             for needle in ("enabled set", "install bare",
-                           "tint palette", "wire the dependency-free"):
+                           "active color theme", "wire the dependency-free"):
                 row = next(l for l in lines if needle in l)
                 self.assertEqual(row.index(needle), col,
                                  "misaligned at COLUMNS=%s: %r" % (cols, needle))
