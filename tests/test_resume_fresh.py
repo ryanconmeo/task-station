@@ -15,6 +15,7 @@ monkeypatched `_session_msgcount`. Never touches live data.
 import importlib.util
 import io
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -128,6 +129,51 @@ class ResumeFreshTest(unittest.TestCase):
         cmd = self.opened[-1]
         self.assertIn("--session-id", cmd)
         self.assertNotIn("--resume %s" % cur, cmd)
+
+    # -- v1.9.1: -s never attaches/re-tints the INVOKING window ----------------
+    def test_jump_does_not_link_invoking_session_fresh(self):
+        """`/todo <n> -s` with no resumable session mints a fresh one and links
+        THAT to the task — the INVOKING session is never linked (re-tint bug)."""
+        t = self._seed("Jumpable")
+        typist = "invoking-uuid"        # the window /todo -s is typed in; unattached
+        self.opened.clear()
+        ts._jump_one(str(t["seq"]), typist)
+        # invoking session is NOT attached to the jumped task
+        self.assertNotEqual(ts.get_link(typist), t["id"])
+        # the freshly-minted TARGET session IS attached (so the NEW window tints)
+        cmd = self.opened[-1]
+        m = re.search(r"--session-id (\S+)", cmd)
+        self.assertTrue(m, "fresh jump should emit --session-id")
+        fresh = m.group(1)
+        self.assertNotEqual(fresh, typist)
+        self.assertEqual(ts.get_link(fresh), t["id"])
+
+    def test_jump_leaves_invoking_session_on_its_own_task(self):
+        """A -s jump from a window attached to task A must leave it attached to A —
+        it must not steal the invoking session onto the jumped task."""
+        a = self._seed("Owner")
+        b = self._seed("Target")
+        typist = "busy-typist"
+        ts.set_link(typist, a["id"])     # invoking window is working on task A
+        self.opened.clear()
+        ts._jump_one(str(b["seq"]), typist)
+        self.assertEqual(ts.get_link(typist), a["id"])   # still A, NOT b
+
+    def test_jump_resumes_existing_target_without_touching_invoking(self):
+        """When a real working session exists, -s resumes IT (kept attached so the
+        new window tints) while leaving the invoking session unattached."""
+        t = self._seed("HasSession")
+        other = "working-sess"
+        self._register(t, other, msgs=6)
+        ts.set_link(other, t["id"])      # the real working session, attached
+        ts.save_task(t)
+        typist = "typist-uuid"
+        self.opened.clear()
+        ts._jump_one(str(t["seq"]), typist)
+        cmd = self.opened[-1]
+        self.assertIn("--resume %s" % other, cmd)          # resumes the existing one
+        self.assertEqual(ts.get_link(other), t["id"])      # target stays attached → tints
+        self.assertNotEqual(ts.get_link(typist), t["id"])  # invoking never attached
 
     # -- #3 skip exclusion -----------------------------------------------------
     def test_skipped_session_excluded_even_with_live_transcript(self):

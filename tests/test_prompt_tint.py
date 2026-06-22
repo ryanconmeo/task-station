@@ -84,6 +84,22 @@ class PromptTintFallback(unittest.TestCase):
         out = self._run(session="sess-th", prompt="repaint please")
         self.assertIn("\033]11;%s\007" % categories.THEMES["sands"]["light"]["red"]["bg"], out)
 
+    def test_session_jump_prompt_emits_nothing(self):
+        """v1.9.1 belt-and-suspenders: a `/todo <n> -s` session-jump must NOT
+        repaint the invoking window, even when it is attached to a coloured task."""
+        t = self._seed("red")
+        ts.set_link("sess-js", t["id"])
+        self.assertEqual(self._run(session="sess-js", prompt="/todo 1 -s"), "")
+        self.assertEqual(self._run(session="sess-js", prompt="/todo 1 --session"), "")
+
+    def test_plain_todo_still_repaints(self):
+        """Preserve the 1.9.0 behaviour: plain `/todo <n>` (no -s) still falls back
+        to the attached task's colour and repaints the current window."""
+        t = self._seed("red")
+        ts.set_link("sess-plain", t["id"])
+        out = self._run(session="sess-plain", prompt="/todo 1")
+        self.assertEqual(out, categories.tint_escape("red", "auto", "iterm"))
+
     def test_skill_prompt_wins_over_task(self):
         t = self._seed("red")
         ts.set_link("sess-2", t["id"])
