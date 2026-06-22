@@ -104,25 +104,40 @@ Pick from the *nature of the work*, not the surface keywords:
 - **gold** — documentation & writing: READMEs, guides, changelogs, docs (📖 DOCS).
 - **black** — general / catch-all when nothing above fits.
 
-## Themes
+## Themes (appearance-aware)
 
-A **theme** is a named, full-palette colour set. For each category key it defines
-`bg`, `fg`, `bold`, `cursor`, `sel`, and a 16-element `ansi` list; the **active theme**
-supplies the tint for every category. The taxonomy (dot/tag/label) is theme-independent —
-only the colours change between themes. Two ship:
+A **theme** has **two variants — `dark` and `light`** — and the **OS appearance picks
+which renders**. For each category key each variant defines `bg`, `fg`, `bold`, `cursor`,
+`sel`, and a 16-element `ansi` list. The taxonomy (dot/tag/label) is theme-independent —
+only the colours change. One theme ships:
 
-- **`dusk`** — the default: dark, muted.
-- **`sands`** — vibrant.
+- **`default`** — its **dark** half is **Dusk** (muted), its **light** half is **Sands**
+  (vibrant).
 
-The active theme is `config.active_theme()` — config key `theme`, validated against the
-available themes (shipped + user), falling back to `dusk`.
+So out of the box the terminal follows the OS — dark mode → Dusk, light mode → Sands —
+re-resolved every prompt/attach.
+
+**Two controls:**
+
+- **`config --tint-theme auto|dark|light`** (default `auto`) — the *appearance*: which
+  variant renders. `auto` detects the OS (macOS: `defaults read -g AppleInterfaceStyle`
+  → `Dark` means dark, else light; non-macOS / any failure → dark). `dark`/`light` force
+  it. Resolved by `categories.resolve_variant()`.
+- **`config --theme <name>`** — the *active theme* (config key `theme`, validated against
+  the available themes, default `default`). With one shipped theme this is mainly for
+  custom themes. Resolved by `config.active_theme()`.
+
+`tint_escape` resolves: **active theme → variant (appearance) → that variant's
+per-category palette** (falling back to the `default` theme's variant), then emits the OSC
+escapes.
 
 ```text
-config --theme                 # list shipped + user themes, mark the active one (also: list)
-config --theme sands           # select a theme as active
-config --theme save my-theme   # snapshot the effective active palette into config.json
+config --tint-theme            # show / set appearance (auto|dark|light)
+config --theme                 # list themes + active + the resolved variant (also: list)
+config --theme <name>          # select a (custom) theme as active
+config --theme save my-theme   # snapshot the current resolved palette into config.json
 config --theme edit            # print the config.json path (edit user themes there)
-config --theme preview         # render an HTML gallery → <data_dir>/themes-preview.html
+config --theme preview         # render an HTML gallery (both variants) → <data_dir>/themes-preview.html
 ```
 
 `--theme` is **verb-first**: the first token is a verb if it's one of
@@ -130,20 +145,24 @@ config --theme preview         # render an HTML gallery → <data_dir>/themes-pr
 
 ### Overriding & adding themes
 
-`config.json` `themes` is **deep-merged** over the shipped `THEMES`, per theme → per
-category → per field — so you can tweak one colour, or add a whole new named theme, and
-it survives `/plugin update`. `effective_themes()` does the merge (on a deep copy; the
-shipped themes are never mutated). Examples:
+`config.json` `themes` is **deep-merged** over the shipped `THEMES`, **variant-nested**
+(theme → `dark`|`light` → category → field) — so you can tweak one colour, or add a whole
+new named theme, and it survives `/plugin update`. `effective_themes()` does the merge (on
+a deep copy; the shipped theme is never mutated). A theme that defines only one variant
+falls back to `default` for the other (per category). Examples:
 
 ```jsonc
 {
-  "theme": "sands",                                 // active theme
+  "theme": "default",                                  // active theme (default: default)
+  "tint_theme": "auto",                                // appearance: auto|dark|light
   "themes": {
-    "dusk":  { "red": { "bg": "#1a0e10" } },        // tweak one field of a shipped theme
-    "ocean": {                                       // a brand-new named theme
-      "green": { "bg": "#001a22", "fg": "#dfeef2", "bold": "#5fd0dc",
-                 "cursor": "#5fd0dc", "sel": "#04323a",
-                 "ansi": ["#0b1416", "..."] }         // 16 entries
+    "default": { "dark": { "red": { "bg": "#1a0e10" } } },  // tweak one Dusk field
+    "ocean": {                                           // a brand-new named theme
+      "dark": {                                          // its light half falls back to default
+        "green": { "bg": "#001a22", "fg": "#dfeef2", "bold": "#5fd0dc",
+                   "cursor": "#5fd0dc", "sel": "#04323a",
+                   "ansi": ["#0b1416", "..."] }           // 16 entries
+      }
     }
   }
 }
@@ -151,8 +170,9 @@ shipped themes are never mutated). Examples:
 
 **Reserved theme names** (cannot be saved): `save`, `edit`, `preview`, `list`, `show`,
 `default`. A saved/added theme name must match `^[a-z0-9][a-z0-9_-]*$`. `config --theme
-save <name>` snapshots the **effective active** palette (full per-category set) under
-that name; it refuses reserved or malformed names.
+save <name>` snapshots the active theme's **currently-resolved** palette under the current
+variant (`themes[<name>][<dark|light>]`); the other variant falls back to `default`. It
+refuses reserved or malformed names.
 
 ## Enabled set (lean default that grows)
 
@@ -229,12 +249,14 @@ All category/colour logic lives in **`lib/categories.py`**, not in the core.
   tags, legend, and full-palette tinting on create/attach/resume and on skill runs.
 
 `lib/categories.py` exposes: `CATEGORIES` + `DEFAULT` (the dot/tag/label taxonomy),
-`THEMES` + `DEFAULT_THEME` (the named full palettes), `effective_themes` /
-`available_themes` / `theme_palette` (the merged registry + accessors), `normalize`,
-`label`, `tag`, `summary`, `legend`, `compact_legend`, `tint_escape` (the active-theme
-full-palette escape string, `""` when tinting is off / the colour or terminal is
-unsupported), and `picker_lines` (the colour-choosing guidance, served via
-`task-station.py guidance`). The active theme name is resolved by `config.active_theme()`.
+`THEMES` + `DEFAULT_THEME` + `VARIANTS` + `VARIANT_NAMES` (the appearance-aware full
+palettes), `effective_themes` / `available_themes` / `theme_palette` (the merged registry
++ accessors), `resolve_variant` / `tint_theme_setting` (the appearance), `normalize`,
+`label`, `tag`, `summary`, `legend`, `compact_legend`, `tint_escape` (the active-theme,
+resolved-variant full-palette escape string, `""` when tinting is off / the colour or
+terminal is unsupported), and `picker_lines` (the colour-choosing guidance, served via
+`task-station.py guidance`). The active theme name is resolved by `config.active_theme()`,
+the variant by `config.tint_theme()` → `categories.resolve_variant()`.
 
 **Do not edit `lib/categories.py` directly** — changes are overwritten on `/plugin
 update`. Customize via `config.json` instead (path shown by `task-station config
@@ -251,16 +273,19 @@ JSON shape (all keys optional — only what you set is stored):
   "categories": {
     "green": { "tag": "VOLT", "label": "volt work" }   // dot + colour inherited
   },
-  "theme": "sands",                                     // active theme (default: dusk)
-  "themes": {
-    "dusk":  { "green": { "bold": "#d7f528" } },        // tweak one shipped-theme field
+  "theme": "default",                                   // active theme (default: default)
+  "tint_theme": "auto",                                 // appearance: auto|dark|light
+  "themes": {                                            // variant-nested: theme → dark|light → cat → field
+    "default": { "dark": { "green": { "bold": "#d7f528" } } },  // tweak one Dusk field
     "ocean": {                                           // a brand-new named theme
-      "green": { "bg": "#001a22", "fg": "#dfeef2", "bold": "#5fd0dc",
-                 "cursor": "#5fd0dc", "sel": "#04323a",
-                 "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1",
-                          "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f",
-                          "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0",
-                          "#e9ebeb"] }
+      "dark": {                                          // its light half falls back to default
+        "green": { "bg": "#001a22", "fg": "#dfeef2", "bold": "#5fd0dc",
+                   "cursor": "#5fd0dc", "sel": "#04323a",
+                   "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1",
+                            "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f",
+                            "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0",
+                            "#e9ebeb"] }
+      }
     }
   },
   "enabled_categories": ["red", "white", "pink", "black", "green"],
@@ -275,18 +300,19 @@ JSON shape (all keys optional — only what you set is stored):
   explicit `dot` overrides it. Colour is **not** here — it lives in `themes`. Entries
   missing `tag` or `label` are silently skipped; any invalid JSON leaves the shipped
   defaults entirely intact.
-- **`theme`** — the active theme name (default `dusk`); validated against the available
-  themes, falling back to `dusk`. Set via `config --theme <name>`.
-- **`themes`** — per-theme → per-category → per-field overrides deep-merged over the
-  shipped `THEMES`; brand-new named themes are allowed. Fields per category: `bg`, `fg`,
-  `bold`, `cursor`, `sel`, `ansi` (16 entries). Survives `/plugin update`.
+- **`theme`** — the active theme name (default `default`); validated against the available
+  themes, falling back to `default`. Set via `config --theme <name>`.
+- **`themes`** — **variant-nested** (theme → `dark`|`light` → category → field) overrides
+  deep-merged over the shipped `THEMES`; brand-new named themes are allowed (a missing
+  variant falls back to `default`). Fields per category: `bg`, `fg`, `bold`, `cursor`,
+  `sel`, `ansi` (16 entries). Survives `/plugin update`.
 - **`enabled_categories`** — the list of "on" colour keys (see *Enabled set*).
   Absent ⇒ CORE (`BUG · FEATURE · GENERAL`); `⚫ GENERAL` is always forced in. Usually
   set via `config --enable` / `--disable` (or grown automatically by auto-enable).
 - **`tint_terminal`** toggles tinting globally. Set `false` to keep the `<emoji> [TAG]`
   decoration without any terminal tinting.
-- **`tint_theme`** — `"auto"` (follow OS appearance), `"dark"`, or `"light"`. See
-  *Dark / light* above.
+- **`tint_theme`** — the appearance: `"auto"` (follow OS appearance), `"dark"`, or
+  `"light"`. Picks which **variant** of the active theme renders. See *Themes* above.
 - **`skill_colors`** entries are **prepended** to the shipped list, so your patterns win;
   each is `["regex", "color"]`, first match wins.
 

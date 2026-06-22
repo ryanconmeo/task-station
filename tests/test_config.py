@@ -17,10 +17,10 @@ class Config(unittest.TestCase):
         os.environ.pop("TASK_STATION_HOME", None); shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_set_get_roundtrip(self):
-        config.set("theme", "sands")
-        self.assertEqual(config.get("theme"), "sands")
+        config.set("tint_theme", "dark")
+        self.assertEqual(config.get("tint_theme"), "dark")
         with open(os.path.join(self.tmp, "config.json")) as f:
-            self.assertEqual(json.load(f)["theme"], "sands")
+            self.assertEqual(json.load(f)["tint_theme"], "dark")
 
     def test_get_default_when_absent(self):
         self.assertEqual(config.get("tint_mode", "auto"), "auto")
@@ -31,8 +31,8 @@ class Config(unittest.TestCase):
                          [os.path.expanduser("~/a"), os.path.expanduser("~/b")])
 
     def test_unset_restores_default(self):
-        config.set("theme", "sands"); config.unset("theme")
-        self.assertEqual(config.get("theme", "dusk"), "dusk")
+        config.set("tint_theme", "dark"); config.unset("tint_theme")
+        self.assertEqual(config.get("tint_theme", "auto"), "auto")
 
     def test_title_enabled_default_on(self):
         os.environ.pop("TASK_STATION_TITLE", None)
@@ -86,7 +86,8 @@ class Board(unittest.TestCase):
         os.environ["COLUMNS"] = "120"
         board = config.render_board()
         self.assertIn("OPTIONS", board)
-        self.assertIn("dusk · sands", board)
+        self.assertIn("auto · dark · light", board)   # --tint-theme options
+        self.assertIn("default", board)               # --theme value/options
         self.assertIn("on · off", board)
         self.assertIn("edit·toggle", board)
 
@@ -146,7 +147,7 @@ class Board(unittest.TestCase):
             col = header.index("WHAT IT DOES")
             # prefixes that survive textwrap at every width (each starts its desc).
             for needle in ("enabled set", "install bare",
-                           "terminal color theme", "wire the dependency-free"):
+                           "active color theme", "wire the dependency-free"):
                 row = next(l for l in lines if needle in l)
                 self.assertEqual(row.index(needle), col,
                                  "misaligned at COLUMNS=%s: %r" % (cols, needle))

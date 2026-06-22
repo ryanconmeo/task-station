@@ -38,8 +38,8 @@ class NewDefaults(_Base):
         self.assertEqual(c.CATEGORIES["white"]["tag"], "DESIGN")
         self.assertEqual(c.CATEGORIES["white"]["dot"], "🎨")
         self.assertEqual(c.CATEGORIES["white"]["label"], "design")
-        self.assertIn("white", c.THEMES["dusk"])        # white has a palette per theme
-        self.assertIn("white", c.THEMES["sands"])
+        self.assertIn("white", c.THEMES["default"]["dark"])    # palette per variant
+        self.assertIn("white", c.THEMES["default"]["light"])
 
     def test_pink_is_personal_heart(self):
         c = self._reload()
@@ -53,8 +53,8 @@ class NewDefaults(_Base):
         self.assertEqual(c.CATEGORIES["silver"]["tag"], "TOOLING")
         self.assertEqual(c.CATEGORIES["silver"]["dot"], "🪩")
         self.assertEqual(c.CATEGORIES["silver"]["label"], "dev/AI tooling, config, env")
-        self.assertIn("silver", c.THEMES["dusk"])
-        self.assertIn("silver", c.THEMES["sands"])
+        self.assertIn("silver", c.THEMES["default"]["dark"])
+        self.assertIn("silver", c.THEMES["default"]["light"])
 
     def test_resolve_new_tags(self):
         c = self._reload()
@@ -67,9 +67,10 @@ class NewDefaults(_Base):
         # The palette is supplied by the ACTIVE theme per SLOT KEY: white carries
         # DESIGN, silver carries TOOLING. tint_escape emits the slot's bg (OSC 11)
         # whether addressed by key or by the category's [TAG]/label.
+        self._write_config({"tint_theme": "dark"})   # force the dark variant
         c = self._reload()
-        white_bg = "\033]11;%s\007" % c.THEMES["dusk"]["white"]["bg"]
-        silver_bg = "\033]11;%s\007" % c.THEMES["dusk"]["silver"]["bg"]
+        white_bg = "\033]11;%s\007" % c.THEMES["default"]["dark"]["white"]["bg"]
+        silver_bg = "\033]11;%s\007" % c.THEMES["default"]["dark"]["silver"]["bg"]
         self.assertIn(white_bg, c.tint_escape("white", "auto", "iterm"))
         self.assertIn(silver_bg, c.tint_escape("silver", "auto", "iterm"))
         self.assertIn(white_bg, c.tint_escape("DESIGN", "auto", "iterm"))
@@ -99,10 +100,11 @@ class SlotDeterminesEmoji(_Base):
     def test_override_palette_comes_from_active_theme(self):
         # An override that sets only {tag,label} leaves colour to the active theme,
         # resolved by SLOT KEY — so tint_escape still emits green's full theme palette.
-        self._write_config({"categories": {"green": {"tag": "VOLT", "label": "volt work"}}})
+        self._write_config({"categories": {"green": {"tag": "VOLT", "label": "volt work"}},
+                            "tint_theme": "dark"})
         c = self._reload()
         self.assertEqual(c.CATEGORIES["green"]["tag"], "VOLT")
-        p = c.THEMES["dusk"]["green"]
+        p = c.THEMES["default"]["dark"]["green"]
         self.assertEqual(len(p["ansi"]), 16)
         out = c.tint_escape("green", "auto", "iterm")
         self.assertIn("\033]10;%s\007" % p["fg"], out)                          # fg from theme

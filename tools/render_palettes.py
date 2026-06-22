@@ -53,11 +53,10 @@ _CSS = """
   .meta .sw{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:-1px;margin-right:4px;border:1px solid rgba(255,255,255,.18)}
 """
 
-# Per-theme section chrome. Shipped themes get their tuned copy; any user theme
-# falls back to a neutral badge/tagline.
-_SECTION_CHROME = {
-    "dusk":  ("dark · default", "muted · legible cream prose · soft accents"),
-    "sands": ("vibrant", "saturated · bright accents · same hues as dusk"),
+# Per-variant section chrome (each theme renders both halves).
+_VARIANT_CHROME = {
+    "dark":  ("dark", "muted · legible cream prose · soft accents"),
+    "light": ("light", "vibrant · saturated · bright accents"),
 }
 
 
@@ -108,7 +107,9 @@ def _card(meta, pal):
 
 def render_html(themes=None):
     """The full self-contained HTML gallery for `themes` (default: the effective
-    theme registry). Categories render in the canonical CATEGORIES order."""
+    theme registry). For EACH theme it renders BOTH variants (dark + light) — a
+    theme that doesn't define a variant falls back to the shipped `default` (via
+    categories.theme_palette). Categories render in canonical CATEGORIES order."""
     if themes is None:
         themes = categories.effective_themes()
     try:
@@ -116,6 +117,8 @@ def render_html(themes=None):
     except Exception:
         order = list(themes)
     order = [t for t in order if t in themes] + [t for t in themes if t not in order]
+    variants = getattr(categories, "VARIANTS", ("dark", "light"))
+    vnames = getattr(categories, "VARIANT_NAMES", {})
 
     out = [
         "<!doctype html>", '<html lang="en"><head><meta charset="utf-8">',
@@ -124,22 +127,27 @@ def render_html(themes=None):
         '</head><body><div class="wrap">',
         '<div class="kicker">Task Station · themes</div>',
         "<h1>Themes</h1>",
-        '<p class="lede">One full palette per category, per theme. Each card is a real '
-        "terminal scene — comment · command (bold word) · prose · "
-        "<em>selected</em> span · ERR/warn/ok · cursor — plus the 16-ANSI strip.</p>",
+        '<p class="lede">Each theme has two variants — <b>dark</b> and <b>light</b> — and '
+        "the OS appearance picks which renders. Each card is a real terminal scene — "
+        "comment · command (bold word) · prose · <em>selected</em> span · ERR/warn/ok · "
+        "cursor — plus the 16-ANSI strip.</p>",
     ]
     for tname in order:
-        pals = themes.get(tname) or {}
-        badge, tagline = _SECTION_CHROME.get(tname, ("user theme", "custom palette"))
-        out.append('<div class="sec"><h2>%s</h2><span class="badge">%s</span>'
-                   '<span class="tagline">%s</span></div>' % (_e(tname), _e(badge), _e(tagline)))
-        out.append('<div class="grid">')
-        for key in categories.CATEGORIES:
-            if key not in pals:
-                continue
-            meta = dict(categories.CATEGORIES[key]); meta["_key"] = key
-            out.append(_card(meta, pals[key]))
-        out.append("</div>")
+        for variant in variants:
+            badge, tagline = _VARIANT_CHROME.get(variant, (variant, ""))
+            vname = vnames.get(variant, "")
+            label = "%s · %s%s" % (tname, variant, (" — %s" % vname) if vname else "")
+            out.append('<div class="sec"><h2>%s</h2><span class="badge">%s</span>'
+                       '<span class="tagline">%s</span></div>'
+                       % (_e(label), _e(badge), _e(tagline)))
+            out.append('<div class="grid">')
+            for key in categories.CATEGORIES:
+                pal = categories.theme_palette(tname, key, variant)
+                if not pal:
+                    continue
+                meta = dict(categories.CATEGORIES[key]); meta["_key"] = key
+                out.append(_card(meta, pal))
+            out.append("</div>")
     out.append("</div></body></html>")
     return "\n".join(out) + "\n"
 
