@@ -25,14 +25,14 @@ Running `/todo` prints your board — rendered exactly as it appears in the term
 | ● | 142 | Fix OAuth redirect loop on Safari | 🔴 [BUG] | `▰▰▱▱▱ S` | just now |
 | ○ | 138 | Ship the dark-mode toggle ⧉2 | 🟢 [FEATURE] | `▰▰▰▱▱ M` | 2h ago |
 | ○ | 131 | Address review feedback on PR 284 | 🟡 [FIX] | `▰▰▱▱▱ S` | 5h ago |
-| ○ | 119 | Migrate billing schema to Postgres | 🟤 [DATABASE] | `▰▰▰▰▱ L` | 1d ago |
-| ○ | 88 | Publish task-station to the marketplace | 🪩 [AI CONFIG] | `▰▰▰▱▱ M` | 3d ago |
+| ○ | 119 | Migrate billing schema to Postgres | 🟤 [DATA] | `▰▰▰▰▱ L` | 1d ago |
+| ○ | 88 | Publish task-station to the marketplace | 🪩 [TOOLING] | `▰▰▰▱▱ M` | 3d ago |
 
 **Closed**
 
 |  | # | Task | Category | Effort | Activity |
 |:-:|--:|------|----------|--------|----------|
-| ✕ | 134 | Add retry/backoff to webhook dispatch | 🔵 [DEVOPS] | `▰▰▱▱▱ S` | 1d ago |
+| ✕ | 134 | Add retry/backoff to webhook dispatch | 🔵 [INFRA] | `▰▰▱▱▱ S` | 1d ago |
 | ✕ | 127 | Rework the settings page layout | 🎨 [DESIGN] | `▰▰▰▱▱ M` | 2d ago |
 
 *… 42 older closed task(s) hidden — show more with `/todo closed N` or `/todo all`.*
@@ -120,9 +120,9 @@ Twelve colour categories, each with a tag and a full terminal palette:
 | | Category | | Category | | Category |
 |---|---|---|---|---|---|
 | 🔴 | BUG | 🟢 | FEATURE | 🩷 | PERSONAL |
-| 🟠 | REVIEW | 🔵 | DEVOPS | 🎨 | DESIGN |
-| 🟡 | FIX | 🟣 | SPECIAL | 🪩 | AI CONFIG |
-| ⚫ | GENERAL | 🟤 | DATABASE | 🟨 | GOLD |
+| 🟠 | REVIEW | 🔵 | INFRA | 🎨 | DESIGN |
+| 🟡 | FIX | 🟣 | RESEARCH | 🪩 | TOOLING |
+| ⚫ | GENERAL | 🟤 | DATA | 📖 | DOCS |
 
 Tinting is **zero‑setup** on iTerm2 and Apple Terminal: Task Station writes OSC escapes directly to the originating window — background, foreground, cursor, the full 16‑colour ANSI palette, and (on iTerm) bold. No profiles or shell aliases required. Trim the set with presets (`config --categories preset minimal|web|data|ops|full`) or customise tags, labels and palettes in `config.json` — your edits survive plugin updates. See [CATEGORIES.md](CATEGORIES.md).
 

@@ -37,7 +37,7 @@ TINT_TERMINAL = True
 #
 # Palette by slot: the per-slot palette is kept BY SLOT through the white↔silver
 # category swap — the `white` slot keeps White Sands (now home to 🎨 DESIGN) and
-# `silver` keeps Silver Sands (now home to 🪩 AI CONFIG). Only the dot/tag/label
+# `silver` keeps Silver Sands (now home to 🪩 TOOLING). Only the dot/tag/label
 # move between the two slots; each category thus lands on the intended palette.
 # Each slot bakes in a full "Sands" palette (background/foreground/bold/cursor +
 # 16 ANSI colors + selection), emitted as terminal escapes by tint_escape. The
@@ -70,13 +70,13 @@ CATEGORIES = {
         "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
     },
     "blue": {
-        "dot": "🔵", "tag": "DEVOPS", "label": "devops",
+        "dot": "🔵", "tag": "INFRA", "label": "CI/CD, pipelines, cloud, deploy",
         "hex": "#0d1b4b", "hex_light": "#0d1b4b",
         "fg": "#c0d8f0", "bold": "#5bc8f5", "cursor": "#ffffff", "selbg": "#c35a96",
         "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
     },
     "purple": {
-        "dot": "🟣", "tag": "SPECIAL", "label": "special",
+        "dot": "🟣", "tag": "RESEARCH", "label": "spikes / investigation",
         "hex": "#330056", "hex_light": "#330056",
         "fg": "#ca75ff", "bold": "#e9afff", "cursor": "#ffffff", "selbg": "#c3945a",
         "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
@@ -100,19 +100,19 @@ CATEGORIES = {
         "ansi": ["#2d3840", "#b45648", "#6caa71", "#c4ac62", "#5685a8", "#ad64be", "#69c6c9", "#c1c8cc", "#506573", "#df6c5a", "#79be7e", "#e5c872", "#49a2e1", "#d389e5", "#77e1e5", "#d8e1e7"],
     },
     "silver": {
-        "dot": "🪩", "tag": "AI CONFIG", "label": "AI tooling & config",
+        "dot": "🪩", "tag": "TOOLING", "label": "dev/AI tooling, config, env",
         "hex": "#191d27", "hex_light": "#191d27",
         "fg": "#e0e0e0", "bold": "#ea7ba5", "cursor": "#e6709e", "selbg": "#c35a7f",
         "ansi": ["#35424c", "#b45648", "#6caa71", "#c4ac62", "#6d96b4", "#bd7bcd", "#7ccbcd", "#dee5eb", "#465c6d", "#df6c5a", "#79be7e", "#e5c872", "#67b5ed", "#d389e5", "#84dde0", "#e5eff5"],
     },
     "gold": {
-        "dot": "🟨", "tag": "GOLD", "label": "reserved",
+        "dot": "📖", "tag": "DOCS", "label": "documentation, writing",
         "hex": "#4e3507", "hex_light": "#4e3507",
         "fg": "#f8eaa5", "bold": "#ffdb00", "cursor": "#ffffff", "selbg": "#5ac3aa",
         "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
     },
     "brown": {
-        "dot": "🟤", "tag": "DATABASE", "label": "database",
+        "dot": "🟤", "tag": "DATA", "label": "databases, schemas, ETL, migrations",
         "hex": "#22140c", "hex_light": "#22140c",
         "fg": "#f4bf7f", "bold": "#ef7300", "cursor": "#ffffff", "selbg": "#5ac38d",
         "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
@@ -129,9 +129,9 @@ SLOT_DOTS = {key: meta["dot"] for key, meta in CATEGORIES.items()}
 # A seeded-but-removable set of "on" slots, persisted in config.json as
 # `enabled_categories`. Unconfigured ⇒ the full set (back-compat). ⚫ GENERAL is
 # PERMANENT: always enabled, never disable-able. Universal core (seeded in every
-# preset, removable except GENERAL): BUG · AI CONFIG · PERSONAL · GENERAL.
+# preset, removable except GENERAL): BUG · TOOLING · PERSONAL · GENERAL.
 PERMANENT = "black"
-CORE = ("red", "silver", "pink", "black")  # BUG · AI CONFIG · PERSONAL · GENERAL
+CORE = ("red", "silver", "pink", "black")  # BUG · TOOLING · PERSONAL · GENERAL
 PRESETS = {
     "minimal": list(CORE),
     "web":     list(CORE) + ["green", "white", "blue", "orange", "yellow"],
@@ -152,7 +152,7 @@ SKILL_COLORS = [
     (r"fix-pr",                                                    "yellow"),  # fixing PR review feedback
     (r"review|security-review",                                    "orange"),  # PR / code review
     (r"update-config|keybindings|permission|schedule|statusline|"
-     r"\binit\b|claude-api|\bloop\b|deep-research|simplify|verify", "silver"),  # Claude tooling skills → AI CONFIG (silver slot)
+     r"\binit\b|claude-api|\bloop\b|deep-research|simplify|verify", "silver"),  # Claude tooling skills → TOOLING (silver slot)
 ]
 
 def _apply_overrides():
@@ -291,8 +291,8 @@ def _build_aliases():
     or human label — whatever the caller copied out of the legend/picker.
 
     Exact keys are registered first so they can never be shadowed; everything
-    else uses setdefault so the first (primary) category wins a shared token
-    (e.g. the 🟡 dot and the "reserved" label, which two entries each carry)."""
+    else uses setdefault so the first (primary) category wins any token shared
+    between two slots."""
     m = {}
     for key in CATEGORIES:
         m[key] = key
@@ -398,28 +398,23 @@ def _enabled_items():
 
 
 def legend():
-    """Compact one-line legend of the enabled, assigned (non-reserved) categories."""
-    parts = ["%s %s" % (tag(c), m["label"])
-             for c, m in _enabled_items() if m["label"] != "reserved"]
+    """Compact one-line legend of the enabled categories."""
+    parts = ["%s %s" % (tag(c), m["label"]) for c, m in _enabled_items()]
     return "Legend: " + "  ·  ".join(parts)
 
 
 def compact_legend():
     """Minimal key=dot+TAG legend for the per-prompt hook (token-lean).
-    Only enabled, non-reserved categories appear."""
+    Only enabled categories appear."""
     return " ".join("%s=%s%s" % (c, m["dot"], m["tag"])
-                    for c, m in _enabled_items() if m["label"] != "reserved")
+                    for c, m in _enabled_items())
 
 
 def picker_lines():
     """Guidance lines for the UserPromptSubmit hook: how to choose a colour.
     Scoped to the enabled categories only."""
-    lines = ["Pick a category COLOR for the task from its context (see CATEGORIES.md):",
-             "  " + legend()]
-    reserved = [c for c, m in _enabled_items() if m["label"] == "reserved"]
-    if reserved:
-        lines.append("  (reserved / unassigned: " + ", ".join(reserved) + ")")
-    return lines
+    return ["Pick a category COLOR for the task from its context (see CATEGORIES.md):",
+            "  " + legend()]
 
 
 def _hex_of(color):

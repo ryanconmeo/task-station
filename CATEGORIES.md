@@ -60,20 +60,19 @@ reliable) → on iTerm, the session UUID in `$TERM_SESSION_ID` mapped to its `tt
 | orange | 🟠  | `[REVIEW]`    | code review                       |
 | yellow | 🟡  | `[FIX]`       | fixing PR review feedback         |
 | green  | 🟢  | `[FEATURE]`   | feature work                      |
-| blue   | 🔵  | `[DEVOPS]`    | devops                            |
-| purple | 🟣  | `[SPECIAL]`   | special                           |
+| blue   | 🔵  | `[INFRA]`     | CI/CD, pipelines, cloud, deploy   |
+| purple | 🟣  | `[RESEARCH]`  | spikes / investigation            |
 | black  | ⚫  | `[GENERAL]`   | general (the default, permanent)  |
 | pink   | 🩷  | `[PERSONAL]`  | personal projects                 |
 | white  | 🎨  | `[DESIGN]`    | design                            |
-| silver | 🪩  | `[AI CONFIG]` | AI tooling & config               |
-| gold   | 🟨  | `[GOLD]`      | reserved (unassigned)             |
-| brown  | 🟤  | `[DATABASE]` | database                          |
+| silver | 🪩  | `[TOOLING]`   | dev/AI tooling, config, env       |
+| gold   | 📖  | `[DOCS]`      | documentation, writing            |
+| brown  | 🟤  | `[DATA]`      | databases, schemas, ETL, migrations |
 
 Each task is rendered as `<dot> [TAG]` — e.g. `🔴 [BUG]`.
 
 `black` / general is the fallback for anything that doesn't fit a category, and is
 **permanent** — always enabled, cannot be disabled (see *Enabled set & presets* below).
-`gold` is reserved — leave it unassigned until it gets a meaning.
 
 ### The dot is slot-canonical — "you pick the colour; the colour determines the icon"
 
@@ -92,12 +91,13 @@ Pick from the *nature of the work*, not the surface keywords:
 - **orange** — reviewing someone's code / a PR (running a review, leaving review threads).
 - **yellow** — fixing PR *review feedback* on your own PR (addressing threads, pushing fixes, replying/resolving).
 - **green** — feature / product coding.
-- **blue** — infra, deploys, DNS, domains, CI, environment setup.
+- **blue** — CI/CD, pipelines, cloud, deploys, DNS, domains, environment setup (🔵 INFRA).
 - **white** — UI/UX, theming, dark mode, layout, visual design (🎨).
 - **pink** — personal projects / side work (🩷).
-- **silver** — AI tooling & config: skills, slash commands, hooks, memory, this task-station system (🪩).
-- **brown** — database work: schema, queries, SQL, DB tuning, **and data migrations** (moving/transforming data between systems counts as database work).
-- **purple** — anything genuinely special / one-off that warrants standing out.
+- **silver** — dev/AI tooling, config & env: skills, slash commands, hooks, memory, this task-station system (🪩 TOOLING).
+- **brown** — data work: databases, schemas, queries, SQL, ETL, **and data migrations** (moving/transforming data between systems) (🟤 DATA).
+- **purple** — spikes / investigation: research, prototypes, one-off exploration (🟣 RESEARCH).
+- **gold** — documentation & writing: READMEs, guides, changelogs, docs (📖 DOCS).
 - **black** — general / catch-all when nothing above fits.
 
 ## Dark / light
@@ -122,15 +122,15 @@ set** of all 12 shows (back-compat).
 ### Presets
 
 `task-station config --categories preset <name>` sets `enabled_categories` to a named
-preset. The **universal core** — `red BUG`, `silver AI CONFIG`, `pink PERSONAL`,
+preset. The **universal core** — `red BUG`, `silver TOOLING`, `pink PERSONAL`,
 `black GENERAL` — is seeded in **every** preset (removable except GENERAL):
 
 | preset    | enabled slots                                                   |
 |-----------|-----------------------------------------------------------------|
-| `minimal` | core only (BUG · AI CONFIG · PERSONAL · GENERAL)                 |
-| `web`     | core + FEATURE, DESIGN, DEVOPS, REVIEW, FIX                      |
-| `data`    | core + DATABASE, FEATURE, DEVOPS, REVIEW                         |
-| `ops`     | core + DEVOPS, DATABASE, REVIEW, FIX, SPECIAL                    |
+| `minimal` | core only (BUG · TOOLING · PERSONAL · GENERAL)                   |
+| `web`     | core + FEATURE, DESIGN, INFRA, REVIEW, FIX                       |
+| `data`    | core + DATA, FEATURE, INFRA, REVIEW                              |
+| `ops`     | core + INFRA, DATA, REVIEW, FIX, RESEARCH                        |
 | `full`    | all 12 (the default)                                            |
 
 - `task-station config --categories` (no arg) — show the current enabled set + presets.

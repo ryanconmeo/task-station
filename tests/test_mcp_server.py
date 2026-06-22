@@ -55,7 +55,7 @@ class McpServerTest(unittest.TestCase):
         t = self.mcp._create_task(
             "Wire up the deploy pipeline",
             "Set up CI for the new service.",
-            category="devops",
+            category="infra",
             effort="m",
             source="https://claude.ai/chat/abc-123",
         )
@@ -85,7 +85,7 @@ class McpServerTest(unittest.TestCase):
     def test_get_task_detail_includes_source(self):
         t = self.mcp._create_task(
             "Inspectable task", "A summary worth surfacing.",
-            category="devops", effort="l",
+            category="infra", effort="l",
             source="desktop://conversation/xyz",
         )
         self.mcp._add_note(str(t["seq"]), "looked into the logs")

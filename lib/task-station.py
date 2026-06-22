@@ -915,7 +915,7 @@ def cmd_attach(a):
             task["color"] = cats.normalize(requested)
         elif requested:
             print("⚠ Ignoring --color '%s': not a known category. Use a key, "
-                  "emoji, or [TAG] — e.g. brown, 🟤, or DATABASE. (Keeping %s.)"
+                  "emoji, or [TAG] — e.g. brown, 🟤, or DATA. (Keeping %s.)"
                   % (requested, task.get("color") or cats.DEFAULT))
             if not task.get("color"):
                 task["color"] = cats.DEFAULT

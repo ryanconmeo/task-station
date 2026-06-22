@@ -33,6 +33,17 @@ All notable changes to Task Station are documented here. This project adheres to
   `$COLUMNS`, falls back to 80, clamped to a minimum of 60). Pure stdlib.
 
 ### Changed
+- **Category taxonomy rebalance (slots/keys/palettes unchanged).** Five category
+  slots were renamed/clarified for everyday work — only `tag`/`label` (and one
+  dot) changed; colour keys, hexes and palettes are untouched, so existing tasks
+  and `config.json` overrides keep working: `purple` SPECIAL → **RESEARCH**
+  ("spikes / investigation"); `gold` GOLD/reserved → **DOCS** 📖
+  ("documentation, writing") — gold is now a real category, no longer a hidden
+  "reserved" slot; `blue` DEVOPS → **INFRA** ("CI/CD, pipelines, cloud, deploy");
+  `brown` DATABASE → **DATA** ("databases, schemas, ETL, migrations"); `silver`
+  AI CONFIG → **TOOLING** ("dev/AI tooling, config, env"). Presets and the
+  enabled-set default are unchanged (presets key on colour, not tag). The
+  legend/picker no longer special-case a "reserved" label.
 - **One config board, no duplication.** The separate `setup.status()` block
   printed after the no-arg board is gone; its facts (tint + terminal, policy,
   desktop-bridge) are folded into a compact `status` section at the bottom of the

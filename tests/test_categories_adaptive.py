@@ -47,25 +47,25 @@ class NewDefaults(_Base):
         self.assertEqual(c.CATEGORIES["pink"]["dot"], "🩷")
         self.assertEqual(c.CATEGORIES["pink"]["label"], "personal projects")
 
-    def test_silver_is_ai_config_disco(self):
-        # AI CONFIG occupies the silver slot → Silver Sands palette (theme-independent).
+    def test_silver_is_tooling_disco(self):
+        # TOOLING occupies the silver slot → Silver Sands palette (theme-independent).
         c = self._reload()
-        self.assertEqual(c.CATEGORIES["silver"]["tag"], "AI CONFIG")
+        self.assertEqual(c.CATEGORIES["silver"]["tag"], "TOOLING")
         self.assertEqual(c.CATEGORIES["silver"]["dot"], "🪩")
-        self.assertEqual(c.CATEGORIES["silver"]["label"], "AI tooling & config")
+        self.assertEqual(c.CATEGORIES["silver"]["label"], "dev/AI tooling, config, env")
         self.assertEqual(c.CATEGORIES["silver"]["hex"], "#191d27")        # Silver Sands bg
         self.assertEqual(c.CATEGORIES["silver"]["hex_light"], "#191d27")  # same in both themes
 
     def test_resolve_new_tags(self):
         c = self._reload()
-        self.assertEqual(c.resolve("AI CONFIG"), "silver")
+        self.assertEqual(c.resolve("TOOLING"), "silver")
         self.assertEqual(c.resolve("PERSONAL"), "pink")
         self.assertEqual(c.resolve("DESIGN"), "white")
         self.assertEqual(c.resolve("FIX"), "yellow")
 
     def test_palette_follows_swapped_slots(self):
         # The palette is a property of the SLOT: white→White Sands carries DESIGN,
-        # silver→Silver Sands carries AI CONFIG. tint_escape emits the slot's bg
+        # silver→Silver Sands carries TOOLING. tint_escape emits the slot's bg
         # (OSC 11) whether addressed by key or by the category's [TAG]/label.
         c = self._reload()
         white_bg = "\033]11;%s\007" % c.CATEGORIES["white"]["hex"]
@@ -73,11 +73,11 @@ class NewDefaults(_Base):
         self.assertIn(white_bg, c.tint_escape("white", "auto", "iterm"))
         self.assertIn(silver_bg, c.tint_escape("silver", "auto", "iterm"))
         self.assertIn(white_bg, c.tint_escape("DESIGN", "auto", "iterm"))
-        self.assertIn(silver_bg, c.tint_escape("AI CONFIG", "auto", "iterm"))
+        self.assertIn(silver_bg, c.tint_escape("TOOLING", "auto", "iterm"))
 
 
 class SkillColorRedirect(_Base):
-    """A'. Claude-tooling skills tint AI CONFIG, which now lives on the silver slot."""
+    """A'. Claude-tooling skills tint TOOLING, which now lives on the silver slot."""
     def test_tooling_skill_tints_silver(self):
         c = self._reload()
         self.assertEqual(c.color_for_prompt("/update-config"), "silver")
@@ -164,7 +164,7 @@ class EnabledSet(_Base):
 
 class Presets(_Base):
     """D. Presets, with the universal core in every one."""
-    CORE = {"red", "silver", "pink", "black"}   # AI CONFIG now on the silver slot
+    CORE = {"red", "silver", "pink", "black"}   # TOOLING now on the silver slot
 
     def test_minimal_is_core_only(self):
         c = self._reload()
@@ -190,7 +190,7 @@ class Presets(_Base):
         c = self._reload()
         self.assertEqual(set(c.preset_keys("web")),
                          self.CORE | {"green", "white", "blue", "orange", "yellow"})
-        # web still contains both AI CONFIG (silver, via core) and DESIGN (white)
+        # web still contains both TOOLING (silver, via core) and DESIGN (white)
         self.assertIn("silver", c.preset_keys("web"))
         self.assertIn("white", c.preset_keys("web"))
 
@@ -266,7 +266,7 @@ class LegendRespectsEnabled(_Base):
         self.assertIn("BUG", leg)
         self.assertIn("GENERAL", leg)
         self.assertNotIn("FEATURE", leg)
-        self.assertNotIn("DEVOPS", leg)
+        self.assertNotIn("INFRA", leg)
 
     def test_compact_legend_limited_to_enabled(self):
         self._write_config({"enabled_categories": ["red", "black"]})
@@ -275,12 +275,13 @@ class LegendRespectsEnabled(_Base):
         self.assertIn("red=", comp)
         self.assertNotIn("green=", comp)
 
-    def test_full_legend_shows_assigned_not_reserved(self):
+    def test_full_legend_shows_all_assigned_categories(self):
         c = self._reload()
         leg = c.legend()
         self.assertIn("PERSONAL", leg)
         self.assertIn("DESIGN", leg)
-        self.assertNotIn("reserved", leg)   # gold is reserved
+        self.assertIn("DOCS", leg)           # gold is now a real category (no longer reserved/hidden)
+        self.assertNotIn("reserved", leg)    # the "reserved" concept is gone
 
 
 if __name__ == "__main__":
