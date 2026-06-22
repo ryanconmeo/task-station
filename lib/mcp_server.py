@@ -108,6 +108,10 @@ def _create_task(title, summary="", category=None, effort=None, source=None):
         task["source"] = str(source)
     ts.touch(task, note="created (Desktop bridge)")
     ts.save_task(task)
+    # Grow the board if this lands on a not-yet-enabled slot (auto_categories on).
+    # Persist silently — this channel is JSON-RPC, so no stdout notice here.
+    if task.get("color") and ts.cats and hasattr(ts.cats, "auto_enable"):
+        ts.cats.auto_enable(task.get("color"))
     return ts.load_task(task["id"])
 
 

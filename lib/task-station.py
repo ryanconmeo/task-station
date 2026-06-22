@@ -177,6 +177,17 @@ def cat_lines(color):
     return [cats.summary(color)]
 
 
+def auto_enable_category(color):
+    """If `color` is a real category not yet on the board and auto_categories is on,
+    enable it and print a one-line notice (so the board grows as tasks are
+    categorised). No-op when categories are off / the helper is unavailable."""
+    if not cats or not color or not hasattr(cats, "auto_enable"):
+        return
+    msg = cats.auto_enable(color)
+    if msg:
+        print(msg)
+
+
 # ----------------------------------------------------------------- effort ----
 # Optional per-task effort estimate (complexity / scope), shown as a column in
 # the /todo list. Canonical t-shirt sizes; a 5-segment filled bar makes the
@@ -887,6 +898,7 @@ def cmd_create(a):
                   "session." % (task["id"][:8], task["title"], task["seq"]))
         for line in cat_lines(task.get("color")):
             print(line)
+        auto_enable_category(task.get("color"))
         return
 
     touch(task, session=session, note="created")
@@ -896,6 +908,7 @@ def cmd_create(a):
     print("Created and attached to task [%s] %s" % (task["id"][:8], task["title"]))
     for line in cat_lines(task.get("color")):
         print(line)
+    auto_enable_category(task.get("color"))
 
 
 def cmd_attach(a):
@@ -935,6 +948,7 @@ def cmd_attach(a):
              " (note appended)" if note and note.strip() else ""))
     for line in cat_lines(task.get("color")):
         print(line)
+    auto_enable_category(task.get("color"))
 
 
 def cmd_bump(a):
@@ -1648,6 +1662,10 @@ def _update_one(ref, a):
     touch(task, note="scope updated: " + ", ".join(changed))
     save_task(task)
     msgs.append("updated task %s: %s" % (label, ", ".join(changed)))
+    if "color" in changed and cats and hasattr(cats, "auto_enable"):
+        notice = cats.auto_enable(task.get("color"))
+        if notice:
+            msgs.append("  ↳ " + notice)
     # A scope change is the moment effort might have grown or shrunk — prompt a
     # re-rate so the column tracks reality, but only when this update touched
     # scope WITHOUT already re-rating (so re-setting effort itself stays quiet).
@@ -2333,6 +2351,10 @@ def main():
                     help="enable a category slot (key, emoji, or [TAG])")
     sp.add_argument("--disable", dest="disable", default=None,
                     help="disable a category slot (refuses ⚫ GENERAL — permanent)")
+    sp.add_argument("--auto-categories", dest="auto_categories", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="auto-enable a category slot the first time a task is assigned to it (default on)")
+    sp.add_argument("--auto-categories-get", dest="auto_categories_get", action="store_true")
     sp.add_argument("--bare-cmds", dest="bare_cmds", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--bare-cmds-get", dest="bare_cmds_get", action="store_true")
     sp.add_argument("--update-check", dest="update_check", nargs="?", choices=["on","off"], const="on", default=None)

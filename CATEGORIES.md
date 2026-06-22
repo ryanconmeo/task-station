@@ -127,6 +127,27 @@ as you categorise tasks — see *Auto-enable* below.)
   (accepts a key, emoji, or `[TAG]`). Disabling `black`/`GENERAL` is refused.
 - Editing the raw `categories` override map in `config.json` still works.
 
+### Auto-enable (the board grows itself)
+
+The categoriser always considers the **full 12-slot taxonomy** so it can pick the most
+accurate category — even one that isn't on the board yet. When **`auto_categories`** is on
+(the default) and a task is assigned to a slot that isn't in the enabled set, that slot is
+**enabled automatically** (persisted to `enabled_categories`) and prints a one-line notice,
+e.g. `enabled new category 🔵 [INFRA]`. From then on it shows on the board and legend like
+any other. This applies to every assignment path: `create --color`, `attach --color`,
+`update --color`, and the Desktop bridge's create tool.
+
+The enabled set governs **display only** — assignment can target any taxonomy slot
+regardless of what's enabled. So the board converges on exactly the categories you use,
+starting from CORE, with no manual curation.
+
+Turn it off to keep a fixed set:
+
+- `task-station config --auto-categories off` (or `--auto-categories-get` to read it),
+  or the env escape `TASK_STATION_AUTO_CATEGORIES=off`.
+- With auto-enable off, assignment no longer grows the board; the legend/picker restrict
+  to the currently-enabled slots, and you curate the set by hand with `--enable`/`--disable`.
+
 ## Skill → colour (immediate tinting)
 
 The `skill_colors` array in `config.json` is an ordered list of `["regex", "color"]`

@@ -124,7 +124,7 @@ Twelve colour categories, each with a tag and a full terminal palette:
 | 🟡 | FIX | 🟣 | RESEARCH | 🪩 | TOOLING |
 | ⚫ | GENERAL | 🟤 | DATA | 📖 | DOCS |
 
-The **board starts lean** — only the **CORE** set (`🔴 BUG`, `🟢 FEATURE`, `⚫ GENERAL`) shows on a fresh install, so you're not staring at twelve slots you don't use yet. The full taxonomy is always available to the categoriser; slots light up on the board as you use them. Toggle slots by hand with `config --enable`/`--disable`, or customise tags, labels and palettes in `config.json` — your edits survive plugin updates. See [CATEGORIES.md](CATEGORIES.md).
+The **board starts lean and grows by itself.** On a fresh install only the **CORE** set (`🔴 BUG`, `🟢 FEATURE`, `⚫ GENERAL`) shows — you're not staring at twelve slots you don't use yet. The full taxonomy is always available to the categoriser, and **auto-enable** does the rest: the first time a task is assigned to a category that isn't on the board, that slot is enabled automatically (with a one-line `enabled new category 🔵 [INFRA]` notice) and stays on the board thereafter. So the board converges on exactly the categories *you* actually use, with zero setup. Prefer a fixed set? `config --auto-categories off` (or `TASK_STATION_AUTO_CATEGORIES=off`) freezes it; then toggle slots by hand with `config --enable`/`--disable`. Customise tags, labels and palettes in `config.json` — your edits survive plugin updates. See [CATEGORIES.md](CATEGORIES.md).
 
 Tinting is **zero‑setup** on iTerm2 and Apple Terminal: Task Station writes OSC escapes directly to the originating window — background, foreground, cursor, the full 16‑colour ANSI palette, and (on iTerm) bold. No profiles or shell aliases required.
 
@@ -156,6 +156,7 @@ This safely merges one entry into your existing Desktop config (backed up first)
 |---|---|---|---|
 | `--workspace-dirs <a:b>` | paths | unset | Repo roots for delegate's `--project` shorthand. |
 | `--categories [edit]` | — | CORE | Show the active category set (`edit` prints the config path). |
+| `--auto-categories [on\|off]` | on/off | on | Auto-enable a slot the first time a task is assigned to it (board grows itself). |
 | `--enable` / `--disable <key>` | category | — | Toggle a single category (GENERAL is permanent). |
 | `--tint-theme [auto\|dark\|light]` | auto/dark/light | auto | Tint palette; `auto` follows OS appearance. |
 | `--title [on\|off]` | on/off | on | Auto terminal title `#<seq>: <title>`. |

@@ -99,6 +99,15 @@ def title_enabled():
         return False
     return bool(get("title", True))
 
+def auto_categories_enabled():
+    """True unless explicitly disabled — default ON. Mirrors TASK_STATION_TITLE's
+    env escape: `TASK_STATION_AUTO_CATEGORIES=off` (or `config --auto-categories off`)
+    freezes the enabled set — assigning a task to a disabled slot no longer
+    auto-enables it (today's restrict-to-enabled behaviour)."""
+    if os.environ.get("TASK_STATION_AUTO_CATEGORIES") == "off":
+        return False
+    return bool(get("auto_categories", True))
+
 def enabled_categories():
     """The configured active-category key list, or None when unconfigured
     (categories.enabled_keys() then defaults to CORE — the lean default)."""
@@ -180,6 +189,8 @@ def render_board():
     rows = [
         ("--categories", _enabled_summary(), "edit·toggle",
          "enabled set (CORE default) + toggles"),
+        ("--auto-categories", "on" if auto_categories_enabled() else "off", "on · off",
+         "grow the board automatically as new categories are assigned"),
         ("category overrides", "%d override(s)" % n_cat if n_cat else "defaults", "edit",
          "custom tags/labels + skill auto-tint"),
         ("--bare-cmds", "on" if bare_commands() else "off", "on · off",
@@ -252,7 +263,10 @@ def _categories_status(cats):
     if disabled:
         lines.append("  off: " + ", ".join(disabled))
     lines.append("")
-    lines.append("The board starts lean at CORE (BUG · FEATURE · GENERAL).")
+    lines.append("The board starts lean at CORE (BUG · FEATURE · GENERAL) and grows on its own:")
+    lines.append("assigning a task to a new category auto-enables that slot. Freeze the set")
+    lines.append("with: config --auto-categories off  (currently %s)."
+                 % ("on" if auto_categories_enabled() else "off"))
     lines.append("")
     lines.append("Toggle individual slots: config --enable <key> · config --disable <key>")
     lines.append("(⚫ GENERAL is permanent — always on, cannot be disabled.)")
@@ -326,6 +340,11 @@ def cmd_config(a):
         print("title = %s" % ("on" if get("title") else "off")); return
     if getattr(a, "title_get", False):
         print("on" if title_enabled() else "off"); return
+    if getattr(a, "auto_categories", None) is not None:
+        set("auto_categories", a.auto_categories == "on")
+        print("auto_categories = %s" % ("on" if get("auto_categories") else "off")); return
+    if getattr(a, "auto_categories_get", False):
+        print("on" if auto_categories_enabled() else "off"); return
     if getattr(a, "categories", None) is not None:
         return cmd_categories(a.categories);
     if getattr(a, "enable", None) is not None:

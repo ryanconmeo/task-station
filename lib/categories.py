@@ -382,24 +382,75 @@ def _enabled_items():
     return [(c, CATEGORIES[c]) for c in CATEGORIES if c in ek]
 
 
-def legend():
-    """Compact one-line legend of the enabled categories."""
-    parts = ["%s %s" % (tag(c), m["label"]) for c, m in _enabled_items()]
+def _all_items():
+    """(key, meta) pairs for EVERY slot, in canonical order."""
+    return [(c, CATEGORIES[c]) for c in CATEGORIES]
+
+
+def auto_categories_on():
+    """Whether assigning a task to a disabled slot auto-enables it (config flag,
+    default on). When on, the categoriser is shown the FULL taxonomy so it can pick
+    the most accurate slot even if that slot isn't on the board yet."""
+    try:
+        import config as _config
+        return _config.auto_categories_enabled()
+    except Exception:
+        return False
+
+
+def legend(items=None):
+    """Compact one-line legend. Defaults to the enabled categories; pass `items`
+    (e.g. _all_items()) to legend the full taxonomy instead."""
+    items = _enabled_items() if items is None else items
+    parts = ["%s %s" % (tag(c), m["label"]) for c, m in items]
     return "Legend: " + "  ·  ".join(parts)
 
 
 def compact_legend():
-    """Minimal key=dot+TAG legend for the per-prompt hook (token-lean).
-    Only enabled categories appear."""
-    return " ".join("%s=%s%s" % (c, m["dot"], m["tag"])
-                    for c, m in _enabled_items())
+    """Minimal key=dot+TAG legend for the per-prompt hook (token-lean). Lists the
+    FULL taxonomy when auto_categories is on (the categoriser may pick any slot and
+    a fresh pick auto-enables it); otherwise only the enabled categories."""
+    items = _all_items() if auto_categories_on() else _enabled_items()
+    return " ".join("%s=%s%s" % (c, m["dot"], m["tag"]) for c, m in items)
 
 
 def picker_lines():
-    """Guidance lines for the UserPromptSubmit hook: how to choose a colour.
-    Scoped to the enabled categories only."""
+    """Guidance lines for the UserPromptSubmit hook: how to choose a colour. When
+    auto_categories is on, present the FULL 12-slot taxonomy and note that assigning
+    a not-yet-shown slot enables it automatically; otherwise scope to enabled."""
+    if auto_categories_on():
+        return ["Pick the MOST ACCURATE category COLOR from the full taxonomy "
+                "(see CATEGORIES.md) — a slot not yet on the board is enabled "
+                "automatically the moment you assign it:",
+                "  " + legend(_all_items())]
     return ["Pick a category COLOR for the task from its context (see CATEGORIES.md):",
             "  " + legend()]
+
+
+def auto_enable(color):
+    """When auto_categories is ON and `color` resolves to a real category NOT in the
+    enabled set, persist it onto the enabled set (so it shows on the board/legend
+    thereafter) and return a one-line notice; otherwise return None.
+
+    Display follows assignment: the categoriser may pick ANY of the 12 slots, and
+    the first time a task lands on a disabled slot the board grows to include it."""
+    key = resolve(color)
+    if not key:
+        return None
+    try:
+        import config as _config
+        if not _config.auto_categories_enabled():
+            return None
+        if key in enabled_keys():
+            return None
+        cur = list(enabled_keys())
+        cur.append(key)
+        keys = [k for k in CATEGORIES if k in set(cur)]   # canonical order
+        _config.set_enabled_categories(keys)
+    except Exception:
+        return None
+    m = CATEGORIES[key]
+    return "enabled new category %s [%s]" % (m["dot"], m["tag"])
 
 
 def _hex_of(color):
