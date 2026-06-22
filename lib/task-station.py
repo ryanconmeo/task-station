@@ -1787,6 +1787,17 @@ def cmd_prompt_tint(a):
     prompt = a.prompt if getattr(a, "prompt", None) is not None else os.environ.get("TASK_STATION_PROMPT", "")
     color = cats.color_for_prompt(prompt)
     if not color:
+        # The prompt invokes no skill → fall back to the ATTACHED task's category
+        # colour (like cmd_session_tint), so a plain `/todo <n>` — or any non-skill
+        # prompt — repaints the CURRENT window to the active task's theme tint
+        # instead of leaving it on whatever the last skill painted.
+        session = getattr(a, "session", None)
+        task_id = get_link(session) if session else None
+        if task_id and task_id != SKIP_SENTINEL:
+            task = load_task(task_id)
+            if task and task.get("color"):
+                color = task.get("color")
+    if not color:
         return
     import config, term
     esc = cats.tint_escape(color, config.tint_mode(), term.detect())
@@ -2359,8 +2370,8 @@ def main():
     sp.add_argument("--bare-cmds-get", dest="bare_cmds_get", action="store_true")
     sp.add_argument("--update-check", dest="update_check", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--update-check-get", dest="update_check_get", action="store_true")
-    sp.add_argument("--tint-theme", dest="tint_theme", nargs="?", choices=["auto","dark","light"], const="auto", default=None)
-    sp.add_argument("--tint-theme-get", dest="tint_theme_get", action="store_true")
+    sp.add_argument("--theme", dest="theme", nargs="*", default=None,
+                    help="(no arg) list themes + active · <name> select · save <name> · edit · preview")
     sp.add_argument("--title", dest="title", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--title-get", dest="title_get", action="store_true")
     sp.add_argument("--policy", nargs="?", choices=["on", "off"], const="on", default=None)

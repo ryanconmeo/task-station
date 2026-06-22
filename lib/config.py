@@ -1,5 +1,5 @@
 """Single JSON config store under the data dir, plus the `task-station config` board."""
-import json, os
+import copy, json, os, re
 import paths
 
 # Default repo roots scanned for the hub repo index (`task-station repos`) when no
@@ -127,10 +127,30 @@ def _categories_module():
 def tint_mode():
     return get("tint_mode", "auto")
 
-def tint_theme():
-    """Configured palette: "auto" (follow OS appearance), "dark", or "light"."""
-    val = get("tint_theme", "auto")
-    return val if val in ("auto", "dark", "light") else "auto"
+def active_theme():
+    """The active terminal theme name: config `theme`, validated against the
+    available themes (shipped + user), falling back to 'dusk' for an absent/unknown
+    value. The active theme supplies every category's full palette
+    (bg/fg/bold/cursor/sel + 16 ANSI) — see categories.effective_themes / tint_escape."""
+    name = get("theme", "dusk")
+    cats = _categories_module()
+    if cats is None:
+        return "dusk"
+    try:
+        avail = cats.available_themes()
+    except Exception:
+        return "dusk"
+    return name if name in avail else "dusk"
+
+def _theme_options():
+    """`dusk · sands · …` options string for the config board."""
+    cats = _categories_module()
+    if cats is None:
+        return "dusk · sands"
+    try:
+        return " · ".join(cats.available_themes())
+    except Exception:
+        return "dusk · sands"
 
 def _enabled_summary():
     """`3/12 (default: CORE)`-style summary of the active category set, or
@@ -197,8 +217,8 @@ def render_board():
          "install bare /todo + /done (else /task-station:todo)"),
         ("--update-check", "on" if update_check_enabled() else "off", "on · off",
          "opt-in /todo footer when a newer version ships"),
-        ("--tint-theme", tint_theme(), "auto · dark · light",
-         "tint palette; auto follows OS appearance"),
+        ("--theme", active_theme(), _theme_options(),
+         "terminal color theme — full palette per category"),
         ("--title", "on" if title_enabled() else "off", "on · off",
          "auto terminal title '#<seq>: <title>' on attach"),
         ("--desktop-bridge", _desktop_bridge_summary(), "on · off",
@@ -314,6 +334,122 @@ def toggle_category(color, on):
           % ("enabled" if on else "disabled", m["dot"], m["tag"], " ".join(keys)))
 
 
+# --- themes -------------------------------------------------------------------
+# A THEME is a named full-palette set (per category: bg/fg/bold/cursor/sel + 16
+# ANSI). `--theme` is verb-first: the first token is a VERB if in THEME_VERBS,
+# else a theme NAME to select. RESERVED names can never be saved.
+THEME_VERBS = {"save", "edit", "preview", "list"}
+RESERVED_THEME_NAMES = {"save", "edit", "preview", "list", "show", "default"}
+_THEME_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def _list_themes():
+    cats = _categories_module()
+    if cats is None:
+        print("categories plugin not available (lib/categories.py missing)"); return
+    active = active_theme()
+    shipped = getattr(cats, "THEMES", {}) or {}   # NB: module-level set() shadows builtin
+    lines = ["Themes (* = active):"]
+    for name in cats.available_themes():
+        mark = "*" if name == active else " "
+        kind = "shipped" if name in shipped else "user"
+        lines.append("  %s %-12s (%s)" % (mark, name, kind))
+    lines.append("")
+    lines.append("Select:  config --theme <name>")
+    lines.append("Save current palette as a theme:  config --theme save <name>")
+    lines.append("Edit user themes (config.json):   config --theme edit")
+    lines.append("Render a preview gallery:         config --theme preview")
+    print("\n".join(lines))
+
+
+def _theme_save(name):
+    """Snapshot the EFFECTIVE active palette into config.json themes[<name>].
+    Refuses reserved names and names that don't match ^[a-z0-9][a-z0-9_-]*$."""
+    cats = _categories_module()
+    if cats is None:
+        print("categories plugin not available (lib/categories.py missing)"); return
+    if name in RESERVED_THEME_NAMES:
+        print("Refusing to save theme '%s' — reserved name (one of: %s)."
+              % (name, ", ".join(sorted(RESERVED_THEME_NAMES)))); return
+    if not _THEME_NAME_RE.match(name):
+        print("Refusing to save theme '%s' — invalid name. Use a lowercase letter or "
+              "digit, then any of [a-z0-9_-] (e.g. 'my-theme')." % name); return
+    try:
+        eff = cats.effective_themes()
+    except Exception as e:
+        print("could not read themes: %s" % e); return
+    active = active_theme()
+    pal = eff.get(active)
+    if not isinstance(pal, dict) or not pal:
+        print("No active theme palette to snapshot (active = '%s')." % active); return
+    d = _load()
+    themes = d.get("themes")
+    if not isinstance(themes, dict):
+        themes = {}
+    themes[name] = copy.deepcopy(pal)
+    d["themes"] = themes
+    _save(d)
+    print("saved theme '%s' — snapshot of '%s' (%d categories) → %s"
+          % (name, active, len(pal), _path()))
+
+
+def _theme_preview():
+    """Render the gallery for effective_themes() to <data_dir>/themes-preview.html."""
+    import sys as _sys
+    out = os.path.join(paths.data_dir(), "themes-preview.html")
+    try:
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        tools = os.path.join(here, "tools")
+        if tools not in _sys.path:
+            _sys.path.insert(0, tools)
+        import render_palettes
+        html = render_palettes.render_html()
+        os.makedirs(paths.data_dir(), exist_ok=True)
+        tmp = out + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(html)
+        os.replace(tmp, out)
+        print(out)
+    except Exception as e:
+        print("preview failed: %s" % e)
+
+
+def cmd_theme(arg):
+    """Handle `config --theme [...]` (verb-first grammar):
+      (no arg) / list   → list shipped + user themes, mark active
+      <name>            → select that theme as active
+      save <name>       → snapshot the effective active palette into config themes[<name>]
+      edit              → print the config.json path (edit user themes there)
+      preview           → render the gallery for effective_themes() to a HTML file
+    """
+    cats = _categories_module()
+    if cats is None:
+        print("categories plugin not available (lib/categories.py missing)"); return
+    if not arg:
+        return _list_themes()
+    verb, rest = arg[0], arg[1:]
+    if verb in THEME_VERBS:
+        if verb == "list":
+            return _list_themes()
+        if verb == "edit":
+            print(_path()); return
+        if verb == "preview":
+            return _theme_preview()
+        if verb == "save":
+            if len(rest) != 1:
+                print("usage: config --theme save <name>"); return
+            return _theme_save(rest[0])
+    # not a verb → a theme NAME to select
+    if len(arg) != 1:
+        print("usage: config --theme [<name> | save <name> | edit | preview | list]"); return
+    name = arg[0]
+    avail = cats.available_themes()
+    if name not in avail:
+        print("Unknown theme '%s'. Available: %s" % (name, ", ".join(avail))); return
+    set("theme", name)
+    print("theme = %s" % active_theme())
+
+
 def cmd_config(a):
     if getattr(a, "workspace_dirs_get", False):
         print(":".join(get("workspace_dirs") or "")); return
@@ -330,11 +466,8 @@ def cmd_config(a):
         print("update_check = %s" % ("on" if get("update_check") else "off")); return
     if getattr(a, "update_check_get", False):
         print("on" if update_check_enabled() else "off"); return
-    if getattr(a, "tint_theme", None) is not None:
-        set("tint_theme", a.tint_theme)
-        print("tint_theme = %s" % tint_theme()); return
-    if getattr(a, "tint_theme_get", False):
-        print(tint_theme()); return
+    if getattr(a, "theme", None) is not None:
+        return cmd_theme(a.theme)
     if getattr(a, "title", None) is not None:
         set("title", a.title == "on")
         print("title = %s" % ("on" if get("title") else "off")); return

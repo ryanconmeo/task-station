@@ -14,11 +14,14 @@ This file is the ONLY place the colour taxonomy and the terminal-tinting live.
   • Delete / rename this file        → a plain, colourless tracker.
   • Keep it, set TINT_TERMINAL=False → tags + labels, but no terminal tinting.
 
-Each slot ships a full baked palette (see CATEGORIES); tint_escape emits it as
-OSC escapes that iTerm and Terminal.app both honor. Edit CATEGORIES to your own
-taxonomy — keys are just identifiers now (no alias/profile coupling).
+The colour taxonomy (dot/tag/label) lives in CATEGORIES; the full per-category
+palette (bg/fg/bold/cursor/sel + 16 ANSI) lives in THEMES and is supplied by the
+ACTIVE theme. tint_escape emits the active theme's palette for a category as OSC
+escapes that iTerm and Terminal.app both honor. Edit CATEGORIES for your own
+taxonomy (keys are just identifiers); edit/override THEMES for colour.
 """
 
+import copy
 import os
 import re
 import sys as _sys
@@ -27,98 +30,84 @@ import sys as _sys
 # tint_escape from being emitted (see cmd_prompt_tint / cmd_session_tint).
 TINT_TERMINAL = True
 
-# key → {emoji dot, short [TAG], human label, + baked palette}
+# key → {emoji dot, short [TAG], human label}
 #
 # The dot is SLOT-CANONICAL: each colour slot OWNS an emoji. You pick the colour;
 # the colour determines the icon. A category override / new category therefore
-# needs only `tag` + `label` — the dot (and the baked palette) are inherited from
-# the slot automatically (an explicit `dot` is still allowed for power users). See
-# `_apply_overrides` and SLOT_DOTS below, and CATEGORIES.md.
+# needs only `tag` + `label` — the dot is inherited from the slot automatically
+# (an explicit `dot` is still allowed for power users). See `_apply_overrides` and
+# SLOT_DOTS below, and CATEGORIES.md.
 #
-# Palette by slot: the per-slot palette is kept BY SLOT through the white↔silver
-# category swap — the `white` slot keeps White Sands (now home to 🎨 DESIGN) and
-# `silver` keeps Silver Sands (now home to 🪩 TOOLING). Only the dot/tag/label
-# move between the two slots; each category thus lands on the intended palette.
-# Each slot bakes in a full "Sands" palette (background/foreground/bold/cursor +
-# 16 ANSI colors + selection), emitted as terminal escapes by tint_escape. The
-# look is theme-INDEPENDENT: `hex` and `hex_light` are the same value, so the
-# Sands background applies in both OS appearances. A user override that sets only
-# {tag,label} still inherits the full palette from its slot (see _apply_overrides).
+# COLOUR is NOT baked here. The taxonomy (dot/tag/label) is theme-INDEPENDENT; the
+# full per-category palette (bg/fg/bold/cursor/sel + 16 ANSI colours) lives in
+# THEMES and is supplied by the ACTIVE theme (see config.active_theme,
+# effective_themes, tint_escape). The category key is the join: THEMES[theme][key].
 CATEGORIES = {
-    "red": {
-        "dot": "🔴", "tag": "BUG", "label": "bug",
-        "hex": "#7a251e", "hex_light": "#7a251e",
-        "fg": "#d7c9a7", "bold": "#dfbd22", "cursor": "#ffffff", "selbg": "#5ac39d",
-        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
-    },
-    "orange": {
-        "dot": "🟠", "tag": "REVIEW", "label": "code review",
-        "hex": "#753300", "hex_light": "#753300",
-        "fg": "#ffaf1f", "bold": "#ffd63a", "cursor": "#ffffff", "selbg": "#5ac396",
-        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
-    },
-    "yellow": {
-        "dot": "🟡", "tag": "FIX", "label": "fixing PR review feedback",
-        "hex": "#564e00", "hex_light": "#564e00",
-        "fg": "#fff127", "bold": "#ffff4e", "cursor": "#ffffff", "selbg": "#5ac3b5",
-        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
-    },
-    "green": {
-        "dot": "🟢", "tag": "FEATURE", "label": "feature work",
-        "hex": "#2e381a", "hex_light": "#2e381a",
-        "fg": "#f3e2b2", "bold": "#d7f528", "cursor": "#ffffff", "selbg": "#5ac3a0",
-        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
-    },
-    "blue": {
-        "dot": "🔵", "tag": "INFRA", "label": "CI/CD, pipelines, cloud, deploy",
-        "hex": "#0d1b4b", "hex_light": "#0d1b4b",
-        "fg": "#c0d8f0", "bold": "#5bc8f5", "cursor": "#ffffff", "selbg": "#c35a96",
-        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
-    },
-    "purple": {
-        "dot": "🟣", "tag": "RESEARCH", "label": "spikes / investigation",
-        "hex": "#330056", "hex_light": "#330056",
-        "fg": "#ca75ff", "bold": "#e9afff", "cursor": "#ffffff", "selbg": "#c3945a",
-        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
-    },
-    "black": {
-        "dot": "⚫", "tag": "GENERAL", "label": "general",
-        "hex": "#000000", "hex_light": "#000000",
-        "fg": "#e6c55e", "bold": "#00d6e2", "cursor": "#ffffff", "selbg": "#5ac3a3",
-        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
-    },
-    "pink": {
-        "dot": "🩷", "tag": "PERSONAL", "label": "personal projects",
-        "hex": "#320b1b", "hex_light": "#320b1b",
-        "fg": "#f4db9b", "bold": "#ff40ac", "cursor": "#ffffff", "selbg": "#5ac39f",
-        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
-    },
-    "white": {
-        "dot": "🎨", "tag": "DESIGN", "label": "design",
-        "hex": "#ffffff", "hex_light": "#ffffff",
-        "fg": "#2d3840", "bold": "#a82d6a", "cursor": "#b3377b", "selbg": "#c35a9f",
-        "ansi": ["#2d3840", "#b45648", "#6caa71", "#c4ac62", "#5685a8", "#ad64be", "#69c6c9", "#c1c8cc", "#506573", "#df6c5a", "#79be7e", "#e5c872", "#49a2e1", "#d389e5", "#77e1e5", "#d8e1e7"],
-    },
-    "silver": {
-        "dot": "🪩", "tag": "TOOLING", "label": "dev/AI tooling, config, env",
-        "hex": "#191d27", "hex_light": "#191d27",
-        "fg": "#e0e0e0", "bold": "#ea7ba5", "cursor": "#e6709e", "selbg": "#c35a7f",
-        "ansi": ["#35424c", "#b45648", "#6caa71", "#c4ac62", "#6d96b4", "#bd7bcd", "#7ccbcd", "#dee5eb", "#465c6d", "#df6c5a", "#79be7e", "#e5c872", "#67b5ed", "#d389e5", "#84dde0", "#e5eff5"],
-    },
-    "gold": {
-        "dot": "📖", "tag": "DOCS", "label": "documentation, writing",
-        "hex": "#4e3507", "hex_light": "#4e3507",
-        "fg": "#f8eaa5", "bold": "#ffdb00", "cursor": "#ffffff", "selbg": "#5ac3aa",
-        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
-    },
-    "brown": {
-        "dot": "🟤", "tag": "DATA", "label": "databases, schemas, ETL, migrations",
-        "hex": "#22140c", "hex_light": "#22140c",
-        "fg": "#f4bf7f", "bold": "#ef7300", "cursor": "#ffffff", "selbg": "#5ac38d",
-        "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1", "#d338d3", "#33bbc8", "#cbcccd", "#818383", "#fc391f", "#31e722", "#eaec23", "#5833ff", "#f935f8", "#14f0f0", "#e9ebeb"],
-    },
+    "red":    {"dot": "🔴", "tag": "BUG",      "label": "bug"},
+    "orange": {"dot": "🟠", "tag": "REVIEW",   "label": "code review"},
+    "yellow": {"dot": "🟡", "tag": "FIX",      "label": "fixing PR review feedback"},
+    "green":  {"dot": "🟢", "tag": "FEATURE",  "label": "feature work"},
+    "blue":   {"dot": "🔵", "tag": "INFRA",    "label": "CI/CD, pipelines, cloud, deploy"},
+    "purple": {"dot": "🟣", "tag": "RESEARCH", "label": "spikes / investigation"},
+    "black":  {"dot": "⚫", "tag": "GENERAL",  "label": "general"},
+    "pink":   {"dot": "🩷", "tag": "PERSONAL", "label": "personal projects"},
+    "white":  {"dot": "🎨", "tag": "DESIGN",   "label": "design"},
+    "silver": {"dot": "🪩", "tag": "TOOLING",  "label": "dev/AI tooling, config, env"},
+    "gold":   {"dot": "📖", "tag": "DOCS",     "label": "documentation, writing"},
+    "brown":  {"dot": "🟤", "tag": "DATA",     "label": "databases, schemas, ETL, migrations"},
 }
 DEFAULT = "black"
+
+# --- THEMES: named, full-palette colour sets ---------------------------------
+# A THEME is a named full palette: per category it supplies bg/fg/bold/cursor/sel
+# plus the 16 ANSI colours, emitted to the terminal by tint_escape. Two ship —
+# `dusk` (DEFAULT — dark, muted) and `sands` (vibrant). The category key joins a
+# category to its palette: THEMES[active_theme][category_key]. Users can override
+# any field and add brand-new named themes via config.json (deep-merged by
+# effective_themes); config.active_theme() picks the active one (default `dusk`).
+#
+# The 16-ANSI ramps are shared within a theme (one per appearance), so they're
+# named once and referenced — keeping every list exactly 16 elements and identical
+# to _themes-data.json. effective_themes() deep-copies before merging, so these
+# shared lists are never mutated by an override.
+_DUSK_ANSI = ["#2a2c33", "#ef7a8b", "#9bd485", "#e6c178", "#7aa6ec", "#c79bef", "#79c9d6", "#dcd2c0",
+              "#5a5650", "#ff93a3", "#b2e69c", "#f4d690", "#94bcff", "#d7b5fb", "#94dde9", "#f3ece0"]
+_SANDS_ANSI = ["#000000", "#ff7a64", "#4fd24a", "#e6d24a", "#5f7fff", "#ef6cef", "#3fd0dc", "#cbcccd",
+               "#818383", "#ff9078", "#62ee52", "#f0f152", "#7e8eff", "#f96cf9", "#4ff0f0", "#e9ebeb"]
+_SANDS_LIGHT_ANSI = ["#575167", "#c83b53", "#5a8a3c", "#b07d1a", "#2f6fd0", "#9450c8", "#1f8a99", "#575167",
+                     "#6f6982", "#d8455f", "#67992f", "#c08a00", "#3a7ce0", "#a45fd8", "#2799aa", "#3d3850"]
+
+THEMES = {
+    "dusk": {
+        "red":    {"bg": "#2c1518", "fg": "#dcd2c0", "bold": "#e0c060", "cursor": "#e0c060", "sel": "#235a52", "ansi": _DUSK_ANSI},
+        "orange": {"bg": "#34200d", "fg": "#dcd2c0", "bold": "#f0926e", "cursor": "#f0926e", "sel": "#20545e", "ansi": _DUSK_ANSI},
+        "yellow": {"bg": "#26220f", "fg": "#dcd2c0", "bold": "#ffb454", "cursor": "#ffb454", "sel": "#4a3270", "ansi": _DUSK_ANSI},
+        "green":  {"bg": "#1c2a16", "fg": "#dcd2c0", "bold": "#b6e85a", "cursor": "#b6e85a", "sel": "#6e2a4e", "ansi": _DUSK_ANSI},
+        "blue":   {"bg": "#141d2e", "fg": "#d6d8c8", "bold": "#5bc8f5", "cursor": "#5bc8f5", "sel": "#7a5816", "ansi": _DUSK_ANSI},
+        "purple": {"bg": "#1f1730", "fg": "#dcd2c0", "bold": "#d9b0f0", "cursor": "#d9b0f0", "sel": "#2f5a2a", "ansi": _DUSK_ANSI},
+        "black":  {"bg": "#121214", "fg": "#e6c55e", "bold": "#79c9d6", "cursor": "#79c9d6", "sel": "#2e4a5e", "ansi": _DUSK_ANSI},
+        "pink":   {"bg": "#2b0f1d", "fg": "#dcd2c0", "bold": "#ff6ab0", "cursor": "#ff6ab0", "sel": "#245a3e", "ansi": _DUSK_ANSI},
+        "white":  {"bg": "#5e5c5c", "fg": "#f7f9fc", "bold": "#ec7bbd", "cursor": "#ec7bbd", "sel": "#6e4a62", "ansi": _DUSK_ANSI},
+        "silver": {"bg": "#242b3c", "fg": "#dde1e8", "bold": "#e6c27a", "cursor": "#e6c27a", "sel": "#6e5418", "ansi": _DUSK_ANSI},
+        "gold":   {"bg": "#2a2210", "fg": "#dcd2c0", "bold": "#ffd24a", "cursor": "#ffd24a", "sel": "#2e3a6e", "ansi": _DUSK_ANSI},
+        "brown":  {"bg": "#241910", "fg": "#dcd2c0", "bold": "#f08a4a", "cursor": "#f08a4a", "sel": "#2a5048", "ansi": _DUSK_ANSI},
+    },
+    "sands": {
+        "red":    {"bg": "#80232a", "fg": "#e8dcc0", "bold": "#ffd84a", "cursor": "#ffd84a", "sel": "#235a52", "ansi": _SANDS_ANSI},
+        "orange": {"bg": "#934606", "fg": "#ecdcc0", "bold": "#ff8f6b", "cursor": "#ff8f6b", "sel": "#20545e", "ansi": _SANDS_ANSI},
+        "yellow": {"bg": "#6a5c00", "fg": "#f0e4a8", "bold": "#ff9d3a", "cursor": "#ff9d3a", "sel": "#4a3270", "ansi": _SANDS_ANSI},
+        "green":  {"bg": "#233a2b", "fg": "#e6e2b8", "bold": "#d7f528", "cursor": "#d7f528", "sel": "#6e2a4e", "ansi": _SANDS_ANSI},
+        "blue":   {"bg": "#0d1b4b", "fg": "#d8dcc0", "bold": "#5bc8f5", "cursor": "#5bc8f5", "sel": "#7a5816", "ansi": _SANDS_ANSI},
+        "purple": {"bg": "#330056", "fg": "#e0d4b0", "bold": "#e9afff", "cursor": "#e9afff", "sel": "#2f5a2a", "ansi": _SANDS_ANSI},
+        "black":  {"bg": "#000000", "fg": "#e6c55e", "bold": "#5fd0dc", "cursor": "#5fd0dc", "sel": "#2e4a5e", "ansi": _SANDS_ANSI},
+        "pink":   {"bg": "#320b1b", "fg": "#f4db9b", "bold": "#ff40ac", "cursor": "#ff40ac", "sel": "#245a3e", "ansi": _SANDS_ANSI},
+        "white":  {"bg": "#f4f4f2", "fg": "#2d3840", "bold": "#a82d6a", "cursor": "#a82d6a", "sel": "#ecc4de", "ansi": _SANDS_LIGHT_ANSI},
+        "silver": {"bg": "#2a3142", "fg": "#eef1f6", "bold": "#f0c27a", "cursor": "#f0c27a", "sel": "#6e5418", "ansi": _SANDS_ANSI},
+        "gold":   {"bg": "#4e3507", "fg": "#f4e4b0", "bold": "#ffdb00", "cursor": "#ffdb00", "sel": "#2e3a6e", "ansi": _SANDS_ANSI},
+        "brown":  {"bg": "#332a23", "fg": "#f4bf7f", "bold": "#ef7300", "cursor": "#ef7300", "sel": "#2a5048", "ansi": _SANDS_ANSI},
+    },
+}
+DEFAULT_THEME = "dusk"
 
 # The canonical per-slot emoji, captured from the shipped defaults BEFORE any user
 # override mutates CATEGORIES — this is the source of truth an override inherits
@@ -162,10 +151,10 @@ def _apply_overrides():
         cats = _config.get("categories")
         if isinstance(cats, dict):
             for key, meta in cats.items():
-                # Slot-determines-emoji: an override needs only {tag,label}. Missing
-                # fields (dot, hex, hex_light) are inherited from the slot's shipped
-                # default; an explicit `dot` still wins. Brand-new keys with no slot
-                # fall back to the GENERAL dot.
+                # Slot-determines-emoji: an override needs only {tag,label}. A
+                # missing `dot` is inherited from the slot's shipped default; an
+                # explicit `dot` still wins. Brand-new keys with no slot fall back to
+                # the GENERAL dot. (Colour is no longer here — it lives in THEMES.)
                 if isinstance(meta, dict) and {"tag", "label"} <= set(meta):
                     merged = dict(CATEGORIES.get(key, {}))
                     merged.update(meta)
@@ -453,98 +442,89 @@ def auto_enable(color):
     return "enabled new category %s [%s]" % (m["dot"], m["tag"])
 
 
-def _hex_of(color):
-    key = resolve(color)  # None if unrecognized (no DEFAULT fallback)
-    m = CATEGORIES.get(key) if key else None
-    return m.get("hex") if m else None
+# --- Active-theme palette access ---------------------------------------------
 
+def effective_themes():
+    """The active theme registry: the shipped THEMES with user overrides and
+    brand-new named themes from config.json `themes` deep-merged on top (per theme →
+    per category → per field). Returns a DEEP COPY, so callers may mutate freely and
+    the shipped THEMES (and the shared ANSI ramps) are never touched.
 
-def tint_theme_setting():
-    """The configured `tint_theme` ("auto" | "dark" | "light"), default "auto".
-    "auto" means "follow the OS appearance" (see resolve_theme)."""
+    GROUP 1 ships the base registry; GROUP 2 deep-merges the user's config layer."""
+    base = copy.deepcopy(THEMES)
     try:
         import config as _config
-        val = _config.get("tint_theme", "auto")
+        user = _config.get("themes")
+        if isinstance(user, dict):
+            for tname, tcats in user.items():
+                if not isinstance(tcats, dict):
+                    continue
+                dst_theme = base.setdefault(tname, {})
+                for ckey, fields in tcats.items():
+                    if not isinstance(fields, dict):
+                        continue
+                    dst_theme.setdefault(ckey, {}).update(fields)
     except Exception:
-        return "auto"
-    return val if val in ("auto", "dark", "light") else "auto"
+        return copy.deepcopy(THEMES)
+    return base
 
 
-def resolve_theme():
-    """Resolve the effective palette: "dark" or "light". Never raises.
-
-    A manual "dark"/"light" setting is returned as-is (no detection). "auto"
-    detects the OS appearance: on macOS, `defaults read -g AppleInterfaceStyle`
-    prints "Dark" in dark mode and errors (no such key) in light mode. Any
-    non-macOS platform or any failure falls back to "dark" — today's behaviour."""
-    setting = tint_theme_setting()
-    if setting in ("dark", "light"):
-        return setting
-    if _sys.platform != "darwin":
-        return "dark"
-    try:
-        import subprocess
-        out = subprocess.run(
-            ["defaults", "read", "-g", "AppleInterfaceStyle"],
-            capture_output=True, text=True, timeout=2,
-        )
-        return "dark" if out.stdout.strip() == "Dark" else "light"
-    except Exception:
-        return "dark"
+def available_themes():
+    """Theme names available to select (shipped + any user-defined), shipped first
+    (dusk, sands) then user themes alphabetically."""
+    names = list(effective_themes())
+    order = {"dusk": 0, "sands": 1}
+    return sorted(names, key=lambda n: (order.get(n, 2), n))
 
 
-def hex_for(color, theme=None):
-    """The tint hex for `color` under the given theme (resolved if None).
-    Returns the light palette when theme is "light" and the slot defines
-    `hex_light`, else the dark `hex` — so user overrides that only set `hex`
-    still work. None when the colour is unrecognized."""
-    key = resolve(color)  # None if unrecognized (no DEFAULT fallback)
-    m = CATEGORIES.get(key) if key else None
-    if not m:
-        return None
-    if theme is None:
-        theme = resolve_theme()
-    if theme == "light" and m.get("hex_light"):
-        return m["hex_light"]
-    return m.get("hex")
+def theme_palette(theme, key):
+    """The palette dict for category `key` under `theme` in the effective registry,
+    or None when the theme or category is absent."""
+    t = effective_themes().get(theme)
+    return t.get(key) if isinstance(t, dict) else None
 
 
 def tint_escape(color, mode, term):
-    """The terminal escape string that tints the window to `color`'s full Sands
-    palette, or '' for a no-op. Zero-setup: standard OSC so iTerm AND Terminal.app
-    both honor most of it, plus one iTerm-only extra for the bold color.
+    """The terminal escape string that tints the window to the ACTIVE theme's full
+    palette for category `color`, or '' for a no-op. Zero-setup: standard OSC that
+    iTerm AND Terminal.app both honor, plus one iTerm-only extra for the bold color.
 
       bg      OSC 11   \\033]11;<hex>\\007
       fg      OSC 10   \\033]10;<hex>\\007
       cursor  OSC 12   \\033]12;<hex>\\007
       ANSI n  OSC 4    \\033]4;<n>;<hex>\\007   for n in 0..15 (when 'ansi' present)
-      selbg   OSC 17   \\033]17;<hex>\\007      (when 'selbg' present)
+      sel     OSC 17   \\033]17;<hex>\\007      (when 'sel' present)
       bold    iTerm    \\033]1337;SetColors=bold=<hexNoHash>\\007  (skipped on Terminal.app)
 
-    A slot that defines ONLY a bg (no fg/bold/ansi) still emits just the bg, so a
-    minimal public taxonomy keeps working. `term == 'none'` or an unknown color
-    yields ''. `mode` is accepted for back-compat (profile mode was removed) and
-    ignored — tinting is always the direct escape now."""
+    The palette comes from the effective ACTIVE theme (config.active_theme over
+    effective_themes); only dot/tag/label still come from CATEGORIES. A palette that
+    defines ONLY a bg still emits just the bg. `term == 'none'`, an unknown color, or
+    a category with no palette in the active theme all yield ''. `mode` is accepted
+    for back-compat (profile mode was removed) and ignored."""
     if term == "none":
         return ""
     key = resolve(color)
-    m = CATEGORIES.get(key) if key else None
-    if not m:
+    if not key:
         return ""
-    bg = hex_for(color)  # theme-aware, but Sands is theme-independent (hex==hex_light)
-    if not bg:
+    try:
+        import config as _config
+        theme = _config.active_theme()
+    except Exception:
+        theme = DEFAULT_THEME
+    pal = theme_palette(theme, key)
+    if not pal or not pal.get("bg"):
         return ""
-    parts = ["\033]11;%s\007" % bg]
-    if m.get("fg"):
-        parts.append("\033]10;%s\007" % m["fg"])
-    if m.get("cursor"):
-        parts.append("\033]12;%s\007" % m["cursor"])
-    ansi = m.get("ansi")
+    parts = ["\033]11;%s\007" % pal["bg"]]
+    if pal.get("fg"):
+        parts.append("\033]10;%s\007" % pal["fg"])
+    if pal.get("cursor"):
+        parts.append("\033]12;%s\007" % pal["cursor"])
+    ansi = pal.get("ansi")
     if isinstance(ansi, (list, tuple)):
         for n, ah in enumerate(ansi):
             parts.append("\033]4;%d;%s\007" % (n, ah))
-    if m.get("selbg"):
-        parts.append("\033]17;%s\007" % m["selbg"])
-    if term == "iterm" and m.get("bold"):
-        parts.append("\033]1337;SetColors=bold=%s\007" % m["bold"].lstrip("#"))
+    if pal.get("sel"):
+        parts.append("\033]17;%s\007" % pal["sel"])
+    if term == "iterm" and pal.get("bold"):
+        parts.append("\033]1337;SetColors=bold=%s\007" % pal["bold"].lstrip("#"))
     return "".join(parts)
