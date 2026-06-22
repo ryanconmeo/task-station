@@ -1,9 +1,9 @@
 # Task Station
 
-> A persistent task hub for Claude Code. Every task is a **resumable, colour‑tinted session** — auto‑categorised, re‑pinnable, with parallel in‑project worker delegation and a Claude Desktop bridge.
+> A persistent task hub for Claude Code. Every task is a **resumable, colour‑tinted session** — auto‑categorised on a self‑growing board, re‑pinnable, tinted to an OS‑aware theme, with parallel in‑project worker delegation and a Claude Desktop bridge.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-1.7.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-1.9.1-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -58,7 +58,7 @@ Running `/todo` prints your board — rendered exactly as it appears in the term
 
 - **Tasks that outlive the session.** State lives outside the plugin cache, so `/plugin update` never wipes your board or history.
 - **One‑command resume.** `/todo 286` reopens the task *and* the session that holds its context — cwd auto‑corrected from the transcript, never tainting your current conversation. `/todo 286 -s` jumps straight into it in a fresh window.
-- **Your terminal as ambient state.** Each category owns a full colour palette; the terminal tints the instant a skill runs (`/review` → orange) so you always know what you're in.
+- **Your terminal as ambient state.** Each category owns a full colour palette from an **OS‑aware theme** — Dark Sands in dark mode, Light Sands in light mode, switching with your appearance — and the terminal tints the instant a skill runs (`/review` → orange) so you always know what you're in.
 - **Never lose untracked work.** Edit a file and the task auto‑promotes to *active*; a Stop‑gate reminds you before a turn ends with untracked edits.
 - **Delegate into your repos.** Spin up crash‑safe, worktree‑isolated workers that run inside a target repo with its own `CLAUDE.md`, hooks, MCP servers and permissions — one persistent worker per (task, repo).
 - **Code ↔ Desktop, one board.** A dependency‑free MCP bridge shares a single task store between Claude Code and Claude Desktop. Create a task in a Desktop chat; it's there in the CLI, and vice‑versa.
@@ -78,7 +78,7 @@ Requires the `python3` that ships with macOS/Linux (3.9+) — **no pip, no depen
 ```text
 /todo                      # show the board (empty at first)
 > add login bug to my tasks
-  → Task [a1b2c3d4] created: "Fix login redirect bug"  ◦ open
+  → Task [a1b2c3d4] created: "Fix login redirect bug"  ○ open
 > /todo                    # it's tracked, with a category + effort
 > /done                    # close the current task when finished
 ```
@@ -179,7 +179,7 @@ This safely merges one entry into your existing Desktop config (backed up first)
 | `--auto-categories [on\|off]` | on/off | on | Auto-enable a slot the first time a task is assigned to it (board grows itself). |
 | `--enable` / `--disable <key>` | category | — | Toggle a single category (GENERAL is permanent). |
 | `--tint-theme [auto\|dark\|light]` | auto/dark/light | auto | Appearance: which variant renders — `auto` follows the OS (dark=Dark Sands, light=Light Sands). |
-| `--theme [<name>\|save <name>\|edit\|preview\|list]` | theme name / verb | default | Active colour theme (dark+light variants); mainly for custom themes (see [Themes](#themes)). |
+| `--theme [<name>\|save <name>\|edit\|preview\|list]` | theme name / verb | sands | Active colour theme (dark+light variants); mainly for custom themes (see [Themes](#themes)). |
 | `--title [on\|off]` | on/off | on | Auto terminal title `#<seq>: <title>`. |
 | `--bare-cmds [on\|off]` | on/off | off | Install bare `/todo` + `/done` aliases. |
 | `--update-check [on\|off]` | on/off | off | Opt‑in daily version check (no task data sent). |
@@ -190,7 +190,7 @@ This safely merges one entry into your existing Desktop config (backed up first)
 
 ## How it works
 
-Tasks are stored in a local SQLite database (WAL mode, indexed) read on every prompt via hooks. A task is one record with a three‑state lifecycle (`open ◦ → active ● → closed`) and a stable `seq` number you never lose. The deeper mechanics — resume/cwd recovery, the dedup "fold don't fork" logic, worker registry, repo‑index enrichment, the Desktop launcher — are documented in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+Tasks are stored in a local SQLite database (WAL mode, indexed) read on every prompt via hooks. A task is one record with a three‑state lifecycle (`open ○ → active ● → closed ✕`) and a stable `seq` number you never lose. The deeper mechanics — resume/cwd recovery, the dedup "fold don't fork" logic, worker registry, repo‑index enrichment, the Desktop launcher — are documented in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ## Data & privacy
 
