@@ -72,7 +72,7 @@ reliable) → on iTerm, the session UUID in `$TERM_SESSION_ID` mapped to its `tt
 Each task is rendered as `<dot> [TAG]` — e.g. `🔴 [BUG]`.
 
 `black` / general is the fallback for anything that doesn't fit a category, and is
-**permanent** — always enabled, cannot be disabled (see *Enabled set & presets* below).
+**permanent** — always enabled, cannot be disabled (see *Enabled set* below).
 
 ### The dot is slot-canonical — "you pick the colour; the colour determines the icon"
 
@@ -109,31 +109,20 @@ light-mode background — but the **shipped Sands palettes are theme-independent
 (`hex == hex_light`), so the setting mainly matters for your own `hex_light` overrides.
 A slot/override that defines only `hex` still tints under either theme.
 
-## Enabled set & presets
+## Enabled set (lean default that grows)
 
-Not every taxonomy fits every workflow, so the active set of categories is
-**seeded-but-removable**, stored in `config.json` as `enabled_categories` (a list of
-colour keys). The legend, the auto-classification nudge, and the colour picker all
-consider **only enabled categories**. When `enabled_categories` is unset, the **full
-set** of all 12 shows (back-compat).
+The **enabled set** governs what shows on the board and in the legend — it is *display*
+only; a task can be assigned any of the 12 taxonomy slots regardless. It is stored in
+`config.json` as `enabled_categories` (a list of colour keys).
+
+**The board starts lean and grows.** When `enabled_categories` is unset, the enabled set
+is **CORE** — just `🔴 BUG`, `🟢 FEATURE`, and `⚫ GENERAL` — so a new install isn't
+cluttered with twelve slots you don't use yet. (Auto-enable then grows the set on its own
+as you categorise tasks — see *Auto-enable* below.)
 
 **⚫ GENERAL is permanent**: always enabled, cannot be disabled.
 
-### Presets
-
-`task-station config --categories preset <name>` sets `enabled_categories` to a named
-preset. The **universal core** — `red BUG`, `silver TOOLING`, `pink PERSONAL`,
-`black GENERAL` — is seeded in **every** preset (removable except GENERAL):
-
-| preset    | enabled slots                                                   |
-|-----------|-----------------------------------------------------------------|
-| `minimal` | core only (BUG · TOOLING · PERSONAL · GENERAL)                   |
-| `web`     | core + FEATURE, DESIGN, INFRA, REVIEW, FIX                       |
-| `data`    | core + DATA, FEATURE, INFRA, REVIEW                              |
-| `ops`     | core + INFRA, DATA, REVIEW, FIX, RESEARCH                        |
-| `full`    | all 12 (the default)                                            |
-
-- `task-station config --categories` (no arg) — show the current enabled set + presets.
+- `task-station config --categories` (no arg) — show the current enabled set.
 - `task-station config --enable <key>` / `--disable <key>` — toggle a single slot
   (accepts a key, emoji, or `[TAG]`). Disabling `black`/`GENERAL` is refused.
 - Editing the raw `categories` override map in `config.json` still works.
@@ -217,9 +206,9 @@ JSON shape (all keys optional — only what you set is stored):
   Supply any of those fields to override just that part of the palette. Entries missing
   `tag` or `label` are silently skipped; any invalid JSON leaves the shipped defaults
   entirely intact.
-- **`enabled_categories`** — the list of "on" colour keys (see *Enabled set & presets*).
-  Absent ⇒ the full set; `⚫ GENERAL` is always forced in. Usually set via `config
-  --categories preset <name>` / `--enable` / `--disable`.
+- **`enabled_categories`** — the list of "on" colour keys (see *Enabled set*).
+  Absent ⇒ CORE (`BUG · FEATURE · GENERAL`); `⚫ GENERAL` is always forced in. Usually
+  set via `config --enable` / `--disable` (or grown automatically by auto-enable).
 - **`tint_terminal`** toggles tinting globally. Set `false` to keep the `<emoji> [TAG]`
   decoration without any terminal tinting.
 - **`tint_theme`** — `"auto"` (follow OS appearance), `"dark"`, or `"light"`. See

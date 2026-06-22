@@ -1,6 +1,6 @@
 ---
 description: View or change Task Station settings, plus one-time setup (workspace dirs, categories, tint, title, bare commands, delegation policy, Desktop bridge).
-argument-hint: "[--workspace-dirs a:b | --categories [edit|preset <name>] | --enable/--disable <key> | --tint-theme auto|dark|light | --title on|off | --bare-cmds on|off | --update-check on|off | --desktop-bridge on|off | --policy on|off]"
+argument-hint: "[--workspace-dirs a:b | --categories [edit] | --enable/--disable <key> | --tint-theme auto|dark|light | --title on|off | --bare-cmds on|off | --update-check on|off | --desktop-bridge on|off | --policy on|off]"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -11,7 +11,7 @@ The block above is the live output of `task-station config` — either the unifi
 
 - No arguments → the unified board: the settable values below, the read-only data dir, the tint (full-palette escape) + detected terminal, and a status report of what's still unconfigured (workspace dirs, whether the delegation policy is installed, the Desktop bridge).
 - `--workspace-dirs <a:b>` → sets the colon-separated repo roots used by delegate's `--project` shorthand (writes `config.json`).
-- `--categories [edit | preset <name>]` → no arg shows the enabled set + presets; `preset <minimal|web|data|ops|full>` switches the active set; `edit` prints the `config.json` path so you can customize category tags/labels, palettes, and skill→colour auto-tint rules.
+- `--categories [edit]` → no arg shows the enabled set (which **starts lean at CORE — BUG · FEATURE · GENERAL — and grows automatically** as tasks are categorised); `edit` prints the `config.json` path so you can customize category tags/labels, palettes, and skill→colour auto-tint rules.
 - `--enable <key>` / `--disable <key>` → toggle a single category slot on/off (accepts a key, emoji, or `[TAG]`). Disabling `⚫ GENERAL` is refused — it's permanent.
 - `--tint-theme auto|dark|light` → choose the tint palette appearance. `auto` follows the OS appearance; the Sands palettes ship theme-independent, so this mainly affects any custom `hex_light` overrides.
 - `--title on|off` → toggle the auto terminal tab/window title `#<seq>: <title>` for attached sessions (default on; also via `TASK_STATION_TITLE=off`).

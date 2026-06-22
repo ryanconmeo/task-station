@@ -2328,7 +2328,7 @@ def main():
     sp.add_argument("--workspace-dirs", dest="workspace_dirs", default=None)
     sp.add_argument("--workspace-dirs-get", dest="workspace_dirs_get", action="store_true")
     sp.add_argument("--categories", dest="categories", nargs="*", default=None,
-                    help="(no arg) show enabled set + presets · 'edit' print config path · 'preset <name>' apply a preset")
+                    help="(no arg) show enabled set + toggles · 'edit' print config path")
     sp.add_argument("--enable", dest="enable", default=None,
                     help="enable a category slot (key, emoji, or [TAG])")
     sp.add_argument("--disable", dest="disable", default=None,

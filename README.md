@@ -124,7 +124,9 @@ Twelve colour categories, each with a tag and a full terminal palette:
 | 🟡 | FIX | 🟣 | RESEARCH | 🪩 | TOOLING |
 | ⚫ | GENERAL | 🟤 | DATA | 📖 | DOCS |
 
-Tinting is **zero‑setup** on iTerm2 and Apple Terminal: Task Station writes OSC escapes directly to the originating window — background, foreground, cursor, the full 16‑colour ANSI palette, and (on iTerm) bold. No profiles or shell aliases required. Trim the set with presets (`config --categories preset minimal|web|data|ops|full`) or customise tags, labels and palettes in `config.json` — your edits survive plugin updates. See [CATEGORIES.md](CATEGORIES.md).
+The **board starts lean** — only the **CORE** set (`🔴 BUG`, `🟢 FEATURE`, `⚫ GENERAL`) shows on a fresh install, so you're not staring at twelve slots you don't use yet. The full taxonomy is always available to the categoriser; slots light up on the board as you use them. Toggle slots by hand with `config --enable`/`--disable`, or customise tags, labels and palettes in `config.json` — your edits survive plugin updates. See [CATEGORIES.md](CATEGORIES.md).
+
+Tinting is **zero‑setup** on iTerm2 and Apple Terminal: Task Station writes OSC escapes directly to the originating window — background, foreground, cursor, the full 16‑colour ANSI palette, and (on iTerm) bold. No profiles or shell aliases required.
 
 ## In‑project delegation
 
@@ -153,7 +155,7 @@ This safely merges one entry into your existing Desktop config (backed up first)
 | Flag | Values | Default | Purpose |
 |---|---|---|---|
 | `--workspace-dirs <a:b>` | paths | unset | Repo roots for delegate's `--project` shorthand. |
-| `--categories [edit\|preset <name>]` | minimal/web/data/ops/full | full | Show / switch the active category set. |
+| `--categories [edit]` | — | CORE | Show the active category set (`edit` prints the config path). |
 | `--enable` / `--disable <key>` | category | — | Toggle a single category (GENERAL is permanent). |
 | `--tint-theme [auto\|dark\|light]` | auto/dark/light | auto | Tint palette; `auto` follows OS appearance. |
 | `--title [on\|off]` | on/off | on | Auto terminal title `#<seq>: <title>`. |

@@ -125,20 +125,15 @@ DEFAULT = "black"
 # from when it omits `dot` (see _apply_overrides).
 SLOT_DOTS = {key: meta["dot"] for key, meta in CATEGORIES.items()}
 
-# --- Active (enabled) categories & presets -----------------------------------
-# A seeded-but-removable set of "on" slots, persisted in config.json as
-# `enabled_categories`. Unconfigured ⇒ the full set (back-compat). ⚫ GENERAL is
-# PERMANENT: always enabled, never disable-able. Universal core (seeded in every
-# preset, removable except GENERAL): BUG · TOOLING · PERSONAL · GENERAL.
+# --- Active (enabled) categories ---------------------------------------------
+# A lean, growable set of "on" slots, persisted in config.json as
+# `enabled_categories`. Unconfigured ⇒ CORE only (the board starts small and
+# grows: auto_categories auto-enables a slot the first time a task is assigned to
+# it — see auto_enable). ⚫ GENERAL is PERMANENT: always enabled, never
+# disable-able. CORE (the seeded lean default, removable except GENERAL):
+# BUG · FEATURE · GENERAL.
 PERMANENT = "black"
-CORE = ("red", "silver", "pink", "black")  # BUG · TOOLING · PERSONAL · GENERAL
-PRESETS = {
-    "minimal": list(CORE),
-    "web":     list(CORE) + ["green", "white", "blue", "orange", "yellow"],
-    "data":    list(CORE) + ["brown", "green", "blue", "orange"],
-    "ops":     list(CORE) + ["blue", "brown", "orange", "yellow", "purple"],
-    "full":    list(CATEGORIES),
-}
+CORE = ("red", "green", "black")  # BUG · FEATURE · GENERAL
 
 _TAG_WIDTH = max(len(m["tag"]) for m in CATEGORIES.values()) + 2  # +2 for "[]"
 
@@ -331,8 +326,9 @@ def enabled_keys():
     """The active category keys, in canonical CATEGORIES order.
 
     Reads `enabled_categories` from config live (no module reload needed). An
-    absent/empty/invalid value ⇒ the FULL set (back-compat: today all 12 show).
-    ⚫ GENERAL (black) is PERMANENT — always present even if config omits it."""
+    absent/empty/invalid value ⇒ CORE only (the lean default — the board starts
+    small and grows via auto_enable). ⚫ GENERAL (black) is PERMANENT — always
+    present even if config omits it."""
     raw = None
     try:
         import config as _config
@@ -342,7 +338,7 @@ def enabled_keys():
     if isinstance(raw, list) and raw:
         sel = {k for k in raw if k in CATEGORIES}
     else:
-        sel = set(CATEGORIES)
+        sel = set(CORE)
     sel.add(PERMANENT)
     return [k for k in CATEGORIES if k in sel]
 
@@ -351,17 +347,6 @@ def is_enabled(color):
     """True when `color` resolves to a currently-enabled category."""
     key = resolve(color)
     return bool(key) and key in enabled_keys()
-
-
-def preset_keys(name):
-    """Canonical-order enabled set for a named preset, or None if unknown.
-    GENERAL is always forced in (permanent)."""
-    keys = PRESETS.get(name)
-    if keys is None:
-        return None
-    sel = {k for k in keys if k in CATEGORIES}
-    sel.add(PERMANENT)
-    return [k for k in CATEGORIES if k in sel]
 
 
 def normalize(color):

@@ -101,7 +101,7 @@ def title_enabled():
 
 def enabled_categories():
     """The configured active-category key list, or None when unconfigured
-    (categories.enabled_keys() then defaults to the full set)."""
+    (categories.enabled_keys() then defaults to CORE — the lean default)."""
     raw = get("enabled_categories")
     return raw if isinstance(raw, list) else None
 
@@ -124,20 +124,14 @@ def tint_theme():
     return val if val in ("auto", "dark", "light") else "auto"
 
 def _enabled_summary():
-    """`9/12 (preset web)`-style summary of the active category set, or
-    `12/12 (full — default)` when unconfigured."""
+    """`3/12 (default: CORE)`-style summary of the active category set, or
+    `N/12 (custom)` once the user has configured it."""
     cats = _categories_module()
     if cats is None:
         return "n/a"
     enabled = cats.enabled_keys()
     total = len(cats.all_keys())
-    raw = enabled_categories()
-    name = "full — default" if raw is None else "custom"
-    if raw is not None:
-        for pname in cats.PRESETS:
-            if cats.preset_keys(pname) == enabled:   # both canonical order
-                name = "preset %s" % pname
-                break
+    name = "default: CORE" if enabled_categories() is None else "custom"
     return "%d/%d (%s)" % (len(enabled), total, name)
 
 def _desktop_bridge_summary():
@@ -184,8 +178,8 @@ def render_board():
     # --- toggle grid (short values only) ----------------------------------------
     header = ("SETTING", "VALUE", "OPTIONS", "WHAT IT DOES")
     rows = [
-        ("--categories", _enabled_summary(), "edit·preset·toggle",
-         "enabled set + presets/toggles"),
+        ("--categories", _enabled_summary(), "edit·toggle",
+         "enabled set (CORE default) + toggles"),
         ("category overrides", "%d override(s)" % n_cat if n_cat else "defaults", "edit",
          "custom tags/labels + skill auto-tint"),
         ("--bare-cmds", "on" if bare_commands() else "off", "on · off",
@@ -258,9 +252,7 @@ def _categories_status(cats):
     if disabled:
         lines.append("  off: " + ", ".join(disabled))
     lines.append("")
-    lines.append("Presets  (config --categories preset <name>):")
-    for name in cats.PRESETS:
-        lines.append("  %-8s %s" % (name, " ".join(cats.preset_keys(name))))
+    lines.append("The board starts lean at CORE (BUG · FEATURE · GENERAL).")
     lines.append("")
     lines.append("Toggle individual slots: config --enable <key> · config --disable <key>")
     lines.append("(⚫ GENERAL is permanent — always on, cannot be disabled.)")
@@ -269,26 +261,16 @@ def _categories_status(cats):
 
 def cmd_categories(arg):
     """Handle `config --categories [...]`:
-      (no arg)        → show the enabled set + available presets
-      edit            → print the config.json path (legacy behaviour)
-      preset <name>   → set enabled_categories to that preset (GENERAL forced in)
+      (no arg)  → show the enabled set + how to toggle slots
+      edit      → print the config.json path (legacy behaviour)
     """
     if arg == ["edit"]:
         print(_path()); return
     cats = _categories_module()
     if cats is None:
         print("categories plugin not available (lib/categories.py missing)"); return
-    if arg and arg[0] == "preset":
-        if len(arg) < 2:
-            print("usage: config --categories preset <%s>" % "|".join(cats.PRESETS)); return
-        name = arg[1]
-        keys = cats.preset_keys(name)
-        if keys is None:
-            print("Unknown preset '%s'. Available: %s" % (name, ", ".join(cats.PRESETS))); return
-        set_enabled_categories(keys)
-        print("enabled_categories = preset '%s' → %s" % (name, " ".join(keys))); return
     if arg:
-        print("usage: config --categories [edit | preset <name>]"); return
+        print("usage: config --categories [edit]"); return
     print(_categories_status(cats))
 
 
