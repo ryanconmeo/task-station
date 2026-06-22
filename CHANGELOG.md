@@ -3,6 +3,22 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.9.1] — 2026-06-22
+
+### Fixed
+- **`/todo <n> -s` no longer re-tints the invoking window.** A session-jump opens
+  the task in a NEW window and must leave the window you typed it in untouched.
+  `_jump_one` was attaching (`set_link`) the **invoking** session to the jumped
+  task; combined with the 1.9.0 prompt-tint fallback (which repaints the current
+  window to its attached task's colour on any non-skill prompt), the invoking
+  window wrongly repainted to the jumped task's colour. Now `-s` attaches only the
+  **target** session — the resumed recorded session or the freshly-minted one — so
+  only the new window carries the jumped task's tint. Belt-and-suspenders:
+  `cmd_prompt_tint` also skips the attached-task fallback for a `/todo … -s` /
+  `--session` prompt, so even the immediate jump prompt never repaints the current
+  window. Plain `/todo <n>` (non-jump) still attaches the invoking session and
+  repaints the current window, unchanged.
+
 ## [1.9.0] — 2026-06-22
 
 ### Added

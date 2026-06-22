@@ -1407,10 +1407,15 @@ def _jump_one(ref, session):
     task = resolve_ref(ref)
     if not task:
         return "No task matching '%s'." % ref
-    touch(task, session=session, note="resumed", reopen=True)
+    # A `-s` jump opens the task in a NEW window and must leave the INVOKING window
+    # completely untouched — no attach, no re-tint. So we log the 'resumed' touch +
+    # reopen but DON'T pass (or link) the invoking session: linking it would make
+    # cmd_prompt_tint's attached-task fallback repaint the current window to the
+    # jumped task (the v1.9.1 bug). Only the TARGET session carries this task's
+    # colour — the resumed recorded session (already linked) or the fresh session
+    # minted below (fresh_resume_command links THAT sid to the task).
+    touch(task, note="resumed", reopen=True)
     save_task(task)
-    set_link(session, task["id"])
-    clear_count(session)
     resume = resume_command(task, session)
     # No concrete session to resume (no recorded one, or the only candidate was
     # THIS session) → mint + pre-bind a fresh one so the jump window auto-attaches
@@ -1438,6 +1443,22 @@ def _parse_session_flag(arg):
         else:
             kept.append(t)
     return " ".join(kept), session
+
+
+def _is_session_jump_prompt(prompt):
+    """True when `prompt` is a `/todo <n> -s` (or `--session`) session-jump.
+
+    The jump opens the task in a NEW window and deliberately leaves the invoking
+    session unattached, so cmd_prompt_tint must NOT fall back to repainting the
+    current window to the jumped task's colour (the v1.9.1 re-tint bug). Matches
+    only a bare `-s`/`--session` token on a todo command — never a substring of
+    an id or an arbitrary non-todo prompt that happens to contain `-s`."""
+    if not prompt or not cats or not hasattr(cats, "command_name"):
+        return False
+    name = cats.command_name(prompt)
+    if not name or name.split(":")[-1].lower() != "todo":
+        return False
+    return any(t in ("-s", "--session") for t in prompt.split())
 
 
 DEFAULT_CLOSED_LIST = 20  # how many closed tasks `/todo closed` (no count) shows
@@ -1791,6 +1812,11 @@ def cmd_prompt_tint(a):
         # colour (like cmd_session_tint), so a plain `/todo <n>` — or any non-skill
         # prompt — repaints the CURRENT window to the active task's theme tint
         # instead of leaving it on whatever the last skill painted.
+        # EXCEPT a `/todo <n> -s` session-jump: that opens the task in a NEW window
+        # and must leave the invoking window's tint alone — never repaint it to the
+        # jumped task (v1.9.1; belt-and-suspenders to _jump_one not linking here).
+        if _is_session_jump_prompt(prompt):
+            return
         session = getattr(a, "session", None)
         task_id = get_link(session) if session else None
         if task_id and task_id != SKIP_SENTINEL:
