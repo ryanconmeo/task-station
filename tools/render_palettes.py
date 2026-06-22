@@ -118,7 +118,16 @@ def render_html(themes=None):
         order = list(themes)
     order = [t for t in order if t in themes] + [t for t in themes if t not in order]
     variants = getattr(categories, "VARIANTS", ("dark", "light"))
-    vnames = getattr(categories, "VARIANT_NAMES", {})
+
+    def _vlabel(theme, variant):
+        if hasattr(categories, "variant_label"):
+            return categories.variant_label(theme, variant)
+        return variant.capitalize()
+
+    def _tdisplay(theme):
+        if hasattr(categories, "theme_display"):
+            return categories.theme_display(theme)
+        return theme
 
     out = [
         "<!doctype html>", '<html lang="en"><head><meta charset="utf-8">',
@@ -135,8 +144,7 @@ def render_html(themes=None):
     for tname in order:
         for variant in variants:
             badge, tagline = _VARIANT_CHROME.get(variant, (variant, ""))
-            vname = vnames.get(variant, "")
-            label = "%s · %s%s" % (tname, variant, (" — %s" % vname) if vname else "")
+            label = "%s — %s" % (_tdisplay(tname), _vlabel(tname, variant))
             out.append('<div class="sec"><h2>%s</h2><span class="badge">%s</span>'
                        '<span class="tagline">%s</span></div>'
                        % (_e(label), _e(badge), _e(tagline)))

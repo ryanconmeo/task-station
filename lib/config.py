@@ -130,19 +130,19 @@ def tint_mode():
 def tint_theme():
     """The appearance control `tint_theme` ("auto" | "dark" | "light"), default
     "auto". "auto" follows the OS appearance; "dark"/"light" force the variant. This
-    picks which VARIANT of the active theme renders (dark → Dusk, light → Sands for
-    the shipped `default` theme)."""
+    picks which VARIANT of the active theme renders (dark → Dark Sands, light → Light
+    Sands for the shipped `sands` theme)."""
     val = get("tint_theme", "auto")
     return val if val in ("auto", "dark", "light") else "auto"
 
 def active_theme():
     """The active theme NAME: config `theme`, validated against the available themes
-    (shipped `default` + any user themes), falling back to 'default' for an
-    absent/unknown value. The active theme supplies every category's full palette in
-    two variants — the appearance (tint_theme) picks which renders. See
+    (shipped `sands` + any user themes), falling back to 'sands' for an absent/unknown
+    value. The active theme supplies every category's full palette in two variants —
+    the appearance (tint_theme) picks which renders. See
     categories.effective_themes / resolve_variant / tint_escape."""
     cats = _categories_module()
-    default = getattr(cats, "DEFAULT_THEME", "default") if cats else "default"
+    default = getattr(cats, "DEFAULT_THEME", "sands") if cats else "sands"
     name = get("theme", default)
     if cats is None:
         return default
@@ -163,16 +163,23 @@ def resolved_variant():
     except Exception:
         return "dark"
 
-def _theme_summary():
-    """`default · auto → dark (Dusk)`-style summary for the config board: active
-    theme, the tint-theme setting, and the currently-resolved variant + its name."""
+def _variant_label(variant, theme=None):
+    """'{Dark|Light} {ThemeDisplay}' for the active theme's variant, via
+    categories.variant_label (falls back to a bare capitalised variant)."""
     cats = _categories_module()
+    theme = theme or active_theme()
+    if cats is not None and hasattr(cats, "variant_label"):
+        try:
+            return cats.variant_label(theme, variant)
+        except Exception:
+            pass
+    return variant.capitalize()
+
+def _theme_summary():
+    """`sands · auto → Dark Sands`-style summary for the config board: active theme,
+    the tint-theme setting, and the currently-resolved variant's display label."""
     variant = resolved_variant()
-    vname = ""
-    if cats is not None:
-        vname = getattr(cats, "VARIANT_NAMES", {}).get(variant, "")
-    arrow = "%s → %s%s" % (tint_theme(), variant, (" (%s)" % vname) if vname else "")
-    return "%s · %s" % (active_theme(), arrow)
+    return "%s · %s → %s" % (active_theme(), tint_theme(), _variant_label(variant))
 
 def _enabled_summary():
     """`3/12 (default: CORE)`-style summary of the active category set, or
@@ -239,10 +246,10 @@ def render_board():
          "install bare /todo + /done (else /task-station:todo)"),
         ("--update-check", "on" if update_check_enabled() else "off", "on · off",
          "opt-in /todo footer when a newer version ships"),
-        ("--theme", active_theme(), "default · …",
+        ("--theme", active_theme(), "sands · …",
          "active color theme (full palette, dark+light variants)"),
         ("--tint-theme", _theme_summary(), "auto · dark · light",
-         "appearance: which variant renders — auto follows the OS (dark=Dusk, light=Sands)"),
+         "appearance: which variant renders — auto follows the OS (dark=Dark Sands, light=Light Sands)"),
         ("--title", "on" if title_enabled() else "off", "on · off",
          "auto terminal title '#<seq>: <title>' on attach"),
         ("--desktop-bridge", _desktop_bridge_summary(), "on · off",
@@ -374,15 +381,14 @@ def _list_themes():
     active = active_theme()
     shipped = getattr(cats, "THEMES", {}) or {}   # NB: module-level set() shadows builtin
     variant = resolved_variant()
-    vname = getattr(cats, "VARIANT_NAMES", {}).get(variant, "")
     lines = ["Themes (* = active):"]
     for name in cats.available_themes():
         mark = "*" if name == active else " "
         kind = "shipped" if name in shipped else "user"
-        lines.append("  %s %-12s (%s)" % (mark, name, kind))
+        variants = " · ".join(_variant_label(v, name) for v in getattr(cats, "VARIANTS", ("dark", "light")))
+        lines.append("  %s %-12s (%s)   %s" % (mark, name, kind, variants))
     lines.append("")
-    lines.append("Appearance: --tint-theme %s → variant %s%s"
-                 % (tint_theme(), variant, (" (%s)" % vname) if vname else ""))
+    lines.append("Appearance: --tint-theme %s → %s" % (tint_theme(), _variant_label(variant)))
     lines.append("")
     lines.append("Select:  config --theme <name>")
     lines.append("Appearance:  config --tint-theme auto|dark|light")
@@ -393,10 +399,11 @@ def _list_themes():
 
 
 def _theme_save(name):
-    """Snapshot the active theme's CURRENTLY-RESOLVED palette into config.json
-    themes[<name>][<variant>], where <variant> is the appearance now in effect
-    (dark/light). The other variant is left unset, so it falls back to the shipped
-    `default` theme. Refuses reserved names and names not matching ^[a-z0-9][a-z0-9_-]*$."""
+    """Snapshot BOTH variants (dark + light) of the active theme's currently-resolved
+    palette into config.json themes[<name>] — a fully self-contained copy, independent
+    of the current appearance. Each variant captures every category (resolving the
+    active theme over the shipped fallback). Refuses reserved names and names not
+    matching ^[a-z0-9][a-z0-9_-]*$."""
     cats = _categories_module()
     if cats is None:
         print("categories plugin not available (lib/categories.py missing)"); return
@@ -406,32 +413,32 @@ def _theme_save(name):
     if not _THEME_NAME_RE.match(name):
         print("Refusing to save theme '%s' — invalid name. Use a lowercase letter or "
               "digit, then any of [a-z0-9_-] (e.g. 'my-theme')." % name); return
-    try:
-        eff = cats.effective_themes()
-    except Exception as e:
-        print("could not read themes: %s" % e); return
     active = active_theme()
-    variant = resolved_variant()
-    pal = (eff.get(active, {}) or {}).get(variant)
-    if not isinstance(pal, dict) or not pal:           # fall back to default's variant
-        pal = (eff.get(getattr(cats, "DEFAULT_THEME", "default"), {}) or {}).get(variant)
-    if not isinstance(pal, dict) or not pal:
-        print("No active theme palette to snapshot (active = '%s', variant = '%s')."
-              % (active, variant)); return
+    entry = {}
+    for variant in getattr(cats, "VARIANTS", ("dark", "light")):
+        pals = {}
+        for key in cats.CATEGORIES:
+            try:
+                p = cats.theme_palette(active, key, variant)
+            except Exception:
+                p = None
+            if isinstance(p, dict) and p:
+                pals[key] = copy.deepcopy(p)
+        if pals:
+            entry[variant] = pals
+    if not entry:
+        print("No active theme palette to snapshot (active = '%s')." % active); return
     d = _load()
     themes = d.get("themes")
     if not isinstance(themes, dict):
         themes = {}
-    entry = themes.get(name) if isinstance(themes.get(name), dict) else {}
-    entry[variant] = copy.deepcopy(pal)
     themes[name] = entry
     d["themes"] = themes
     _save(d)
-    vname = getattr(cats, "VARIANT_NAMES", {}).get(variant, "")
-    print("saved theme '%s' — snapshot of '%s' %s variant%s (%d categories); other "
-          "variant falls back to '%s' → %s"
-          % (name, active, variant, (" (%s)" % vname) if vname else "", len(pal),
-             getattr(cats, "DEFAULT_THEME", "default"), _path()))
+    labels = " + ".join(_variant_label(v, active) for v in entry)
+    counts = ", ".join("%s: %d cats" % (v, len(entry[v])) for v in entry)
+    print("saved theme '%s' — snapshot of '%s' (both variants: %s; %s) → %s"
+          % (name, active, labels, counts, _path()))
 
 
 def _theme_preview():

@@ -87,7 +87,7 @@ class Board(unittest.TestCase):
         board = config.render_board()
         self.assertIn("OPTIONS", board)
         self.assertIn("auto · dark · light", board)   # --tint-theme options
-        self.assertIn("default", board)               # --theme value/options
+        self.assertIn("sands", board)                 # --theme active value
         self.assertIn("on · off", board)
         self.assertIn("edit·toggle", board)
 

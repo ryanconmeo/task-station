@@ -21,7 +21,7 @@ class Tint(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _pal(self, variant, key):
-        return categories.THEMES["default"][variant][key]
+        return categories.THEMES["sands"][variant][key]
 
     def test_full_palette_iterm_dark_variant(self):
         out = categories.tint_escape("silver", "auto", "iterm")

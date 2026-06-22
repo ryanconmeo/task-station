@@ -19,30 +19,35 @@ class _Base(unittest.TestCase):
 
 
 class ThemesRegistry(_Base):
-    """The baked THEMES registry: one theme, two variants, full taxonomy, 16-ANSI."""
+    """The baked THEMES registry: one `sands` theme, two variants, 16-ANSI each."""
 
     def test_one_shipped_theme_two_variants(self):
-        self.assertEqual(set(categories.THEMES), {"default"})
-        self.assertEqual(categories.DEFAULT_THEME, "default")
-        self.assertEqual(set(categories.THEMES["default"]), {"dark", "light"})
+        self.assertEqual(set(categories.THEMES), {"sands"})
+        self.assertEqual(categories.DEFAULT_THEME, "sands")
+        self.assertEqual(set(categories.THEMES["sands"]), {"dark", "light"})
         self.assertEqual(tuple(categories.VARIANTS), ("dark", "light"))
-        self.assertEqual(categories.VARIANT_NAMES, {"dark": "Dusk", "light": "Sands"})
+
+    def test_variant_labels_and_display(self):
+        self.assertEqual(categories.theme_display("sands"), "Sands")
+        self.assertEqual(categories.variant_label("sands", "dark"), "Dark Sands")
+        self.assertEqual(categories.variant_label("sands", "light"), "Light Sands")
+        self.assertEqual(categories.variant_label("ocean", "dark"), "Dark Ocean")
 
     def test_each_variant_has_twelve_categories_full_palette(self):
         cat_keys = set(categories.CATEGORIES)
         self.assertEqual(len(cat_keys), 12)
         for variant in ("dark", "light"):
-            pals = categories.THEMES["default"][variant]
+            pals = categories.THEMES["sands"][variant]
             self.assertEqual(set(pals), cat_keys, "variant %s missing categories" % variant)
             for ckey, p in pals.items():
                 for field in ("bg", "fg", "bold", "cursor", "sel"):
                     self.assertTrue(p.get(field), "%s/%s missing %s" % (variant, ckey, field))
                 self.assertEqual(len(p["ansi"]), 16, "%s/%s ansi != 16" % (variant, ckey))
 
-    def test_dark_is_dusk_light_is_sands(self):
-        # the dark variant carries the muted "Dusk" reds; light the vibrant "Sands".
-        self.assertEqual(categories.THEMES["default"]["dark"]["red"]["bg"], "#2c1518")
-        self.assertEqual(categories.THEMES["default"]["light"]["red"]["bg"], "#80232a")
+    def test_dark_and_light_palettes(self):
+        # dark = the muted reds, light = the vibrant reds (same hexes as before).
+        self.assertEqual(categories.THEMES["sands"]["dark"]["red"]["bg"], "#2c1518")
+        self.assertEqual(categories.THEMES["sands"]["light"]["red"]["bg"], "#80232a")
 
     def test_categories_carry_no_colour(self):
         for meta in categories.CATEGORIES.values():
@@ -55,19 +60,18 @@ class EffectiveThemes(_Base):
 
     def test_no_overrides_returns_shipped(self):
         eff = categories.effective_themes()
-        self.assertEqual(eff["default"]["dark"]["red"]["bg"],
-                         categories.THEMES["default"]["dark"]["red"]["bg"])
+        self.assertEqual(eff["sands"]["dark"]["red"]["bg"],
+                         categories.THEMES["sands"]["dark"]["red"]["bg"])
 
     def test_field_override_merges_and_keeps_siblings(self):
-        config.set("themes", {"default": {"dark": {"red": {"bg": "#abcdef"}}}})
+        config.set("themes", {"sands": {"dark": {"red": {"bg": "#abcdef"}}}})
         eff = categories.effective_themes()
-        self.assertEqual(eff["default"]["dark"]["red"]["bg"], "#abcdef")           # overridden
-        self.assertEqual(eff["default"]["dark"]["red"]["fg"],
-                         categories.THEMES["default"]["dark"]["red"]["fg"])        # sibling kept
-        self.assertEqual(len(eff["default"]["dark"]["red"]["ansi"]), 16)          # ansi kept
-        # the OTHER variant is untouched
-        self.assertEqual(eff["default"]["light"]["red"]["bg"],
-                         categories.THEMES["default"]["light"]["red"]["bg"])
+        self.assertEqual(eff["sands"]["dark"]["red"]["bg"], "#abcdef")            # overridden
+        self.assertEqual(eff["sands"]["dark"]["red"]["fg"],
+                         categories.THEMES["sands"]["dark"]["red"]["fg"])         # sibling kept
+        self.assertEqual(len(eff["sands"]["dark"]["red"]["ansi"]), 16)           # ansi kept
+        self.assertEqual(eff["sands"]["light"]["red"]["bg"],
+                         categories.THEMES["sands"]["light"]["red"]["bg"])        # other variant untouched
 
     def test_brand_new_named_theme_appears(self):
         config.set("themes", {"ocean": {"dark": {"green": {"bg": "#001122", "fg": "#ffffff"}}}})
@@ -77,14 +81,14 @@ class EffectiveThemes(_Base):
         self.assertIn("ocean", categories.available_themes())
 
     def test_shipped_themes_not_mutated_by_override(self):
-        before = categories.THEMES["default"]["dark"]["red"]["bg"]
-        config.set("themes", {"default": {"dark": {"red": {"bg": "#000000"}}}})
+        before = categories.THEMES["sands"]["dark"]["red"]["bg"]
+        config.set("themes", {"sands": {"dark": {"red": {"bg": "#000000"}}}})
         categories.effective_themes()   # must deep-copy, not mutate THEMES
-        self.assertEqual(categories.THEMES["default"]["dark"]["red"]["bg"], before)
+        self.assertEqual(categories.THEMES["sands"]["dark"]["red"]["bg"], before)
 
-    def test_available_themes_default_first(self):
+    def test_available_themes_sands_first(self):
         config.set("themes", {"aqua": {"dark": {"red": {"bg": "#111111"}}}})
-        self.assertEqual(categories.available_themes(), ["default", "aqua"])
+        self.assertEqual(categories.available_themes(), ["sands", "aqua"])
 
 
 class AppearanceVariant(_Base):
@@ -138,7 +142,7 @@ class TintVariant(_Base):
     """tint_escape switches variant with --tint-theme; default auto follows the OS."""
 
     def _osc11(self, variant, key):
-        return "\033]11;%s\007" % categories.THEMES["default"][variant][key]["bg"]
+        return "\033]11;%s\007" % categories.THEMES["sands"][variant][key]["bg"]
 
     def test_dark_vs_light_differ(self):
         config.set("tint_theme", "dark")
@@ -154,17 +158,17 @@ class TintVariant(_Base):
 
 
 class ActiveTheme(_Base):
-    def test_default_is_default_theme(self):
-        self.assertEqual(config.active_theme(), "default")
+    def test_default_is_sands(self):
+        self.assertEqual(config.active_theme(), "sands")
 
     def test_valid_selection(self):
         config.set("themes", {"ocean": {"dark": {"red": {"bg": "#001122"}}}})
         config.set("theme", "ocean")
         self.assertEqual(config.active_theme(), "ocean")
 
-    def test_unknown_falls_back_to_default(self):
+    def test_unknown_falls_back_to_sands(self):
         config.set("theme", "nonsense")
-        self.assertEqual(config.active_theme(), "default")
+        self.assertEqual(config.active_theme(), "sands")
 
 
 class ThemeCommands(_Base):
@@ -185,12 +189,13 @@ class ThemeCommands(_Base):
         self.assertIn("Unknown theme", out)
         self.assertIsNone(config.get("theme"))
 
-    def test_list_marks_active_and_shows_appearance(self):
+    def test_list_marks_active_and_shows_labels(self):
         config.set("tint_theme", "dark")
-        out = self._run([])                      # bare --theme → list
-        self.assertIn("* default", out)          # active marked
-        self.assertIn("--tint-theme dark", out)  # appearance line
-        self.assertIn("Dusk", out)               # resolved-variant name
+        out = self._run([])                       # bare --theme → list
+        self.assertIn("* sands", out)             # active marked
+        self.assertIn("Dark Sands", out)          # variant labels per theme line
+        self.assertIn("Light Sands", out)
+        self.assertIn("--tint-theme dark → Dark Sands", out)   # appearance line
 
     def test_save_reserved_name_refused(self):
         for name in ("save", "edit", "preview", "list", "show", "default"):
@@ -203,26 +208,29 @@ class ThemeCommands(_Base):
         self.assertIn("invalid name", out)
         self.assertIsNone(config.get("themes"))
 
-    def test_save_valid_writes_variant_nested(self):
-        config.set("tint_theme", "light")        # snapshot the light (Sands) variant
+    def test_save_captures_both_variants(self):
+        config.set("tint_theme", "light")        # appearance must NOT affect what's saved
         out = self._run(["save", "my-theme"])
         self.assertIn("saved theme 'my-theme'", out)
+        self.assertIn("both variants", out)
         themes = config.get("themes")
         self.assertIn("my-theme", themes)
-        self.assertIn("light", themes["my-theme"])               # captured under the variant
-        self.assertNotIn("dark", themes["my-theme"])             # other variant falls back
+        # BOTH variants captured, each full (12 categories)
+        self.assertEqual(set(themes["my-theme"]), {"dark", "light"})
+        self.assertEqual(set(themes["my-theme"]["dark"]), set(categories.CATEGORIES))
         self.assertEqual(set(themes["my-theme"]["light"]), set(categories.CATEGORIES))
+        self.assertEqual(themes["my-theme"]["dark"]["red"]["bg"],
+                         categories.THEMES["sands"]["dark"]["red"]["bg"])
         self.assertEqual(themes["my-theme"]["light"]["red"]["bg"],
-                         categories.THEMES["default"]["light"]["red"]["bg"])
+                         categories.THEMES["sands"]["light"]["red"]["bg"])
         self.assertIn("my-theme", categories.available_themes())
 
-    def test_saved_theme_other_variant_falls_back_to_default(self):
-        config.set("tint_theme", "light")
-        self._run(["save", "my-theme"])
-        config.set("theme", "my-theme")
-        # dark variant not saved → resolves to default's dark (Dusk) palette
-        pal = categories.theme_palette("my-theme", "red", "dark")
-        self.assertEqual(pal["bg"], categories.THEMES["default"]["dark"]["red"]["bg"])
+    def test_partial_user_theme_falls_back_to_sands(self):
+        # A theme that defines only one variant falls back to sands for the other.
+        config.set("themes", {"mt": {"dark": {"green": {"bg": "#111111"}}}})
+        self.assertEqual(categories.theme_palette("mt", "green", "dark")["bg"], "#111111")
+        self.assertEqual(categories.theme_palette("mt", "red", "light")["bg"],
+                         categories.THEMES["sands"]["light"]["red"]["bg"])
 
     def test_edit_prints_config_path(self):
         out = self._run(["edit"]).strip()
@@ -236,15 +244,13 @@ class RenderPalettes(_Base):
         importlib.reload(render_palettes)   # pick up the freshly-reloaded categories
         return render_palettes
 
-    def test_render_html_contains_both_variants(self):
+    def test_render_html_contains_both_variant_labels(self):
         html = self._import().render_html()
         self.assertIn("<html", html)
-        self.assertIn("default · dark", html)        # both variant sections
-        self.assertIn("default · light", html)
-        self.assertIn("Dusk", html)
-        self.assertIn("Sands", html)
-        self.assertIn(categories.THEMES["default"]["dark"]["red"]["bg"], html)   # a real dark bg
-        self.assertIn(categories.THEMES["default"]["light"]["red"]["bg"], html)  # a real light bg
+        self.assertIn("Sands — Dark Sands", html)     # section headers
+        self.assertIn("Sands — Light Sands", html)
+        self.assertIn(categories.THEMES["sands"]["dark"]["red"]["bg"], html)   # a real dark bg
+        self.assertIn(categories.THEMES["sands"]["light"]["red"]["bg"], html)  # a real light bg
         self.assertIn("[BUG]", html)
 
     def test_render_includes_user_theme(self):
@@ -252,7 +258,7 @@ class RenderPalettes(_Base):
                                                            "bold": "#88ccff", "cursor": "#88ccff",
                                                            "sel": "#003344", "ansi": ["#000000"] * 16}}}})
         html = self._import().render_html()
-        self.assertIn("ocean · dark", html)
+        self.assertIn("Ocean — Dark Ocean", html)
         self.assertIn("#001122", html)
 
 

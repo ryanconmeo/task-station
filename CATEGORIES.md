@@ -111,11 +111,14 @@ which renders**. For each category key each variant defines `bg`, `fg`, `bold`, 
 `sel`, and a 16-element `ansi` list. The taxonomy (dot/tag/label) is theme-independent —
 only the colours change. One theme ships:
 
-- **`default`** — its **dark** half is **Dusk** (muted), its **light** half is **Sands**
-  (vibrant).
+- **`sands`** (display **Sands**) — a **Dark Sands** (muted) variant and a **Light Sands**
+  (vibrant) variant.
 
-So out of the box the terminal follows the OS — dark mode → Dusk, light mode → Sands —
-re-resolved every prompt/attach.
+So out of the box the terminal follows the OS — dark mode → Dark Sands, light mode → Light
+Sands — re-resolved every prompt/attach. A theme's variants display as
+**"{Dark\|Light} {Theme}"** (`categories.variant_label`): `Dark Sands` / `Light Sands`,
+or `Dark Ocean` / `Light Ocean` for a custom `ocean`. The variant **keys** stay
+`dark`/`light` (the appearance mapping); only the labels change.
 
 **Two controls:**
 
@@ -124,18 +127,18 @@ re-resolved every prompt/attach.
   → `Dark` means dark, else light; non-macOS / any failure → dark). `dark`/`light` force
   it. Resolved by `categories.resolve_variant()`.
 - **`config --theme <name>`** — the *active theme* (config key `theme`, validated against
-  the available themes, default `default`). With one shipped theme this is mainly for
+  the available themes, default `sands`). With one shipped theme this is mainly for
   custom themes. Resolved by `config.active_theme()`.
 
 `tint_escape` resolves: **active theme → variant (appearance) → that variant's
-per-category palette** (falling back to the `default` theme's variant), then emits the OSC
+per-category palette** (falling back to the `sands` theme's variant), then emits the OSC
 escapes.
 
 ```text
 config --tint-theme            # show / set appearance (auto|dark|light)
 config --theme                 # list themes + active + the resolved variant (also: list)
 config --theme <name>          # select a (custom) theme as active
-config --theme save my-theme   # snapshot the current resolved palette into config.json
+config --theme save my-theme   # snapshot BOTH variants into config.json (self-contained)
 config --theme edit            # print the config.json path (edit user themes there)
 config --theme preview         # render an HTML gallery (both variants) → <data_dir>/themes-preview.html
 ```
@@ -149,16 +152,16 @@ config --theme preview         # render an HTML gallery (both variants) → <dat
 (theme → `dark`|`light` → category → field) — so you can tweak one colour, or add a whole
 new named theme, and it survives `/plugin update`. `effective_themes()` does the merge (on
 a deep copy; the shipped theme is never mutated). A theme that defines only one variant
-falls back to `default` for the other (per category). Examples:
+falls back to `sands` for the other (per category). Examples:
 
 ```jsonc
 {
-  "theme": "default",                                  // active theme (default: default)
+  "theme": "sands",                                    // active theme (default: sands)
   "tint_theme": "auto",                                // appearance: auto|dark|light
   "themes": {
-    "default": { "dark": { "red": { "bg": "#1a0e10" } } },  // tweak one Dusk field
+    "sands": { "dark": { "red": { "bg": "#1a0e10" } } },    // tweak one Dark Sands field
     "ocean": {                                           // a brand-new named theme
-      "dark": {                                          // its light half falls back to default
+      "dark": {                                          // its light half falls back to sands
         "green": { "bg": "#001a22", "fg": "#dfeef2", "bold": "#5fd0dc",
                    "cursor": "#5fd0dc", "sel": "#04323a",
                    "ansi": ["#0b1416", "..."] }           // 16 entries
@@ -170,9 +173,9 @@ falls back to `default` for the other (per category). Examples:
 
 **Reserved theme names** (cannot be saved): `save`, `edit`, `preview`, `list`, `show`,
 `default`. A saved/added theme name must match `^[a-z0-9][a-z0-9_-]*$`. `config --theme
-save <name>` snapshots the active theme's **currently-resolved** palette under the current
-variant (`themes[<name>][<dark|light>]`); the other variant falls back to `default`. It
-refuses reserved or malformed names.
+save <name>` snapshots **both** variants of the active theme's resolved palette
+(`themes[<name>][dark]` + `[light]`, every category) — a fully self-contained copy,
+independent of the current appearance. It refuses reserved or malformed names.
 
 ## Enabled set (lean default that grows)
 
@@ -273,12 +276,12 @@ JSON shape (all keys optional — only what you set is stored):
   "categories": {
     "green": { "tag": "VOLT", "label": "volt work" }   // dot + colour inherited
   },
-  "theme": "default",                                   // active theme (default: default)
+  "theme": "sands",                                     // active theme (default: sands)
   "tint_theme": "auto",                                 // appearance: auto|dark|light
   "themes": {                                            // variant-nested: theme → dark|light → cat → field
-    "default": { "dark": { "green": { "bold": "#d7f528" } } },  // tweak one Dusk field
+    "sands": { "dark": { "green": { "bold": "#d7f528" } } },  // tweak one Dark Sands field
     "ocean": {                                           // a brand-new named theme
-      "dark": {                                          // its light half falls back to default
+      "dark": {                                          // its light half falls back to sands
         "green": { "bg": "#001a22", "fg": "#dfeef2", "bold": "#5fd0dc",
                    "cursor": "#5fd0dc", "sel": "#04323a",
                    "ansi": ["#000000", "#c23621", "#25bc24", "#adad27", "#492ee1",
@@ -300,11 +303,11 @@ JSON shape (all keys optional — only what you set is stored):
   explicit `dot` overrides it. Colour is **not** here — it lives in `themes`. Entries
   missing `tag` or `label` are silently skipped; any invalid JSON leaves the shipped
   defaults entirely intact.
-- **`theme`** — the active theme name (default `default`); validated against the available
-  themes, falling back to `default`. Set via `config --theme <name>`.
+- **`theme`** — the active theme name (default `sands`); validated against the available
+  themes, falling back to `sands`. Set via `config --theme <name>`.
 - **`themes`** — **variant-nested** (theme → `dark`|`light` → category → field) overrides
   deep-merged over the shipped `THEMES`; brand-new named themes are allowed (a missing
-  variant falls back to `default`). Fields per category: `bg`, `fg`, `bold`, `cursor`,
+  variant falls back to `sands`). Fields per category: `bg`, `fg`, `bold`, `cursor`,
   `sel`, `ansi` (16 entries). Survives `/plugin update`.
 - **`enabled_categories`** — the list of "on" colour keys (see *Enabled set*).
   Absent ⇒ CORE (`BUG · FEATURE · GENERAL`); `⚫ GENERAL` is always forced in. Usually

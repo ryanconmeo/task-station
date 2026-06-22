@@ -9,32 +9,33 @@ All notable changes to Task Station are documented here. This project adheres to
 - **Appearance-aware theme system.** The 12-category taxonomy (dot/[TAG]/label) is
   unchanged; colour now comes from a **THEME**, and every theme has **two variants —
   `dark` and `light`** — each a full per-category palette (background, foreground,
-  bold, cursor, selection + the 16 ANSI colours). One theme ships, **`default`**,
-  whose **dark** half is **Dusk** (muted) and **light** half is **Sands** (vibrant).
-  The **OS appearance picks the variant**, so out of the box the terminal follows the
-  OS — dark mode → Dusk, light mode → Sands — re-resolved every prompt/attach. Tinting
-  uses standard OSC escapes (OSC 11/10/12, OSC 4 for the 16 ANSI slots, OSC 17 for
-  selection, plus an iTerm-only `SetColors=bold`).
+  bold, cursor, selection + the 16 ANSI colours). One theme ships, **`sands`**, with a
+  **Dark Sands** (muted) variant and a **Light Sands** (vibrant) variant. The **OS
+  appearance picks the variant**, so out of the box the terminal follows the OS — dark
+  mode → Dark Sands, light mode → Light Sands — re-resolved every prompt/attach.
+  Variants display as `{Dark|Light} {Theme}`. Tinting uses standard OSC escapes (OSC
+  11/10/12, OSC 4 for the 16 ANSI slots, OSC 17 for selection, plus an iTerm-only
+  `SetColors=bold`).
 - **`config --tint-theme auto|dark|light`** (default `auto`) — the appearance control:
   which variant renders. `auto` detects the OS (macOS `AppleInterfaceStyle`;
   non-macOS/failure → dark); `dark`/`light` force it.
 - **`config --theme`** — verb-first grammar for the active theme (mainly for custom
   themes, since one ships):
-  - `config --theme` (or `list`) lists themes + active + the current tint-theme and
-    resolved variant.
+  - `config --theme` (or `list`) lists themes + active + each theme's variant labels +
+    the current tint-theme and resolved variant.
   - `config --theme <name>` selects a theme.
-  - `config --theme save <name>` snapshots the active theme's **currently-resolved**
-    palette into `config.json` under the current variant (the other variant falls back
-    to `default`); rejects reserved names `save·edit·preview·list·show·default` and
-    names not matching `^[a-z0-9][a-z0-9_-]*$`.
+  - `config --theme save <name>` snapshots **both variants** (dark + light) of the
+    active theme into `config.json` as a fully self-contained theme (independent of the
+    current appearance); rejects reserved names `save·edit·preview·list·show·default`
+    and names not matching `^[a-z0-9][a-z0-9_-]*$`.
   - `config --theme edit` prints the `config.json` path.
   - `config --theme preview` renders a self-contained HTML gallery — **both variants**
     of every theme — to `<data_dir>/themes-preview.html`.
-  - `--theme`, `--tint-theme`, and the resolved variant (e.g. `auto → dark (Dusk)`)
-    all appear on the `config` board.
+  - `--theme`, `--tint-theme`, and the resolved variant (e.g. `auto → Dark Sands`) all
+    appear on the `config` board.
 - **User themes survive updates.** `config.json` `themes` deep-merge over the shipped
   THEMES, **variant-nested** (theme → `dark`|`light` → category → field); brand-new
-  named themes are allowed (a missing variant falls back to `default`) — so
+  named themes are allowed (a missing variant falls back to `sands`) — so
   customisations persist across `/plugin update`.
 - **`tools/render_palettes.py`** — the data-driven preview generator (HTML to stdout
   or `--out`), rendering both variants of each theme; backs `config --theme preview`.

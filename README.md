@@ -130,23 +130,23 @@ Tinting is **zero‑setup** on iTerm2 and Apple Terminal: Task Station writes OS
 
 ## Themes
 
-A **theme** is a full‑palette colour set with **two variants — `dark` and `light`** — and the **OS appearance picks which one renders**. For every category each variant supplies a complete terminal palette (background, foreground, bold, cursor, selection, and the 16 ANSI colours). One theme ships — **`default`** — whose dark half is **Dusk** (muted) and light half is **Sands** (vibrant). So out of the box the terminal **follows the OS**: dark mode → Dusk, light mode → Sands, switching automatically (re‑resolved every prompt/attach).
+A **theme** is a full‑palette colour set with **two variants — `dark` and `light`** — and the **OS appearance picks which one renders**. For every category each variant supplies a complete terminal palette (background, foreground, bold, cursor, selection, and the 16 ANSI colours). One theme ships — **`sands`** — with a **Dark Sands** (muted) variant and a **Light Sands** (vibrant) variant. So out of the box the terminal **follows the OS**: dark mode → Dark Sands, light mode → Light Sands, switching automatically (re‑resolved every prompt/attach).
 
 ```text
 task-station config --tint-theme            # auto (default) — follow the OS appearance
-task-station config --tint-theme dark       # force the dark variant (Dusk)
-task-station config --tint-theme light      # force the light variant (Sands)
+task-station config --tint-theme dark       # force the dark variant (Dark Sands)
+task-station config --tint-theme light      # force the light variant (Light Sands)
 
 task-station config --theme                 # list themes + the active one + resolved variant
-task-station config --theme save my-theme   # snapshot the current resolved palette as a theme
+task-station config --theme save my-theme   # snapshot BOTH variants as a new self-contained theme
 task-station config --theme <name>          # select a (custom) theme
 task-station config --theme edit            # print config.json to hand-edit themes
 task-station config --theme preview         # render an HTML gallery (both variants of each theme)
 ```
 
-`--tint-theme` controls the **appearance** (which variant renders); `--theme` selects **which theme** supplies the palettes (mainly for custom themes — one theme ships).
+`--tint-theme` controls the **appearance** (which variant renders); `--theme` selects **which theme** supplies the palettes (mainly for custom themes — one theme ships). A theme's variants display as **"{Dark\|Light} {Theme}"** — e.g. `Dark Sands` / `Light Sands`, or `Dark Ocean` / `Light Ocean` for a custom `ocean`.
 
-**Customisations survive updates.** Any colour you change — and any brand‑new named theme you add — lives under `themes` in `config.json`, **variant‑nested** (`theme → dark|light → category → field`), and is **deep‑merged** over the shipped theme, so it persists across `/plugin update`. A custom theme that defines only one variant falls back to `default` for the other. `--theme save` captures the palette under the *current* variant. Reserved names (`save`, `edit`, `preview`, `list`, `show`, `default`) can't be saved; theme names must match `^[a-z0-9][a-z0-9_-]*$`. See [CATEGORIES.md](CATEGORIES.md).
+**Customisations survive updates.** Any colour you change — and any brand‑new named theme you add — lives under `themes` in `config.json`, **variant‑nested** (`theme → dark|light → category → field`), and is **deep‑merged** over the shipped theme, so it persists across `/plugin update`. A custom theme that defines only one variant falls back to `sands` for the other. `--theme save` captures **both** variants (fully self‑contained, independent of the current appearance). Reserved names (`save`, `edit`, `preview`, `list`, `show`, `default`) can't be saved; theme names must match `^[a-z0-9][a-z0-9_-]*$`. See [CATEGORIES.md](CATEGORIES.md).
 
 ## In‑project delegation
 
@@ -178,7 +178,7 @@ This safely merges one entry into your existing Desktop config (backed up first)
 | `--categories [edit]` | — | CORE | Show the active category set (`edit` prints the config path). |
 | `--auto-categories [on\|off]` | on/off | on | Auto-enable a slot the first time a task is assigned to it (board grows itself). |
 | `--enable` / `--disable <key>` | category | — | Toggle a single category (GENERAL is permanent). |
-| `--tint-theme [auto\|dark\|light]` | auto/dark/light | auto | Appearance: which variant renders — `auto` follows the OS (dark=Dusk, light=Sands). |
+| `--tint-theme [auto\|dark\|light]` | auto/dark/light | auto | Appearance: which variant renders — `auto` follows the OS (dark=Dark Sands, light=Light Sands). |
 | `--theme [<name>\|save <name>\|edit\|preview\|list]` | theme name / verb | default | Active colour theme (dark+light variants); mainly for custom themes (see [Themes](#themes)). |
 | `--title [on\|off]` | on/off | on | Auto terminal title `#<seq>: <title>`. |
 | `--bare-cmds [on\|off]` | on/off | off | Install bare `/todo` + `/done` aliases. |

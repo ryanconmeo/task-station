@@ -75,21 +75,21 @@ class PromptTintFallback(unittest.TestCase):
         ts.set_link("sess-1", t["id"])
         out = self._run(session="sess-1", prompt="/todo 1")   # not a skill mapping
         self.assertEqual(out, categories.tint_escape("red", "auto", "iterm"))
-        self.assertIn("\033]11;%s\007" % categories.THEMES["default"]["dark"]["red"]["bg"], out)
+        self.assertIn("\033]11;%s\007" % categories.THEMES["sands"]["dark"]["red"]["bg"], out)
 
     def test_fallback_follows_resolved_variant(self):
         t = self._seed("red")
         ts.set_link("sess-th", t["id"])
         config.set("tint_theme", "light")     # appearance picks the light (Sands) variant
         out = self._run(session="sess-th", prompt="repaint please")
-        self.assertIn("\033]11;%s\007" % categories.THEMES["default"]["light"]["red"]["bg"], out)
+        self.assertIn("\033]11;%s\007" % categories.THEMES["sands"]["light"]["red"]["bg"], out)
 
     def test_skill_prompt_wins_over_task(self):
         t = self._seed("red")
         ts.set_link("sess-2", t["id"])
         out = self._run(session="sess-2", prompt="/review")   # skill → orange
-        self.assertIn("\033]11;%s\007" % categories.THEMES["default"]["dark"]["orange"]["bg"], out)
-        self.assertNotIn("\033]11;%s\007" % categories.THEMES["default"]["dark"]["red"]["bg"], out)
+        self.assertIn("\033]11;%s\007" % categories.THEMES["sands"]["dark"]["orange"]["bg"], out)
+        self.assertNotIn("\033]11;%s\007" % categories.THEMES["sands"]["dark"]["red"]["bg"], out)
 
     def test_unattached_session_emits_nothing(self):
         self.assertEqual(self._run(session="nobody", prompt="hello world"), "")

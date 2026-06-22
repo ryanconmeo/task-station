@@ -62,26 +62,28 @@ DEFAULT = "black"
 # A THEME has TWO VARIANTS — `dark` and `light` — each a full per-category palette
 # (bg/fg/bold/cursor/sel + 16 ANSI). The OS appearance, or a forced
 # `--tint-theme dark|light`, picks which variant renders:
-# THEMES[theme][variant][category_key]. One theme ships: `default`, whose DARK half
-# is "Dusk" (muted) and LIGHT half is "Sands" (vibrant). So out of the box the
-# terminal follows the OS — dark mode → Dusk, light mode → Sands — re-resolved every
-# prompt/attach (see resolve_variant). Users can override any field and add
-# brand-new named themes via config.json (deep-merged, variant-nested, by
-# effective_themes); config.active_theme() picks the theme (default `default`).
+# THEMES[theme][variant][category_key]. One theme ships: `sands` (display "Sands"),
+# with a "Dark Sands" (muted) and a "Light Sands" (vibrant) variant. So out of the
+# box the terminal follows the OS — dark mode → Dark Sands, light mode → Light Sands
+# — re-resolved every prompt/attach (see resolve_variant). Users can override any
+# field and add brand-new named themes via config.json (deep-merged, variant-nested,
+# by effective_themes); config.active_theme() picks the theme (default `sands`).
+# Variant DISPLAY labels follow "{Dark|Light} {ThemeDisplay}" (see variant_label);
+# the variant KEYS stay dark/light (the appearance mapping).
 #
 # The 16-ANSI ramps are shared within a variant, named once and referenced —
 # keeping every list exactly 16 elements. effective_themes() deep-copies before
 # merging, so these shared lists are never mutated by an override.
 _DARK_ANSI = ["#2a2c33", "#ef7a8b", "#9bd485", "#e6c178", "#7aa6ec", "#c79bef", "#79c9d6", "#dcd2c0",
-              "#5a5650", "#ff93a3", "#b2e69c", "#f4d690", "#94bcff", "#d7b5fb", "#94dde9", "#f3ece0"]  # Dusk
+              "#5a5650", "#ff93a3", "#b2e69c", "#f4d690", "#94bcff", "#d7b5fb", "#94dde9", "#f3ece0"]  # Dark Sands
 _LIGHT_ANSI = ["#000000", "#ff7a64", "#4fd24a", "#e6d24a", "#5f7fff", "#ef6cef", "#3fd0dc", "#cbcccd",
-               "#818383", "#ff9078", "#62ee52", "#f0f152", "#7e8eff", "#f96cf9", "#4ff0f0", "#e9ebeb"]  # Sands
+               "#818383", "#ff9078", "#62ee52", "#f0f152", "#7e8eff", "#f96cf9", "#4ff0f0", "#e9ebeb"]  # Light Sands
 _LIGHT_WHITE_ANSI = ["#575167", "#c83b53", "#5a8a3c", "#b07d1a", "#2f6fd0", "#9450c8", "#1f8a99", "#575167",
-                     "#6f6982", "#d8455f", "#67992f", "#c08a00", "#3a7ce0", "#a45fd8", "#2799aa", "#3d3850"]  # Sands, white slot
+                     "#6f6982", "#d8455f", "#67992f", "#c08a00", "#3a7ce0", "#a45fd8", "#2799aa", "#3d3850"]  # Light Sands, white slot
 
 THEMES = {
-    "default": {
-        "dark": {   # "Dusk" — dark, muted
+    "sands": {
+        "dark": {   # "Dark Sands" — dark, muted
             "red":    {"bg": "#2c1518", "fg": "#dcd2c0", "bold": "#e0c060", "cursor": "#e0c060", "sel": "#235a52", "ansi": _DARK_ANSI},
             "orange": {"bg": "#34200d", "fg": "#dcd2c0", "bold": "#f0926e", "cursor": "#f0926e", "sel": "#20545e", "ansi": _DARK_ANSI},
             "yellow": {"bg": "#26220f", "fg": "#dcd2c0", "bold": "#ffb454", "cursor": "#ffb454", "sel": "#4a3270", "ansi": _DARK_ANSI},
@@ -95,7 +97,7 @@ THEMES = {
             "gold":   {"bg": "#2a2210", "fg": "#dcd2c0", "bold": "#ffd24a", "cursor": "#ffd24a", "sel": "#2e3a6e", "ansi": _DARK_ANSI},
             "brown":  {"bg": "#241910", "fg": "#dcd2c0", "bold": "#f08a4a", "cursor": "#f08a4a", "sel": "#2a5048", "ansi": _DARK_ANSI},
         },
-        "light": {  # "Sands" — vibrant
+        "light": {  # "Light Sands" — vibrant
             "red":    {"bg": "#80232a", "fg": "#e8dcc0", "bold": "#ffd84a", "cursor": "#ffd84a", "sel": "#235a52", "ansi": _LIGHT_ANSI},
             "orange": {"bg": "#934606", "fg": "#ecdcc0", "bold": "#ff8f6b", "cursor": "#ff8f6b", "sel": "#20545e", "ansi": _LIGHT_ANSI},
             "yellow": {"bg": "#6a5c00", "fg": "#f0e4a8", "bold": "#ff9d3a", "cursor": "#ff9d3a", "sel": "#4a3270", "ansi": _LIGHT_ANSI},
@@ -111,10 +113,8 @@ THEMES = {
         },
     },
 }
-DEFAULT_THEME = "default"
+DEFAULT_THEME = "sands"
 VARIANTS = ("dark", "light")
-# Display names for a theme's two variants (the shipped `default` theme's halves).
-VARIANT_NAMES = {"dark": "Dusk", "light": "Sands"}
 
 # The canonical per-slot emoji, captured from the shipped defaults BEFORE any user
 # override mutates CATEGORIES — this is the source of truth an override inherits
@@ -481,9 +481,22 @@ def effective_themes():
 
 def available_themes():
     """Theme names available to select (shipped + any user-defined), the shipped
-    `default` first, then user themes alphabetically."""
+    `sands` first, then user themes alphabetically."""
     names = list(effective_themes())
     return sorted(names, key=lambda n: (0 if n == DEFAULT_THEME else 1, n))
+
+
+def theme_display(theme):
+    """Human display name for a theme key — the key with its first letter upper-cased
+    (`sands` → 'Sands', `ocean` → 'Ocean'). Used to build variant labels."""
+    return (theme[:1].upper() + theme[1:]) if theme else theme
+
+
+def variant_label(theme, variant):
+    """Display label for a theme's variant: '{Dark|Light} {ThemeDisplay}' — e.g.
+    ('sands','dark') → 'Dark Sands', ('sands','light') → 'Light Sands', ('ocean',
+    'dark') → 'Dark Ocean'. The variant KEYS stay dark/light; only labels change."""
+    return "%s %s" % (variant.capitalize(), theme_display(theme))
 
 
 def tint_theme_setting():
@@ -503,7 +516,7 @@ def resolve_variant():
     A forced "dark"/"light" setting is returned as-is. "auto" detects the OS
     appearance: on macOS, `defaults read -g AppleInterfaceStyle` prints "Dark" in
     dark mode and errors (no such key) in light mode. Any non-macOS platform or any
-    failure falls back to "dark" (so the default theme renders Dusk)."""
+    failure falls back to "dark" (so the shipped theme renders Dark Sands)."""
     setting = tint_theme_setting()
     if setting in ("dark", "light"):
         return setting

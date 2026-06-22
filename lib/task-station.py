@@ -2373,7 +2373,7 @@ def main():
     sp.add_argument("--theme", dest="theme", nargs="*", default=None,
                     help="(no arg) list themes + active · <name> select · save <name> · edit · preview")
     sp.add_argument("--tint-theme", dest="tint_theme", nargs="?", choices=["auto","dark","light"], const="auto", default=None,
-                    help="appearance variant: auto follows the OS (dark=Dusk, light=Sands), or force dark/light")
+                    help="appearance variant: auto follows the OS (dark=Dark Sands, light=Light Sands), or force dark/light")
     sp.add_argument("--tint-theme-get", dest="tint_theme_get", action="store_true")
     sp.add_argument("--title", dest="title", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--title-get", dest="title_get", action="store_true")

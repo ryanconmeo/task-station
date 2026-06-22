@@ -38,8 +38,8 @@ class NewDefaults(_Base):
         self.assertEqual(c.CATEGORIES["white"]["tag"], "DESIGN")
         self.assertEqual(c.CATEGORIES["white"]["dot"], "🎨")
         self.assertEqual(c.CATEGORIES["white"]["label"], "design")
-        self.assertIn("white", c.THEMES["default"]["dark"])    # palette per variant
-        self.assertIn("white", c.THEMES["default"]["light"])
+        self.assertIn("white", c.THEMES["sands"]["dark"])    # palette per variant
+        self.assertIn("white", c.THEMES["sands"]["light"])
 
     def test_pink_is_personal_heart(self):
         c = self._reload()
@@ -53,8 +53,8 @@ class NewDefaults(_Base):
         self.assertEqual(c.CATEGORIES["silver"]["tag"], "TOOLING")
         self.assertEqual(c.CATEGORIES["silver"]["dot"], "🪩")
         self.assertEqual(c.CATEGORIES["silver"]["label"], "dev/AI tooling, config, env")
-        self.assertIn("silver", c.THEMES["default"]["dark"])
-        self.assertIn("silver", c.THEMES["default"]["light"])
+        self.assertIn("silver", c.THEMES["sands"]["dark"])
+        self.assertIn("silver", c.THEMES["sands"]["light"])
 
     def test_resolve_new_tags(self):
         c = self._reload()
@@ -69,8 +69,8 @@ class NewDefaults(_Base):
         # whether addressed by key or by the category's [TAG]/label.
         self._write_config({"tint_theme": "dark"})   # force the dark variant
         c = self._reload()
-        white_bg = "\033]11;%s\007" % c.THEMES["default"]["dark"]["white"]["bg"]
-        silver_bg = "\033]11;%s\007" % c.THEMES["default"]["dark"]["silver"]["bg"]
+        white_bg = "\033]11;%s\007" % c.THEMES["sands"]["dark"]["white"]["bg"]
+        silver_bg = "\033]11;%s\007" % c.THEMES["sands"]["dark"]["silver"]["bg"]
         self.assertIn(white_bg, c.tint_escape("white", "auto", "iterm"))
         self.assertIn(silver_bg, c.tint_escape("silver", "auto", "iterm"))
         self.assertIn(white_bg, c.tint_escape("DESIGN", "auto", "iterm"))
@@ -104,7 +104,7 @@ class SlotDeterminesEmoji(_Base):
                             "tint_theme": "dark"})
         c = self._reload()
         self.assertEqual(c.CATEGORIES["green"]["tag"], "VOLT")
-        p = c.THEMES["default"]["dark"]["green"]
+        p = c.THEMES["sands"]["dark"]["green"]
         self.assertEqual(len(p["ansi"]), 16)
         out = c.tint_escape("green", "auto", "iterm")
         self.assertIn("\033]10;%s\007" % p["fg"], out)                          # fg from theme
