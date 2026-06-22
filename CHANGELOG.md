@@ -19,6 +19,13 @@ All notable changes to Task Station are documented here. This project adheres to
   window. Plain `/todo <n>` (non-jump) still attaches the invoking session and
   repaints the current window, unchanged.
 
+### Documentation
+- **Comprehensive README refresh.** Re-audited every section against the shipped
+  code — the appearance-aware theme system, auto-enabling categories, the full
+  config flag table, the `/todo` board render, and the MCP bridge tools. Corrected
+  the version badge (now `1.9.1`), the `--theme` default (`sands`), and normalised
+  the open-status glyph to `○` for consistency with the board.
+
 ## [1.9.0] — 2026-06-22
 
 ### Added
