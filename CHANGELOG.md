@@ -3,6 +3,45 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.9.0] — 2026-06-22
+
+### Added
+- **Theme system — named, full-palette colour sets.** The 12-category taxonomy
+  (dot/[TAG]/label) is unchanged; colour now comes from a **THEME** — a named set
+  that supplies every category's full terminal palette (background, foreground,
+  bold, cursor, selection + the 16 ANSI colours). Two ship: **`dusk`** (the
+  default — dark, muted) and **`sands`** (vibrant). The active theme tints the
+  window for the attached task's category via standard OSC escapes (OSC 11/10/12,
+  OSC 4 for the 16 ANSI slots, OSC 17 for selection, plus an iTerm-only
+  `SetColors=bold`).
+- **`config --theme`** — verb-first grammar:
+  - `config --theme` (or `list`) lists shipped + user themes and marks the active one.
+  - `config --theme <name>` selects a theme.
+  - `config --theme save <name>` snapshots the current effective palette into
+    `config.json` as a reusable theme (rejects reserved names
+    `save·edit·preview·list·show·default` and names not matching
+    `^[a-z0-9][a-z0-9_-]*$`).
+  - `config --theme edit` prints the `config.json` path.
+  - `config --theme preview` renders a self-contained HTML gallery of every theme to
+    `<data_dir>/themes-preview.html`.
+  - A **`--theme`** row now appears on the `config` board.
+- **User themes survive updates.** `config.json` `themes` deep-merge over the
+  shipped THEMES (per theme → per category → per field), and brand-new named themes
+  are allowed — so customisations and new palettes persist across `/plugin update`.
+- **`tools/render_palettes.py`** — the data-driven preview generator (HTML to stdout
+  or `--out`), backing `config --theme preview`.
+
+### Changed
+- **In-session re-tint.** When a prompt invokes no skill, `prompt-tint` now falls
+  back to the **attached task's** category colour (like the on-attach tint), so a
+  plain `/todo <n>` repaints the current window to the active task's theme. Honours
+  `TASK_STATION_TINT=off` and `TINT_TERMINAL`.
+
+### Removed
+- **OS-appearance tint switch (`--tint-theme` / `auto·dark·light`).** Choosing a
+  THEME is now the appearance choice; the per-category baked palette and the
+  `hex/hex_light` + `resolve_theme`/`hex_for` OS-detection machinery are gone.
+
 ## [1.8.0] — 2026-06-21
 
 ### Added

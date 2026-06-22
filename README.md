@@ -128,6 +128,25 @@ The **board starts lean and grows by itself.** On a fresh install only the **COR
 
 Tinting is **zero‑setup** on iTerm2 and Apple Terminal: Task Station writes OSC escapes directly to the originating window — background, foreground, cursor, the full 16‑colour ANSI palette, and (on iTerm) bold. No profiles or shell aliases required.
 
+## Themes
+
+A **theme** is a named, full‑palette colour set: for every category it supplies a complete terminal palette — background, foreground, bold, cursor, selection, and the 16 ANSI colours. The category taxonomy (dot/tag/label) is the same across themes; the **active theme** decides what the window actually looks like.
+
+Two ship:
+
+- **`dusk`** — the default: dark, muted, legible cream prose with soft accents.
+- **`sands`** — vibrant: saturated backgrounds and bright accents on the same per‑category hues.
+
+```text
+task-station config --theme                 # list themes, mark the active one
+task-station config --theme sands           # switch the active theme
+task-station config --theme save my-theme   # snapshot the current palette as a reusable theme
+task-station config --theme edit            # print config.json to hand-edit themes
+task-station config --theme preview         # render an HTML gallery of every theme
+```
+
+**Customisations survive updates.** Any colour you change — and any brand‑new named theme you add — lives under `themes` in `config.json` and is **deep‑merged** over the shipped themes (per theme → per category → per field), so it persists across `/plugin update`. Reserved names (`save`, `edit`, `preview`, `list`, `show`, `default`) can't be saved; theme names must match `^[a-z0-9][a-z0-9_-]*$`. See [CATEGORIES.md](CATEGORIES.md).
+
 ## In‑project delegation
 
 A hub session launched from `~` can't load a repo's `CLAUDE.md`, hooks, MCP servers or permissions — those only load inside the repo. Task Station delegates the work to a `claude` worker spawned *in* the repo:
@@ -158,7 +177,7 @@ This safely merges one entry into your existing Desktop config (backed up first)
 | `--categories [edit]` | — | CORE | Show the active category set (`edit` prints the config path). |
 | `--auto-categories [on\|off]` | on/off | on | Auto-enable a slot the first time a task is assigned to it (board grows itself). |
 | `--enable` / `--disable <key>` | category | — | Toggle a single category (GENERAL is permanent). |
-| `--tint-theme [auto\|dark\|light]` | auto/dark/light | auto | Tint palette; `auto` follows OS appearance. |
+| `--theme [<name>\|save <name>\|edit\|preview\|list]` | theme name / verb | dusk | Terminal colour theme — full palette per category (see [Themes](#themes)). |
 | `--title [on\|off]` | on/off | on | Auto terminal title `#<seq>: <title>`. |
 | `--bare-cmds [on\|off]` | on/off | off | Install bare `/todo` + `/done` aliases. |
 | `--update-check [on\|off]` | on/off | off | Opt‑in daily version check (no task data sent). |
