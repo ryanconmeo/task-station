@@ -14,10 +14,25 @@ from contextlib import redirect_stdout
 LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
 sys.path.insert(0, LIB)
 
+import store  # noqa: E402  (normal import — store.py has no hyphen)
+
 # task-station.py has a hyphen, so it can't be a normal import — load it by path.
 _spec = importlib.util.spec_from_file_location("task_station", os.path.join(LIB, "task-station.py"))
 ts = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ts)
+
+
+def _repoint(tmp):
+    """Point task-station.py's import-frozen path globals at a fresh tmp store so
+    writes can NEVER reach the real ~/.claude store, regardless of how the test is
+    invoked (flat-module discovery skips tests/__init__.py)."""
+    os.environ["TASK_STATION_HOME"] = tmp
+    ts.DATA = tmp
+    ts.STORE = os.path.join(tmp, "store")
+    ts.TASKS_DIR = os.path.join(ts.STORE, "tasks")
+    ts.LINKS_DIR = os.path.join(ts.STORE, "links")
+    ts.PROJECTS_ROOT = os.path.join(tmp, "projects")
+    store.reset_cache()
 
 
 class _Args:
@@ -28,10 +43,11 @@ class _Args:
 class PromptTitleTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        os.environ["TASK_STATION_HOME"] = self.tmp
+        _repoint(self.tmp)
         os.environ.pop("TASK_STATION_TITLE", None)
 
     def tearDown(self):
+        store.reset_cache()
         os.environ.pop("TASK_STATION_HOME", None)
         os.environ.pop("TASK_STATION_TITLE", None)
         shutil.rmtree(self.tmp, ignore_errors=True)

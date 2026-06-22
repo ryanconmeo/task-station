@@ -22,7 +22,7 @@ constraint, not an accident:
 The suite is plain `unittest`:
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -t . -s tests -v
 ```
 
 If you happen to have `pytest` installed, `pytest.ini` points it at the same

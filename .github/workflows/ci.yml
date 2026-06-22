@@ -20,4 +20,4 @@ jobs:
           python-version: ${{ matrix.python-version }}
       # Stdlib-only project — no dependencies to install.
       - name: Run tests
-        run: python3 -m unittest discover -s tests -v
+        run: python3 -m unittest discover -t . -s tests -v
