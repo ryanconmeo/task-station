@@ -3,6 +3,36 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.8.0] — 2026-06-21
+
+### Added
+- **Auto-enable categories — the board grows itself.** The categoriser now always
+  considers the **full 12-slot taxonomy**, so it can pick the most accurate
+  category even if that slot isn't on the board. When `auto_categories` is on (the
+  default) and a task is assigned (via `create --color`, `attach --color`,
+  `update --color`, or the Desktop bridge's create tool) to a category not in the
+  enabled set, that slot is **enabled automatically** — persisted to
+  `enabled_categories` and surfaced with a one-line `enabled new category 🔵 [INFRA]`
+  notice. The enabled set governs **display only**; assignment can target any slot.
+- **`--auto-categories on|off`** (plus `--auto-categories-get`) and the env escape
+  **`TASK_STATION_AUTO_CATEGORIES=off`** to freeze the enabled set. With it off,
+  assignment no longer grows the board and the legend/picker restrict to enabled
+  slots (the prior behaviour). Shown as a row on the `config` board.
+
+### Changed
+- **Lean CORE default.** When `enabled_categories` is unconfigured, the enabled set
+  is now **CORE = 🔴 BUG · 🟢 FEATURE · ⚫ GENERAL** (was: all 12). A fresh board
+  starts small and fills in via auto-enable as you categorise. `⚫ GENERAL` stays
+  permanent. The `config` board summary reads `N/12 (default: CORE)` / `N/12
+  (custom)`.
+
+### Removed
+- **Category presets are gone.** The `PRESETS` map, `preset_keys()`, the
+  `config --categories preset <name>` subcommand (and its `minimal|web|data|ops|full`
+  argument), and the preset listing on the `--categories` board were removed in
+  favour of the lean default + auto-enable. `--categories` (show set), `--enable`,
+  and `--disable` are unchanged.
+
 ## [1.7.0] — 2026-06-21
 
 ### Added

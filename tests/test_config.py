@@ -88,7 +88,7 @@ class Board(unittest.TestCase):
         self.assertIn("OPTIONS", board)
         self.assertIn("auto · dark · light", board)
         self.assertIn("on · off", board)
-        self.assertIn("edit·preset·toggle", board)
+        self.assertIn("edit·toggle", board)
 
     def test_header_row_present(self):
         os.environ["COLUMNS"] = "120"

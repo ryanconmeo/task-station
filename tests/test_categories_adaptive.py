@@ -137,10 +137,13 @@ class SlotDeterminesEmoji(_Base):
 
 
 class EnabledSet(_Base):
-    """C. Seeded-but-removable enabled set; GENERAL permanent."""
-    def test_unconfigured_defaults_to_full_set(self):
+    """C. Lean, growable enabled set; GENERAL permanent."""
+    def test_unconfigured_defaults_to_core(self):
         c = self._reload()
-        self.assertEqual(set(c.enabled_keys()), set(c.all_keys()))
+        self.assertEqual(set(c.enabled_keys()), set(c.CORE))
+        self.assertEqual(set(c.CORE), {"red", "green", "black"})   # BUG · FEATURE · GENERAL
+        # CORE is a strict subset — the full taxonomy is NOT all enabled by default.
+        self.assertNotEqual(set(c.enabled_keys()), set(c.all_keys()))
 
     def test_general_always_enabled_even_if_omitted(self):
         self._write_config({"enabled_categories": ["red", "green"]})
@@ -162,77 +165,17 @@ class EnabledSet(_Base):
         self.assertFalse(c.is_enabled("green"))
 
 
-class Presets(_Base):
-    """D. Presets, with the universal core in every one."""
-    CORE = {"red", "silver", "pink", "black"}   # TOOLING now on the silver slot
-
-    def test_minimal_is_core_only(self):
-        c = self._reload()
-        self.assertEqual(set(c.preset_keys("minimal")), self.CORE)
-
-    def test_full_is_all_twelve(self):
-        c = self._reload()
-        self.assertEqual(set(c.preset_keys("full")), set(c.all_keys()))
-        self.assertEqual(len(c.preset_keys("full")), 12)
-
-    def test_every_preset_contains_core(self):
-        c = self._reload()
-        for name in c.PRESETS:
-            self.assertTrue(self.CORE <= set(c.preset_keys(name)),
-                            "%s missing core" % name)
-
-    def test_every_preset_contains_general(self):
-        c = self._reload()
-        for name in c.PRESETS:
-            self.assertIn("black", c.preset_keys(name))
-
-    def test_web_preset_contents(self):
-        c = self._reload()
-        self.assertEqual(set(c.preset_keys("web")),
-                         self.CORE | {"green", "white", "blue", "orange", "yellow"})
-        # web still contains both TOOLING (silver, via core) and DESIGN (white)
-        self.assertIn("silver", c.preset_keys("web"))
-        self.assertIn("white", c.preset_keys("web"))
-
-    def test_data_preset_contents(self):
-        c = self._reload()
-        self.assertEqual(set(c.preset_keys("data")),
-                         self.CORE | {"brown", "green", "blue", "orange"})
-
-    def test_ops_preset_contents(self):
-        c = self._reload()
-        self.assertEqual(set(c.preset_keys("ops")),
-                         self.CORE | {"blue", "brown", "orange", "yellow", "purple"})
-
-    def test_unknown_preset_is_none(self):
-        c = self._reload()
-        self.assertIsNone(c.preset_keys("nope"))
-
-
 class ConfigCommands(_Base):
-    """D. config command surface: preset apply + enable/disable toggles."""
-    def _args(self, **kw):
-        kw.setdefault("categories", None)
-        kw.setdefault("enable", None)
-        kw.setdefault("disable", None)
-        return type("A", (), kw)()
-
+    """D. config command surface: enable/disable toggles from the lean default."""
     def _reload_config(self):
         import config
         importlib.reload(config)
         return config
 
-    def test_preset_apply_persists_enabled_set(self):
-        cfg = self._reload_config()
-        cfg.cmd_categories(["preset", "minimal"])
-        c = self._reload()
-        self.assertEqual(set(c.enabled_keys()), {"red", "silver", "pink", "black"})
-
     def test_disable_general_refused(self):
         cfg = self._reload_config()
         c = self._reload()
-        cfg.cmd_categories(["preset", "full"])
-        cfg.toggle_category("black", False)        # should refuse
+        cfg.toggle_category("black", False)        # should refuse (permanent)
         self.assertIn("black", c.enabled_keys())
         cfg.toggle_category("GENERAL", False)      # via tag, also refused
         self.assertIn("black", c.enabled_keys())
@@ -240,25 +183,87 @@ class ConfigCommands(_Base):
     def test_disable_then_enable_noncore(self):
         cfg = self._reload_config()
         c = self._reload()
-        cfg.cmd_categories(["preset", "full"])
-        cfg.toggle_category("green", False)
+        cfg.toggle_category("green", False)         # green (FEATURE) is in CORE
         self.assertNotIn("green", c.enabled_keys())
-        self.assertIn("black", c.enabled_keys())   # untouched + permanent
+        self.assertIn("black", c.enabled_keys())    # untouched + permanent
         cfg.toggle_category("FEATURE", True)        # re-enable via tag
         self.assertIn("green", c.enabled_keys())
 
-    def test_enable_materializes_from_full_default(self):
+    def test_disable_materializes_from_core_default(self):
         cfg = self._reload_config()
         c = self._reload()
-        # unconfigured (full) → disabling one slot materializes full-minus-one
-        cfg.toggle_category("purple", False)
+        # unconfigured (CORE) → disabling one CORE slot materializes CORE-minus-one
+        cfg.toggle_category("green", False)
         ek = c.enabled_keys()
-        self.assertNotIn("purple", ek)
-        self.assertEqual(len(ek), 11)
+        self.assertNotIn("green", ek)
+        self.assertEqual(set(ek), {"red", "black"})
+
+    def test_enable_grows_a_disabled_slot(self):
+        cfg = self._reload_config()
+        c = self._reload()
+        self.assertNotIn("blue", c.enabled_keys())  # INFRA off by default
+        cfg.toggle_category("INFRA", True)           # enable via tag
+        self.assertIn("blue", c.enabled_keys())
+
+
+class AutoEnableCategories(_Base):
+    """F. auto_categories: assigning a disabled slot grows the board (default on);
+    off freezes it. The enabled set is DISPLAY only — assignment may pick any slot."""
+    def _reload_config(self):
+        import config
+        importlib.reload(config)
+        return config
+
+    def test_assign_disabled_category_auto_enables_when_on(self):
+        cfg = self._reload_config()
+        c = self._reload()
+        self.assertTrue(cfg.auto_categories_enabled())   # default on
+        self.assertNotIn("blue", c.enabled_keys())       # INFRA not on the lean board
+        notice = c.auto_enable("INFRA")                  # assign a disabled slot
+        self.assertIsNotNone(notice)
+        self.assertIn("INFRA", notice)
+        self.assertIn("blue", c.enabled_keys())          # board grew
+        # persisted, canonical order, GENERAL still in.
+        self.assertEqual(cfg.enabled_categories(), ["red", "green", "blue", "black"])
+
+    def test_already_enabled_is_noop(self):
+        c = self._reload()
+        self.assertIsNone(c.auto_enable("red"))          # red (BUG) is in CORE
+        self.assertIsNone(c.auto_enable("nonsense"))     # unknown → no-op
+
+    def test_auto_off_does_not_auto_enable(self):
+        self._write_config({"auto_categories": False})
+        cfg = self._reload_config()
+        c = self._reload()
+        self.assertFalse(cfg.auto_categories_enabled())
+        before = list(c.enabled_keys())
+        self.assertIsNone(c.auto_enable("INFRA"))
+        self.assertEqual(c.enabled_keys(), before)
+        self.assertNotIn("blue", c.enabled_keys())
+
+    def test_env_escape_disables_auto(self):
+        os.environ["TASK_STATION_AUTO_CATEGORIES"] = "off"
+        try:
+            cfg = self._reload_config()
+            c = self._reload()
+            self.assertFalse(cfg.auto_categories_enabled())
+            self.assertIsNone(c.auto_enable("INFRA"))
+            self.assertNotIn("blue", c.enabled_keys())
+        finally:
+            os.environ.pop("TASK_STATION_AUTO_CATEGORIES", None)
+
+    def test_toggle_and_getter(self):
+        cfg = self._reload_config()
+        self.assertTrue(cfg.auto_categories_enabled())   # default on
+        cfg.set("auto_categories", False)
+        self.assertFalse(cfg.auto_categories_enabled())  # what --auto-categories-get prints
+        cfg.set("auto_categories", True)
+        self.assertTrue(cfg.auto_categories_enabled())
 
 
 class LegendRespectsEnabled(_Base):
-    """E. legend / compact_legend / picker only show enabled categories."""
+    """E. legend scope. legend() is always enabled-scoped (the board); the picker /
+    compact_legend present the FULL taxonomy when auto_categories is on."""
     def test_legend_limited_to_enabled(self):
         self._write_config({"enabled_categories": ["red", "black"]})
         c = self._reload()
@@ -268,19 +273,29 @@ class LegendRespectsEnabled(_Base):
         self.assertNotIn("FEATURE", leg)
         self.assertNotIn("INFRA", leg)
 
-    def test_compact_legend_limited_to_enabled(self):
-        self._write_config({"enabled_categories": ["red", "black"]})
+    def test_compact_legend_enabled_only_when_auto_off(self):
+        self._write_config({"enabled_categories": ["red", "black"], "auto_categories": False})
         c = self._reload()
         comp = c.compact_legend()
         self.assertIn("red=", comp)
         self.assertNotIn("green=", comp)
 
-    def test_full_legend_shows_all_assigned_categories(self):
+    def test_compact_legend_full_taxonomy_when_auto_on(self):
+        # auto on (default): the categoriser sees ALL slots even if disabled.
+        self._write_config({"enabled_categories": ["red", "black"]})
         c = self._reload()
-        leg = c.legend()
+        comp = c.compact_legend()
+        self.assertIn("green=", comp)        # not enabled, still shown
+        self.assertIn("blue=", comp)
+        picker = "\n".join(c.picker_lines())
+        self.assertIn("INFRA", picker)       # full taxonomy in the picker guidance
+
+    def test_full_taxonomy_legend_shows_all_assigned_categories(self):
+        c = self._reload()
+        leg = c.legend(c._all_items())       # full-taxonomy legend (categoriser view)
         self.assertIn("PERSONAL", leg)
         self.assertIn("DESIGN", leg)
-        self.assertIn("DOCS", leg)           # gold is now a real category (no longer reserved/hidden)
+        self.assertIn("DOCS", leg)           # gold is a real category (no longer reserved/hidden)
         self.assertNotIn("reserved", leg)    # the "reserved" concept is gone
 
 
