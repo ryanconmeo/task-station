@@ -3,6 +3,27 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.12.0] — 2026-06-23
+
+### Added
+- **`guidance` now emits the full command reference.** Alongside the existing
+  track/attach/skip how-to, `task-station guidance` prints a compact reference for
+  every subcommand — purpose plus key flags, the lifecycle (open ○ → active ● →
+  closed ✕), and the ref forms — so the model-facing guidance is the single source
+  of truth for the command set instead of each session reinventing a command.
+- **Hidden `delete --task <ref>` maintenance command.** A real hard-delete that
+  removes a single task's record and detaches any session linked to it. Hidden from
+  `--help`, the config board, and the README (documented only in `guidance`): the
+  lifecycle is normally close-not-delete — prefer `done`/close.
+
+### Fixed
+- **Category tint now applies IMMEDIATELY on create/attach/recategorize.** Assigning
+  a colour (via `create`, `attach`, `update --color`, or guaranteed-tracking
+  auto-create) previously only tinted the terminal on the *following* prompt, since
+  nothing emitted the escape at assign time. The colour is now emitted best-effort
+  to the originating TTY the moment it is set; if the TTY can't be resolved or
+  tinting is off it is a silent no-op and the per-prompt hook tints as before.
+
 ## [1.11.0] — 2026-06-23
 
 ### Added

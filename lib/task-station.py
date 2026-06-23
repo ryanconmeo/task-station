@@ -938,6 +938,7 @@ def cmd_create(a):
     for line in cat_lines(task.get("color")):
         print(line)
     auto_enable_category(task.get("color"))
+    _emit_tint_to_origin(task.get("color"))   # tint NOW, not on the next prompt
 
 
 def cmd_attach(a):
@@ -979,6 +980,7 @@ def cmd_attach(a):
     for line in cat_lines(task.get("color")):
         print(line)
     auto_enable_category(task.get("color"))
+    _emit_tint_to_origin(task.get("color"))   # tint NOW on attach/recategorize
 
 
 def cmd_bump(a):
@@ -1217,6 +1219,30 @@ def cmd_done(a):
     clear_edit_markers(a.session)   # deliberate wrap-up — don't let the Stop gate block
     print("Closed task [%s] %s and detached this session. Reopen later with /todo."
           % (task["id"][:8], task["title"]))
+
+
+def cmd_delete(a):
+    """HARD-delete a single task and detach any session linked to it.
+
+    Maintenance escape hatch only — the lifecycle is close-not-delete (`done`
+    closes the task and keeps its record; this removes the record entirely).
+    Hidden from `--help`, the config board, and the README; documented only in
+    `guidance` so the model can still reach for it. Removes EXACTLY the one
+    resolved task — never the store."""
+    task = resolve_ref(a.task) or load_task(a.task)
+    if not task:
+        print("No task matching '%s'." % a.task)
+        return
+    tid, seq, title = task["id"], task.get("seq"), task["title"]
+    # Detach every session linked to this task so none is left pointing at a ghost
+    # (mirrors the provisional-discard path in _close_one).
+    for sess in list(task.get("sessions", [])):
+        if get_link(sess) == tid:
+            clear_link(sess)
+            clear_count(sess)
+            clear_edit_markers(sess)
+    delete_task(tid)
+    print("Deleted task [%s] #%s %s." % (tid[:8], seq, title))
 
 
 def _live_marker(task):
@@ -1753,6 +1779,8 @@ def _update_one(ref, a):
         notice = cats.auto_enable(task.get("color"))
         if notice:
             msgs.append("  ↳ " + notice)
+    if "color" in changed:
+        _emit_tint_to_origin(task.get("color"))   # recategorize tints NOW, not next prompt
     # A scope change is the moment effort might have grown or shrunk — prompt a
     # re-rate so the column tracks reality, but only when this update touched
     # scope WITHOUT already re-rating (so re-setting effort itself stays quiet).
@@ -1921,6 +1949,45 @@ def cmd_session_tint(a):
         sys.stdout.write(esc)
 
 
+def _emit_tint_to_origin(color):
+    """Best-effort: paint the originating window the moment a colour is assigned
+    (create / attach / recategorize) instead of waiting for the next prompt.
+
+    The prompt-tint / session-tint hooks emit the escape to stdout and the shell
+    hook redirects it to the origin TTY; but a `create`/`attach` command runs in
+    Claude's captured Bash tool, whose stdout is the model-visible RESULT, not the
+    terminal — so writing the escape to stdout here would corrupt that result and
+    never reach the window. Instead we resolve the origin TTY ourselves (same
+    `origin-tty.sh` the hooks use) and write the bytes straight to it.
+
+    Pure best-effort: a no-op (never raises, never writes to stdout) when tinting
+    is off, categories/tint are unavailable, no colour, or the TTY can't be
+    resolved — the next UserPromptSubmit hook still tints as it did before."""
+    if not color:
+        return
+    if not cats or not getattr(cats, "TINT_TERMINAL", False):
+        return
+    import config, term
+    if not config.tint_enabled():
+        return
+    esc = cats.tint_escape(color, config.tint_mode(), term.detect())
+    if not esc:
+        return
+    try:
+        dev = subprocess.check_output(
+            ["bash", os.path.join(BASE, "origin-tty.sh")],
+            stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        dev = ""
+    if not dev:
+        return
+    try:
+        with open(dev, "w") as fh:
+            fh.write(esc)
+    except Exception:
+        pass   # unwritable/vanished TTY — the prompt hook will tint next message
+
+
 def cmd_prompt_title(a):
     """Emit an OSC title escape that labels the terminal tab/window `#<seq>: <title>`
     for an attached session — the on-attach surface, run by UserPromptSubmit every
@@ -1963,6 +2030,7 @@ def _auto_track_provisional(a, prompt):
         set_link(a.session, dup["id"])
         clear_count(a.session)
         auto_enable_category(dup.get("color"))
+        _emit_tint_to_origin(dup.get("color"))   # tint NOW on auto-fold
         print("[task-station] Auto-tracked: folded into open task [%s] %s — this "
               "session is now attached and your prompt was noted. No sibling task "
               "was created." % (dup["id"][:8], dup["title"]))
@@ -1980,6 +2048,7 @@ def _auto_track_provisional(a, prompt):
     set_link(a.session, task["id"])
     clear_count(a.session)
     auto_enable_category(task.get("color"))
+    _emit_tint_to_origin(task.get("color"))   # tint NOW on provisional auto-create
 
     tid = task["id"][:8]
     label = task.get("seq", tid)
@@ -2163,6 +2232,33 @@ def cmd_guidance(a):
     lines.append("Do this as a side action, but DO tell the user in one short line when you "
                  "create or attach a task — e.g. \"📋 Tracking this as a new task: <title>\" or "
                  "\"📋 Attached to existing task: <title>\".")
+
+    # COMMANDS — compact full reference (model-facing source of truth). Use these
+    # exact forms instead of reinventing a command. All invoked as:
+    #   python3 <BASE>/task-station.py <command> …   (BASE printed below).
+    lines.append("")
+    lines.append("Commands  (invoke as: python3 %s/task-station.py <command> …)" % BASE)
+    lines.append("Lifecycle: open ○ → active ● → closed ✕.  <task> = seq number or id-prefix; "
+                 "<session> = session uuid.")
+    lines.extend([
+        "  create  --session <s> --color <c> --effort <xs|s|m|l|xl> --title '…' --summary '…' "
+        "[--active] [--no-attach|--attach] [--force]   — track a new task (attaches the session)",
+        "  attach  --session <s> --task <ref> [--color <c>] [--note '…']   — link session to a task "
+        "(reopens if closed). FOLD-DON'T-FORK: prefer attach --note over a new create when it "
+        "continues an existing task",
+        "  detach  --session <s> [--task <ref>]   — unlink the session from its task",
+        "  update  --task <ref> [--title|--summary|--append-summary|--color|--effort]   — amend a task",
+        "  status  --task <ref> [open|active]   — show/set status (close via done)",
+        "  pin     --task <ref> [--session <s>] [--new]   ·   unpin --task <ref>   — pin/unpin a resume target",
+        "  done    --task <ref>   (or --session <s>)   ·   skip --session <s>   — close a task · mark session untracked",
+        "  whoami  --session <s>   ·   render --session <s> [--arg <ref>] [--format ascii|md]   ·   "
+        "bump --session <s>   — current task · the /todo board · touch activity",
+        "  config   ·   repos   — settings board · repo index",
+    ])
+    lines.append("Maintenance (rarely needed — prefer done/close):")
+    lines.append("  delete  --task <ref>   — HARD-delete a task (hidden from --help; lifecycle is "
+                 "normally close-not-delete)")
+
     print("\n".join(lines))
 
 
@@ -2425,6 +2521,13 @@ def main():
     sp = sub.add_parser("done"); sp.add_argument("--session", default=None)
     sp.add_argument("--task", default=None)   # close any task by seq/id from anywhere
     sp.set_defaults(fn=cmd_done)
+
+    # HARD-delete a task. Hidden (help=SUPPRESS) — not in --help's command list,
+    # the config board, or the README; lifecycle is close-not-delete (use `done`).
+    # Discoverable only via `guidance`'s maintenance line. See cmd_delete.
+    sp = sub.add_parser("delete", help=argparse.SUPPRESS)
+    sp.add_argument("--task", required=True)
+    sp.set_defaults(fn=cmd_delete)
 
     sp = sub.add_parser("mark-edited"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_mark_edited)   # PostToolUse(Write|Edit|NotebookEdit) one-shot reminder
