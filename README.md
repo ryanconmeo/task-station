@@ -3,7 +3,7 @@
 > A persistent task hub for Claude Code. Every task is a **resumable, colour‑tinted session** — auto‑categorised on a self‑growing board, re‑pinnable, tinted to an OS‑aware theme, with parallel in‑project worker delegation and a Claude Desktop bridge.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-1.11.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-1.12.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -96,6 +96,8 @@ That's the loop. Tasks are created from natural language ("track this", "make a 
 | `/task-station:config` | Settings + status board (categories, tint, bridge, policy). |
 
 > Bare `/todo` and `/done` aliases are opt‑in — enable with `task-station config --bare-cmds on`. The namespaced forms always work.
+
+> Running `task-station guidance` prints the **full command reference** — every subcommand with its purpose and key flags, the model‑facing source of truth for the command set. Point an agent (or yourself) there instead of reinventing a command.
 
 ### Skills
 | Skill | Triggers when |
