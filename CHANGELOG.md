@@ -3,6 +3,30 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.11.0] — 2026-06-23
+
+### Added
+- **`--tint [on|off]` (default on).** A persisted config flag for the full-palette
+  terminal tint, so tinting can be controlled without an env var. The
+  `TASK_STATION_TINT` env var still wins over the config setting (on/off/1/0/
+  true/false). Every Python tint emitter now consults this flag.
+- **`--reset` factory-reset action (confirm-gated).** Bare `task-station config
+  --reset` explains what it will do and resets nothing; `--reset confirm` wipes the
+  board-managed settings in `config.json` back to defaults. **Tasks are never
+  touched** (`tasks.db` is a separate file), and externally-installed integrations
+  (bare command files, the Desktop bridge entry, the `CLAUDE.md` delegation block)
+  are *reported* with their off-commands rather than silently removed.
+
+### Changed
+- **`task-station config` board redesigned.** One stanza per setting — an aligned
+  `<flag> <value> <options>` line, then the description on its own line with the
+  factory default shown inline as `(default: X)` — replacing the old wrapped-text
+  blob. The former separate `status`, `--workspace-dirs`, and `--data-dir` blocks
+  are folded into the single list; `--tint-theme` now shows just the appearance
+  mode (`auto`/`dark`/`light`), not the resolved theme name; the `category
+  overrides` row is relabelled `--category-overrides`. No more `* = default`
+  markers — the value column always shows the current value.
+
 ## [1.10.0] — 2026-06-23
 
 ### Added

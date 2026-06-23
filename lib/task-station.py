@@ -1867,7 +1867,8 @@ def cmd_prompt_tint(a):
     whatever it prints to the originating TTY — so a skill like /review tints the
     terminal the instant it's run, before Claude responds. Silent when tinting is
     off, categories are off, the prompt isn't a skill, or the skill has no mapping."""
-    if os.environ.get("TASK_STATION_TINT") == "off":
+    import config
+    if not config.tint_enabled():
         return
     if not cats or not hasattr(cats, "color_for_prompt") or not cats.TINT_TERMINAL:
         return
@@ -1903,7 +1904,8 @@ def cmd_session_tint(a):
     prompt-tint but resolves the colour from the session's task instead of the
     prompt. Silent when tinting is off, the session is unattached/skipped, or the
     task carries no colour; the SessionStart hook writes the bytes to the TTY."""
-    if os.environ.get("TASK_STATION_TINT") == "off":
+    import config
+    if not config.tint_enabled():
         return
     if not cats or not getattr(cats, "TINT_TERMINAL", False):
         return
@@ -2530,6 +2532,11 @@ def main():
     sp.add_argument("--tint-theme", dest="tint_theme", nargs="?", choices=["auto","dark","light"], const="auto", default=None,
                     help="appearance variant: auto follows the OS (dark=Dark Sands, light=Light Sands), or force dark/light")
     sp.add_argument("--tint-theme-get", dest="tint_theme_get", action="store_true")
+    sp.add_argument("--tint", dest="tint", nargs="?", choices=["on","off"], const="on", default=None,
+                    help="full-palette terminal tint via escape codes (default on; TASK_STATION_TINT env overrides)")
+    sp.add_argument("--tint-get", dest="tint_get", action="store_true")
+    sp.add_argument("--reset", dest="reset", nargs="?", const="ask", default=None,
+                    help="reset ALL config settings to factory defaults — asks to confirm (tasks unaffected)")
     sp.add_argument("--title", dest="title", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--title-get", dest="title_get", action="store_true")
     sp.add_argument("--strict-delegation", dest="strict_delegation", nargs="?",

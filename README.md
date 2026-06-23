@@ -3,7 +3,7 @@
 > A persistent task hub for Claude Code. Every task is a **resumable, colour‑tinted session** — auto‑categorised on a self‑growing board, re‑pinnable, tinted to an OS‑aware theme, with parallel in‑project worker delegation and a Claude Desktop bridge.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-1.10.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-1.11.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -182,12 +182,16 @@ This safely merges one entry into your existing Desktop config (backed up first)
 | `--enable` / `--disable <key>` | category | — | Toggle a single category (GENERAL is permanent). |
 | `--tint-theme [auto\|dark\|light]` | auto/dark/light | auto | Appearance: which variant renders — `auto` follows the OS (dark=Dark Sands, light=Light Sands). |
 | `--theme [<name>\|save <name>\|edit\|preview\|list]` | theme name / verb | sands | Active colour theme (dark+light variants); mainly for custom themes (see [Themes](#themes)). |
+| `--tint [on\|off]` | on/off | on | Full-palette terminal tint via escape codes. The `TASK_STATION_TINT` env var overrides the config setting. |
 | `--title [on\|off]` | on/off | on | Auto terminal title `#<seq>: <title>`. |
 | `--bare-cmds [on\|off]` | on/off | off | Install bare `/todo` + `/done` aliases. |
 | `--update-check [on\|off]` | on/off | off | Opt‑in daily version check (no task data sent). |
 | `--desktop-bridge [on\|off]` | on/off | off | Wire the MCP server into Claude Desktop. |
 | `--guaranteed-tracking [on\|off]` | on/off | off | Deterministic auto-create+attach a provisional task on a fresh session (vs the default nudge); auto-GC'd if skipped/closed untouched. |
 | `--strict-delegation [on\|off]` | on/off | off | Writes standing delegation rules to `CLAUDE.md` (reversible managed block). Hidden `--policy` alias kept for back-compat. |
+| `--reset [confirm]` | — | — | Reset all settings to factory defaults — asks to confirm (re-run `--reset confirm` to proceed). Your tasks are never touched. |
+
+`task-station config` (no args) renders one **stanza per setting** — an aligned `<flag> <value> <options>` line, then the description with its default shown inline as `(default: X)` (the `--category-overrides` row is the relabelled former *category overrides*; the former `status`, `--workspace-dirs`, and `--data-dir` blocks are folded into this single list).
 
 **Data dir** (set via `$TASK_STATION_HOME`, defaults to `~/.claude/task-station-data`) holds your `tasks.db` and config — outside the plugin cache, so updates never touch it.
 
