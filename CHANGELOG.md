@@ -3,6 +3,35 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.10.0] — 2026-06-23
+
+### Added
+- **`--guaranteed-tracking` (opt-in, default off).** Hook-side deterministic
+  create+attach of a *provisional* task on a fresh, unattached, non-skipped
+  session — the `UserPromptSubmit` hook tracks the topic itself instead of only
+  nudging the model. **Fold-don't-fork**: a similar open task is attached to (with
+  the prompt filed as a note) rather than forked into a sibling. **Auto-GC**: a
+  provisional task that's never engaged is deleted when the session is skipped or
+  closed, so pure Q&A leaves no litter. Engagement (update title/summary/colour,
+  file edit, folded note) sheds the provisional flag. Default off → the
+  conservative install behaves exactly as the firmer nudge.
+
+### Changed
+- **`--policy` renamed to `--strict-delegation`** (hidden `--policy` alias kept for
+  back-compat; the managed `CLAUDE.md` block markers are unchanged so blocks
+  installed under the old name remain detectable/removable). Config board and
+  README clarify available-vs-enforced delegation.
+- **Firmer untracked-session nudge.** The default nudge now directs tracking even
+  for plain questions and no longer advertises `skip` as an easy out; the
+  escalation block still offers `skip` for genuinely throwaway sessions.
+
+### Fixed
+- **Intent detector no longer false-positives "create" on meta-questions about
+  tasks.** Added past-tense/perfect/existential interrogatives (`did`, `have you`,
+  `has`, `is there`, `was`, `were`, `didn't`, …) to the question guard, so
+  "did you open a new task for this?" is correctly read as a question, not a
+  create imperative.
+
 ## [1.9.1] — 2026-06-22
 
 ### Fixed

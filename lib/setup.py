@@ -149,8 +149,8 @@ def status():
     lines.append("  tint        full-palette escape · terminal %s%s" % (
         t, "" if t != "none" else "  (no supported terminal detected → no-op)"))
     lines.append("  workspace   %s" % (":".join(ws) if ws else "unset — task-station config --workspace-dirs <dirs>"))
-    lines.append("  policy      %s" % ("installed in CLAUDE.md — remove: task-station config --policy off"
-                 if has_policy else "not installed — task-station config --policy on"))
+    lines.append("  strict-delegation %s" % ("installed in CLAUDE.md — remove: task-station config --strict-delegation off"
+                 if has_policy else "not installed — task-station config --strict-delegation on"))
     installed, server_path = desktop_bridge_status()
     lines.append("  desktop-bridge %s" % (
         "installed → %s  (restart Desktop after changes)" % server_path if installed
@@ -162,9 +162,9 @@ def set_policy(on):
     md = _claude_md()
     if on:
         _apply_block(md, _policy_text())
-        return "Added delegation policy to %s (reverse: task-station config --policy off)." % md
+        return "Added strict-delegation rules to %s (reverse: task-station config --strict-delegation off)." % md
     ok = _remove_block(md)
-    return ("Removed delegation policy from %s." % md) if ok else \
+    return ("Removed strict-delegation rules from %s." % md) if ok else \
            ("Left %s unchanged — the managed block was hand-edited; remove it manually." % md)
 
 

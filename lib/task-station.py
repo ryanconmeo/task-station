@@ -319,6 +319,12 @@ def save_task(task):
     _backend().save_task(task)
 
 
+def delete_task(task_id):
+    """Remove a task from the store entirely. Used to GC an untouched provisional
+    auto-task (Workstream D) when its session is skipped or closed."""
+    _backend().delete_task(task_id)
+
+
 def all_tasks():
     return _backend().all_tasks()
 
@@ -520,6 +526,29 @@ def similar_open_task(title):
         if score > best_score:
             best, best_score = t, score
     return best if best_score >= 0.6 else None
+
+
+def seed_title(prompt):
+    """A provisional title from a free-typed prompt: the first sentence, else the
+    first ~60 chars, whitespace-collapsed and trimmed. Falls back to "Untitled
+    task" when the prompt is empty. Used by guaranteed-tracking auto-create."""
+    text = re.sub(r"\s+", " ", (prompt or "")).strip()
+    if not text:
+        return "Untitled task"
+    first = re.split(r"[.;\n?!]", text, maxsplit=1)[0].strip()
+    seed = first or text
+    if len(seed) > 60:
+        seed = seed[:60].rstrip()
+    return seed or "Untitled task"
+
+
+def clear_provisional(task):
+    """Drop the `provisional` flag once a task gets genuine engagement (a real
+    update, promotion to active, a folded note, or a linked worker). A task is
+    provisional ONLY while auto-created-and-untouched — clearing it protects it
+    from the skip/close GC that reaps untouched provisional auto-tasks."""
+    if task is not None and task.get("provisional"):
+        task["provisional"] = False
 
 
 def add_log(task, note):
@@ -940,6 +969,7 @@ def cmd_attach(a):
     note = getattr(a, "note", None)
     if note and note.strip():
         add_log(task, note.strip())
+        clear_provisional(task)   # a folded-in note is genuine engagement
     save_task(task)
     set_link(a.session, task["id"])
     clear_count(a.session)
@@ -963,11 +993,22 @@ def cmd_bump(a):
 
 
 def cmd_skip(a):
+    # GC: if this session is attached to a still-PROVISIONAL auto-task (created by
+    # guaranteed-tracking and never engaged), skipping means it was throwaway —
+    # delete it so the board carries no litter.
+    gc_note = ""
+    link = get_link(a.session)
+    if link and link != SKIP_SENTINEL:
+        task = load_task(link)
+        if task and task.get("provisional"):
+            delete_task(task["id"])
+            gc_note = (" Removed the untouched provisional task [%s] %s."
+                       % (task["id"][:8], task["title"]))
     set_link(a.session, SKIP_SENTINEL)
     clear_count(a.session)
     clear_edit_markers(a.session)   # skip is a deliberate opt-out — stop the gate nagging
     print("This session is marked untracked — the [task-station] nudge will stay silent. "
-          "Attaching to or creating a task later resumes tracking.")
+          "Attaching to or creating a task later resumes tracking.%s" % gc_note)
 
 
 def cmd_detach(a):
@@ -1030,10 +1071,15 @@ def cmd_mark_edited(a):
         return
     if link:                       # attached to a real task — editing means work
         # has started, so promote an open task to active (idempotent), then
-        # we're done (tracked sessions get no nudge).
+        # we're done (tracked sessions get no nudge). Editing is genuine
+        # engagement, so an auto-tracked task is no longer provisional.
         task = load_task(link)
-        if task and promote_active(task):
-            save_task(task)
+        if task:
+            changed = promote_active(task)
+            if task.get("provisional"):
+                clear_provisional(task); changed = True
+            if changed:
+                save_task(task)
         return
     if not mark_edited(a.session):  # one-shot: the reminder already fired
         return
@@ -1105,6 +1151,15 @@ def _close_one(ref, session):
         return "No task matching '%s'." % ref
     if is_closed(task):
         return "Task [%s] %s is already closed." % (task["id"][:8], task["title"])
+    if task.get("provisional"):
+        # Untouched auto-tracked task: closing it leaves no closed-task litter —
+        # GC it instead. Detach every linked session first.
+        tid, ttl = task["id"][:8], task["title"]
+        for sess in list(task.get("sessions", [])):
+            if get_link(sess) == task["id"]:
+                clear_link(sess); clear_count(sess); clear_edit_markers(sess)
+        delete_task(task["id"])
+        return "Discarded provisional task [%s] %s (auto-tracked, never engaged)." % (tid, ttl)
     task["status"] = STATUS_CLOSED              # close from open OR active
     touch(task, session=session, note="closed (by id)")
     save_task(task)
@@ -1143,6 +1198,16 @@ def cmd_done(a):
     task = load_task(task_id) if task_id else None
     if not task:
         print("No task is attached to this session. Nothing to close.")
+        return
+    if task.get("provisional"):
+        # Untouched auto-tracked task: GC instead of leaving a closed-task husk.
+        tid, ttl = task["id"][:8], task["title"]
+        delete_task(task["id"])
+        clear_link(a.session)
+        clear_count(a.session)
+        clear_edit_markers(a.session)
+        print("Discarded provisional task [%s] %s (auto-tracked, never engaged) and "
+              "detached this session." % (tid, ttl))
         return
     task["status"] = STATUS_CLOSED          # close from open OR active
     touch(task, session=a.session, note="closed")
@@ -1680,6 +1745,7 @@ def _update_one(ref, a):
     if not changed:
         msgs.append("update %s: nothing to change (pass --title/--summary/--append-summary/--color/--effort)" % label)
         return "\n".join(msgs)
+    clear_provisional(task)   # the model refined it → real work, not a throwaway auto-task
     touch(task, note="scope updated: " + ", ".join(changed))
     save_task(task)
     msgs.append("updated task %s: %s" % (label, ", ".join(changed)))
@@ -1873,6 +1939,59 @@ def cmd_prompt_title(a):
     sys.stdout.write("\033]0;#%s: %s\007" % (task.get("seq", "?"), task["title"]))
 
 
+def _auto_track_provisional(a, prompt):
+    """guaranteed-tracking: deterministically track a fresh, unattached session.
+
+    Fold-don't-fork: if a similar OPEN task already exists, attach to it and fold
+    the prompt in as a note (no sibling). Otherwise create a PROVISIONAL open task
+    (auto-categorised), attach this session, and print a short directive telling
+    the model how to refine it (`update`) or drop it (`skip`, which GCs it)."""
+    seed = seed_title(prompt)
+    note = (prompt or "").strip()
+
+    dup = similar_open_task(seed)
+    if dup:
+        # Same code path cmd_attach uses to fold a cross-session prompt in: a
+        # marker note via touch(), then the prompt itself via add_log() (so the
+        # prompt is logged exactly once, not duplicated by touch's own add_log).
+        touch(dup, session=a.session, note="auto-tracked (folded in)", reopen=True)
+        if note:
+            add_log(dup, note)
+        save_task(dup)
+        set_link(a.session, dup["id"])
+        clear_count(a.session)
+        auto_enable_category(dup.get("color"))
+        print("[task-station] Auto-tracked: folded into open task [%s] %s — this "
+              "session is now attached and your prompt was noted. No sibling task "
+              "was created." % (dup["id"][:8], dup["title"]))
+        return
+
+    color = None
+    if cats:
+        color = (cats.color_for_prompt(prompt) if hasattr(cats, "color_for_prompt") else None) or cats.DEFAULT
+    task = new_task(seed, "", color=color, status=STATUS_OPEN)
+    task["provisional"] = True
+    ensure_seqs()                      # number any pre-seq tasks before we pick ours
+    task["seq"] = _max_seq() + 1       # stable number, mirroring cmd_create
+    touch(task, session=a.session, note="auto-tracked (provisional)")
+    save_task(task)
+    set_link(a.session, task["id"])
+    clear_count(a.session)
+    auto_enable_category(task.get("color"))
+
+    tid = task["id"][:8]
+    label = task.get("seq", tid)
+    print("\n".join([
+        "[task-station] Auto-tracked as task [%s] %s (provisional) — this session is "
+        "now attached." % (tid, task["title"]),
+        "If this is real work, refine it (clears the provisional flag):",
+        "  update: python3 %s/task-station.py update --task %s --title '<short title>' "
+        "--color <color> --summary '<1-3 sentences>'" % (BASE, label),
+        "If it is genuinely throwaway/meta, drop it (removes the provisional task):",
+        "  skip:   python3 %s/task-station.py skip --session %s" % (BASE, a.session),
+    ]))
+
+
 def cmd_prompt_context(a):
     """UserPromptSubmit: bump if attached; otherwise nudge Claude to attach/create.
 
@@ -1930,6 +2049,15 @@ def cmd_prompt_context(a):
     # Not attached: count the miss, surface open tasks, and nudge Claude.
     n = bump_count(a.session)
 
+    # Guaranteed-tracking (opt-in, default OFF): on the FIRST miss of a fresh,
+    # unattached, non-skipped, no-explicit-intent session, the hook itself
+    # deterministically creates+attaches a provisional task (fold-don't-fork) and
+    # returns — no nudge. Default OFF → behaviour is exactly the firmer nudge below.
+    import config
+    if config.guaranteed_tracking_enabled() and n == 1:
+        _auto_track_provisional(a, os.environ.get("TASK_STATION_PROMPT", ""))
+        return
+
     # Intermediate misses (1 < n < NUDGE_ESCALATE_AFTER): a SINGLE compact line.
     # The full block — open-task list, attach/create syntax, colour legend, tint,
     # guidance pointer — was already shown at n == 1, so reprinting it every
@@ -1966,12 +2094,13 @@ def cmd_prompt_context(a):
 
     # Compact form: full rules/examples live in `task-station.py guidance` (and the
     # SessionStart injection points there) — keep the per-prompt cost minimal.
-    lines.append("Track this topic NOW as an OPEN task (○) — even a question counts; it "
-                 "shows on the board immediately and AUTO-PROMOTES to active (●) when you act "
-                 "on it (edit a file, delegate, multi-step). FIRST scan the tasks above: if "
-                 "this prompt continues one of them, FOLD INTO IT — `attach --session %s --task "
-                 "<id> --note '<this prompt>'` — don't create a sibling. Only a genuinely new "
-                 "topic creates a task. (Skip only if it's truly throwaway/meta.)" % a.session)
+    lines.append("Track this topic NOW as an OPEN task (○) — every topic gets tracked, "
+                 "plain questions and Q&A included; it shows on the board immediately and "
+                 "AUTO-PROMOTES to active (●) when you act on it (edit a file, delegate, "
+                 "multi-step). FIRST scan the tasks above: if this prompt continues one of "
+                 "them, FOLD INTO IT — `attach --session %s --task <id> --note '<this "
+                 "prompt>'` — don't create a sibling. Only a genuinely new topic creates a "
+                 "task." % a.session)
     if cats:
         skill_color = (cats.color_for_prompt(os.environ.get("TASK_STATION_PROMPT", ""))
                        if hasattr(cats, "color_for_prompt") else None)
@@ -2403,7 +2532,16 @@ def main():
     sp.add_argument("--tint-theme-get", dest="tint_theme_get", action="store_true")
     sp.add_argument("--title", dest="title", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--title-get", dest="title_get", action="store_true")
-    sp.add_argument("--policy", nargs="?", choices=["on", "off"], const="on", default=None)
+    sp.add_argument("--strict-delegation", dest="strict_delegation", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="install (on) / remove (off) a managed delegation-rules block in CLAUDE.md")
+    # Hidden back-compat alias for the former flag name; same dest.
+    sp.add_argument("--policy", dest="strict_delegation", nargs="?",
+                    choices=["on", "off"], const="on", default=None, help=argparse.SUPPRESS)
+    sp.add_argument("--guaranteed-tracking", dest="guaranteed_tracking", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="hook-side deterministic create+attach of a provisional task on a fresh session (default off)")
+    sp.add_argument("--guaranteed-tracking-get", dest="guaranteed_tracking_get", action="store_true")
     sp.add_argument("--desktop-bridge", dest="desktop_bridge", nargs="?",
                     choices=["on", "off"], const="on", default=None,
                     help="wire the dependency-free MCP server into Claude Desktop (on) / remove it (off)")

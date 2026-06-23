@@ -128,11 +128,11 @@ class Board(unittest.TestCase):
         os.environ["COLUMNS"] = "120"
         board = config.render_board()
         self.assertIn("status", board)
-        self.assertIn("policy", board)
+        self.assertIn("strict-delegation", board)
         self.assertIn("desktop-bridge", board)
         self.assertIn("tint", board)
         # actionable hints survive the fold-in.
-        self.assertIn("--policy on", board)
+        self.assertIn("--strict-delegation on", board)
         # tint now describes the full-palette escape; no profile mechanism remains.
         self.assertIn("escape (full palette)", board)
         self.assertNotIn("tint-profiles", board)
