@@ -51,6 +51,21 @@ class TaskIntentDetectTest(unittest.TestCase):
                   "", "tasks are running slowly"]:
             self.assertIsNone(cats.task_intent(p), p)
 
+    def test_meta_question_phrasings(self):
+        # Questions ABOUT tracking must not false-positive as "create"/"attach"
+        # even though they contain create/attach verbs.
+        for p in ["did you open a new task-station for this inquiry yet?",
+                  "have you made a task for this?",
+                  "has anyone opened a new task for this?",
+                  "is there a task open for this already?",
+                  "were you going to create a task here?",
+                  "haven't you started a new task for this?"]:
+            self.assertIsNone(cats.task_intent(p), p)
+
+    def test_create_attach_still_fire_around_meta_guard(self):
+        self.assertEqual(cats.task_intent("open a new task for the auth bug"), "create")
+        self.assertEqual(cats.task_intent("attach this to the existing task"), "attach")
+
     def test_attach_wins_over_create(self):
         # "add this to the existing task" contains "add … task" but the "to … task"
         # shape must classify it as attach, not create.

@@ -230,7 +230,8 @@ def color_for_prompt(prompt):
 # matched verb means it is NOT an imperative → no intent.
 _INTENT_QUESTION_RE = re.compile(
     r"\b(what's|whats|what|how|why|does|do you|can you|should|could|when|"
-    r"explain|tell me|difference between)\b", re.I)
+    r"explain|tell me|difference between|did|did you|have you|has|had|"
+    r"is there|are there|was|were|didn't|weren't|haven't)\b", re.I)
 _INTENT_NEGATION_RE = re.compile(
     r"\b(don't|dont|do not|no need to|without|never|stop|instead of)\b", re.I)
 

@@ -108,6 +108,16 @@ def auto_categories_enabled():
         return False
     return bool(get("auto_categories", True))
 
+def guaranteed_tracking_enabled():
+    """False unless explicitly enabled — default OFF. When ON, the UserPromptSubmit
+    hook deterministically creates+attaches a provisional task on a fresh, unattached,
+    non-skipped session instead of merely nudging. Env override
+    `TASK_STATION_GUARANTEED_TRACKING` (on/off/1/0/true/false) wins over config."""
+    env = os.environ.get("TASK_STATION_GUARANTEED_TRACKING")
+    if env is not None:
+        return env.strip().lower() in ("on", "1", "true")
+    return bool(get("guaranteed_tracking", False))
+
 def enabled_categories():
     """The configured active-category key list, or None when unconfigured
     (categories.enabled_keys() then defaults to CORE — the lean default)."""
@@ -252,6 +262,8 @@ def render_board():
          "appearance: which variant renders — auto follows the OS (dark=Dark Sands, light=Light Sands)"),
         ("--title", "on" if title_enabled() else "off", "on · off",
          "auto terminal title '#<seq>: <title>' on attach"),
+        ("--guaranteed-tracking", "on" if guaranteed_tracking_enabled() else "off", "on · off",
+         "hook-side auto-create+attach a provisional task on a fresh session (default off; GC'd if skipped/closed untouched)"),
         ("--desktop-bridge", _desktop_bridge_summary(), "on · off",
          "wire the dependency-free MCP server into Claude Desktop"),
     ]
@@ -290,8 +302,8 @@ def render_board():
     st = [
         ("tint", "escape (full palette) · terminal %s%s" % (
             t, "" if t != "none" else "  (no supported terminal → no-op)")),
-        ("policy", "installed in CLAUDE.md — remove: --policy off" if has_policy
-         else "off — install: --policy on"),
+        ("strict-delegation", "installed in CLAUDE.md (writes a managed block to CLAUDE.md) — remove: --strict-delegation off"
+         if has_policy else "off (writes a managed block to CLAUDE.md) — install: --strict-delegation on"),
         ("desktop-bridge", "installed — remove: --desktop-bridge off" if installed
          else "off — install: --desktop-bridge on"),
     ]
@@ -531,6 +543,11 @@ def cmd_config(a):
         print("auto_categories = %s" % ("on" if get("auto_categories") else "off")); return
     if getattr(a, "auto_categories_get", False):
         print("on" if auto_categories_enabled() else "off"); return
+    if getattr(a, "guaranteed_tracking", None) is not None:
+        set("guaranteed_tracking", a.guaranteed_tracking == "on")
+        print("guaranteed_tracking = %s" % ("on" if get("guaranteed_tracking") else "off")); return
+    if getattr(a, "guaranteed_tracking_get", False):
+        print("on" if guaranteed_tracking_enabled() else "off"); return
     if getattr(a, "categories", None) is not None:
         return cmd_categories(a.categories);
     if getattr(a, "enable", None) is not None:
@@ -538,8 +555,8 @@ def cmd_config(a):
     if getattr(a, "disable", None) is not None:
         return toggle_category(a.disable, False)
     import setup
-    if getattr(a, "policy", None) is not None:
-        print(setup.set_policy(a.policy == "on")); return
+    if getattr(a, "strict_delegation", None) is not None:
+        print(setup.set_policy(a.strict_delegation == "on")); return
     if getattr(a, "desktop_bridge", None) is not None:
         print(setup.install_desktop_bridge() if a.desktop_bridge == "on"
               else setup.remove_desktop_bridge()); return

@@ -3,7 +3,7 @@
 > A persistent task hub for Claude Code. Every task is a **resumable, colour‑tinted session** — auto‑categorised on a self‑growing board, re‑pinnable, tinted to an OS‑aware theme, with parallel in‑project worker delegation and a Claude Desktop bridge.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-1.9.1-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-1.10.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -156,7 +156,9 @@ A hub session launched from `~` can't load a repo's `CLAUDE.md`, hooks, MCP serv
 - **Crash‑safe** — the worker's session id is registered *before* launch, so a timeout or kill never loses the conversation; the next call resumes it.
 - **One worker per (task, repo)** — resume one‑liners show up in the task's detail view.
 
-Pair it with the optional, reversible delegation‑policy block (`config --policy on`) and the privacy‑first repo index (`/repos`). Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**Available vs enforced.** Delegation is *always available* — the delegating‑work skill and `delegate.py` ship with the plugin and work regardless of any flag, decided ad hoc per task. `config --strict-delegation on` *enforces* it: it writes a standing, reversible managed block into your `CLAUDE.md` so Claude delegates by **default** and follows the guardrails (worktree isolation, self‑contained briefs, require a story/PR). Off (the default) leaves delegation available but unenforced.
+
+Pair it with the privacy‑first repo index (`/repos`). Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Claude Desktop bridge
 
@@ -184,9 +186,14 @@ This safely merges one entry into your existing Desktop config (backed up first)
 | `--bare-cmds [on\|off]` | on/off | off | Install bare `/todo` + `/done` aliases. |
 | `--update-check [on\|off]` | on/off | off | Opt‑in daily version check (no task data sent). |
 | `--desktop-bridge [on\|off]` | on/off | off | Wire the MCP server into Claude Desktop. |
-| `--policy [on\|off]` | on/off | off | Add/remove the reversible delegation‑policy block in `CLAUDE.md`. |
+| `--guaranteed-tracking [on\|off]` | on/off | off | Deterministic auto-create+attach a provisional task on a fresh session (vs the default nudge); auto-GC'd if skipped/closed untouched. |
+| `--strict-delegation [on\|off]` | on/off | off | Writes standing delegation rules to `CLAUDE.md` (reversible managed block). Hidden `--policy` alias kept for back-compat. |
 
 **Data dir** (set via `$TASK_STATION_HOME`, defaults to `~/.claude/task-station-data`) holds your `tasks.db` and config — outside the plugin cache, so updates never touch it.
+
+### Guaranteed tracking (1.10.0, opt‑in)
+
+By default a fresh, unattached session gets a **nudge** — Claude is told to track the topic but decides how (and may `skip` genuinely throwaway chatter). Turn on `config --guaranteed-tracking on` and the `UserPromptSubmit` hook makes it **deterministic**: on the first prompt of an untracked session it auto‑creates a *provisional* open task and attaches the session — no model decision required. It **folds, doesn't fork** (if a similar open task already exists it attaches to that one and files your prompt as a note instead of creating a sibling), and it **auto‑GCs**: a provisional task that's never engaged is deleted when the session is `skip`ped or closed, so pure Q&A leaves no litter. The moment you genuinely engage (update its title/summary/colour, edit a file, fold in a note) the task sheds its provisional flag and behaves like any normal task. **Off by default** — the conservative install behaves exactly as the firmer nudge.
 
 ## How it works
 

@@ -72,6 +72,12 @@ class JsonBackend:
         self.ensure()
         self._atomic_write(self._task_path(task["id"]), json.dumps(task, indent=2))
 
+    def delete_task(self, task_id):
+        try:
+            os.remove(self._task_path(task_id))
+        except OSError:
+            pass
+
     def all_tasks(self):
         self.ensure()
         out = []
@@ -346,6 +352,11 @@ class SqliteBackend:
                 json.dumps(task),
             ),
         )
+        conn.commit()
+
+    def delete_task(self, task_id):
+        conn = self._connect()
+        conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
         conn.commit()
 
     def all_tasks(self):
