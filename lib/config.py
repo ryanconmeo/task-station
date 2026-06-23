@@ -99,6 +99,16 @@ def title_enabled():
         return False
     return bool(get("title", True))
 
+def tint_enabled():
+    """True unless explicitly disabled — default ON. The env escape
+    `TASK_STATION_TINT` (on/off/1/0/true/false) WINS over config (so a one-off
+    `TASK_STATION_TINT=on` re-enables a config `tint=off`, and vice-versa); else
+    the persisted `tint` flag (default ON). Gates every terminal-tint emitter."""
+    env = os.environ.get("TASK_STATION_TINT")
+    if env is not None:
+        return env.strip().lower() in ("on", "1", "true")
+    return bool(get("tint", True))
+
 def auto_categories_enabled():
     """True unless explicitly disabled — default ON. Mirrors TASK_STATION_TITLE's
     env escape: `TASK_STATION_AUTO_CATEGORIES=off` (or `config --auto-categories off`)
@@ -185,21 +195,16 @@ def _variant_label(variant, theme=None):
             pass
     return variant.capitalize()
 
-def _theme_summary():
-    """`sands · auto → Dark Sands`-style summary for the config board: active theme,
-    the tint-theme setting, and the currently-resolved variant's display label."""
-    variant = resolved_variant()
-    return "%s · %s → %s" % (active_theme(), tint_theme(), _variant_label(variant))
-
 def _enabled_summary():
-    """`3/12 (default: CORE)`-style summary of the active category set, or
-    `N/12 (custom)` once the user has configured it."""
+    """`3/12 (CORE)`-style summary of the active category set, or `N/12 (custom)`
+    once the user has configured it. The factory default is carried in the board
+    description parens now, so this never embeds the word "default"."""
     cats = _categories_module()
     if cats is None:
         return "n/a"
     enabled = cats.enabled_keys()
     total = len(cats.all_keys())
-    name = "default: CORE" if enabled_categories() is None else "custom"
+    name = "CORE" if enabled_categories() is None else "custom"
     return "%d/%d (%s)" % (len(enabled), total, name)
 
 def _desktop_bridge_summary():
@@ -215,103 +220,85 @@ def _desktop_bridge_summary():
 def render_board():
     """The unified, width-aware `task-station config` board (no-arg view).
 
-    Short-valued settings render as a 4-column aligned grid (SETTING / VALUE /
-    OPTIONS / WHAT IT DOES); the first three columns are sized to their widest cell
-    per render, and the description column takes the remaining terminal width,
-    wrapping with a hanging indent under WHAT IT DOES so long text never breaks the
-    grid. Long PATH-valued settings print as their own full-width two-line blocks
-    below the grid. The status facts that used to live in a separate
-    setup.status() block are folded into a compact `status` section at the bottom —
-    one board, nothing duplicated."""
+    Every setting renders as a two-line STANZA: an aligned
+    `<flag>  <current value>  <options>` line, then an indented description that
+    ends with the factory default in parens — `(default: X)`. A blank line
+    separates every stanza. The flag / value / options columns are sized to their
+    widest cell per render (the path-valued rows are excluded from the value width
+    so a long path never inflates the grid); on a narrow terminal the description
+    wraps with a hanging indent under itself, never under a column. The former
+    separate `status`, `--workspace-dirs`, and `--data-dir` blocks are folded into
+    this single list — one board, nothing duplicated, no `* = default` markers."""
     import textwrap
     import term
+    import setup
     width = term.width()
     indent = "  "
     gutter = "  "
+    desc_indent = "      "   # 6 cols — the description hangs under the flag, not a column
 
     cats = get("categories"); n_cat = len(cats) if isinstance(cats, dict) else 0
-    lines = []
+    has_policy = ("policy" in setup._manifest())
 
+    # (flag, value, options-or-None, description). options=None marks a value-only
+    # row (the paths) that carries no OPTIONS cell. The VALUE column always shows
+    # the CURRENT value; the factory default lives only in the description parens.
+    rows = [
+        ("--categories", _enabled_summary(), "edit · toggle",
+         "enabled category set — starts lean at CORE (BUG · FEATURE · GENERAL), grows itself (default: CORE)"),
+        ("--auto-categories", "on" if auto_categories_enabled() else "off", "on · off",
+         "auto-enable a slot the first time a task is assigned to it (default: on)"),
+        ("--category-overrides", "%d override(s)" % n_cat if n_cat else "none", "edit",
+         "custom tags / labels / skill auto-tint, edit config.json (default: none)"),
+        ("--bare-cmds", "on" if bare_commands() else "off", "on · off",
+         "install bare /todo + /done aliases, else /task-station:todo (default: off)"),
+        ("--update-check", "on" if update_check_enabled() else "off", "on · off",
+         "/todo footer when a newer version ships, one git ls-remote/day (default: off)"),
+        ("--theme", active_theme(), "sands · …",
+         "active colour theme — full palette, dark + light variants (default: sands)"),
+        ("--tint-theme", tint_theme(), "auto · dark · light",
+         "appearance: which variant renders — auto follows the OS (default: auto)"),
+        ("--tint", "on" if tint_enabled() else "off", "on · off",
+         "full-palette terminal tint via escape codes; TASK_STATION_TINT overrides (default: on)"),
+        ("--title", "on" if title_enabled() else "off", "on · off",
+         "auto terminal title '#<seq>: <title>' on attach (default: on)"),
+        ("--guaranteed-tracking", "on" if guaranteed_tracking_enabled() else "off", "on · off",
+         "hook creates+attaches a provisional task on a fresh session; GC'd if untouched (default: off)"),
+        ("--strict-delegation", "on" if has_policy else "off", "on · off",
+         "write the delegation-rules block into CLAUDE.md, reversible (default: off)"),
+        ("--desktop-bridge", _desktop_bridge_summary(), "on · off",
+         "wire the dependency-free MCP server into Claude Desktop (default: off)"),
+        ("--workspace-dirs", ":".join(get("workspace_dirs") or []) or "unset", None,
+         "repo roots for delegate --project (default: unset)"),
+        ("--data-dir", paths.data_dir(), None,
+         "where tasks.db + config.json live (read-only · $TASK_STATION_HOME)"),
+        ("--reset", "—", "(action)",
+         "reset ALL settings above to factory defaults — asks to confirm (default: —)"),
+    ]
+    w_flag = max(len(r[0]) for r in rows)
+    w_val = max(len(r[1]) for r in rows if r[2] is not None)
+    wrap_w = max(24, width - len(desc_indent))
+
+    lines = []
     # --- top header: store path (+ set/reset hint); store breaks to its own line
     #     rather than overflow the terminal width.
-    store_line = "task-station config       store: %s" % _path()
+    store_line = "task-station config        store: %s" % _path()
     if len(store_line) <= width:
         lines.append(store_line)
     else:
         lines.append("task-station config")
         lines.append(indent + "store: %s" % _path())
-    lines.append(indent + "set: task-station config --<flag> <value>   ·   reset: <flag> default")
-    lines.append("")
+    lines.append("set a flag: task-station config --<flag> <value>     ·     reset a flag: --<flag> default")
 
-    # --- toggle grid (short values only) ----------------------------------------
-    header = ("SETTING", "VALUE", "OPTIONS", "WHAT IT DOES")
-    rows = [
-        ("--categories", _enabled_summary(), "edit·toggle",
-         "enabled set (CORE default) + toggles"),
-        ("--auto-categories", "on" if auto_categories_enabled() else "off", "on · off",
-         "grow the board automatically as new categories are assigned"),
-        ("category overrides", "%d override(s)" % n_cat if n_cat else "defaults", "edit",
-         "custom tags/labels + skill auto-tint"),
-        ("--bare-cmds", "on" if bare_commands() else "off", "on · off",
-         "install bare /todo + /done (else /task-station:todo)"),
-        ("--update-check", "on" if update_check_enabled() else "off", "on · off",
-         "opt-in /todo footer when a newer version ships"),
-        ("--theme", active_theme(), "sands · …",
-         "active color theme (full palette, dark+light variants)"),
-        ("--tint-theme", _theme_summary(), "auto · dark · light",
-         "appearance: which variant renders — auto follows the OS (dark=Dark Sands, light=Light Sands)"),
-        ("--title", "on" if title_enabled() else "off", "on · off",
-         "auto terminal title '#<seq>: <title>' on attach"),
-        ("--guaranteed-tracking", "on" if guaranteed_tracking_enabled() else "off", "on · off",
-         "hook-side auto-create+attach a provisional task on a fresh session (default off; GC'd if skipped/closed untouched)"),
-        ("--desktop-bridge", _desktop_bridge_summary(), "on · off",
-         "wire the dependency-free MCP server into Claude Desktop"),
-    ]
-    w_set = max(len(header[0]), *(len(r[0]) for r in rows))
-    w_val = max(len(header[1]), *(len(r[1]) for r in rows))
-    w_opt = max(len(header[2]), *(len(r[2]) for r in rows))
-    fixed = len(indent) + w_set + len(gutter) + w_val + len(gutter) + w_opt + len(gutter)
-    w_desc = max(24, width - fixed)
-
-    def _grid_row(setting, value, options, desc):
-        prefix = (indent + setting.ljust(w_set) + gutter
-                  + value.ljust(w_val) + gutter + options.ljust(w_opt) + gutter)
-        wrapped = textwrap.wrap(desc, w_desc) or [""]
-        out = [prefix + wrapped[0]]
-        hang = " " * len(prefix)         # aligns continuations under WHAT IT DOES
-        out += [hang + cont for cont in wrapped[1:]]
-        return out
-
-    lines += _grid_row(*header)
-    for r in rows:
-        lines += _grid_row(*r)
-
-    # --- long PATH-valued settings: own full-width two-line blocks (never gridded)
-    ws = ":".join(get("workspace_dirs") or []) or "(unset — use --repo)"
-    lines.append("")
-    lines.append(indent + "--workspace-dirs  (repo roots for delegate --project)")
-    lines.append(indent + "    " + ws)
-    lines.append(indent + "--data-dir        (read-only · $TASK_STATION_HOME)")
-    lines.append(indent + "    " + paths.data_dir())
-
-    # --- status: facts folded in from setup.status() (reusing its helpers) -------
-    import setup
-    t = term.detect()
-    has_policy = ("policy" in setup._manifest())
-    installed, _server = setup.desktop_bridge_status()
-    st = [
-        ("tint", "escape (full palette) · terminal %s%s" % (
-            t, "" if t != "none" else "  (no supported terminal → no-op)")),
-        ("strict-delegation", "installed in CLAUDE.md (writes a managed block to CLAUDE.md) — remove: --strict-delegation off"
-         if has_policy else "off (writes a managed block to CLAUDE.md) — install: --strict-delegation on"),
-        ("desktop-bridge", "installed — remove: --desktop-bridge off" if installed
-         else "off — install: --desktop-bridge on"),
-    ]
-    w_label = max(len(s[0]) for s in st)
-    lines.append("")
-    lines.append(indent + "status")
-    for label, val in st:
-        lines.append(indent + "  " + label.ljust(w_label) + "  " + val)
+    for flag, value, options, desc in rows:
+        lines.append("")
+        if options is None:
+            lines.append(indent + flag.ljust(w_flag) + gutter + value)
+        else:
+            lines.append(indent + flag.ljust(w_flag) + gutter
+                         + value.ljust(w_val) + gutter + options)
+        for seg in (textwrap.wrap(desc, wrap_w) or [""]):
+            lines.append(desc_indent + seg)
 
     return "\n".join(lines)
 
@@ -510,6 +497,87 @@ def cmd_theme(arg):
     print("theme = %s" % active_theme())
 
 
+# --- factory reset -----------------------------------------------------------
+# The config.json keys the board manages. `--reset confirm` pops exactly these
+# (so get()'s defaults take over). NOT touched: tasks.db (a separate file) and
+# externally-installed integrations that live OUTSIDE config.json — the bare
+# /todo,/done command files, the Claude Desktop bridge entry, and the CLAUDE.md
+# delegation block. Those are reported with their off-commands, never silently
+# removed, so the user removes them deliberately.
+RESET_KEYS = [
+    "enabled_categories", "auto_categories", "categories",
+    "bare_commands", "update_check", "theme", "tint_theme",
+    "tint", "title", "guaranteed_tracking", "workspace_dirs",
+]
+
+
+def reset_settings():
+    """Pop every board-managed key from config.json, returning the count cleared.
+    Other config (user themes, repo-index roots) and tasks.db are left intact."""
+    d = _load()
+    cleared = [k for k in RESET_KEYS if k in d]
+    for k in cleared:
+        del d[k]
+    _save(d)
+    return len(cleared)
+
+
+def _commands_dir():
+    """Where the SessionStart hook writes bare /todo,/done aliases (honours
+    CLAUDE_CONFIG_DIR like the hook does)."""
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+    base = os.path.expanduser(cfg) if cfg else os.path.expanduser("~/.claude")
+    return os.path.join(base, "commands")
+
+
+def bare_commands_installed():
+    """True if any task-station-managed bare command file (/todo, /done, /repos)
+    is present on disk. These are written by the hook OUTSIDE config.json, so a
+    settings reset reports rather than deletes them."""
+    cdir = _commands_dir()
+    for name in ("todo", "done", "repos"):
+        try:
+            with open(os.path.join(cdir, "%s.md" % name)) as f:
+                if "task-station-managed" in f.readline():
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def cmd_reset(token):
+    """`config --reset` factory reset. Bare (`token == "ask"`, or anything other
+    than the confirm token) prints what it WILL do plus the confirm command and
+    resets NOTHING. `--reset confirm` wipes the board-managed settings back to
+    defaults, then reports which externally-installed integrations survive (with
+    their off-commands). tasks.db is never touched — your tasks survive."""
+    if token != "confirm":
+        print("task-station config --reset resets ALL settings on the board above to")
+        print("factory defaults (categories, theme, tint, title, workspace-dirs, …).")
+        print("Your tasks are NOT affected — tasks.db is left untouched.")
+        print("")
+        print("To proceed, re-run:  task-station config --reset confirm")
+        return
+    n = reset_settings()
+    print("Reset %d setting%s to defaults." % (n, "" if n == 1 else "s"))
+    # Integrations that live OUTSIDE config.json can't (and shouldn't) be removed
+    # by a settings reset — report what survives so the user removes it deliberately.
+    import setup
+    leftovers = []
+    if bare_commands_installed():
+        leftovers.append(("bare /todo + /done command files", "--bare-cmds off"))
+    installed, _ = setup.desktop_bridge_status()
+    if installed:
+        leftovers.append(("Claude Desktop MCP bridge entry", "--desktop-bridge off"))
+    if "policy" in setup._manifest():
+        leftovers.append(("delegation-rules block in CLAUDE.md", "--strict-delegation off"))
+    if leftovers:
+        print("")
+        print("Still installed outside config.json (remove deliberately):")
+        for what, how in leftovers:
+            print("  %s — task-station config %s" % (what, how))
+
+
 def cmd_config(a):
     if getattr(a, "workspace_dirs_get", False):
         print(":".join(get("workspace_dirs") or "")); return
@@ -533,6 +601,13 @@ def cmd_config(a):
         print("tint_theme = %s   (variant: %s)" % (tint_theme(), resolved_variant())); return
     if getattr(a, "tint_theme_get", False):
         print(tint_theme()); return
+    if getattr(a, "tint", None) is not None:
+        set("tint", a.tint == "on")
+        print("tint = %s" % ("on" if get("tint") else "off")); return
+    if getattr(a, "tint_get", False):
+        print("on" if tint_enabled() else "off"); return
+    if getattr(a, "reset", None) is not None:
+        return cmd_reset(a.reset)
     if getattr(a, "title", None) is not None:
         set("title", a.title == "on")
         print("title = %s" % ("on" if get("title") else "off")); return

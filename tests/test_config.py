@@ -50,6 +50,104 @@ class Config(unittest.TestCase):
         finally:
             os.environ.pop("TASK_STATION_TITLE", None)
 
+    # --- --tint flag --------------------------------------------------------
+    def test_tint_enabled_default_on(self):
+        os.environ.pop("TASK_STATION_TINT", None)
+        self.assertTrue(config.tint_enabled())
+
+    def test_tint_off_persists_and_disables(self):
+        os.environ.pop("TASK_STATION_TINT", None)
+        config.set("tint", False)
+        self.assertFalse(config.tint_enabled())
+        with open(os.path.join(self.tmp, "config.json")) as f:
+            self.assertFalse(json.load(f)["tint"])
+
+    def test_tint_env_on_overrides_config_off(self):
+        config.set("tint", False)
+        os.environ["TASK_STATION_TINT"] = "on"
+        try:
+            self.assertTrue(config.tint_enabled())   # env wins over config
+        finally:
+            os.environ.pop("TASK_STATION_TINT", None)
+
+    def test_tint_env_off_overrides_config_on(self):
+        config.set("tint", True)
+        os.environ["TASK_STATION_TINT"] = "off"
+        try:
+            self.assertFalse(config.tint_enabled())
+        finally:
+            os.environ.pop("TASK_STATION_TINT", None)
+
+    def test_cmd_config_tint_off_persists(self):
+        os.environ.pop("TASK_STATION_TINT", None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            config.cmd_config(_Args(workspace_dirs=None, tint="off"))
+        self.assertIn("tint = off", buf.getvalue())
+        self.assertFalse(config.tint_enabled())
+
+class Reset(unittest.TestCase):
+    """`config --reset` factory reset: confirm-gated, preserves tasks.db."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        # Save the harness-pinned values so tearDown RESTORES them rather than
+        # popping — popping CLAUDE_CONFIG_DIR destroys the isolation pin and trips
+        # test_store_isolation's guard in later tests (env leak across the suite).
+        self._saved = {k: os.environ.get(k) for k in
+                       ("TASK_STATION_HOME", "TASK_STATION_DESKTOP_CONFIG", "CLAUDE_CONFIG_DIR")}
+        os.environ["TASK_STATION_HOME"] = self.tmp
+        # Isolate the integration probes from this machine's real config.
+        os.environ["TASK_STATION_DESKTOP_CONFIG"] = os.path.join(self.tmp, "no-desktop.json")
+        os.environ["CLAUDE_CONFIG_DIR"] = self.tmp   # no bare command files here
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_bare_reset_does_not_reset(self):
+        config.set("theme", "midnight")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            config.cmd_config(_Args(workspace_dirs=None, reset="ask"))
+        out = buf.getvalue()
+        self.assertIn("--reset confirm", out)     # instructs how to proceed
+        self.assertEqual(config.get("theme"), "midnight")   # nothing reset
+
+    def test_reset_confirm_clears_settings(self):
+        config.set("theme", "midnight"); config.set("title", False)
+        config.set("tint", False); config.set("workspace_dirs", ["~/x"])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            config.cmd_config(_Args(workspace_dirs=None, reset="confirm"))
+        self.assertIn("Reset", buf.getvalue())
+        for key in ("theme", "title", "tint", "workspace_dirs"):
+            self.assertIsNone(config.get(key))
+
+    def test_reset_confirm_preserves_tasks_db(self):
+        # Seed a real task through the storage backend, then reset and confirm it
+        # survives — reset must never touch tasks.db.
+        import importlib.util
+        lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
+        spec = importlib.util.spec_from_file_location("task_station_r", os.path.join(lib, "task-station.py"))
+        ts = importlib.util.module_from_spec(spec); spec.loader.exec_module(ts)
+        ts.DATA = self.tmp
+        ts.STORE = os.path.join(self.tmp, "store")
+        ts.TASKS_DIR = os.path.join(ts.STORE, "tasks")
+        ts.LINKS_DIR = os.path.join(ts.STORE, "links")
+        import store; store.reset_cache()
+        t = ts.new_task("survive the reset", "x"); ts.save_task(t); ts.ensure_seqs()
+        tid = t["id"]
+        config.set("theme", "midnight")
+        with redirect_stdout(io.StringIO()):
+            config.cmd_config(_Args(workspace_dirs=None, reset="confirm"))
+        self.assertIsNone(config.get("theme"))            # settings cleared
+        store.reset_cache()
+        self.assertIsNotNone(ts.load_task(tid))           # task survives
+
 class Board(unittest.TestCase):
     """The no-arg `task-station config` unified board (render_board)."""
     def setUp(self):
@@ -67,10 +165,15 @@ class Board(unittest.TestCase):
         else: os.environ["COLUMNS"] = self._cols
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    # (a) the board no longer carries the separate setup.status() block.
-    def test_no_status_duplicate_header(self):
+    # (a) one board, no separate status / path / header-row blocks.
+    def test_single_board_no_legacy_sections(self):
         os.environ["COLUMNS"] = "120"
-        self.assertNotIn("— status", config.render_board())
+        board = config.render_board()
+        self.assertEqual(board.count("store:"), 1)        # exactly one header
+        # the redesign drops the column-header row and the trailing status block.
+        for legacy in ("SETTING", "VALUE", "OPTIONS", "WHAT IT DOES",
+                       "escape (full palette)", "* = default"):
+            self.assertNotIn(legacy, board)
 
     def test_cmd_config_no_arg_renders_single_board(self):
         os.environ["COLUMNS"] = "120"
@@ -78,78 +181,77 @@ class Board(unittest.TestCase):
         with redirect_stdout(buf):
             config.cmd_config(_Args(workspace_dirs=None))
         out = buf.getvalue()
-        self.assertNotIn("— status", out)        # no second status board
-        self.assertEqual(out.count("store:"), 1)  # exactly one board header
+        self.assertEqual(out.count("store:"), 1)
+        self.assertIn("--reset", out)
 
-    # (b) the OPTIONS column values appear.
-    def test_options_values_present(self):
+    # (b) every setting renders as a stanza: flag + value + options line, then an
+    #     indented description ending with the default in parens.
+    def test_stanzas_present_with_values_and_options(self):
         os.environ["COLUMNS"] = "120"
         board = config.render_board()
-        self.assertIn("OPTIONS", board)
+        for flag in ("--categories", "--auto-categories", "--category-overrides",
+                     "--bare-cmds", "--update-check", "--theme", "--tint-theme",
+                     "--tint", "--title", "--guaranteed-tracking",
+                     "--strict-delegation", "--desktop-bridge", "--workspace-dirs",
+                     "--data-dir", "--reset"):
+            self.assertIn(flag, board)
         self.assertIn("auto · dark · light", board)   # --tint-theme options
         self.assertIn("sands", board)                 # --theme active value
         self.assertIn("on · off", board)
-        self.assertIn("edit·toggle", board)
+        self.assertIn("edit · toggle", board)
+        self.assertIn("(action)", board)              # --reset options cell
 
-    def test_header_row_present(self):
+    def test_defaults_shown_in_description_parens(self):
         os.environ["COLUMNS"] = "120"
         board = config.render_board()
-        for h in ("SETTING", "VALUE", "OPTIONS", "WHAT IT DOES"):
-            self.assertIn(h, board)
+        for d in ("(default: CORE)", "(default: on)", "(default: off)",
+                  "(default: sands)", "(default: auto)", "(default: unset)",
+                  "(default: —)", "(default: none)"):
+            self.assertIn(d, board)
+        # data-dir is read-only — no default paren, just the env note.
+        self.assertIn("(read-only · $TASK_STATION_HOME)", board)
+        # no asterisk default markers anywhere.
+        self.assertNotIn("(*)", board)
 
-    # (c) long descriptions wrap with a hanging indent aligned under WHAT IT DOES.
-    def test_wrap_hangs_under_what_it_does_at_narrow_width(self):
-        os.environ["COLUMNS"] = "60"
+    # (c) --tint-theme value is just the appearance mode, not the resolved theme.
+    def test_tint_theme_value_is_appearance_only(self):
+        os.environ["COLUMNS"] = "120"
+        config.set("tint_theme", "dark")
         lines = config.render_board().splitlines()
-        header = next(l for l in lines if "WHAT IT DOES" in l)
-        col = header.index("WHAT IT DOES")
-        # the desktop-bridge description is the longest → guaranteed to wrap.
+        row = next(l for l in lines if l.lstrip().startswith("--tint-theme"))
+        self.assertIn("dark", row)
+        self.assertNotIn("→", row)        # no "sands · auto → Light Sands" blob
+        self.assertNotIn("Sands", row)
+
+    # (d) blank line separates every stanza.
+    def test_blank_line_between_stanzas(self):
+        os.environ["COLUMNS"] = "120"
+        lines = config.render_board().splitlines()
+        i = next(i for i, l in enumerate(lines) if l.lstrip().startswith("--auto-categories"))
+        # the line above a flag line (after its predecessor's description) is blank.
+        self.assertEqual(lines[i - 1], "")
+
+    # (e) long descriptions wrap with a hanging indent under themselves.
+    def test_wrap_hangs_under_description_at_narrow_width(self):
+        os.environ["COLUMNS"] = "50"
+        lines = config.render_board().splitlines()
         idx = next(i for i, l in enumerate(lines) if "wire the dependency-free" in l)
-        # first description line starts exactly under the WHAT IT DOES column.
-        self.assertEqual(lines[idx].index("wire the dependency-free"), col)
-        # the continuation line hangs to the same column (never under flag/value).
+        col = lines[idx].index("wire the dependency-free")
         cont = lines[idx + 1]
-        self.assertTrue(cont.startswith(" " * col))
         self.assertNotEqual(cont.strip(), "")
-        self.assertEqual(len(cont) - len(cont.lstrip()), col)
+        self.assertEqual(len(cont) - len(cont.lstrip()), col)  # continuation hangs
 
-    # (d) a long workspace path prints on its own line, not inside the grid.
-    def test_long_workspace_path_on_own_line(self):
-        os.environ["COLUMNS"] = "80"
-        longpath = "/Users/somebody/very/long/workspace/path/that/exceeds/the/grid/width/repos"
-        config.set("workspace_dirs", [longpath])
-        lines = config.render_board().splitlines()
-        self.assertTrue(any("--workspace-dirs" in l for l in lines))
-        match = [l for l in lines if longpath in l]
-        self.assertTrue(match)
-        self.assertEqual(match[0].strip(), longpath)  # nothing else shares the line
-
-    def test_status_footer_facts_present_with_hints(self):
-        os.environ["COLUMNS"] = "120"
-        board = config.render_board()
-        self.assertIn("status", board)
-        self.assertIn("strict-delegation", board)
-        self.assertIn("desktop-bridge", board)
-        self.assertIn("tint", board)
-        # actionable hints survive the fold-in.
-        self.assertIn("--strict-delegation on", board)
-        # tint now describes the full-palette escape; no profile mechanism remains.
-        self.assertIn("escape (full palette)", board)
-        self.assertNotIn("tint-profiles", board)
-
+    # (f) flag/value/options columns stay aligned across widths.
     def test_columns_align_across_widths(self):
-        # The WHAT IT DOES column starts at the same offset for the header and
-        # every first-line data row, at any width.
         for cols in ("60", "80", "120"):
             os.environ["COLUMNS"] = cols
             lines = config.render_board().splitlines()
-            header = next(l for l in lines if "WHAT IT DOES" in l)
-            col = header.index("WHAT IT DOES")
-            # prefixes that survive textwrap at every width (each starts its desc).
-            for needle in ("enabled set", "install bare",
-                           "active color theme", "wire the dependency-free"):
-                row = next(l for l in lines if needle in l)
-                self.assertEqual(row.index(needle), col,
-                                 "misaligned at COLUMNS=%s: %r" % (cols, needle))
+            # the value cells line up: --tint and --title both show on/off at the
+            # same column (flag column padded to the widest flag).
+            tint = next(l for l in lines if l.lstrip().startswith("--tint "))
+            title = next(l for l in lines if l.lstrip().startswith("--title "))
+            self.assertEqual(tint.index(" on") if " on" in tint else tint.index(" off"),
+                             title.index(" on") if " on" in title else title.index(" off"),
+                             "value column misaligned at COLUMNS=%s" % cols)
 
 if __name__=="__main__": unittest.main()
