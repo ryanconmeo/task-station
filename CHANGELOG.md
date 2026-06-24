@@ -3,6 +3,23 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.14.2] — 2026-06-24
+
+### Fixed
+- **`delegate.py` never resumes a worker into the main checkout.** A resume of a
+  tracked seq with no `--worktree` could land in the repo's MAIN checkout (on an
+  unrelated branch) and spin a stale session, because a prior read-only (no-worktree)
+  delegation had overwritten the `seq:project` registry entry — its saved `dir` was
+  the main checkout. Now worktree workers and read-only/main-checkout workers live in
+  **separate registry slots** (`seq:project` vs `seq:project@main`), so a read-only run
+  can never clobber a worktree binding, and a no-`--worktree` resume **self-routes to
+  the worktree worker**. A pre-fix `seq:project` entry still pointing at the main
+  checkout is **refused** with guidance (pass `--worktree` to rebind, or `--fresh`)
+  rather than resumed. `--seq` is now also inherited from the attached task for
+  read-only delegations (not just `--worktree` ones), so `delegate --project X` from an
+  attached session resolves to that task's worktree worker with zero flags. The whole
+  fix removes the need to remember to pass `--worktree`/`--fresh` on resume.
+
 ## [1.14.1] — 2026-06-24
 
 ### Fixed
