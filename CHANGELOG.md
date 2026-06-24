@@ -3,6 +3,31 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.13.0] — 2026-06-24
+
+### Added
+- **Composable status-line convention ([docs/STATUSLINE.md](docs/STATUSLINE.md)).**
+  A small, vendor-neutral convention for composing multiple segments under Claude
+  Code's single `statusLine.command`: **providers** are executables in
+  `${CLAUDE_CONFIG_DIR:-~/.claude}/statusline.d/` that speak the statusLine
+  stdin-JSON contract (empty output / non-zero exit ⇒ skipped); **hosts** own
+  `statusLine.command`, run every provider with the JSON on stdin, and join the
+  non-empty segments. Reference-implemented here, intended for extraction into a
+  neutral repo + an upstream feature request.
+- **`config --statusline on` (opt-in, default off).** Installs a self-sufficient
+  task-station status-bar **host** (it embeds the ~30-line compose routine —
+  `lib/statusline-host.sh` — and needs no external conductor) when nothing else
+  owns the bar, registers a segment **provider** (`statusline.d/50-task-station.sh`)
+  either way, and **never clobbers** an existing/foreign `statusLine`. Writes to
+  `settings.json` are backed up first and fully reversible (`--statusline off`
+  removes only what we own). Provider + host honor `CLAUDE_STATUSLINE_WIDTH` /
+  `CLAUDE_STATUSLINE_SEP`.
+
+### Changed
+- **The `statusline.d/` provider drop-in is now written only when `--statusline`
+  is on** (was unconditional in the SessionStart hook), so task-station no longer
+  writes into a user's `statusline.d/` unbidden.
+
 ## [1.12.0] — 2026-06-23
 
 ### Added

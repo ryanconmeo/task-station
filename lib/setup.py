@@ -288,6 +288,186 @@ def desktop_bridge_status(path=None):
     return installed, launcher_path()
 
 
+# ----------------------------------------------- Status-line host + provider ----
+#
+# Opt-in (`config --statusline on`), DEFAULT OFF, non-destructive + reversible —
+# same consented-installer shape as the Desktop bridge above. Implements the
+# composition convention in docs/STATUSLINE.md: task-station is BOTH a conformant
+# PROVIDER (a drop-in in statusline.d/) and — when nothing else owns the bar — a
+# self-sufficient HOST (the embedded compose routine in lib/statusline-host.sh).
+
+STATUSLINE_HOST_MARKER = "# claude-statusline-host:task-station"
+# Managed-marker comment carried near the top of our provider drop-in so
+# unregister only ever removes a file we wrote (never a hand-rolled provider).
+PROVIDER_MANAGED_MARKER = "# task-station-managed statusline provider"
+PROVIDER_NAME = "50-task-station.sh"
+SETTINGS_BACKUP_SUFFIX = ".bak-statusline"
+
+
+def _config_dir():
+    return os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
+
+
+def settings_path():
+    """Claude Code's `settings.json` under `${CLAUDE_CONFIG_DIR:-~/.claude}`
+    (env-honoring, like _claude_md()). The file may not exist yet."""
+    return os.path.join(_config_dir(), "settings.json")
+
+
+def statusline_d_dir():
+    return os.path.join(_config_dir(), "statusline.d")
+
+
+def provider_path():
+    return os.path.join(statusline_d_dir(), PROVIDER_NAME)
+
+
+def host_path():
+    """Stable, version-independent path to the host compose script, via the
+    `task-station-engine` symlink (refreshed every SessionStart → survives
+    `/plugin update`). Mirrors how the launcher resolves a stable path."""
+    return os.path.join(_config_dir(), "task-station-engine", "statusline-host.sh")
+
+
+def register_provider():
+    """(Re)write the executable PROVIDER drop-in at statusline.d/50-task-station.sh:
+    reads the statusLine JSON on stdin, pulls `session_id`, and emits task-station's
+    segment honoring CLAUDE_STATUSLINE_WIDTH. Routed through the stable engine path.
+    Idempotent (overwrites). Returns the path."""
+    d = statusline_d_dir()
+    os.makedirs(d, exist_ok=True)
+    engine = os.path.join(_config_dir(), "task-station-engine", "task-station.py")
+    body = (
+        "#!/usr/bin/env bash\n"
+        "%s (config --statusline). Regenerated on install; do not edit.\n"
+        "sid=$(python3 -c 'import sys,json; print(json.load(sys.stdin).get(\"session_id\",\"\"))' 2>/dev/null)\n"
+        "[ -n \"$sid\" ] || exit 0\n"
+        "exec python3 \"%s\" whoami --session \"$sid\" --statusline --width \"${CLAUDE_STATUSLINE_WIDTH:-0}\"\n"
+        % (PROVIDER_MANAGED_MARKER, engine)
+    )
+    p = provider_path()
+    with open(p, "w") as f:
+        f.write(body)
+    os.chmod(p, 0o755)
+    return p
+
+
+def unregister_provider():
+    """Remove ONLY our managed provider drop-in (verified via its marker). Leaves a
+    hand-rolled file of the same name untouched. No-op when absent."""
+    p = provider_path()
+    if not os.path.exists(p):
+        return False
+    try:
+        with open(p) as f:
+            head = f.read(512)
+    except Exception:
+        return False
+    if PROVIDER_MANAGED_MARKER not in head:
+        return False  # not ours — never delete a foreign provider
+    os.remove(p)
+    return True
+
+
+def _read_settings(path):
+    """Parse settings.json, or {} when missing/empty/invalid (never raises)."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            body = f.read().strip()
+        return json.loads(body) if body else {}
+    except Exception:
+        return {}
+
+
+def _write_settings(path, data):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def _backup_settings(path):
+    if os.path.exists(path):
+        shutil.copyfile(path, path + SETTINGS_BACKUP_SUFFIX)
+
+
+def install_statusline(path=None):
+    """Opt-in install. The PROVIDER is ALWAYS (re)registered into statusline.d/.
+    Then, per the non-destructive rule (docs/STATUSLINE.md), inspect
+    settings["statusLine"].command:
+      - unset/empty   → install ourselves as host (write the marked compose command).
+      - bears OUR marker → leave settings untouched (idempotent); provider ensured.
+      - foreign command  → DO NOT modify settings.json; provider registered either way.
+    settings.json is backed up before any modification. Reversible via
+    remove_statusline()."""
+    path = path or settings_path()
+    register_provider()                      # provider first, always
+    data = _read_settings(path)
+    sl = data.get("statusLine")
+    cmd = sl.get("command", "") if isinstance(sl, dict) else ""
+
+    if not cmd:
+        _backup_settings(path)
+        data["statusLine"] = {
+            "type": "command",
+            "command": "bash %s  %s" % (host_path(), STATUSLINE_HOST_MARKER),
+        }
+        _write_settings(path, data)
+        return ("Installed the task-station status-bar host + segment provider.\n"
+                "  statusLine.command → bash %s\n"
+                "  provider           → %s\n"
+                "Reverse: task-station config --statusline off." % (host_path(), provider_path()))
+
+    if STATUSLINE_HOST_MARKER in cmd:
+        return ("task-station already owns the status bar — settings.json left "
+                "unchanged. Segment provider ensured at %s." % provider_path())
+
+    # Foreign / unknown statusLine.command — never clobber it.
+    return ("Your statusLine is owned by another command — left untouched. "
+            "Registered a segment provider at %s; if your bar composes "
+            "statusline.d/ it will appear automatically, otherwise add it to your bar."
+            % provider_path())
+
+
+def remove_statusline(path=None):
+    """Reversible removal: drop our provider drop-in, and clear statusLine ONLY when
+    its command bears OUR host marker (never a foreign statusLine). settings.json is
+    backed up before any modification."""
+    removed_provider = unregister_provider()
+    path = path or settings_path()
+    data = _read_settings(path)
+    sl = data.get("statusLine")
+    cmd = sl.get("command", "") if isinstance(sl, dict) else ""
+    if STATUSLINE_HOST_MARKER in cmd:
+        _backup_settings(path)
+        del data["statusLine"]
+        _write_settings(path, data)
+        return ("Removed the task-station status-bar host from %s and its segment "
+                "provider." % path)
+    note = "Removed the task-station segment provider." if removed_provider \
+        else "task-station status bar not installed — nothing to remove."
+    if cmd:
+        note += " Left the existing statusLine.command (owned by another command) untouched."
+    return note
+
+
+def statusline_status(path=None):
+    """'installed (host)' / 'provider-only' / 'off' — for the config board + status."""
+    path = path or settings_path()
+    data = _read_settings(path)
+    sl = data.get("statusLine")
+    cmd = sl.get("command", "") if isinstance(sl, dict) else ""
+    if STATUSLINE_HOST_MARKER in cmd:
+        return "installed (host)"
+    if os.path.exists(provider_path()):
+        return "provider-only"
+    return "off"
+
+
 def cmd_setup(a):
     if a.policy is not None:
         print(set_policy(a.policy == "on")); return
