@@ -138,6 +138,19 @@ def guaranteed_tracking_enabled():
         return env.strip().lower() in ("on", "1", "true")
     return bool(get("guaranteed_tracking", False))
 
+def ultracode_hints_enabled():
+    """True unless explicitly disabled — default ON. The env escape
+    `TASK_STATION_ULTRACODE_HINTS` (on/off/1/0/true/false) WINS over config; else
+    the persisted `ultracode_hints` flag (default on). Gates EVERY ultracode
+    fan-out hint — the human advisory (detail recap + SessionStart) and the
+    model-facing steering on an ultracode turn. Mirrors tint_enabled()/
+    statusline_enabled()."""
+    env = os.environ.get("TASK_STATION_ULTRACODE_HINTS")
+    if env is not None:
+        return env.strip().lower() in ("on", "1", "true")
+    return bool(get("ultracode_hints", True))
+
+
 def enabled_categories():
     """The configured active-category key list, or None when unconfigured
     (categories.enabled_keys() then defaults to CORE — the lean default)."""
@@ -283,6 +296,8 @@ def render_board():
          "auto terminal title '#<seq>: <title>' on attach (default: on)"),
         ("--guaranteed-tracking", "on" if guaranteed_tracking_enabled() else "off", "on · off",
          "hook creates+attaches a provisional task on a fresh session; GC'd if untouched (default: off)"),
+        ("--ultracode-hints", "on" if ultracode_hints_enabled() else "off", "on · off",
+         "suggest multi-agent breadth (ultracode) on big / RESEARCH / REVIEW / DATA tasks — read/think phases only, never repo writes (default: on)"),
         ("--strict-delegation", "on" if has_policy else "off", "on · off",
          "write the delegation-rules block into CLAUDE.md, reversible (default: off)"),
         ("--desktop-bridge", _desktop_bridge_summary(), "on · off",
@@ -528,7 +543,8 @@ def cmd_theme(arg):
 RESET_KEYS = [
     "enabled_categories", "auto_categories", "categories",
     "bare_commands", "update_check", "theme", "tint_theme",
-    "tint", "title", "guaranteed_tracking", "statusline", "workspace_dirs",
+    "tint", "title", "guaranteed_tracking", "statusline", "ultracode_hints",
+    "workspace_dirs",
 ]
 
 
@@ -647,6 +663,11 @@ def cmd_config(a):
         print("guaranteed_tracking = %s" % ("on" if get("guaranteed_tracking") else "off")); return
     if getattr(a, "guaranteed_tracking_get", False):
         print("on" if guaranteed_tracking_enabled() else "off"); return
+    if getattr(a, "ultracode_hints", None) is not None:
+        set("ultracode_hints", a.ultracode_hints == "on")
+        print("ultracode_hints = %s" % ("on" if get("ultracode_hints") else "off")); return
+    if getattr(a, "ultracode_hints_get", False):
+        print("on" if ultracode_hints_enabled() else "off"); return
     if getattr(a, "categories", None) is not None:
         return cmd_categories(a.categories);
     if getattr(a, "enable", None) is not None:

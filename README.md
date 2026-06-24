@@ -3,7 +3,7 @@
 > A persistent task hub for Claude Code. Every task is a **resumable, colour‑tinted session** — auto‑categorised on a self‑growing board, re‑pinnable, tinted to an OS‑aware theme, with parallel in‑project worker delegation and a Claude Desktop bridge.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-1.13.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-1.14.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -93,7 +93,7 @@ That's the loop. Tasks are created from natural language ("track this", "make a 
 | `/task-station:todo` (or `/todo`) | Show the board; `/todo <n>` open & resume a task; `/todo <n> -s` jump into its session in a new window; `/todo closed [N]` / `all` list closed. |
 | `/task-station:done` (or `/done`) | Close the current task; `/done <n[,n…]>` close by number. |
 | `/task-station:repos` (or `/repos`) | Set up repo routing for delegating tasks to the right project. |
-| `/task-station:config` | Settings + status board (categories, tint, bridge, policy). |
+| `/task-station:config` | Settings + status board (categories, theme & tint, delegation, Desktop bridge, status bar). |
 
 > Bare `/todo` and `/done` aliases are opt‑in — enable with `task-station config --bare-cmds on`. The namespaced forms always work.
 
@@ -162,6 +162,12 @@ A hub session launched from `~` can't load a repo's `CLAUDE.md`, hooks, MCP serv
 
 Pair it with the privacy‑first repo index (`/repos`). Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Fan-out hints (ultracode)
+
+Some tasks are big enough to want **breadth** — many subagents reading, analysing, designing or reviewing in parallel. Claude Code's built‑in **`ultracode`** multi‑agent mode does exactly that, and Task Station knows which of your tasks would benefit. On a **fan‑out‑worthy** task — effort **L/XL**, or **RESEARCH / REVIEW / DATA** at **M+** — the task's detail recap and its SessionStart line surface a one‑line advisory suggesting you run it with `ultracode`. The **human opts in** by typing the keyword; Task Station never fires orchestration itself, and trivial work (XS/S, plain questions) never triggers the hint.
+
+**ultracode and delegation are different tools, on purpose.** ultracode is **human‑opt‑in breadth** for **read / analyze / design / review** — hub subagents with no repo `CLAUDE.md`, hooks or build env. **Delegation** (above) is the sanctioned path for **repo writes** — a worktree worker off the repo's base branch, with a story + PR. So when ultracode is active on a worthy task, Task Station steers the model to keep every repo mutation on the delegation path and never edit/build/test in a workflow subagent. Opt out any time with `config --ultracode-hints off` (default on). Design notes: [docs/superpowers/specs/2026-06-24-ultracode-fanout-hints-design.md](docs/superpowers/specs/2026-06-24-ultracode-fanout-hints-design.md).
+
 ## Claude Desktop bridge
 
 Task Station ships a **dependency‑free, hand‑rolled MCP server** (stdio JSON‑RPC, no SDK, no `pip`) that puts the *same* task board in Claude Desktop and Claude Code, backed by one shared local store. Create a task in a Desktop chat and it's waiting for you in the CLI; close it in the CLI and Desktop sees it closed. A self‑resolving launcher pinned to a stable path keeps Desktop working across plugin updates and concurrent CLI sessions.
@@ -206,6 +212,7 @@ The bar follows a small, vendor-neutral **composition convention**: any provider
 | `--statusline [on\|off]` | on/off | off | Opt-in self-sufficient status bar (composes `statusline.d/` providers); installs into `settings.json`, reversible, never clobbers an existing `statusLine`. See [docs/STATUSLINE.md](docs/STATUSLINE.md). |
 | `--guaranteed-tracking [on\|off]` | on/off | off | Deterministic auto-create+attach a provisional task on a fresh session (vs the default nudge); auto-GC'd if skipped/closed untouched. |
 | `--strict-delegation [on\|off]` | on/off | off | Writes standing delegation rules to `CLAUDE.md` (reversible managed block). Hidden `--policy` alias kept for back-compat. |
+| `--ultracode-hints [on\|off]` | on/off | on | Suggest `ultracode` multi-agent breadth on fan-out-worthy tasks (L/XL, or RESEARCH/REVIEW/DATA at M+) for read/think phases only — never repo writes. `TASK_STATION_ULTRACODE_HINTS` overrides. See [Fan‑out hints](#fan-out-hints-ultracode). |
 | `--reset [confirm]` | — | — | Reset all settings to factory defaults — asks to confirm (re-run `--reset confirm` to proceed). Your tasks are never touched. |
 
 `task-station config` (no args) renders one **stanza per setting** — an aligned `<flag> <value> <options>` line, then the description with its default shown inline as `(default: X)` (the `--category-overrides` row is the relabelled former *category overrides*; the former `status`, `--workspace-dirs`, and `--data-dir` blocks are folded into this single list).

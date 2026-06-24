@@ -238,6 +238,84 @@ def effort_legend():
     return "Effort:  " + "  ".join("%s %s" % (EFFORT_GAUGE[s], s) for s in EFFORT_ORDER)
 
 
+# --------------------------------------------------------- ultracode fan-out ----
+# "ultracode" is Claude Code's built-in multi-agent Workflow / dynamic-
+# orchestration feature. Task Station never fires it — it only HINTS, and only
+# when a task genuinely warrants breadth, and only for read/analyze/design/review
+# phases (never repo writes, never trivial work). See
+# docs/superpowers/specs/2026-06-24-ultracode-fanout-hints-design.md.
+#
+# Categories whose NATURE warrants multi-agent breadth even at medium effort.
+# Referenced by category KEY (the slot identifier) so this stays correct if a
+# tag/label is re-skinned: orange = REVIEW, purple = RESEARCH, brown = DATA
+# (databases / schemas / ETL / migrations slot).
+FANOUT_CATEGORIES = ("orange", "purple", "brown")
+_FANOUT_ANY_MIN = "L"       # effort at/above which ANY category is fan-out-worthy
+_FANOUT_BREADTH_MIN = "M"   # effort at/above which a breadth category qualifies
+
+_ULTRACODE_RE = re.compile(r"\bultracode\b", re.I)
+
+
+def fanout_worthy(task):
+    """True when a task genuinely warrants multi-agent BREADTH (the ultracode
+    fan-out hint). PURE and DERIVED — reads only the task's effort + category and
+    adds no task state, so it can be recomputed anywhere. TRUE when effort is L/XL
+    (any category), OR the category is one of the breadth slots
+    (REVIEW/RESEARCH/DATA) at M+. FALSE for xs/s, an unset/unknown effort, or
+    a plain open (○) question / untracked task (no effort)."""
+    eff = task.get("effort") if isinstance(task, dict) else None
+    if eff not in EFFORT_ORDER:          # unset / unknown effort → never worthy
+        return False
+    i = EFFORT_ORDER.index(eff)
+    if i >= EFFORT_ORDER.index(_FANOUT_ANY_MIN):     # L / XL — any category
+        return True
+    color = task.get("color")
+    key = cats.resolve(color) if (cats and hasattr(cats, "resolve")) else color
+    return key in FANOUT_CATEGORIES and i >= EFFORT_ORDER.index(_FANOUT_BREADTH_MIN)
+
+
+def ultracode_signal(prompt):
+    """True when this turn carries an ultracode opt-in token: the word-boundary
+    token `ultracode` (case-insensitive) anywhere in the prompt — the SAME trigger
+    Claude Code's harness uses to switch on multi-agent orchestration.
+
+    This is the ONLY reliable per-turn signal available to the UserPromptSubmit
+    hook. The hook input (and TASK_STATION_PROMPT) carry no 'standing ultracode
+    mode' field or env var, so we deliberately do NOT attempt to detect a standing
+    mode here — inventing a fragile detector would mis-steer the model. Standing-
+    mode users still get the human advisory; only the model-facing steering is
+    keyed to this token. See the design spec."""
+    return bool(prompt) and bool(_ULTRACODE_RE.search(prompt))
+
+
+def ultracode_advisory(task):
+    """The HUMAN-facing fan-out advisory (default mode): suggest the human opt into
+    Claude Code's `ultracode` multi-agent breadth for a worthy task's read/analyze/
+    design/review phases. The human opts in by typing the keyword — this NEVER
+    fires orchestration and NEVER suggests pointing a workflow at repo writes.
+    Returns '' unless the task is fan-out-worthy AND ultracode hints are enabled."""
+    import config
+    if not (config.ultracode_hints_enabled() and fanout_worthy(task)):
+        return ""
+    return ("ultracode: this task is fan-out-worthy (effort %s). For its "
+            "read/analyze/design/review phases, running it with `ultracode` gives "
+            "multi-agent breadth (if your Claude Code supports it). Repo edits still "
+            "go through delegation (worktree + story/PR) — never point a workflow at "
+            "writes." % task.get("effort"))
+
+
+def ultracode_steering():
+    """The MODEL-facing steering block, printed by the per-prompt hook ONLY on an
+    ultracode turn (signal present) for a fan-out-worthy attached task. The harness
+    is ALREADY orchestrating; this just steers breadth to think-phases and keeps
+    every repo write on the sanctioned delegation path (worktree + story/PR)."""
+    return ("ultracode active on a fan-out-worthy task: fan subagents out for "
+            "read/analyze/design/review/verify ONLY (hub context — no repo "
+            "CLAUDE.md/hooks/build env). Route every repo MUTATION through "
+            "task-station delegation (a worktree worker off the repo's base branch, "
+            "with story + PR). Never edit/build/test in workflow subagents.")
+
+
 # Authoritative command help — git/fd/gh style aligned block. ONE source of truth
 # for both surfaces: the ASCII list footer (commands_footer) and the Markdown
 # board footer (commands_footer_md, which fences it so it stays monospace). The
@@ -1426,6 +1504,10 @@ def _format_detail(task, session):
             out.append("  In-project workers this task has delegated into "
                        "(drop into one directly to debug a repo):")
             out.extend(workers)
+    adv = ultracode_advisory(task)
+    if adv:
+        out.append("")
+        out.append(adv)
     return "\n".join(out)
 
 
@@ -2115,6 +2197,16 @@ def cmd_prompt_context(a):
         if was_closed:
             print("[task-station] Reopened task [%s] %s — this session is working on it again."
                   % (task["id"][:8], task["title"]))
+        # MODEL steering, ONLY on an ultracode turn (the harness is already
+        # orchestrating): on a fan-out-worthy task with the hints feature on and an
+        # ultracode signal in THIS prompt, steer breadth to think-phases and keep
+        # repo writes on the delegation path. Default mode prints NOTHING here (the
+        # human advisory lives on the lower-frequency detail/SessionStart surfaces),
+        # so the per-prompt cost stays zero unless ultracode is in play.
+        import config
+        if (config.ultracode_hints_enabled() and fanout_worthy(task)
+                and ultracode_signal(os.environ.get("TASK_STATION_PROMPT", ""))):
+            print(ultracode_steering())
         return  # attached & open: stay silent to avoid clutter
 
     # Not attached: count the miss, surface open tasks, and nudge Claude.
@@ -2470,6 +2562,9 @@ def cmd_session_start(a):
         msg = ["[task-station] This session is attached to task [%s] %s (%s). Continue it; /done to close."
                % (task["id"][:8], task["title"], task["status"])]
         msg.extend(cat_lines(task.get("color")))
+        adv = ultracode_advisory(task)
+        if adv:
+            msg.append(adv)
         print("\n".join(msg))
         return
     opens = [t for t in sorted_tasks() if is_on_board(t)]
@@ -2660,6 +2755,12 @@ def main():
                     help="install (on) / remove (off) the opt-in self-sufficient status bar; "
                          "non-destructive, never clobbers an existing statusLine (default off)")
     sp.add_argument("--statusline-get", dest="statusline_get", action="store_true")
+    sp.add_argument("--ultracode-hints", dest="ultracode_hints", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="suggest ultracode multi-agent breadth on fan-out-worthy tasks "
+                         "(L/XL, or RESEARCH/REVIEW/DATA at M+) for read/think phases "
+                         "only — never repo writes (default on)")
+    sp.add_argument("--ultracode-hints-get", dest="ultracode_hints_get", action="store_true")
     sp.set_defaults(fn=lambda a: __import__("config").cmd_config(a))
 
     a = p.parse_args()
