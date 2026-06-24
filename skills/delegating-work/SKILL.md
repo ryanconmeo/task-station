@@ -96,6 +96,15 @@ mid-run timeout leaves it resumable. Key flags:
 - `--fresh` — ignore the saved session and start a new one.
 - `--label <slug>` — add a second concurrent worker for the same (task, repo).
 
+Worktree (write) and read-only/main-checkout workers occupy **separate registry slots**
+(`seq:project` vs `seq:project@main`), so a read-only run can never clobber a worktree
+binding. A no-`--worktree` resume **self-routes to the worktree worker**; only when none
+exists does it fall back to the read-only/main slot. A stale entry left pointing at the
+repo's **main checkout** is **refused** (pass `--worktree <name>` to rebind it, or
+`--fresh`) rather than silently resumed there. `--seq` auto-inherits from the attached
+task for read-only delegations too — so `delegate --project <name>` self-routes to that
+task's worktree worker with no flags.
+
 Workers run with `--permission-mode acceptEdits` and inherit each repo's tool
 allowlist. A tool the repo hasn't allowlisted will *fail* rather than prompt
 (headless workers can't ask a human) — widen the repo's `.claude/settings.json`

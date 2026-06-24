@@ -3,6 +3,16 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.14.3] — 2026-06-24
+
+### Documentation
+- **`delegating-work` skill: document the 1.14.2 resume semantics.** The bundled skill's
+  "Resume and persistent workers" section now explains the separate worktree vs
+  read-only/main-checkout registry slots, that a no-`--worktree` resume self-routes to the
+  worktree worker, that a stale main-checkout entry is refused (rebind with `--worktree`, or
+  `--fresh`), and that `--seq` auto-inherits for read-only delegations too. (Bumped so the
+  doc reaches installs.)
+
 ## [1.14.2] — 2026-06-24
 
 ### Fixed
