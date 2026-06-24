@@ -317,40 +317,94 @@ def _resolve_dir_from_args(a):
     return resolve_dir(project=project)
 
 
+def _is_main_checkout(dirpath, repo_root):
+    """True when dirpath IS the repo's main checkout (not a <repo>-worktrees/ tree).
+    Write work never lives in the main checkout, so a worktree-slot worker that
+    points here is a stale/clobbered entry."""
+    if not dirpath:
+        return False
+    try:
+        return os.path.realpath(dirpath) == os.path.realpath(repo_root)
+    except Exception:
+        return dirpath.rstrip("/") == repo_root.rstrip("/")
+
+
+def _maybe_inherit_seq(a):
+    """Bind a no-seq delegation to the calling session's attached /todo task, so a
+    resume self-routes to the right worktree worker even when --seq AND --worktree
+    are both omitted. Runs for read-only and write delegations alike; --solo opts
+    out for genuine ad-hoc work unrelated to the attached task."""
+    if a.seq or a.solo:
+        return
+    inherited = _attached_seq()
+    if inherited:
+        a.seq = inherited
+        sys.stderr.write("[delegate] inheriting --seq %s from the attached session "
+                         "(pass --solo for ad-hoc work unrelated to that task).\n"
+                         % inherited)
+
+
+def _select_slot(a, project, repo_root, reg):
+    """Pick the registry KEY for this call and return (key, entry).
+
+    Worktree workers and read-only/main-checkout workers are kept in SEPARATE
+    slots for a tracked seq:
+      - `seq:project`        — the canonical WORKTREE worker (write work)
+      - `seq:project@main`   — a read-only worker that ran in the main checkout
+    so a read-only (no---worktree) run can NEVER clobber the worktree binding,
+    and a no---worktree RESUME self-routes to the worktree worker. (--label
+    suffixes both, for a second concurrent tree in the same task.)
+
+    Raises SystemExit when the canonical seq slot is left pointing at the main
+    checkout (a stale / pre-1.14.2 clobbered entry) and no --worktree was given to
+    rebind it — refusing rather than silently resuming stale main-checkout context.
+
+    Un-tracked (no --seq) ad-hoc calls keep the original project[@worktree] keying."""
+    seq, label = a.seq, a.label
+    if not seq:
+        key = ("%s@%s" % (project, a.worktree)) if a.worktree else project
+        if label:
+            key += ":%s" % label
+        return key, reg.get(key, {})
+    suf = (":%s" % label) if label else ""
+    wk_key = "%s:%s%s" % (seq, project, suf)            # worktree worker (canonical seq slot)
+    main_key = "%s:%s@main%s" % (seq, project, suf)     # read-only / main-checkout worker
+    if a.worktree:
+        return wk_key, reg.get(wk_key, {})
+    wk_entry = reg.get(wk_key, {})
+    if not a.fresh and wk_entry.get("session_id"):
+        if _is_main_checkout(wk_entry.get("dir"), repo_root):
+            raise SystemExit(
+                "delegate: the saved worker for %r points at the MAIN checkout\n"
+                "  %s\n"
+                "  — a stale or pre-1.14.2 clobbered entry (write work never lives in the "
+                "main checkout).\n  Refusing to resume there. Pass --worktree <name> to bind "
+                "an isolated tree (the worker rebinds to it), or --fresh to start over."
+                % (wk_key, wk_entry.get("dir")))
+        return wk_key, wk_entry          # prefer the existing worktree worker
+    return main_key, reg.get(main_key, {})   # no worktree worker → read-only @main slot
+
+
 def cmd_run(a):
     repo_root = _resolve_dir_from_args(a)
     project = os.path.basename(repo_root)          # key/name stay the repo's
-    # Auto-inherit the seq from the calling session's attached task for WRITE work
-    # (--worktree) when none was given. This makes the worktree binding deterministic
-    # without the hub having to remember --seq. --solo opts out for genuine ad-hoc
-    # work unrelated to the current task.
-    if a.worktree and not a.seq and not a.solo:
-        inherited = _attached_seq()
-        if inherited:
-            a.seq = inherited
-            sys.stderr.write("[delegate] inheriting --seq %s from the attached session "
-                             "(pass --solo for ad-hoc work unrelated to that task).\n"
-                             % inherited)
+    # Bind a no-seq delegation to the calling session's attached /todo task so the
+    # worktree worker is found even when --seq/--worktree are omitted (--solo opts out).
+    _maybe_inherit_seq(a)
     seq, label = a.seq, a.label
-    # Identity of the persistent worker. For a TRACKED task the seq IS the
-    # identity (one task = one worktree per policy; --label splits a second
-    # concurrent worktree in the same repo), so the worktree is NOT in the key —
-    # that lets a resume find the session even if --worktree is omitted, while
-    # the saved dir below still pins it to the right tree. For UN-tracked ad-hoc
-    # work there's no seq to disambiguate, so the worktree joins the key to keep
-    # two trees in one repo from sharing a slot.
+    # Worker DISPLAY name (independent of the registry key below).
     if seq:
-        key = "%s:%s" % (seq, project)
         name = "task-station-%s-%s" % (seq, project)
     else:
-        key = "%s@%s" % (project, a.worktree) if a.worktree else project
         name = ("wk-%s-%s" % (project, a.worktree)) if a.worktree else None
     if label:
-        key += ":%s" % label
         name = (name or project) + "-%s" % label
 
+    # Pick the registry slot. Worktree workers and read-only/main-checkout workers
+    # live in SEPARATE slots (see _select_slot), so a read-only run can never clobber
+    # a worktree binding and a no---worktree resume self-routes to the worktree worker.
     reg = load_reg()
-    entry = reg.get(key, {})
+    key, entry = _select_slot(a, project, repo_root, reg)
     sid = None if a.fresh else entry.get("session_id")
     saved_dir = entry.get("dir")
 
