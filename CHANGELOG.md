@@ -3,6 +3,27 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.14.0] — 2026-06-24
+
+### Added
+- **ultracode fan-out hints** (opt-out via `config --ultracode-hints off`, default
+  on). On **fan-out-worthy** tasks — effort **L/XL**, or **RESEARCH / REVIEW /
+  DATA** at **M+** — Task Station surfaces a **human advisory** (on the task
+  detail recap and the SessionStart attached-task line) suggesting Claude Code's
+  `ultracode` multi-agent breadth for the task's **read/analyze/design/review**
+  phases. When an **ultracode signal** is present that turn (the word-boundary
+  token `ultracode` in the prompt — the harness's own opt-in trigger), it instead
+  **steers the model** to keep every repo write on the delegation path (a worktree
+  worker off the repo's base branch, with story + PR) and never in workflow
+  subagents. Worthiness is **derived** from the task's effort + category (no new
+  task state). Task Station **never fires orchestration itself** and **never
+  suggests ultracode for repo writes**; trivial work (xs/s, plain questions) never
+  triggers it. Design: [docs/superpowers/specs/2026-06-24-ultracode-fanout-hints-design.md](docs/superpowers/specs/2026-06-24-ultracode-fanout-hints-design.md).
+
+### Changed
+- **README rebalanced** to highlight the headline features and the full
+  config-flag surface (every flag documented with its purpose + default).
+
 ## [1.13.1] — 2026-06-24
 
 ### Fixed
