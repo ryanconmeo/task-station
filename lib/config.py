@@ -109,6 +109,16 @@ def tint_enabled():
         return env.strip().lower() in ("on", "1", "true")
     return bool(get("tint", True))
 
+def statusline_enabled():
+    """False unless explicitly enabled — default OFF (opt-in; writes to the user's
+    settings.json). The env escape `TASK_STATION_STATUSLINE` (on/off/1/0/true/false)
+    WINS over config; else the persisted `statusline` flag (default off). Gates the
+    SessionStart provider drop-in. Mirrors tint_enabled()/guaranteed_tracking_enabled()."""
+    env = os.environ.get("TASK_STATION_STATUSLINE")
+    if env is not None:
+        return env.strip().lower() in ("on", "1", "true")
+    return bool(get("statusline", False))
+
 def auto_categories_enabled():
     """True unless explicitly disabled — default ON. Mirrors TASK_STATION_TITLE's
     env escape: `TASK_STATION_AUTO_CATEGORIES=off` (or `config --auto-categories off`)
@@ -217,6 +227,15 @@ def _desktop_bridge_summary():
     except Exception:
         return "off"
 
+def _statusline_summary():
+    """`installed (host)` / `provider-only` / `off` for the no-arg config board
+    (lazy import — setup imports config, so keep this out of module scope)."""
+    try:
+        import setup
+        return setup.statusline_status()
+    except Exception:
+        return "off"
+
 def render_board():
     """The unified, width-aware `task-station config` board (no-arg view).
 
@@ -268,6 +287,8 @@ def render_board():
          "write the delegation-rules block into CLAUDE.md, reversible (default: off)"),
         ("--desktop-bridge", _desktop_bridge_summary(), "on · off",
          "wire the dependency-free MCP server into Claude Desktop (default: off)"),
+        ("--statusline", _statusline_summary(), "on · off",
+         "opt-in standalone status bar (composes statusline.d/); installs into settings.json, reversible (default: off)"),
         ("--workspace-dirs", ":".join(get("workspace_dirs") or []) or "unset", None,
          "repo roots for delegate --project (default: unset)"),
         ("--data-dir", paths.data_dir(), None,
@@ -507,7 +528,7 @@ def cmd_theme(arg):
 RESET_KEYS = [
     "enabled_categories", "auto_categories", "categories",
     "bare_commands", "update_check", "theme", "tint_theme",
-    "tint", "title", "guaranteed_tracking", "workspace_dirs",
+    "tint", "title", "guaranteed_tracking", "statusline", "workspace_dirs",
 ]
 
 
@@ -569,6 +590,9 @@ def cmd_reset(token):
     installed, _ = setup.desktop_bridge_status()
     if installed:
         leftovers.append(("Claude Desktop MCP bridge entry", "--desktop-bridge off"))
+    if setup.statusline_status() != "off":
+        leftovers.append(("status-bar host/provider in settings.json + statusline.d/",
+                          "--statusline off"))
     if "policy" in setup._manifest():
         leftovers.append(("delegation-rules block in CLAUDE.md", "--strict-delegation off"))
     if leftovers:
@@ -635,6 +659,12 @@ def cmd_config(a):
     if getattr(a, "desktop_bridge", None) is not None:
         print(setup.install_desktop_bridge() if a.desktop_bridge == "on"
               else setup.remove_desktop_bridge()); return
+    if getattr(a, "statusline_get", False):
+        print("on" if statusline_enabled() else "off"); return
+    if getattr(a, "statusline", None) is not None:
+        on = a.statusline == "on"
+        set("statusline", on)
+        print(setup.install_statusline() if on else setup.remove_statusline()); return
     # No flags: the single unified settings + status board. The status facts are
     # folded into render_board() now, so we no longer print setup.status() here
     # (setup.status() is unchanged and still used by the install flow).

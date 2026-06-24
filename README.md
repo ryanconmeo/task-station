@@ -3,7 +3,7 @@
 > A persistent task hub for Claude Code. Every task is a **resumable, colour‑tinted session** — auto‑categorised on a self‑growing board, re‑pinnable, tinted to an OS‑aware theme, with parallel in‑project worker delegation and a Claude Desktop bridge.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-1.12.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-1.13.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -172,6 +172,20 @@ task-station config --desktop-bridge on   # then restart Claude Desktop
 
 This safely merges one entry into your existing Desktop config (backed up first) and is fully reversible (`--desktop-bridge off`).
 
+## Status bar
+
+```text
+task-station config --statusline on    # opt-in; default off, fully reversible
+```
+
+Installs an **opt-in, self-sufficient status bar** that shows your attached task's segment in the Claude Code status line. It is **default off**, **reversible** (`--statusline off`), and **non-destructive** — it never clobbers an existing `statusLine`:
+
+- nothing owns the bar yet → task-station installs itself as the **host** (a tiny embedded compose routine — no external conductor needed);
+- another conformant host already owns it → task-station only **registers its segment provider**, which that host composes automatically;
+- a foreign/hand-written `statusLine` is present → task-station **leaves it untouched** and registers its provider for you to wire in.
+
+The bar follows a small, vendor-neutral **composition convention**: any provider dropped into `${CLAUDE_CONFIG_DIR:-~/.claude}/statusline.d/` is composed alongside task-station's own segment, joined with a separator (`CLAUDE_STATUSLINE_SEP`, default `  │  `). Both the host and the provider honor `CLAUDE_STATUSLINE_WIDTH`. Full spec: [docs/STATUSLINE.md](docs/STATUSLINE.md).
+
 ## Configuration
 
 `task-station config` (no args) prints a settings + status board. Flags:
@@ -189,6 +203,7 @@ This safely merges one entry into your existing Desktop config (backed up first)
 | `--bare-cmds [on\|off]` | on/off | off | Install bare `/todo` + `/done` aliases. |
 | `--update-check [on\|off]` | on/off | off | Opt‑in daily version check (no task data sent). |
 | `--desktop-bridge [on\|off]` | on/off | off | Wire the MCP server into Claude Desktop. |
+| `--statusline [on\|off]` | on/off | off | Opt-in self-sufficient status bar (composes `statusline.d/` providers); installs into `settings.json`, reversible, never clobbers an existing `statusLine`. See [docs/STATUSLINE.md](docs/STATUSLINE.md). |
 | `--guaranteed-tracking [on\|off]` | on/off | off | Deterministic auto-create+attach a provisional task on a fresh session (vs the default nudge); auto-GC'd if skipped/closed untouched. |
 | `--strict-delegation [on\|off]` | on/off | off | Writes standing delegation rules to `CLAUDE.md` (reversible managed block). Hidden `--policy` alias kept for back-compat. |
 | `--reset [confirm]` | — | — | Reset all settings to factory defaults — asks to confirm (re-run `--reset confirm` to proceed). Your tasks are never touched. |

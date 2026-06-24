@@ -2655,6 +2655,11 @@ def main():
     sp.add_argument("--desktop-bridge", dest="desktop_bridge", nargs="?",
                     choices=["on", "off"], const="on", default=None,
                     help="wire the dependency-free MCP server into Claude Desktop (on) / remove it (off)")
+    sp.add_argument("--statusline", dest="statusline", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="install (on) / remove (off) the opt-in self-sufficient status bar; "
+                         "non-destructive, never clobbers an existing statusLine (default off)")
+    sp.add_argument("--statusline-get", dest="statusline_get", action="store_true")
     sp.set_defaults(fn=lambda a: __import__("config").cmd_config(a))
 
     a = p.parse_args()
