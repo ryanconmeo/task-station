@@ -3,6 +3,15 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.13.1] — 2026-06-24
+
+### Fixed
+- **Dark Sands: separate REVIEW (orange) and DOCS (gold) backgrounds.** Their tints
+  (`#34200d` / `#2a2210`) were near-identical muddy browns. Orange → `#3a1b08`
+  (redder/warmer) and gold → `#2e2a0c` (greener/amber) so REVIEW reads red-orange
+  (G ≪ R) and DOCS reads amber (G ≈ R) at the same dark lightness. Light Sands was
+  already well-separated and is unchanged.
+
 ## [1.13.0] — 2026-06-24
 
 ### Added

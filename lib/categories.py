@@ -85,7 +85,7 @@ THEMES = {
     "sands": {
         "dark": {   # "Dark Sands" — dark, muted
             "red":    {"bg": "#2c1518", "fg": "#dcd2c0", "bold": "#e0c060", "cursor": "#e0c060", "sel": "#235a52", "ansi": _DARK_ANSI},
-            "orange": {"bg": "#34200d", "fg": "#dcd2c0", "bold": "#f0926e", "cursor": "#f0926e", "sel": "#20545e", "ansi": _DARK_ANSI},
+            "orange": {"bg": "#3a1b08", "fg": "#dcd2c0", "bold": "#f0926e", "cursor": "#f0926e", "sel": "#20545e", "ansi": _DARK_ANSI},
             "yellow": {"bg": "#26220f", "fg": "#dcd2c0", "bold": "#ffb454", "cursor": "#ffb454", "sel": "#4a3270", "ansi": _DARK_ANSI},
             "green":  {"bg": "#1c2a16", "fg": "#dcd2c0", "bold": "#b6e85a", "cursor": "#b6e85a", "sel": "#6e2a4e", "ansi": _DARK_ANSI},
             "blue":   {"bg": "#141d2e", "fg": "#d6d8c8", "bold": "#5bc8f5", "cursor": "#5bc8f5", "sel": "#7a5816", "ansi": _DARK_ANSI},
@@ -94,7 +94,7 @@ THEMES = {
             "pink":   {"bg": "#2b0f1d", "fg": "#dcd2c0", "bold": "#ff6ab0", "cursor": "#ff6ab0", "sel": "#245a3e", "ansi": _DARK_ANSI},
             "white":  {"bg": "#5e5c5c", "fg": "#f7f9fc", "bold": "#ec7bbd", "cursor": "#ec7bbd", "sel": "#6e4a62", "ansi": _DARK_ANSI},
             "silver": {"bg": "#242b3c", "fg": "#dde1e8", "bold": "#e6c27a", "cursor": "#e6c27a", "sel": "#6e5418", "ansi": _DARK_ANSI},
-            "gold":   {"bg": "#2a2210", "fg": "#dcd2c0", "bold": "#ffd24a", "cursor": "#ffd24a", "sel": "#2e3a6e", "ansi": _DARK_ANSI},
+            "gold":   {"bg": "#2e2a0c", "fg": "#dcd2c0", "bold": "#ffd24a", "cursor": "#ffd24a", "sel": "#2e3a6e", "ansi": _DARK_ANSI},
             "brown":  {"bg": "#241910", "fg": "#dcd2c0", "bold": "#f08a4a", "cursor": "#f08a4a", "sel": "#2a5048", "ansi": _DARK_ANSI},
         },
         "light": {  # "Light Sands" — vibrant
