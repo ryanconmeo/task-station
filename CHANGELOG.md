@@ -3,6 +3,16 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.14.4] — 2026-06-24
+
+### Fixed
+- **`--strict-delegation` managed-block marker now names the current flag.** The
+  `<!-- BEGIN task-station:delegation-policy … -->` comment still read
+  `task-station config --policy` (the pre-rename name). It now reads
+  `--strict-delegation`. Block detection matches on the stable marker prefix, so a
+  block installed by an older version (old `--policy` text) is still found, replaced,
+  and removed — never orphaned; re-running `--strict-delegation on` upgrades the marker.
+
 ## [1.14.3] — 2026-06-24
 
 ### Documentation

@@ -5,8 +5,24 @@ import hashlib, json, os, shutil
 import paths
 import term, config
 
-BEGIN = "<!-- BEGIN task-station:delegation-policy (managed — task-station config --policy) -->"
+# Stable marker ID present in BOTH the historical (`--policy`) and current
+# (`--strict-delegation`) BEGIN parentheticals. Detection matches on this prefix so a
+# block installed by an older version is still found for replace/remove — never orphaned.
+BEGIN_MARK = "<!-- BEGIN task-station:delegation-policy"
+BEGIN = "%s (managed — task-station config --strict-delegation) -->" % BEGIN_MARK
 END = "<!-- END task-station:delegation-policy -->"
+
+
+def _find_span(body):
+    """Return [start, end) of the managed block — tolerant of the old (`--policy`) and
+    current (`--strict-delegation`) BEGIN text — or None when no block is present."""
+    i = body.find(BEGIN_MARK)
+    if i == -1:
+        return None
+    j = body.find(END, i)
+    if j == -1:
+        return None
+    return i, j + len(END)
 
 
 def _manifest_path():
@@ -44,11 +60,12 @@ def _apply_block(md_path, text):
 
     block = _block(text)
 
-    if BEGIN in body and END in body:
+    span = _find_span(body)
+    if span:
         # Replace in-place: the old inserted substring was recorded in the manifest.
-        # Re-slice around sentinels so we can swap old block for new one.
-        start = body.index(BEGIN)
-        end = body.index(END) + len(END)
+        # Re-slice around sentinels so we can swap old block for new one (the span
+        # finder tolerates a pre-1.14.4 `--policy` BEGIN marker too).
+        start, end = span
         old_block = body[start:end]
         new_body = body[:start] + block + body[end:]
         # The inserted span is the same slice (no separator change on replace).
@@ -96,12 +113,12 @@ def _remove_block(md_path):
     if not os.path.exists(md_path):
         return False
     body = open(md_path).read()
-    if BEGIN not in body or END not in body:
+    span = _find_span(body)
+    if not span:
         return False
 
-    # Extract current block from file.
-    start = body.index(BEGIN)
-    end = body.index(END) + len(END)
+    # Extract current block from file (tolerant of an old `--policy` BEGIN marker).
+    start, end = span
     current_block = body[start:end]
 
     # Hash-check: refuse if block was hand-edited.
