@@ -3,6 +3,18 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.14.1] — 2026-06-24
+
+### Fixed
+- **Window/tab title updates immediately on rename (and create/attach).** Renaming a
+  task (`update --title`) previously only relabelled the terminal on the *next* prompt,
+  when the UserPromptSubmit hook re-emitted the OSC title — the same lag the tint fix
+  addressed. A new best-effort `_emit_title_to_origin` writes the `#<seq>: <title>`
+  escape straight to the originating TTY the moment the title changes, mirroring
+  `_emit_tint_to_origin`. Wired into rename, create, attach, auto-fold, and provisional
+  auto-create. No-op (never raises / never writes stdout) when `--title` is off or the
+  TTY can't be resolved — the prompt hook still relabels as before.
+
 ## [1.14.0] — 2026-06-24
 
 ### Added

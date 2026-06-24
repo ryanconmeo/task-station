@@ -1017,6 +1017,7 @@ def cmd_create(a):
         print(line)
     auto_enable_category(task.get("color"))
     _emit_tint_to_origin(task.get("color"))   # tint NOW, not on the next prompt
+    _emit_title_to_origin(task)                # label the window NOW, not next prompt
 
 
 def cmd_attach(a):
@@ -1059,6 +1060,7 @@ def cmd_attach(a):
         print(line)
     auto_enable_category(task.get("color"))
     _emit_tint_to_origin(task.get("color"))   # tint NOW on attach/recategorize
+    _emit_title_to_origin(task)                # relabel the window NOW on attach
 
 
 def cmd_bump(a):
@@ -1863,6 +1865,8 @@ def _update_one(ref, a):
             msgs.append("  ↳ " + notice)
     if "color" in changed:
         _emit_tint_to_origin(task.get("color"))   # recategorize tints NOW, not next prompt
+    if "title" in changed:
+        _emit_title_to_origin(task)               # a rename relabels the window NOW, not next prompt
     # A scope change is the moment effort might have grown or shrunk — prompt a
     # re-rate so the column tracks reality, but only when this update touched
     # scope WITHOUT already re-rating (so re-setting effort itself stays quiet).
@@ -2070,6 +2074,39 @@ def _emit_tint_to_origin(color):
         pass   # unwritable/vanished TTY — the prompt hook will tint next message
 
 
+def _emit_title_to_origin(task):
+    """Best-effort: relabel the originating window `#<seq>: <title>` the moment a
+    task is created / attached / renamed, instead of waiting for the next prompt.
+
+    Same rationale + mechanism as _emit_tint_to_origin: a create/attach/update
+    command runs in Claude's captured Bash tool (stdout = the model-visible
+    result, not the terminal), so we resolve the origin TTY ourselves (the same
+    `origin-tty.sh` the hooks use) and write the OSC-0 escape straight to it.
+    Pure best-effort: a no-op (never raises, never writes stdout) when the title
+    feature is off or the TTY can't be resolved — the UserPromptSubmit hook still
+    relabels the window next message."""
+    if not task:
+        return
+    import config
+    if not config.title_enabled():
+        return
+    ensure_seqs()
+    esc = "\033]0;#%s: %s\007" % (task.get("seq", "?"), task.get("title", ""))
+    try:
+        dev = subprocess.check_output(
+            ["bash", os.path.join(BASE, "origin-tty.sh")],
+            stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        dev = ""
+    if not dev:
+        return
+    try:
+        with open(dev, "w") as fh:
+            fh.write(esc)
+    except Exception:
+        pass   # unwritable/vanished TTY — the prompt hook will relabel next message
+
+
 def cmd_prompt_title(a):
     """Emit an OSC title escape that labels the terminal tab/window `#<seq>: <title>`
     for an attached session — the on-attach surface, run by UserPromptSubmit every
@@ -2113,6 +2150,7 @@ def _auto_track_provisional(a, prompt):
         clear_count(a.session)
         auto_enable_category(dup.get("color"))
         _emit_tint_to_origin(dup.get("color"))   # tint NOW on auto-fold
+        _emit_title_to_origin(dup)               # relabel the window NOW on auto-fold
         print("[task-station] Auto-tracked: folded into open task [%s] %s — this "
               "session is now attached and your prompt was noted. No sibling task "
               "was created." % (dup["id"][:8], dup["title"]))
@@ -2131,6 +2169,7 @@ def _auto_track_provisional(a, prompt):
     clear_count(a.session)
     auto_enable_category(task.get("color"))
     _emit_tint_to_origin(task.get("color"))   # tint NOW on provisional auto-create
+    _emit_title_to_origin(task)               # label the window NOW on provisional auto-create
 
     tid = task["id"][:8]
     label = task.get("seq", tid)
