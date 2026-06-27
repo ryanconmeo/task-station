@@ -30,7 +30,8 @@ def _update_args(seq, **kw):
     sets the one(s) it exercises (mirrors _update_one's getattr-with-default reads)."""
     base = dict(task=str(seq), title=None, summary=None, append_summary=None,
                 state=None, goal=None, step_add=None, step_done=None,
-                step_undone=None, decision=None, pr=None, color=None, effort=None)
+                step_undone=None, decision=None, pr=None, pr_desc=None,
+                color=None, effort=None)
     base.update(kw)
     return _Args(**base)
 
@@ -153,20 +154,46 @@ class DigestTest(unittest.TestCase):
         t = self._task()
         url = "https://github.com/o/r/pull/5"
         ts._update_one(str(t["seq"]), _update_args(t["seq"], pr=[url]))
-        self.assertEqual(ts.load_task(t["id"]).get("prs"), [url])
+        # stored as a {url,desc} entry (1.19), desc empty when none given
+        self.assertEqual(ts.load_task(t["id"]).get("prs"), [{"url": url, "desc": ""}])
         # storing the same url again is a deduped no-op
         ts._update_one(str(t["seq"]), _update_args(t["seq"], pr=[url]))
-        self.assertEqual(ts.load_task(t["id"]).get("prs"), [url])
+        self.assertEqual(ts.load_task(t["id"]).get("prs"), [{"url": url, "desc": ""}])
+
+    def test_pr_desc_upsert_by_url(self):
+        # --pr --pr-desc stores the desc; --pr-desc alone updates the most-recent pr.
+        t = self._task()
+        url = "https://github.com/o/r/pull/5"
+        ts._update_one(str(t["seq"]), _update_args(t["seq"], pr=[url], pr_desc="the fix"))
+        self.assertEqual(ts.load_task(t["id"]).get("prs"), [{"url": url, "desc": "the fix"}])
+        # re-running with a new desc on the same url UPSERTS (keys on url, not append)
+        ts._update_one(str(t["seq"]), _update_args(t["seq"], pr=[url], pr_desc="revised"))
+        self.assertEqual(ts.load_task(t["id"]).get("prs"), [{"url": url, "desc": "revised"}])
+        # --pr-desc with no --pr applies to the most-recent stored pr
+        ts._update_one(str(t["seq"]), _update_args(t["seq"], pr_desc="latest"))
+        self.assertEqual(ts.load_task(t["id"]).get("prs"), [{"url": url, "desc": "latest"}])
+
+    def test_pr_back_compat_string_loads(self):
+        # A task whose stored prs are legacy bare strings normalizes to {url,desc}.
+        t = self._task()
+        legacy = "https://github.com/o/r/pull/2"
+        t["prs"] = [legacy]
+        self.assertEqual(ts.merged_prs(t), [{"url": legacy, "desc": ""}])
+        # adding a desc upgrades the legacy entry in place (upsert by url)
+        ts.add_pr(t, legacy, "now described")
+        self.assertEqual(t["prs"], [{"url": legacy, "desc": "now described"}])
 
     def test_merged_prs_dedups_stored_and_derived(self):
         stored = "https://github.com/o/r/pull/5"
         derived = "https://github.com/o/r/pull/9"
         t = self._task()
-        t["prs"] = [stored]
+        t["prs"] = [{"url": stored, "desc": "main fix"}]
         # the derived one appears in the log; `stored` also appears in the log but
         # must NOT duplicate the stored entry.
         t["log"] = [{"ts": "t1", "note": "see %s and %s" % (stored, derived)}]
-        self.assertEqual(ts.merged_prs(t), [stored, derived])   # stored-first, deduped
+        self.assertEqual(ts.merged_prs(t),
+                         [{"url": stored, "desc": "main fix"},
+                          {"url": derived, "desc": ""}])   # stored-first, deduped
 
     # -- terminal detail: digest-first -----------------------------------------
 

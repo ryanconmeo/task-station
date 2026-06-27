@@ -1626,35 +1626,82 @@ def append_decision(task, text):
     return True
 
 
-def add_pr(task, url):
-    """Store a PR URL on the task (deduped, first-seen order). Unlike extract_prs
-    — which DERIVES URLs from the log/summary/state at render time — this is an
-    EXPLICIT stored entry (`update --pr`). Blank is a no-op; returns True when
-    newly added."""
+def _pr_entry(item):
+    """Normalize ONE stored pr entry to `{"url","desc"}`. Back-compat (1.18 and
+    earlier stored bare url strings): a plain string loads as `{url, desc:""}`."""
+    if isinstance(item, dict):
+        return {"url": (item.get("url") or "").strip(),
+                "desc": (item.get("desc") or "").strip()}
+    return {"url": (str(item).strip() if item else ""), "desc": ""}
+
+
+def _normalize_prs(prs):
+    """A stored `prs` list (mix of strings and {url,desc} dicts) → a clean
+    `[{url,desc}, …]` list, deduped by url in first-seen order, blanks dropped."""
+    out, seen = [], set()
+    for e in (prs or []):
+        ent = _pr_entry(e)
+        if ent["url"] and ent["url"] not in seen:
+            seen.add(ent["url"])
+            out.append(ent)
+    return out
+
+
+def add_pr(task, url, desc=""):
+    """Upsert a PR on the task, keyed by url, stored as `{"url","desc"}`. Unlike
+    extract_prs — which DERIVES urls from the log/summary/state at render time —
+    this is an EXPLICIT stored entry (`update --pr [--pr-desc]`). Adds the url if
+    new; if it already exists and a non-empty `desc` is given, updates the desc.
+    Normalizes any legacy bare-string entries in place. Blank url is a no-op;
+    returns True when the stored list changed."""
     url = (url or "").strip()
     if not url:
         return False
-    prs = task.setdefault("prs", [])
-    if url in prs:
+    desc = (desc or "").strip()
+    prs = _normalize_prs(task.get("prs"))
+    changed = False
+    for ent in prs:
+        if ent["url"] == url:
+            if desc and ent["desc"] != desc:
+                ent["desc"] = desc
+                changed = True
+            break
+    else:
+        prs.append({"url": url, "desc": desc})
+        changed = True
+    task["prs"] = prs
+    return changed
+
+
+def set_pr_desc(task, desc):
+    """Set `desc` on the MOST-RECENT stored pr (the `--pr-desc` without `--pr`
+    case). No-op (returns False) when the task has no stored pr or the desc is
+    unchanged. Normalizes legacy entries in place."""
+    prs = _normalize_prs(task.get("prs"))
+    if not prs:
         return False
-    prs.append(url)
+    desc = (desc or "").strip()
+    if prs[-1]["desc"] == desc:
+        return False
+    prs[-1]["desc"] = desc
+    task["prs"] = prs
     return True
 
 
 def merged_prs(task):
-    """The task's PR URLs for rendering: the STORED `prs` (from `update --pr`)
-    merged with the DERIVED URLs extract_prs() finds in the log/summary/state —
-    deduped, stored-first then first-seen. The 1.15 auto-extraction is preserved
-    but folded into the stored list instead of deriving a fresh list each render."""
+    """The task's PRs for rendering as `[{"url","desc"}, …]`: the STORED `prs`
+    (from `update --pr`) merged with the DERIVED urls extract_prs() finds in the
+    log/summary/state — deduped by url, stored-first then first-seen. Derived
+    urls carry desc="". The 1.15 auto-extraction is preserved but folded into the
+    stored list instead of deriving a fresh list each render."""
     out, seen = [], set()
-    for u in (task.get("prs") or []):
-        if u and u not in seen:
-            seen.add(u)
-            out.append(u)
+    for ent in _normalize_prs(task.get("prs")):
+        seen.add(ent["url"])
+        out.append(ent)
     for u in extract_prs(task):
         if u not in seen:
             seen.add(u)
-            out.append(u)
+            out.append({"url": u, "desc": ""})
     return out
 
 
@@ -1735,8 +1782,11 @@ def _format_detail(task, session):
                 out.append("    %s  —  %s" % (os.path.basename(p), d))
         if prs:
             out.append("  PRs:")
-            for u in prs:
-                out.append("    %s" % u)
+            for p in prs:
+                line = p["url"]
+                if p.get("desc"):
+                    line += "  —  " + p["desc"]
+                out.append("    %s" % line)
         if projects:
             out.append("  Repos:   %s" % ", ".join(projects))
     log = task.get("log", [])
@@ -1960,7 +2010,7 @@ def cmd_render(a):
         # /todo board → render the visual HTML board and open it (default).
         out = write_board()
         opened = _open_path(out)
-        print("[BOARD] Your visual task board:\n  %s" % out)
+        print("[BOARD] Your visual /todo board:\n  %s" % out)
         print("  Opened in your browser." if opened
               else "  Open it with:  open \"%s\"" % out)
         return
@@ -2141,8 +2191,15 @@ def _update_one(ref, a):
     for text in (getattr(a, "decision", None) or []):
         if append_decision(task, text):
             changed.append("decision")
-    for url in (getattr(a, "pr", None) or []):
-        if add_pr(task, url):
+    # --pr [--pr-desc]: the desc applies to the url(s) given in the SAME update;
+    # a --pr-desc with NO --pr applies to the most-recent stored pr instead.
+    pr_urls = getattr(a, "pr", None) or []
+    pr_desc = getattr(a, "pr_desc", None)
+    for url in pr_urls:
+        if add_pr(task, url, pr_desc or ""):
+            changed.append("pr")
+    if pr_desc is not None and not pr_urls:
+        if set_pr_desc(task, pr_desc):
             changed.append("pr")
     if a.color is not None and cats:
         task["color"] = cat_color(a.color); changed.append("color")
@@ -2156,7 +2213,7 @@ def _update_one(ref, a):
     if not changed:
         msgs.append("update %s: nothing to change (pass --title/--summary/--append-summary/"
                     "--goal/--state/--step-add/--step-done/--step-undone/--decision/--pr/"
-                    "--color/--effort)" % label)
+                    "--pr-desc/--color/--effort)" % label)
         return "\n".join(msgs)
     clear_provisional(task)   # the model refined it → real work, not a throwaway auto-task
     touch(task, note="scope updated: " + ", ".join(changed))
@@ -2934,9 +2991,16 @@ def _board_view_model(task):
             "fresh": rt["fresh"],
             "label": "Resume (pinned)" if rt["pinned"] else "Resume (hub)",
         }
+    seq = task.get("seq")
+    # The simple OPEN command — attaches/opens the task in the CURRENT session (the
+    # recap), distinct from the resume one-liner that jumps back into the original
+    # working session. Only emitted when the task has a seq to address it by.
+    open_command = ("/todo %s" % seq) if seq is not None else None
     return {
-        "seq": task.get("seq"),
+        "seq": seq,
         "title": task.get("title", ""),
+        "full_title": task.get("title", ""),       # never truncated in the expanded detail
+        "open_command": open_command,              # `/todo <seq>` — open in this session
         "summary": (task.get("summary") or "").strip(),
         "status": cur,
         "status_label": cur,                      # the WORD: open / active / closed
@@ -3186,7 +3250,10 @@ def main():
     sp.add_argument("--decision", action="append", default=None,
                     help="append a decision note (repeatable, append-only)")
     sp.add_argument("--pr", action="append", default=None,
-                    help="store a PR URL on the task (repeatable, deduped)")
+                    help="store a PR URL on the task (repeatable, upsert by url)")
+    sp.add_argument("--pr-desc", dest="pr_desc", default=None,
+                    help="description for the --pr url in this update "
+                         "(or the most-recent stored pr when no --pr is given)")
     sp.add_argument("--color", default=None); sp.add_argument("--effort", default=None)
     sp.set_defaults(fn=cmd_update)
 
