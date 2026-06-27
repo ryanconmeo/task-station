@@ -2764,8 +2764,11 @@ def write_board():
     no LLM. Shared by `board` and `/todo board`."""
     ensure_seqs()
     vms = [_board_view_model(t) for t in sorted_tasks()]
-    here = os.path.dirname(BASE)                       # repo root (BASE = lib/)
-    tools = os.path.join(here, "tools")
+    # realpath derefs the ~/.claude/task-station-engine symlink to the real lib/
+    # so tools/ (a sibling of lib/) resolves; BASE keeps the stable symlink path
+    # for the resume one-liners, so we must NOT use it here.
+    real_lib = os.path.dirname(os.path.realpath(__file__))
+    tools = os.path.join(os.path.dirname(real_lib), "tools")
     if tools not in sys.path:
         sys.path.insert(0, tools)
     import render_board

@@ -3,6 +3,14 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.15.2] — 2026-06-24
+
+### Fixed
+- **`/todo board` (and `config --theme preview`) failed via the engine symlink** with
+  `ModuleNotFoundError: No module named 'render_board'`. Both located `tools/` from the
+  script dir without dereferencing the `~/.claude/task-station-engine` symlink, so they looked
+  in `~/.claude/tools` instead of the plugin's `tools/`. Now resolved via `os.path.realpath`.
+
 ## [1.15.1] — 2026-06-24
 
 ### Added
