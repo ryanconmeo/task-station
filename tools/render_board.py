@@ -24,6 +24,15 @@ try:
 except Exception:
     _cats = None
 
+# mdlite (sibling in tools/) renders the summary's light-markdown subset. Optional:
+# without it the summary still shows, just html-escaped + unformatted. Either way the
+# text is escaped first, so the board stays self-contained.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import mdlite as _md
+except Exception:
+    _md = None
+
 # Page chrome per RESOLVED variant — a light variant gives a light page, a dark
 # variant a dark page (req 6). Warm neutrals that complement the shipped Sands
 # palette. Status colours are variant-aware too so the open/active/closed pills
@@ -122,8 +131,19 @@ def _css(pg):
   .detail{padding:14px 16px 16px;display:grid;gap:13px;background:var(--panel)}
   .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
     color:var(--dim);margin-bottom:4px}
+  /* the full summary comes LAST and is rendered as light markdown; cap its height
+     so a huge blob scrolls inside its own box rather than dominating the card. */
   .summary{font-size:14px;color:var(--ink);background:var(--panel2);border-left:3px solid var(--accent);
-    border-radius:6px;padding:10px 12px;overflow-wrap:anywhere}
+    border-radius:6px;padding:10px 12px;overflow-wrap:anywhere;max-height:16em;overflow-y:auto}
+  .summary>*+*{margin-top:7px}
+  .summary h1,.summary h2,.summary h3{font-weight:650;letter-spacing:-.01em;line-height:1.3}
+  .summary h1{font-size:16px}.summary h2{font-size:15px}.summary h3{font-size:13.5px}
+  .summary ul{margin:0;padding-left:20px}
+  .summary li{margin:2px 0}
+  .summary a{color:var(--accent);overflow-wrap:anywhere}
+  .summary code{font-family:var(--mono);font-size:12px;background:var(--code);
+    border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+  .summary hr{border:none;border-top:1px solid var(--line);margin:9px 0}
   .pinned{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11.5px;
     color:var(--accent);background:var(--panel2);border:1px solid var(--accent);border-radius:7px;
     padding:6px 10px;width:max-content;max-width:100%}
@@ -287,6 +307,22 @@ def _brief_detail(t):
     return "".join(rows)
 
 
+def _summary_html(summary):
+    """The full summary, rendered as light markdown (mdlite) when available, else
+    html-escaped plain text. Either path escapes first — no raw HTML survives."""
+    text = (summary or "").strip()
+    if not text:
+        return "(no summary recorded)"
+    if _md is not None:
+        try:
+            rendered = _md.render(text)
+        except Exception:
+            rendered = ""
+        if rendered:
+            return rendered
+    return _e(text)
+
+
 def _row(t, theme, variant):
     pal = _palette_for(t.get("color"), theme, variant)
     accent = _accent_for(pal, "var(--accent)")
@@ -294,13 +330,16 @@ def _row(t, theme, variant):
     seq = t.get("seq")
     seqcell = ('#%s' % _e(seq)) if seq is not None else ""
 
+    # Lead with the at-a-glance DIGEST (briefing: next/standing · files · PRs · repos),
+    # THEN resume (hub/pinned + workers), THEN the full Summary LAST — the eye hits the
+    # scannable digest before the wall of text.
     detail = ['<div class="detail">']
-    detail.append('<div><div class="k">Summary</div><div class="summary">%s</div></div>'
-                  % _e(t.get("summary") or "(no summary recorded)"))
-    detail.extend(_resume_detail(t))
     brief = _brief_detail(t)
     if brief:
         detail.append(brief)
+    detail.extend(_resume_detail(t))
+    detail.append('<div><div class="k">Summary</div><div class="summary">%s</div></div>'
+                  % _summary_html(t.get("summary")))
     detail.append('</div>')
 
     return (
@@ -364,12 +403,17 @@ def _help_panel(commands, config_rows, variant_label):
 
 
 def render_html(tasks, *, theme=None, variant=None, variant_label=None, generated="",
-                commands=None, config_rows=None):
+                commands=None, config_rows=None, board_autorefresh=False):
     """Self-contained HTML board for the task view-models `tasks` (each a dict from
     task-station.py's _board_view_model). Open (not-closed) tasks first, then closed.
     theme/variant default to the active theme; they pick per-category accent colours
     AND the page's light/dark chrome. `commands` (the _COMMANDS_HELP list) and
-    `config_rows` (config.board_rows()) drive the bottom help panel."""
+    `config_rows` (config.board_rows()) drive the bottom help panel.
+
+    When `board_autorefresh` is True (opt-in, default off) the ONLY non-static element
+    on the page is added: a `<meta http-equiv="refresh" content="5">` tag so an open
+    tab reloads every 5s and the Stop hook's quiet regen shows current state. There is
+    never any JavaScript or external asset — the board stays fully self-contained."""
     tasks = list(tasks or [])
     if theme is None and _cats is not None:
         try:
@@ -389,6 +433,12 @@ def render_html(tasks, *, theme=None, variant=None, variant_label=None, generate
     out = [
         "<!doctype html>", '<html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    ]
+    # The sole non-static element, only when the user opted in: a meta-refresh so an
+    # open tab reloads and picks up the Stop hook's quiet regen. No JS, no network.
+    if board_autorefresh:
+        out.append('<meta http-equiv="refresh" content="5">')
+    out += [
         "<title>task-station — board</title>",
         "<style>%s</style>" % _css(pg),
         '</head><body><div class="wrap">',
@@ -405,8 +455,13 @@ def render_html(tasks, *, theme=None, variant=None, variant_label=None, generate
         out.extend(_section("Closed", closed_tasks, theme, variant))
     out.extend(_help_panel(commands, config_rows, variant_label))
     snap = "generated %s · " % _e(generated) if generated else ""
-    out.append('<div class="snapshot">%sthis board is a static snapshot — re-run '
-               "<code>/todo board</code> to refresh.</div>" % snap)
+    if board_autorefresh:
+        note = ('%sauto-refreshing every 5s · <code>config --board-autorefresh off</code> '
+                "to stop." % snap)
+    else:
+        note = ("%sthis board is a static snapshot — re-run <code>/todo board</code> "
+                "to refresh." % snap)
+    out.append('<div class="snapshot">%s</div>' % note)
     out.append("</div></body></html>")
     return "\n".join(out) + "\n"
 

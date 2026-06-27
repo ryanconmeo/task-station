@@ -86,6 +86,42 @@ class Config(unittest.TestCase):
         self.assertIn("tint = off", buf.getvalue())
         self.assertFalse(config.tint_enabled())
 
+    # --- --board-autorefresh flag (1.17.0) ----------------------------------
+    def test_board_autorefresh_default_off(self):
+        os.environ.pop("TASK_STATION_BOARD_AUTOREFRESH", None)
+        self.assertFalse(config.board_autorefresh_enabled())
+
+    def test_board_autorefresh_persists(self):
+        os.environ.pop("TASK_STATION_BOARD_AUTOREFRESH", None)
+        config.set("board_autorefresh", True)
+        self.assertTrue(config.board_autorefresh_enabled())
+
+    def test_board_autorefresh_env_overrides_config(self):
+        config.set("board_autorefresh", False)
+        os.environ["TASK_STATION_BOARD_AUTOREFRESH"] = "on"
+        try:
+            self.assertTrue(config.board_autorefresh_enabled())
+        finally:
+            os.environ.pop("TASK_STATION_BOARD_AUTOREFRESH", None)
+        os.environ["TASK_STATION_BOARD_AUTOREFRESH"] = "off"
+        config.set("board_autorefresh", True)
+        try:
+            self.assertFalse(config.board_autorefresh_enabled())
+        finally:
+            os.environ.pop("TASK_STATION_BOARD_AUTOREFRESH", None)
+
+    def test_cmd_config_board_autorefresh_on_persists(self):
+        os.environ.pop("TASK_STATION_BOARD_AUTOREFRESH", None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            config.cmd_config(_Args(workspace_dirs=None, board_autorefresh="on"))
+        self.assertIn("board_autorefresh = on", buf.getvalue())
+        self.assertTrue(config.board_autorefresh_enabled())
+
+    def test_board_rows_includes_autorefresh(self):
+        flags = [r[0] for r in config.board_rows()]
+        self.assertIn("--board-autorefresh", flags)
+
 class Reset(unittest.TestCase):
     """`config --reset` factory reset: confirm-gated, preserves tasks.db."""
     def setUp(self):

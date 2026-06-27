@@ -225,6 +225,111 @@ class BoardTest(unittest.TestCase):
         self.assertIn("No tasks yet", html)
         self.assertIn("</body></html>", html)
 
+    # ----- auto-refresh opt-in (1.17.0) -------------------------------------
+
+    def _render_board_module(self):
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import render_board
+        return render_board
+
+    def test_autorefresh_off_has_no_meta_and_static_note(self):
+        rb = self._render_board_module()
+        html = rb.render_html([], board_autorefresh=False)
+        self.assertNotIn('http-equiv="refresh"', html)
+        self.assertIn("static snapshot", html)
+        self.assertIn("re-run", html)
+
+    def test_autorefresh_on_injects_meta_and_live_note(self):
+        rb = self._render_board_module()
+        html = rb.render_html([], board_autorefresh=True)
+        self.assertIn('<meta http-equiv="refresh" content="5">', html)
+        self.assertIn("auto-refreshing every 5s", html)
+        self.assertIn("--board-autorefresh off", html)
+        self.assertNotIn("static snapshot", html)
+        # the meta-refresh is the ONLY non-static element — still no JS / assets.
+        for needle in ("<script", "<link ", "src=", "@import", "url(http"):
+            self.assertNotIn(needle, html)
+
+    def test_write_board_picks_up_autorefresh_config(self):
+        self._seed("Live board task")
+        os.environ["TASK_STATION_BOARD_AUTOREFRESH"] = "on"
+        try:
+            _, html = self._run_board()
+        finally:
+            os.environ.pop("TASK_STATION_BOARD_AUTOREFRESH", None)
+        self.assertIn('<meta http-equiv="refresh" content="5">', html)
+        self.assertIn("auto-refreshing every 5s", html)
+
+    def test_refresh_if_live_no_flag_does_nothing(self):
+        # Flag OFF + no board.html → the Stop-hook path must NOT create the file.
+        os.environ.pop("TASK_STATION_BOARD_AUTOREFRESH", None)
+        self._seed("Quiet task")
+        ts.cmd_board(_Args(refresh_if_live=True))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "board.html")))
+
+    def test_refresh_if_live_flag_on_but_no_existing_file_does_nothing(self):
+        # Flag ON but the user never opened the board → do NOT create it.
+        self._seed("Never-opened task")
+        os.environ["TASK_STATION_BOARD_AUTOREFRESH"] = "on"
+        try:
+            ts.cmd_board(_Args(refresh_if_live=True))
+            self.assertFalse(os.path.exists(os.path.join(self.tmp, "board.html")))
+        finally:
+            os.environ.pop("TASK_STATION_BOARD_AUTOREFRESH", None)
+
+    def test_refresh_if_live_regens_existing_when_on(self):
+        self._seed("Opened task")
+        self._run_board()  # creates board.html (snapshot, flag still off)
+        path = os.path.join(self.tmp, "board.html")
+        self.assertTrue(os.path.exists(path))
+        os.environ["TASK_STATION_BOARD_AUTOREFRESH"] = "on"
+        try:
+            ts.cmd_board(_Args(refresh_if_live=True))
+            with open(path, encoding="utf-8") as f:
+                html = f.read()
+        finally:
+            os.environ.pop("TASK_STATION_BOARD_AUTOREFRESH", None)
+        # regenerated WITH the meta-refresh now that the flag is on.
+        self.assertIn('<meta http-equiv="refresh" content="5">', html)
+
+    # ----- digestible summary (1.17.0) --------------------------------------
+
+    def test_digest_appears_before_summary(self):
+        t = self._seed("Briefing-first task")
+        t["state"] = "next: ship the digest"
+        ts.save_task(t)
+        _, html = self._run_board()
+        self.assertIn('class="brief"', html)
+        self.assertIn('class="summary"', html)
+        self.assertLess(html.index('class="brief"'), html.index('class="summary"'),
+                        "the at-a-glance digest must come before the full summary")
+
+    def test_summary_has_scroll_capped_container(self):
+        self._seed("Long summary task")
+        _, html = self._run_board()
+        self.assertIn("max-height:16em", html)
+        self.assertIn("overflow-y:auto", html)
+
+    def test_summary_rendered_as_markdown(self):
+        t = self._seed("Markdown summary task")
+        t["summary"] = "## Heading\n\n- one\n- two\n\nsee **bold** and `code` and https://ex.com/p"
+        ts.save_task(t)
+        _, html = self._run_board()
+        self.assertIn("<h2>Heading</h2>", html)
+        self.assertIn("<li>one</li>", html)
+        self.assertIn("<strong>bold</strong>", html)
+        self.assertIn("<code>code</code>", html)
+        self.assertIn('<a href="https://ex.com/p">', html)
+
+    def test_summary_raw_html_is_escaped(self):
+        t = self._seed("Injection attempt")
+        t["summary"] = "danger <script>alert(1)</script> end"
+        ts.save_task(t)
+        _, html = self._run_board()
+        self.assertNotIn("<script", html)           # self-containment guard
+        self.assertIn("&lt;script&gt;", html)        # rendered inert as text
+
 
 if __name__ == "__main__":
     unittest.main()
