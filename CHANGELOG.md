@@ -3,6 +3,17 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.14.5] — 2026-06-24
+
+### Changed
+- **Positioning corrected: stop calling native tasks "ephemeral."** Native Claude Code
+  tasks have persisted across sessions since 2025-01-23 — the old README/hook claim was
+  inaccurate. Re-framed around the real, demonstrable gap: native tasks are **siloed per
+  session-list with no cross-session board and no link back to the session that holds their
+  context.** Task Station is the cross-session console that **complements** native — one board
+  of every task, each bound to its exact resumable session (cwd recovered). Updated the README
+  intro and the UserPromptSubmit/guidance hook copy accordingly.
+
 ## [1.14.4] — 2026-06-24
 
 ### Fixed

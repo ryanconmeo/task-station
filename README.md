@@ -3,13 +3,13 @@
 > A persistent task hub for Claude Code. Every task is a **resumable, colour‑tinted session** — auto‑categorised on a self‑growing board, re‑pinnable, tinted to an OS‑aware theme, with parallel in‑project worker delegation and a Claude Desktop bridge.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-1.14.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-1.14.5-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
 </p>
 
-Claude Code forgets. Close a session and the thread of *what you were doing* is gone — Claude's native Tasks are ephemeral, per‑conversation, and vanish on exit. **Task Station is the durable layer on top:** a board that survives `/plugin update`, where each entry remembers the exact session that holds its context and resumes it with one command — while your terminal quietly tints to the category of whatever you're working on.
+Claude Code persists tasks now — but they're **siloed per session‑list, with no board across sessions and no link back to the session that holds their context.** Open yesterday's work and you're hunting through transcripts to find where you left off. **Task Station is the cross‑session console on top:** one board of *every* task, each bound to its exact resumable session — cwd recovered from the transcript — so `/todo 286` drops you back in with a single command, while your terminal quietly tints to the category of whatever you're working on. It **complements** Claude's native tasks; it doesn't replace them.
 
 <!-- DEMO: replace with an asciinema/GIF of `/todo` → tinted terminal → resume across sessions.
      Drop the file at docs/media/demo.gif and uncomment:

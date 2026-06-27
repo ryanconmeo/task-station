@@ -102,7 +102,7 @@ class PromptContextDirectiveTest(unittest.TestCase):
     def test_directive_unattached(self):
         out = self._run("sess-unattached", "make this a task")
         self.assertIn("EXPLICIT TASK INTENT", out)
-        self.assertIn("TaskCreate", out)
+        self.assertIn("native task tools", out)   # steers away from native, toward task-station
         self.assertIn("create:", out)
 
     def test_directive_attached(self):
@@ -111,7 +111,7 @@ class PromptContextDirectiveTest(unittest.TestCase):
         ts.set_link("sess-attached", task["id"])
         out = self._run("sess-attached", "make this a task")
         self.assertIn("EXPLICIT TASK INTENT", out)
-        self.assertIn("TaskCreate", out)
+        self.assertIn("native task tools", out)   # steers away from native, toward task-station
         # The already-attached note must mention --force for a separate task.
         self.assertIn("--force", out)
 
@@ -119,7 +119,7 @@ class PromptContextDirectiveTest(unittest.TestCase):
         ts.set_link("sess-skip", ts.SKIP_SENTINEL)
         out = self._run("sess-skip", "make this a task")
         self.assertIn("EXPLICIT TASK INTENT", out)
-        self.assertIn("TaskCreate", out)
+        self.assertIn("native task tools", out)   # steers away from native, toward task-station
 
     def test_attach_directive_lists_open_tasks(self):
         task = ts.new_task("Open candidate", "summary")
