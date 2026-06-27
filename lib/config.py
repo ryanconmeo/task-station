@@ -481,7 +481,9 @@ def _theme_preview():
     import sys as _sys
     out = os.path.join(paths.data_dir(), "themes-preview.html")
     try:
-        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # realpath derefs the ~/.claude/task-station-engine symlink → real lib/
+        # so tools/ resolves when run via the stable engine path (not just in-repo).
+        here = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
         tools = os.path.join(here, "tools")
         if tools not in _sys.path:
             _sys.path.insert(0, tools)
