@@ -1,7 +1,8 @@
-"""Visual HTML board (1.15.0): `task-station board` writes a self-contained HTML
+"""Visual HTML board: `task-station board` writes a (mostly) self-contained HTML
 file of all tasks (open + closed) — seqs, titles, briefing fields — with NO
-server, NO deps, and NO external http(s) asset references. Empty store renders
-without crashing."""
+server, NO deps, and NO EXTERNAL asset references. Inline <script>/<style> ARE
+allowed (1.19 theme toggle + hover-scroll); only external assets are forbidden.
+Empty store renders without crashing."""
 import importlib.util
 import io
 import os
@@ -22,6 +23,11 @@ _spec.loader.exec_module(ts)
 class _Args:
     def __init__(self, **kw):
         self.__dict__.update(kw)
+
+
+# Inline <script>/<style> are allowed; these needles flag EXTERNAL assets only
+# (a PR anchor's href="https://…" is legitimate CONTENT, not an external asset).
+_EXTERNAL_NEEDLES = ("src=", "<link ", "@import", "url(http", "//fonts.")
 
 
 class BoardTest(unittest.TestCase):
@@ -75,12 +81,13 @@ class BoardTest(unittest.TestCase):
         path, html = self._run_board()
         self.assertTrue(path.endswith("board.html"))
         self.assertTrue(os.path.exists(path))
-        # valid-ish document shell + inline style, no external assets
+        # valid-ish document shell + inline style/script, no external assets
         self.assertIn("<!doctype html>", html.lower())
         self.assertIn("<style>", html)
-        for needle in ("<script", "<link ", "src=", "@import", "url(http"):
+        self.assertIn("<script", html)        # inline JS is now allowed (toggle + scroll)
+        for needle in _EXTERNAL_NEEDLES:
             self.assertNotIn(needle, html,
-                             "board must be self-contained (found %r)" % needle)
+                             "board must have no external assets (found %r)" % needle)
         # both tasks present by seq + title; both sections shown
         self.assertIn(str(a["seq"]), html)
         self.assertIn("Open feature task", html)
@@ -112,8 +119,9 @@ class BoardTest(unittest.TestCase):
         path, html = self._run_board()
         self.assertTrue(os.path.exists(path))
         self.assertIn("No tasks yet", html)
-        # still self-contained
-        self.assertNotIn("<script", html)
+        # still no external assets (inline script is fine)
+        for needle in _EXTERNAL_NEEDLES:
+            self.assertNotIn(needle, html)
 
     def test_todo_board_routes_through_render(self):
         # `/todo board` → cmd_render writes board.html and announces it with [BOARD].
@@ -156,24 +164,26 @@ class BoardTest(unittest.TestCase):
         ts.save_task(t)
         self._attach_hub(t)                 # → a hub resume one-liner
         _, html = self._run_board()
-        # Main hub resume present + clearly labeled, on a nowrap element (req 4, 5).
-        self.assertIn("Resume (hub)", html)
+        # Main hub resume present + clearly labeled, on a nowrap element.
+        self.assertIn("Resume the session", html)
         self.assertIn("claude", html)
         # Workers live in their own de-emphasised subsection, distinct from the hub line.
         self.assertIn('class="workers"', html)
         self.assertIn("acme-repo", html)
-        # The resume command sits on a nowrap, scroll-in-place element (req 5).
+        # The resume command sits on a nowrap, scroll-in-place element.
         self.assertIn('class="cmd" style="white-space:nowrap;overflow-x:auto"', html)
 
-    def test_pinned_task_shows_pin_and_pinned_resume(self):
+    def test_pin_merged_into_resume_no_separate_banner(self):
+        # req 3: no separate "📌 Pinned" banner — the pin is folded INTO the resume
+        # label ("Resume the session (pinned 📌)").
         t = self._seed("Pinned task")
         t = self._attach_hub(t, sid="pin-sess", preborn=True)
         t["pinned_session"] = "pin-sess"
         ts.save_task(t)
         _, html = self._run_board()
-        self.assertIn('class="pinned"', html)        # distinct pinned indicator
-        self.assertIn("Pinned", html)
-        self.assertIn("Resume (pinned)", html)        # pinned session is the main target
+        self.assertNotIn('class="pinned"', html)               # banner removed
+        self.assertNotIn("resumes its pinned session", html)   # old banner copy gone
+        self.assertIn("Resume the session (pinned \U0001F4CC)", html)   # pinned in the label
         self.assertIn("--session-id pin-sess", html)
 
     def test_commands_help_present(self):
@@ -206,16 +216,16 @@ class BoardTest(unittest.TestCase):
         self.assertIn("/todo board", html)
 
     def test_redesigned_board_still_self_contained(self):
-        # The richer board (help panel, config table, resume blocks) stays fully
-        # self-contained — no JS, no external assets.
+        # The richer board (help panel, config table, resume blocks) uses inline
+        # JS/CSS but loads NO external assets.
         t = self._seed("Rich task")
         t["projects"] = ["acme-repo"]
         ts.save_task(t)
         self._attach_hub(t)
         _, html = self._run_board()
-        for needle in ("<script", "<link ", "src=", "@import", "url(http"):
+        for needle in _EXTERNAL_NEEDLES:
             self.assertNotIn(needle, html,
-                             "board must be self-contained (found %r)" % needle)
+                             "board must have no external assets (found %r)" % needle)
 
     def test_render_html_directly_on_empty_list(self):
         sys.path.insert(0, os.path.join(
@@ -247,8 +257,8 @@ class BoardTest(unittest.TestCase):
         self.assertIn("auto-refreshing every 5s", html)
         self.assertIn("--board-autorefresh off", html)
         self.assertNotIn("static snapshot", html)
-        # the meta-refresh is the ONLY non-static element — still no JS / assets.
-        for needle in ("<script", "<link ", "src=", "@import", "url(http"):
+        # auto-refresh adds a meta-refresh; still NO external assets (inline JS ok).
+        for needle in _EXTERNAL_NEEDLES:
             self.assertNotIn(needle, html)
 
     def test_write_board_picks_up_autorefresh_config(self):
@@ -322,13 +332,114 @@ class BoardTest(unittest.TestCase):
         self.assertIn("<code>code</code>", html)
         self.assertIn('<a href="https://ex.com/p">', html)
 
+    # ----- board UX overhaul (1.19.0) ---------------------------------------
+
+    def test_full_title_in_expanded_detail(self):
+        # req 1: the expanded detail shows the FULL, untruncated title prominently.
+        long_title = "A very long task title that the collapsed row would truncate hard"
+        self._seed(long_title)
+        _, html = self._run_board()
+        self.assertIn('<div class="fulltitle">' + long_title + "</div>", html)
+
+    def test_theme_toggle_persists_with_both_palettes(self):
+        # req 4: a visible toggle, BOTH palettes embedded, persisted to localStorage.
+        self._seed("Themed task")
+        _, html = self._run_board()
+        self.assertIn('id="theme-toggle"', html)               # visible toggle control
+        self.assertIn("localStorage", html)                    # persistence
+        self.assertIn("ts-board-theme", html)                  # the persisted key
+        # both palettes embedded as CSS-variable sets switchable via data-theme
+        self.assertIn('html[data-theme="dark"]{', html)
+        self.assertIn('html[data-theme="light"]{', html)
+        self.assertIn("#0d0e11", html)                         # dark page bg
+        self.assertIn("#f3efe7", html)                         # light page bg
+        # no external assets despite the inline JS/CSS
+        for needle in _EXTERNAL_NEEDLES:
+            self.assertNotIn(needle, html)
+
+    def test_expanded_row_has_distinct_background(self):
+        # req 6: details.row[open] gets a background clearly different from the page.
+        self._seed("Expandable task")
+        _, html = self._run_board()
+        self.assertIn("details.row[open]{background:var(--open)}", html)
+        self.assertIn("--open:#23272f", html)                  # dark variant open bg
+        self.assertIn("--open:#e3dccb", html)                  # light variant open bg
+        self.assertNotIn("--open:#0d0e11", html)               # not the (dark) page colour
+
+    def test_left_border_is_category_bg_color(self):
+        # req 7: the left accent stripe is the category's BACKGROUND colour, not bold.
+        self._seed("Green task", color="green")
+        _, html = self._run_board()
+        self.assertIn("border-left-color:var(--cat-bg", html)  # driven by --cat-bg
+        self.assertIn(".cat-green{--cat-bg:#1c2a16", html)     # sands dark green BG
+        self.assertIn(".cat-green{--cat-bg:#233a2b", html)     # sands light green BG
+        self.assertIn("--cat-accent:#b6e85a", html)            # bold is the ACCENT, not the stripe
+
+    def test_prs_each_on_own_line_with_desc(self):
+        # req 5: each PR on its own line; the linked url then its description.
+        t = self._seed("PR task")
+        ts.add_pr(t, "https://github.com/o/r/pull/1", "first fix")
+        ts.add_pr(t, "https://github.com/o/r/pull/2", "second fix")
+        ts.save_task(t)
+        _, html = self._run_board()
+        self.assertIn('class="prs"', html)
+        self.assertEqual(html.count('<div class="pr">'), 2)    # one line per PR
+        self.assertIn('href="https://github.com/o/r/pull/1"', html)
+        self.assertIn('href="https://github.com/o/r/pull/2"', html)
+        self.assertIn("first fix", html)
+        self.assertIn("second fix", html)
+        self.assertIn('<span class="d">— first fix</span>', html)
+
+    def test_open_command_distinct_from_resume(self):
+        # req 8: the /todo <seq> OPEN command, labeled distinctly from RESUME.
+        t = self._seed("Open vs resume task")
+        self._attach_hub(t)
+        _, html = self._run_board()
+        self.assertIn("/todo %s" % t["seq"], html)             # the open command
+        self.assertIn("Open the task", html)                   # labeled
+        self.assertIn("Resume the session", html)              # the other, distinct action
+        # both are single-line/no-wrap commands
+        self.assertIn('class="cmd" style="white-space:nowrap;overflow-x:auto"', html)
+        # the open label sits before the resume label (open above resume)
+        self.assertLess(html.index("Open the task"), html.index("Resume the session"))
+
+    def test_heading_is_todo_board_not_task_board(self):
+        # req 9: rename "task board" → "/todo board" on the page.
+        self._seed("Any task")
+        _, html = self._run_board()
+        self.assertIn("/todo board", html)
+        self.assertNotIn("task board", html)                   # the old heading is gone
+        self.assertIn("<h1>/todo board</h1>", html)
+
+    def test_board_message_says_todo_board(self):
+        # req 9: the [BOARD] CLI message references "/todo board".
+        self._seed("Routed task")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ts.cmd_render(_Args(arg="board", format="md", session="s1"))
+        out = buf.getvalue()
+        self.assertIn("/todo board", out)
+        self.assertNotIn("visual task board", out)
+
+    def test_hover_autoscroll_script_present(self):
+        # req 2: an inline script wires hover auto-scroll on the title cells.
+        self._seed("Scrolling title task")
+        _, html = self._run_board()
+        self.assertIn("mouseenter", html)
+        self.assertIn("mouseleave", html)
+        self.assertIn("scrollLeft", html)
+        self.assertIn(".c-task .ttl", html)                    # the scroll target
+
     def test_summary_raw_html_is_escaped(self):
         t = self._seed("Injection attempt")
         t["summary"] = "danger <script>alert(1)</script> end"
         ts.save_task(t)
         _, html = self._run_board()
-        self.assertNotIn("<script", html)           # self-containment guard
-        self.assertIn("&lt;script&gt;", html)        # rendered inert as text
+        # the INJECTED markup must be escaped (inert), even though the page now
+        # carries its own inline <script> for the toggle/scroll.
+        self.assertNotIn("<script>alert(1)", html)        # not a live injected tag
+        self.assertNotIn("alert(1)", html.replace("&lt;script&gt;alert(1)&lt;/script&gt;", ""))
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)   # inert as text
 
 
 if __name__ == "__main__":

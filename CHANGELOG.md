@@ -3,6 +3,36 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.19.0] — 2026-06-27
+
+### Added
+- **HTML `/todo board` UX overhaul.** The board is a local file opened in a browser, so it
+  now uses **inline `<script>`/`<style>`** — still **no external assets** (no `src="http"`,
+  `<link>`, `@import`, `url(http)`, or remote fonts) and all injected text stays
+  **HTML-escaped/inert**. Highlights:
+  - **Light/dark toggle** (top-right) that flips **both** embedded palettes (page chrome +
+    per-category colours, per variant) in place and **persists to `localStorage`**, so the
+    opt-in auto-refresh never resets your choice.
+  - **Hover auto-scroll** of an overflowing collapsed title (smooth, no layout shift),
+    resetting on mouse-out.
+  - **Full, untruncated title** leads the expanded detail.
+  - **Open vs. Resume**, two clearly-labeled commands: **Open the task** (`/todo <n>` —
+    attaches it to *this* session, the recap) above **Resume the session**
+    (`cd … && claude --resume …` — jumps back into the original working session).
+  - **Pin merged into the resume area** — the resume label becomes *“Resume the session
+    (pinned 📌)”*; the separate pinned banner is gone.
+  - **PRs each on their own line**, the linked url then an optional **description**.
+  - **Distinct background** on an expanded row so its bounds are obvious (both variants).
+  - **Left stripe is the category's background colour** (not the bold/accent colour).
+- **Per-PR descriptions.** `prs` entries are now `{url, desc}` (a plain url string still
+  loads, `desc=""`). `update --pr '<url>' [--pr-desc '<text>']` **upserts by url**; a
+  `--pr-desc` with no `--pr` updates the most-recent stored PR. Auto-extracted PRs get
+  `desc=""`. `add_pr`/`merged_prs` and the 1.18 dedup all key on url.
+
+### Changed
+- **“task board” → “/todo board”** on the page (heading + kicker) and in the `[BOARD]` CLI
+  message.
+
 ## [1.18.0] — 2026-06-27
 
 ### Added
