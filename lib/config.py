@@ -249,33 +249,18 @@ def _statusline_summary():
     except Exception:
         return "off"
 
-def render_board():
-    """The unified, width-aware `task-station config` board (no-arg view).
-
-    Every setting renders as a two-line STANZA: an aligned
-    `<flag>  <current value>  <options>` line, then an indented description that
-    ends with the factory default in parens — `(default: X)`. A blank line
-    separates every stanza. The flag / value / options columns are sized to their
-    widest cell per render (the path-valued rows are excluded from the value width
-    so a long path never inflates the grid); on a narrow terminal the description
-    wraps with a hanging indent under itself, never under a column. The former
-    separate `status`, `--workspace-dirs`, and `--data-dir` blocks are folded into
-    this single list — one board, nothing duplicated, no `* = default` markers."""
-    import textwrap
-    import term
+def board_rows():
+    """The (flag, value, options-or-None, description) rows behind the config board
+    — the SINGLE source the terminal `render_board()` formats AND the visual HTML
+    board's config help panel reads, so the two never drift. Pure data: every value
+    comes from this module's getters; no terminal width / formatting applied here.
+    options=None marks a value-only row (the paths) that carries no OPTIONS cell;
+    the VALUE column always shows the CURRENT value, the factory default lives only
+    in the description parens."""
     import setup
-    width = term.width()
-    indent = "  "
-    gutter = "  "
-    desc_indent = "      "   # 6 cols — the description hangs under the flag, not a column
-
     cats = get("categories"); n_cat = len(cats) if isinstance(cats, dict) else 0
     has_policy = ("policy" in setup._manifest())
-
-    # (flag, value, options-or-None, description). options=None marks a value-only
-    # row (the paths) that carries no OPTIONS cell. The VALUE column always shows
-    # the CURRENT value; the factory default lives only in the description parens.
-    rows = [
+    return [
         ("--categories", _enabled_summary(), "edit · toggle",
          "enabled category set — starts lean at CORE (BUG · FEATURE · GENERAL), grows itself (default: CORE)"),
         ("--auto-categories", "on" if auto_categories_enabled() else "off", "on · off",
@@ -311,6 +296,27 @@ def render_board():
         ("--reset", "—", "(action)",
          "reset ALL settings above to factory defaults — asks to confirm (default: —)"),
     ]
+
+def render_board():
+    """The unified, width-aware `task-station config` board (no-arg view).
+
+    Every setting renders as a two-line STANZA: an aligned
+    `<flag>  <current value>  <options>` line, then an indented description that
+    ends with the factory default in parens — `(default: X)`. A blank line
+    separates every stanza. The flag / value / options columns are sized to their
+    widest cell per render (the path-valued rows are excluded from the value width
+    so a long path never inflates the grid); on a narrow terminal the description
+    wraps with a hanging indent under itself, never under a column. The former
+    separate `status`, `--workspace-dirs`, and `--data-dir` blocks are folded into
+    this single list — one board, nothing duplicated, no `* = default` markers."""
+    import textwrap
+    import term
+    width = term.width()
+    indent = "  "
+    gutter = "  "
+    desc_indent = "      "   # 6 cols — the description hangs under the flag, not a column
+
+    rows = board_rows()
     w_flag = max(len(r[0]) for r in rows)
     w_val = max(len(r[1]) for r in rows if r[2] is not None)
     wrap_w = max(24, width - len(desc_indent))

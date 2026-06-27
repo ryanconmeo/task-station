@@ -59,6 +59,16 @@ class BoardTest(unittest.TestCase):
         with open(path, encoding="utf-8") as f:
             return path, f.read()
 
+    def _attach_hub(self, t, sid="hub-sess", **extra):
+        """Give a task a recorded hub session (no live transcript → resume_command
+        falls back to the labeled fresh-start one-liner, which is all the board needs)."""
+        meta = {"cwd": "/work/repo", "ts": ts._now(), "role": "hub"}
+        meta.update(extra)
+        t.setdefault("session_meta", {})[sid] = meta
+        t.setdefault("sessions", []).append(sid)
+        ts.save_task(t)
+        return ts.load_task(t["id"])
+
     def test_board_writes_self_contained_html(self):
         a = self._seed("Open feature task")
         b = self._seed("Done thing", closed=True)
@@ -119,6 +129,93 @@ class BoardTest(unittest.TestCase):
 
     def test_todo_board_listed_in_commands_help(self):
         self.assertTrue(any("/todo board" in c for c, _ in ts._COMMANDS_HELP))
+
+    # ----- redesign (1.16.0): grid · labeled status · summary · resume · help -----
+
+    def test_status_rendered_with_word_labels(self):
+        self._seed("An open one")
+        self._seed("A live one", status="active")
+        self._seed("A finished one", closed=True)
+        _, html = self._run_board()
+        # Labeled status pills carry the WORD, not a lone glyph (req 2).
+        self.assertIn('class="pill open"', html)
+        self.assertIn('class="pill active"', html)
+        self.assertIn('class="pill closed"', html)
+        for word in (">○ open<", ">● active<", ">✕ closed<"):
+            self.assertIn(word, html)
+
+    def test_summary_in_expanded_detail(self):
+        self._seed("Task with a summary")   # _seed writes summary "summary for <title>"
+        _, html = self._run_board()
+        self.assertIn('class="summary"', html)
+        self.assertIn("summary for Task with a summary", html)
+
+    def test_main_resume_labeled_and_workers_separate(self):
+        t = self._seed("Delegated task")
+        t["projects"] = ["acme-repo"]       # → a Workers subsection
+        ts.save_task(t)
+        self._attach_hub(t)                 # → a hub resume one-liner
+        _, html = self._run_board()
+        # Main hub resume present + clearly labeled, on a nowrap element (req 4, 5).
+        self.assertIn("Resume (hub)", html)
+        self.assertIn("claude", html)
+        # Workers live in their own de-emphasised subsection, distinct from the hub line.
+        self.assertIn('class="workers"', html)
+        self.assertIn("acme-repo", html)
+        # The resume command sits on a nowrap, scroll-in-place element (req 5).
+        self.assertIn('class="cmd" style="white-space:nowrap;overflow-x:auto"', html)
+
+    def test_pinned_task_shows_pin_and_pinned_resume(self):
+        t = self._seed("Pinned task")
+        t = self._attach_hub(t, sid="pin-sess", preborn=True)
+        t["pinned_session"] = "pin-sess"
+        ts.save_task(t)
+        _, html = self._run_board()
+        self.assertIn('class="pinned"', html)        # distinct pinned indicator
+        self.assertIn("Pinned", html)
+        self.assertIn("Resume (pinned)", html)        # pinned session is the main target
+        self.assertIn("--session-id pin-sess", html)
+
+    def test_commands_help_present(self):
+        self._seed("Any task")
+        _, html = self._run_board()
+        self.assertIn("Commands", html)
+        self.assertIn("/todo board", html)            # reuses _COMMANDS_HELP
+        self.assertIn("/done", html)
+
+    def test_config_help_present(self):
+        self._seed("Any task")
+        _, html = self._run_board()
+        self.assertIn("Current config", html)
+        self.assertIn("theme", html)                  # the --theme row label
+        self.assertIn("sands", html)                  # the active theme name (value)
+
+    def test_branding_is_lowercase_task_station(self):
+        self._seed("Any task")
+        _, html = self._run_board()
+        self.assertIn("task-station", html)           # real package name, lowercase
+        self.assertNotIn("TASK STATION", html)         # never the shouty form
+        self.assertNotIn("Task Station", html)
+        self.assertIn("<title>task-station — board</title>", html)
+
+    def test_snapshot_note_present(self):
+        self._seed("Any task")
+        _, html = self._run_board()
+        self.assertIn("snapshot", html.lower())
+        self.assertIn("re-run", html)
+        self.assertIn("/todo board", html)
+
+    def test_redesigned_board_still_self_contained(self):
+        # The richer board (help panel, config table, resume blocks) stays fully
+        # self-contained — no JS, no external assets.
+        t = self._seed("Rich task")
+        t["projects"] = ["acme-repo"]
+        ts.save_task(t)
+        self._attach_hub(t)
+        _, html = self._run_board()
+        for needle in ("<script", "<link ", "src=", "@import", "url(http"):
+            self.assertNotIn(needle, html,
+                             "board must be self-contained (found %r)" % needle)
 
     def test_render_html_directly_on_empty_list(self):
         sys.path.insert(0, os.path.join(

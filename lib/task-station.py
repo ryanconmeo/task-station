@@ -763,8 +763,11 @@ def _load_delegate_registry():
         return {}
 
 
-def worker_lines(task):
-    """Resume lines for the in-project workers this task has delegated into.
+def worker_targets(task):
+    """Structured resume entries for the in-project workers this task has delegated
+    into: a list of `{label, command, note}` dicts (command is None when no worker
+    dir is recorded yet). The SINGLE source for both `worker_lines()` (the terminal
+    task-detail) and the HTML board's de-emphasised Workers subsection, so they match.
 
     Worker session-ids are read LIVE from the delegate registry (keyed
     <seq>:<project>[:<label>]) so they reflect delegate's own self-healing rather
@@ -780,18 +783,35 @@ def worker_lines(task):
         base = "%s:%s" % (seq, p)
         keys = sorted(k for k in reg if k == base or k.startswith(base + ":"))
         if not keys:
-            out.append("    %-22s (no worker recorded yet)" % p)
+            out.append({"label": p, "command": None, "note": "no worker recorded yet"})
             continue
         for k in keys:
             e = reg.get(k, {})
             d, sid = e.get("dir"), e.get("session_id")
             disp = p if k == base else "%s [%s]" % (p, e.get("label") or k.split(":", 2)[-1])
             if d and sid:
-                out.append("    %-22s cd %s && claude --resume %s" % (disp, d, sid))
+                out.append({"label": disp,
+                            "command": "cd %s && claude --resume %s" % (d, sid), "note": None})
             elif d:
-                out.append("    %-22s cd %s && claude   (no active worker yet)" % (disp, d))
+                out.append({"label": disp, "command": "cd %s && claude" % d,
+                            "note": "no active worker yet"})
             else:
-                out.append("    %-22s (no worker recorded yet)" % disp)
+                out.append({"label": disp, "command": None, "note": "no worker recorded yet"})
+    return out
+
+
+def worker_lines(task):
+    """The terminal-detail rendering of `worker_targets()` — aligned
+    `    <repo>   <resume command>` lines (with a `(note)` suffix when there's no
+    live worker yet). Returns [] when the task has no recorded projects."""
+    out = []
+    for w in worker_targets(task):
+        if w["command"] and not w["note"]:
+            out.append("    %-22s %s" % (w["label"], w["command"]))
+        elif w["command"]:
+            out.append("    %-22s %s   (%s)" % (w["label"], w["command"], w["note"]))
+        else:
+            out.append("    %-22s (%s)" % (w["label"], w["note"]))
     return out
 
 
@@ -838,8 +858,16 @@ def fresh_resume_command(task, preborn=False):
     return new_sid, "cd %s && claude --session-id %s" % (cwd, new_sid)
 
 
-def resume_command(task, current_session=None):
-    """`cd <dir> && claude …` for the HUB session that holds this task's context.
+def _resume_target(task, current_session=None):
+    """Structured form of the hub resume one-liner: a dict
+    `{command, session, cwd, ts, pinned, fresh}` for the session that holds this
+    task's context, or None when no sessions are recorded. `resume_command()` is a
+    thin wrapper that returns just `.command`, so this is the SINGLE source of truth
+    for the resume line — the terminal task-detail and the HTML board read the same
+    computation (and the same self-corrected cwd). `ts` is the resumed transcript's
+    last-activity epoch (mtime), or the recorded meta ts for the fresh-start/preborn
+    fallbacks; `pinned` mirrors whether the task has a pinned session; `fresh` is True
+    only for the no-live-transcript fresh-start fallback.
 
     GUARANTEE: only ever resumes one of THIS task's own recorded sessions — never
     another task's. (Critical: every hub shares the home bucket, so a whole-bucket
@@ -852,11 +880,11 @@ def resume_command(task, current_session=None):
     launched from ~ but cd'd into a worktree before the task was touched). Prefers the
     most recent SUBSTANTIVE session (so merely opening `/todo <n>` to look — a 1-2
     message session — never displaces the real working session); if none of the
-    task's sessions have a findable live transcript, starts fresh. Returns None only
-    when there are no recorded sessions."""
+    task's sessions have a findable live transcript, starts fresh."""
     meta = task.get("session_meta") or {}
     if not meta:
         return None
+    pinned = bool(task.get("pinned_session"))
     # The resumed window tints itself on attach via the SessionStart hook
     # (cmd_session_tint → tint_escape), so the resume command stays a clean
     # `cd … && claude …` with no tint prefix.
@@ -869,7 +897,9 @@ def resume_command(task, current_session=None):
         if path and _session_msgcount(path) >= 1:
             cwd = _session_cwd(path) or (meta.get(pin) or {}).get("cwd")
             if cwd:
-                return "cd %s && claude --resume %s" % (cwd, pin)
+                return {"command": "cd %s && claude --resume %s" % (cwd, pin),
+                        "session": pin, "cwd": cwd, "ts": os.path.getmtime(path),
+                        "pinned": True, "fresh": False}
         # A pin deliberately pre-bound to an UNBORN session (`pin --new`) has no
         # transcript yet. Honour it anyway by emitting `--session-id <pin>` so the
         # window that opens BECOMES that session — stays PURE (the uuid already
@@ -877,7 +907,9 @@ def resume_command(task, current_session=None):
         pm = meta.get(pin) or {}
         if pm.get("preborn"):
             cwd = pm.get("cwd") or os.getcwd()
-            return "cd %s && claude --session-id %s" % (cwd, pin)
+            return {"command": "cd %s && claude --session-id %s" % (cwd, pin),
+                    "session": pin, "cwd": cwd, "ts": pm.get("ts"),
+                    "pinned": True, "fresh": False}
     hubs = [(sid, m) for sid, m in meta.items() if m.get("role") == "hub"]
     pool = hubs or list(meta.items())
     # For each of THIS task's sessions, find its transcript ANYWHERE and read the
@@ -907,16 +939,29 @@ def resume_command(task, current_session=None):
         # clear the floor do we fall back to the most recent of any.
         cands = [x for x in live if x[3] >= SUBSTANCE_FLOOR] or live
         cands.sort(key=lambda x: x[2], reverse=True)   # newest transcript first
-        sid, cwd, _, _ = cands[0]
-        return "cd %s && claude --resume %s" % (cwd, sid)
+        sid, cwd, mtime, _ = cands[0]
+        return {"command": "cd %s && claude --resume %s" % (cwd, sid),
+                "session": sid, "cwd": cwd, "ts": mtime,
+                "pinned": pinned, "fresh": False}
     # No findable live transcript for any recorded session → fresh start
     # (NEVER --continue, which in the shared home bucket could resume a different task).
     pool.sort(key=lambda kv: kv[1].get("ts", 0), reverse=True)
     for sid, m in pool:
         if m.get("cwd"):
-            return ("cd %s && claude   # no live session found — starting fresh; "
-                    "re-attach with /todo %s" % (m["cwd"], task.get("seq", "")))
+            return {"command": ("cd %s && claude   # no live session found — starting fresh; "
+                                "re-attach with /todo %s" % (m["cwd"], task.get("seq", ""))),
+                    "session": None, "cwd": m["cwd"], "ts": m.get("ts"),
+                    "pinned": pinned, "fresh": True}
     return None
+
+
+def resume_command(task, current_session=None):
+    """`cd <dir> && claude …` for the HUB session that holds this task's context, or
+    None when no sessions are recorded. Thin wrapper over `_resume_target` (which
+    documents the full guarantee + self-correcting-cwd behaviour); returns only the
+    command string so existing callers are unchanged."""
+    r = _resume_target(task, current_session)
+    return r["command"] if r else None
 
 
 def new_task(title, summary, color=None, effort=None, status=STATUS_DEFAULT):
@@ -2724,23 +2769,41 @@ def _board_view_model(task):
     files = [(os.path.basename(p), os.path.dirname(p) or ".")
              for p in (task.get("files") or [])[-8:]]
     color = task.get("color")
+    eff = task.get("effort") or ""
+    # The hub/pinned resume one-liner + its last-activity ts, from the SAME
+    # computation the terminal task-detail uses (resume_command wraps _resume_target).
+    rt = _resume_target(task, None)
+    resume_main = None
+    if rt:
+        resume_main = {
+            "command": rt["command"],
+            "activity": rel_time(rt["ts"]),
+            "pinned": rt["pinned"],
+            "fresh": rt["fresh"],
+            "label": "Resume (pinned)" if rt["pinned"] else "Resume (hub)",
+        }
     return {
         "seq": task.get("seq"),
         "title": task.get("title", ""),
+        "summary": (task.get("summary") or "").strip(),
         "status": cur,
+        "status_label": cur,                      # the WORD: open / active / closed
         "glyph": glyph,
         "color": color,
         "tag": cat_tag(color),
         "label": (cats.label(color) if (cats and color) else ""),
-        "effort": task.get("effort") or "",
-        "effort_gauge": EFFORT_GAUGE.get(task.get("effort"), EFFORT_GAUGE_EMPTY),
+        "effort": eff,
+        "effort_label": EFFORT_WORD.get(eff, ""),
+        "effort_gauge": EFFORT_GAUGE.get(eff, EFFORT_GAUGE_EMPTY),
         "activity": rel_time(task.get("updated_ts")),
         "state": (task.get("state") or "").strip(),
         "repos": list(task.get("projects") or []),
         "prs": extract_prs(task),
         "files": files,
-        "resume": resume_command(task, None),
-        "workers": [w.strip() for w in worker_lines(task) if w.strip()],
+        "pinned": bool(task.get("pinned_session")),
+        "resume": rt["command"] if rt else None,   # back-compat (plain command string)
+        "resume_main": resume_main,                # hub/pinned: command + activity + label
+        "workers": worker_targets(task),           # de-emphasised worker subsection
     }
 
 
@@ -2772,10 +2835,12 @@ def write_board():
     if tools not in sys.path:
         sys.path.insert(0, tools)
     import render_board
-    theme = variant = None
+    theme = variant = variant_label = None
+    config_rows = []
     try:
         import config
         theme = config.active_theme()
+        config_rows = config.board_rows()
     except Exception:
         pass
     if cats and hasattr(cats, "resolve_variant"):
@@ -2783,9 +2848,15 @@ def write_board():
             variant = cats.resolve_variant()
         except Exception:
             variant = None
+    if variant:
+        try:
+            variant_label = config._variant_label(variant, theme)
+        except Exception:
+            variant_label = None
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
-    html_doc = render_board.render_html(vms, theme=theme, variant=variant,
-                                        generated=generated)
+    html_doc = render_board.render_html(
+        vms, theme=theme, variant=variant, variant_label=variant_label,
+        generated=generated, commands=_COMMANDS_HELP, config_rows=config_rows)
     out = os.path.join(paths.data_dir(), "board.html")
     os.makedirs(paths.data_dir(), exist_ok=True)
     tmp = out + ".tmp." + str(os.getpid())

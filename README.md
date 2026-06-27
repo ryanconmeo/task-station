@@ -3,7 +3,7 @@
 > A persistent task hub for Claude Code. Every task is a **resumable, colour‑tinted session** — auto‑categorised on a self‑growing board, re‑pinnable, tinted to an OS‑aware theme, with parallel in‑project worker delegation and a Claude Desktop bridge.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-1.15.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-1.16.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -59,7 +59,7 @@ Running `/todo` prints your board — rendered exactly as it appears in the term
 - **Tasks that outlive the session.** State lives outside the plugin cache, so `/plugin update` never wipes your board or history.
 - **One‑command resume.** `/todo 286` reopens the task *and* the session that holds its context — cwd auto‑corrected from the transcript, never tainting your current conversation. `/todo 286 -s` jumps straight into it in a fresh window.
 - **Resume a briefing, not just a transcript.** Each task carries a structured **briefing** in its detail view: a model‑curated next‑step/standing line (`update --state`), the repos it touched, PR links, and the files it recently edited. The files are captured *deterministically* (the edit hook records each path); the PR links are *derived* from the activity log; the state is maintained by the model already in the loop — **no LLM, no network**.
-- **A visual board.** `task-station board` writes a self‑contained, dark HTML board of every task (status, category colour, briefing, resume command) to `<data_dir>/board.html` and prints its path — no server, no dependencies, no external assets. Add `--open` to pop it in your browser (macOS).
+- **A visual board.** `/todo board` (or `task-station board`) writes a self‑contained HTML board to `<data_dir>/board.html` — the **same Open / Closed grid as the terminal `/todo` board** (status · # · task · category · effort · activity), every row **expandable** (native `<details>`, no JavaScript) to reveal the task summary, the **hub/pinned resume one‑command line with its last‑activity time** (workers in a separate, de‑emphasised subsection), and the briefing. Category colours and the page's light/dark chrome track your **active theme + resolved variant** exactly; a **Help** panel at the bottom lists the `/todo` commands and your current config. No server, no dependencies, no external assets. Add `--open` to pop it in your browser (macOS).
 - **Your terminal as ambient state.** Each category owns a full colour palette from an **OS‑aware theme** — Dark Sands in dark mode, Light Sands in light mode, switching with your appearance — and the terminal tints the instant a skill runs (`/review` → orange) so you always know what you're in.
 - **Never lose untracked work.** Edit a file and the task auto‑promotes to *active*; a Stop‑gate reminds you before a turn ends with untracked edits.
 - **Delegate into your repos.** Spin up crash‑safe, worktree‑isolated workers that run inside a target repo with its own `CLAUDE.md`, hooks, MCP servers and permissions — one persistent worker per (task, repo).

@@ -3,6 +3,35 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.16.0] — 2026-06-27
+
+### Changed
+- **Visual board redesigned to mirror the terminal `/todo` board.** `/todo board` now
+  renders two sections (Open, then Closed), each a **grid with the same columns as the
+  terminal board** — status · # · task · category · effort · activity — and **every row is
+  expandable** via native `<details>`/`<summary>` (still **no JavaScript**, still one
+  self-contained file with no external assets).
+  - **Labeled status pills** — `open` / `active` / `closed` as colored, clearly
+    non-interactive badges (the bare `✕` that read as a clickable close button is gone).
+  - **Expanded rows lead with the task summary**, then a **prominent hub/pinned resume
+    one-liner with its last-activity time** (reusing the *exact* resume computation the
+    terminal task-detail uses, cwd self-corrected from the transcript). A **Pinned**
+    indicator shows when the task is pinned; in-project **workers** move to a separate,
+    de-emphasised collapsed subsection.
+  - **Resume/worker commands never wrap** — they scroll within their own box
+    (`white-space:nowrap; overflow-x:auto`); the page body never scrolls horizontally.
+  - **Colours match the terminal exactly** — per-category background/foreground/accent
+    come from the active theme's resolved (light/dark) palette, and the page's own
+    light/dark chrome tracks the resolved variant.
+  - **Help panel** at the bottom lists the `/todo` commands (shared `_COMMANDS_HELP`
+    source) and the **current config** (`config.board_rows()`), plus a **snapshot note**
+    making clear the board is static — re-run `/todo board` to refresh.
+- Internal: `resume_command()` is now a thin wrapper over a new structured
+  `_resume_target()` (single source of truth for the resume line + its timestamp), and
+  `worker_lines()` over a structured `worker_targets()`, so the HTML board and terminal
+  detail can never drift. `config.board_rows()` is the shared data source for the config
+  board (terminal) and the board's config panel (HTML).
+
 ## [1.15.2] — 2026-06-24
 
 ### Fixed
