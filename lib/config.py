@@ -119,6 +119,17 @@ def statusline_enabled():
         return env.strip().lower() in ("on", "1", "true")
     return bool(get("statusline", False))
 
+def board_autorefresh_enabled():
+    """False unless explicitly enabled — default OFF (opt-in). When ON, the visual
+    board injects a meta-refresh tag so an open tab stays live, and the Stop hook
+    quietly regenerates board.html (only if it already exists). The env escape
+    `TASK_STATION_BOARD_AUTOREFRESH` (on/off/1/0/true/false) WINS over config; else
+    the persisted `board_autorefresh` flag (default off). Mirrors statusline_enabled()."""
+    env = os.environ.get("TASK_STATION_BOARD_AUTOREFRESH")
+    if env is not None:
+        return env.strip().lower() in ("on", "1", "true")
+    return bool(get("board_autorefresh", False))
+
 def auto_categories_enabled():
     """True unless explicitly disabled — default ON. Mirrors TASK_STATION_TITLE's
     env escape: `TASK_STATION_AUTO_CATEGORIES=off` (or `config --auto-categories off`)
@@ -271,6 +282,8 @@ def board_rows():
          "install bare /todo + /done aliases, else /task-station:todo (default: off)"),
         ("--update-check", "on" if update_check_enabled() else "off", "on · off",
          "/todo footer when a newer version ships, one git ls-remote/day (default: off)"),
+        ("--board-autorefresh", "on" if board_autorefresh_enabled() else "off", "on · off",
+         "open /todo board tab stays live — meta-refresh + Stop-hook regen, no network (default: off)"),
         ("--theme", active_theme(), "sands · …",
          "active colour theme — full palette, dark + light variants (default: sands)"),
         ("--tint-theme", tint_theme(), "auto · dark · light",
@@ -550,7 +563,7 @@ def cmd_theme(arg):
 # removed, so the user removes them deliberately.
 RESET_KEYS = [
     "enabled_categories", "auto_categories", "categories",
-    "bare_commands", "update_check", "theme", "tint_theme",
+    "bare_commands", "update_check", "board_autorefresh", "theme", "tint_theme",
     "tint", "title", "guaranteed_tracking", "statusline", "ultracode_hints",
     "workspace_dirs",
 ]
@@ -642,6 +655,11 @@ def cmd_config(a):
         print("update_check = %s" % ("on" if get("update_check") else "off")); return
     if getattr(a, "update_check_get", False):
         print("on" if update_check_enabled() else "off"); return
+    if getattr(a, "board_autorefresh", None) is not None:
+        set("board_autorefresh", a.board_autorefresh == "on")
+        print("board_autorefresh = %s" % ("on" if get("board_autorefresh") else "off")); return
+    if getattr(a, "board_autorefresh_get", False):
+        print("on" if board_autorefresh_enabled() else "off"); return
     if getattr(a, "theme", None) is not None:
         return cmd_theme(a.theme)
     if getattr(a, "tint_theme", None) is not None:

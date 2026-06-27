@@ -9,4 +9,8 @@ input=$(cat)
 [ -n "$TASK_STATION_SUPPRESS" ] && exit 0
 session_id=$(echo "$input" | jq -r '.session_id // "unknown"')
 python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" stop-gate --session "$session_id"
+# Opt-in board auto-refresh: keep an already-open board.html fresh so its meta-refresh
+# shows current state. Strictly gated + silent in task-station.py (no flag → nothing;
+# no existing board.html → nothing); best-effort here so the Stop hook is never disrupted.
+python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" board --refresh-if-live >/dev/null 2>&1 || true
 exit 0

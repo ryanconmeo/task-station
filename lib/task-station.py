@@ -2837,10 +2837,12 @@ def write_board():
     import render_board
     theme = variant = variant_label = None
     config_rows = []
+    board_autorefresh = False
     try:
         import config
         theme = config.active_theme()
         config_rows = config.board_rows()
+        board_autorefresh = config.board_autorefresh_enabled()
     except Exception:
         pass
     if cats and hasattr(cats, "resolve_variant"):
@@ -2856,7 +2858,8 @@ def write_board():
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
     html_doc = render_board.render_html(
         vms, theme=theme, variant=variant, variant_label=variant_label,
-        generated=generated, commands=_COMMANDS_HELP, config_rows=config_rows)
+        generated=generated, commands=_COMMANDS_HELP, config_rows=config_rows,
+        board_autorefresh=board_autorefresh)
     out = os.path.join(paths.data_dir(), "board.html")
     os.makedirs(paths.data_dir(), exist_ok=True)
     tmp = out + ".tmp." + str(os.getpid())
@@ -2867,7 +2870,24 @@ def write_board():
 
 
 def cmd_board(a):
-    """`task-station board [--open]` — write the HTML board and print its path."""
+    """`task-station board [--open]` — write the HTML board and print its path.
+
+    `--refresh-if-live` is the Stop-hook path: regenerate board.html ONLY when board
+    auto-refresh is opted in AND the file already exists (the user has opened the
+    board at least once). Best-effort and silent — never creates the file for someone
+    who never uses the board, never prints, never raises. Gated here (not in the hook)
+    so the gating is unit-testable."""
+    if getattr(a, "refresh_if_live", False):
+        try:
+            import config
+            if not config.board_autorefresh_enabled():
+                return
+            if not os.path.exists(os.path.join(paths.data_dir(), "board.html")):
+                return
+            write_board()
+        except Exception:
+            pass
+        return
     out = write_board()
     print(out)
     if getattr(a, "open", False):
@@ -2955,6 +2975,8 @@ def main():
     sp = sub.add_parser("board")
     sp.add_argument("--open", dest="open", action="store_true",
                     help="best-effort: open the written board.html in a browser (macOS)")
+    sp.add_argument("--refresh-if-live", dest="refresh_if_live", action="store_true",
+                    help="Stop-hook path: silently regen board.html only when auto-refresh is on AND the file exists")
     sp.set_defaults(fn=cmd_board)         # self-contained HTML board of all tasks
 
     sp = sub.add_parser("stop-gate"); sp.add_argument("--session", required=True)
@@ -3058,6 +3080,9 @@ def main():
     sp.add_argument("--bare-cmds-get", dest="bare_cmds_get", action="store_true")
     sp.add_argument("--update-check", dest="update_check", nargs="?", choices=["on","off"], const="on", default=None)
     sp.add_argument("--update-check-get", dest="update_check_get", action="store_true")
+    sp.add_argument("--board-autorefresh", dest="board_autorefresh", nargs="?", choices=["on","off"], const="on", default=None,
+                    help="open /todo board tab stays live via meta-refresh + Stop-hook regen (no network); default off")
+    sp.add_argument("--board-autorefresh-get", dest="board_autorefresh_get", action="store_true")
     sp.add_argument("--theme", dest="theme", nargs="*", default=None,
                     help="(no arg) list themes + active · <name> select · save <name> · edit · preview")
     sp.add_argument("--tint-theme", dest="tint_theme", nargs="?", choices=["auto","dark","light"], const="auto", default=None,

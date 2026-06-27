@@ -3,6 +3,35 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.17.0] — 2026-06-27
+
+### Added
+- **Opt-in board auto-refresh (`config --board-autorefresh on`, default off).** An open
+  `/todo board` tab can now stay live without a manual re-run. When enabled, the board
+  injects a single `<meta http-equiv="refresh" content="5">` tag (the **only** non-static
+  element — still **no JavaScript**, no network, no external assets) and the **Stop hook
+  quietly regenerates `board.html`** so the page reloads onto current state. Strictly
+  gated and best-effort: it regenerates **only when the flag is on AND `board.html`
+  already exists** (i.e. you've opened the board at least once) — it never creates the
+  file for someone who doesn't use the board, and swallows all output/errors so the Stop
+  hook is never disrupted. The snapshot note switches to *"auto-refreshing every 5s ·
+  `config --board-autorefresh off` to stop"* when on. `TASK_STATION_BOARD_AUTOREFRESH`
+  (on/off/1/0/true/false) overrides the config setting.
+
+### Changed
+- **Expanded task detail is now digestible without an LLM.** The expand **leads with the
+  at-a-glance digest** — briefing (next/standing · files · PRs · repos), then the resume
+  one-liner(s) — and moves the **full summary last**, so the eye hits the structured
+  digest before the wall of text.
+- **The summary renders as light Markdown** (new pure-stdlib `tools/mdlite.py`): `#`/`##`/
+  `###` headings, `-`/`*` bullet lists, blank-line paragraphs, `**bold**`, `` `code` ``,
+  `[text](url)` + bare http(s) URLs as links, and `---` rules. The text is **HTML-escaped
+  first**, so a literal `<script>` (or any raw HTML) in a summary is rendered inert as
+  text — the board stays self-contained / no-injection. Unknown syntax passes through as
+  escaped text. The rendered summary sits in a **scroll-capped container** (`max-height`
+  ≈ 16em, `overflow-y:auto`) so a huge blob scrolls in place rather than dominating the
+  card.
+
 ## [1.16.0] — 2026-06-27
 
 ### Changed
