@@ -8,4 +8,10 @@ input=$(cat)
 [ -n "$TASK_STATION_SUPPRESS" ] && exit 0
 session_id=$(echo "$input" | jq -r '.session_id // "unknown"')
 python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" mark-edited --session "$session_id"
+# Best-effort briefing capture: record the edited path on the attached task's
+# `files` list (silent no-op if no attached task / no path). Never blocks the hook.
+file_path=$(echo "$input" | jq -r '.tool_input.file_path // empty')
+if [ -n "$file_path" ]; then
+  python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" touch-file --session "$session_id" --file "$file_path" >/dev/null 2>&1 || true
+fi
 exit 0
