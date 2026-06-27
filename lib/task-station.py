@@ -1025,6 +1025,13 @@ def cmd_create(a):
               "Use xs/s/m/l/xl (or 1–5)." % a.effort)
     status = STATUS_ACTIVE if getattr(a, "active", False) else STATUS_DEFAULT
     task = new_task(a.title, a.summary, requested, getattr(a, "effort", None), status=status)
+    # Structured-digest seeds: a one-line `goal` and an initial `--step` checklist
+    # (repeatable). Stored straight on the task blob (no schema migration).
+    goal = getattr(a, "goal", None)
+    if goal:
+        task["goal"] = goal.strip()
+    for s in (getattr(a, "step", None) or []):
+        append_step(task, s)
     ensure_seqs()                      # number any pre-seq tasks before we pick ours
     task["seq"] = _max_seq() + 1       # stable number, never reused even after /done
 
@@ -1435,12 +1442,17 @@ def _format_list(closed_limit=MAX_CLOSED_IN_LIST):
         eff = effort_cell(t.get("effort"))
         marker = _live_marker(t)
         g = status_glyph(t)            # leading lifecycle glyph, before the number
+        # Compact progress rollup folded INTO the 40-wide Task cell (no new column,
+        # so the grid + the /todo verbatim contract are untouched): "Title  ✓2/5",
+        # only when the task has steps. Truncated with the title at 40 chars.
+        d, m = step_progress(t)
+        title_cell = ("%s  ✓%d/%d" % (t["title"], d, m)) if m else t["title"]
         if tag:
             lines.append("%s %3d  %-40.40s  %s  %s  %s%s"
-                         % (g, t["seq"], t["title"], tag, eff, rel_time(t.get("updated_ts")), marker))
+                         % (g, t["seq"], title_cell, tag, eff, rel_time(t.get("updated_ts")), marker))
         else:
             lines.append("%s %3d  %-40.40s  %s  %s%s"
-                         % (g, t["seq"], t["title"], eff, rel_time(t.get("updated_ts")), marker))
+                         % (g, t["seq"], title_cell, eff, rel_time(t.get("updated_ts")), marker))
     if capped:
         lines.append("     … %d older closed task(s) hidden  ·  show more with /todo closed N "
                      "or /todo all  ·  reachable by number: /todo <n> or /done <n>"
@@ -1474,10 +1486,14 @@ def _md_task_row(task):
     cell keeps the `<emoji> [TAG]` intact."""
     st = task_status(task)
     status_cell = STATUS_GLYPH_CLOSED if st == STATUS_CLOSED else STATUS_GLYPH.get(st, "")
+    # Compact progress rollup appended to the Task cell (no new column), only when
+    # the task has steps — mirrors the ASCII list's "✓N/M".
+    d, m = step_progress(task)
+    progress = ("  ✓%d/%d" % (d, m)) if m else ""
     return "| %s | %s | %s | %s | %s | %s |" % (
         status_cell,
         task.get("seq", ""),
-        _md_escape(task["title"]) + _live_marker(task),
+        _md_escape(task["title"]) + _live_marker(task) + progress,
         cat_tag(task.get("color")),
         _md_effort(task.get("effort")),
         rel_time(task.get("updated_ts")),
@@ -1567,6 +1583,81 @@ def extract_prs(task):
     return out
 
 
+def append_step(task, text):
+    """Append a checklist step {"text":…, "done":False} to the task's `steps` — the
+    granular, stable-indexed digest field. Blank text is a silent no-op. Returns
+    True when a step was added so callers can report it."""
+    text = (text or "").strip()
+    if not text:
+        return False
+    task.setdefault("steps", []).append({"text": text, "done": False})
+    return True
+
+
+def set_step_done(task, n, done):
+    """Tick/untick the 1-based step `n` (done=True/False). Out-of-range or a
+    non-int `n` is a safe no-op (returns False) — a bad index never crashes, so a
+    stray `--step-done 99` just warns rather than blowing up the update."""
+    steps = task.get("steps") or []
+    try:
+        i = int(n)
+    except (TypeError, ValueError):
+        return False
+    if i < 1 or i > len(steps):
+        return False
+    steps[i - 1]["done"] = bool(done)
+    return True
+
+
+def step_progress(task):
+    """(done, total) over the task's checklist steps; (0, 0) when it has none.
+    The single source of truth for the progress rollup on both boards + detail."""
+    steps = task.get("steps") or []
+    return sum(1 for s in steps if s.get("done")), len(steps)
+
+
+def append_decision(task, text):
+    """Append to the task's append-only `decisions` log (choices made as the work
+    progressed). Blank is a no-op; returns True when appended."""
+    text = (text or "").strip()
+    if not text:
+        return False
+    task.setdefault("decisions", []).append(text)
+    return True
+
+
+def add_pr(task, url):
+    """Store a PR URL on the task (deduped, first-seen order). Unlike extract_prs
+    — which DERIVES URLs from the log/summary/state at render time — this is an
+    EXPLICIT stored entry (`update --pr`). Blank is a no-op; returns True when
+    newly added."""
+    url = (url or "").strip()
+    if not url:
+        return False
+    prs = task.setdefault("prs", [])
+    if url in prs:
+        return False
+    prs.append(url)
+    return True
+
+
+def merged_prs(task):
+    """The task's PR URLs for rendering: the STORED `prs` (from `update --pr`)
+    merged with the DERIVED URLs extract_prs() finds in the log/summary/state —
+    deduped, stored-first then first-seen. The 1.15 auto-extraction is preserved
+    but folded into the stored list instead of deriving a fresh list each render."""
+    out, seen = [], set()
+    for u in (task.get("prs") or []):
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    for u in extract_prs(task):
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
 def append_edited_file(task, path):
     """Record `path` as a recently-edited file on the task: dedup (move an
     existing entry to most-recent-last) and cap at FILES_KEEP. Returns True if the
@@ -1604,32 +1695,50 @@ def _format_detail(task, session):
     # total = every session that ever touched it (append-only, never pruned).
     out.append("Live sessions: %d  (of %d ever attached)"
                % (live_session_count(task), len(task.get("sessions", []))))
-    out.append("")
-    out.append("Summary:")
-    out.append(task.get("summary") or "  (no summary recorded)")
-    # Briefing: the deterministic "where it stands / what's next / what it touched"
-    # block, so a resume loads a briefing, not just a transcript. Shown only when
-    # something exists; placed just above the recent-activity log.
+    # DIGEST (digest-first): goal → state → steps → decisions → artifacts. The
+    # deterministic structured briefing that makes a resume load where the work
+    # STANDS — never via an LLM. Supersedes the 1.15 "Briefing:" block; the full
+    # Summary moves to the very end (below).
+    goal = (task.get("goal") or "").strip()
     state = (task.get("state") or "").strip()
-    prs = extract_prs(task)
+    steps = task.get("steps") or []
+    decisions = task.get("decisions") or []
+    prs = merged_prs(task)
     files = task.get("files") or []
     projects = task.get("projects") or []
-    if state or prs or files or projects:
+    if goal:
         out.append("")
-        out.append("Briefing:")
-        if state:
-            out.append("  Next / standing: %s" % state)
-        if projects:
-            out.append("  Repos touched:   %s" % ", ".join(projects))
+        out.append("Goal:    %s" % goal)
+    if state:
+        out.append("")
+        out.append("State (next / standing):")
+        out.append("  %s" % state)
+    if steps:
+        done, total = step_progress(task)
+        out.append("")
+        out.append("Steps (%d/%d done):" % (done, total))
+        for i, s in enumerate(steps, 1):
+            mark = "✓" if s.get("done") else "☐"
+            out.append("  %s %2d. %s" % (mark, i, s.get("text", "")))
+    if decisions:
+        out.append("")
+        out.append("Decisions:")
+        for d in decisions:
+            out.append("  • %s" % d)
+    if files or prs or projects:
+        out.append("")
+        out.append("Artifacts:")
+        if files:
+            out.append("  Files (most recent last):")
+            for p in files[-8:]:
+                d = os.path.dirname(p) or "."
+                out.append("    %s  —  %s" % (os.path.basename(p), d))
         if prs:
             out.append("  PRs:")
             for u in prs:
                 out.append("    %s" % u)
-        if files:
-            out.append("  Recent files (most recent last):")
-            for p in files[-8:]:
-                d = os.path.dirname(p) or "."
-                out.append("    %s  —  %s" % (os.path.basename(p), d))
+        if projects:
+            out.append("  Repos:   %s" % ", ".join(projects))
     log = task.get("log", [])
     if log:
         out.append("")
@@ -1653,6 +1762,10 @@ def _format_detail(task, session):
             out.append("  In-project workers this task has delegated into "
                        "(drop into one directly to debug a repo):")
             out.extend(workers)
+    # Summary LAST — the stable description, after the at-a-glance digest + resume.
+    out.append("")
+    out.append("Summary:")
+    out.append(task.get("summary") or "  (no summary recorded)")
     adv = ultracode_advisory(task)
     if adv:
         out.append("")
@@ -2005,6 +2118,32 @@ def _update_one(ref, a):
         # the loop maintains it as it works.
         task["state"] = state.strip()
         changed.append("state")
+    goal = getattr(a, "goal", None)
+    if goal is not None:
+        # One-line "what done looks like." Blank clears it.
+        task["goal"] = goal.strip()
+        changed.append("goal")
+    # Granular step ops (stable 1-based indices). --step-add appends; --step-done/
+    # --step-undone tick/untick by number; an out-of-range index warns, never crashes.
+    for text in (getattr(a, "step_add", None) or []):
+        if append_step(task, text):
+            changed.append("step+")
+    for n in (getattr(a, "step_done", None) or []):
+        if set_step_done(task, n, True):
+            changed.append("step✓")
+        else:
+            msgs.append("update %s: ignoring --step-done %s (no such step)" % (ref, n))
+    for n in (getattr(a, "step_undone", None) or []):
+        if set_step_done(task, n, False):
+            changed.append("step☐")
+        else:
+            msgs.append("update %s: ignoring --step-undone %s (no such step)" % (ref, n))
+    for text in (getattr(a, "decision", None) or []):
+        if append_decision(task, text):
+            changed.append("decision")
+    for url in (getattr(a, "pr", None) or []):
+        if add_pr(task, url):
+            changed.append("pr")
     if a.color is not None and cats:
         task["color"] = cat_color(a.color); changed.append("color")
     if a.effort is not None:
@@ -2015,7 +2154,9 @@ def _update_one(ref, a):
             task["effort"] = e; changed.append("effort")
     label = task.get("seq", task["id"][:8])
     if not changed:
-        msgs.append("update %s: nothing to change (pass --title/--summary/--append-summary/--state/--color/--effort)" % label)
+        msgs.append("update %s: nothing to change (pass --title/--summary/--append-summary/"
+                    "--goal/--state/--step-add/--step-done/--step-undone/--decision/--pr/"
+                    "--color/--effort)" % label)
         return "\n".join(msgs)
     clear_provisional(task)   # the model refined it → real work, not a throwaway auto-task
     touch(task, note="scope updated: " + ", ".join(changed))
@@ -2527,8 +2668,16 @@ def cmd_guidance(a):
     lines.append("Do this as a side action, but DO tell the user in one short line when you "
                  "create or attach a task — e.g. \"📋 Tracking this as a new task: <title>\" or "
                  "\"📋 Attached to existing task: <title>\".")
-    lines.append("BRIEFING: keep a tracked task's `update --state '<next step / where it stands>'` "
-                 "fresh when you pause or finish — so resume loads a briefing, not just a transcript.")
+    lines.append("DIGEST (this is how a task stays resumable): as you work, keep the structured "
+                 "digest current — `update --state '<next step / where it stands>'` (refresh when "
+                 "you pause or finish), tick the checklist with `--step-done N` (add new ones with "
+                 "`--step-add`), and record choices as you make them with `--decision '<what & why>'`. "
+                 "`--goal '<what done looks like>'` anchors it; `--pr <url>` pins the PR. So a resume "
+                 "loads a briefing, not just a transcript.")
+    lines.append("CONTENT HYGIENE: `summary` is the STABLE task description — set it once and amend "
+                 "it only when scope changes. Put the RUNNING record (progress, ship notes, decisions) "
+                 "in `--state` / `--decision` / the activity log, NOT in `--append-summary` "
+                 "(it still exists, but don't use it for progress notes).")
 
     # COMMANDS — compact full reference (model-facing source of truth). Use these
     # exact forms instead of reinventing a command. All invoked as:
@@ -2539,13 +2688,16 @@ def cmd_guidance(a):
                  "<session> = session uuid.")
     lines.extend([
         "  create  --session <s> --color <c> --effort <xs|s|m|l|xl> --title '…' --summary '…' "
-        "[--active] [--no-attach|--attach] [--force]   — track a new task (attaches the session)",
+        "[--goal '…'] [--step '…' …] [--active] [--no-attach|--attach] [--force]   — track a new "
+        "task (attaches the session; --goal/--step seed the digest)",
         "  attach  --session <s> --task <ref> [--color <c>] [--note '…']   — link session to a task "
         "(reopens if closed). FOLD-DON'T-FORK: prefer attach --note over a new create when it "
         "continues an existing task",
         "  detach  --session <s> [--task <ref>]   — unlink the session from its task",
-        "  update  --task <ref> [--title|--summary|--append-summary|--state|--color|--effort]   — amend a task "
-        "(--state sets the briefing's next-step/standing line)",
+        "  update  --task <ref> [--title|--summary|--append-summary|--goal|--state|--step-add|"
+        "--step-done N|--step-undone N|--decision|--pr|--color|--effort]   — amend a task / keep its "
+        "digest current (--goal what-done-looks-like · --state next-step · --step-* checklist · "
+        "--decision append-only · --pr stored PR url)",
         "  status  --task <ref> [open|active]   — show/set status (close via done)",
         "  pin     --task <ref> [--session <s>] [--new]   ·   unpin --task <ref>   — pin/unpin a resume target",
         "  done    --task <ref>   (or --session <s>)   ·   skip --session <s>   — close a task · mark session untracked",
@@ -2796,9 +2948,14 @@ def _board_view_model(task):
         "effort_label": EFFORT_WORD.get(eff, ""),
         "effort_gauge": EFFORT_GAUGE.get(eff, EFFORT_GAUGE_EMPTY),
         "activity": rel_time(task.get("updated_ts")),
+        "goal": (task.get("goal") or "").strip(),
         "state": (task.get("state") or "").strip(),
+        "steps": [{"text": s.get("text", ""), "done": bool(s.get("done"))}
+                  for s in (task.get("steps") or [])],
+        "progress": list(step_progress(task)),     # [done, total]
+        "decisions": list(task.get("decisions") or []),
         "repos": list(task.get("projects") or []),
-        "prs": extract_prs(task),
+        "prs": merged_prs(task),
         "files": files,
         "pinned": bool(task.get("pinned_session")),
         "resume": rt["command"] if rt else None,   # back-compat (plain command string)
@@ -2928,6 +3085,10 @@ def main():
     sp = sub.add_parser("create"); sp.add_argument("--session", default=None)
     sp.add_argument("--title", required=True); sp.add_argument("--summary", default="")
     sp.add_argument("--color", default=None); sp.add_argument("--effort", default=None)
+    sp.add_argument("--goal", default=None,
+                    help="one line: what 'done' looks like (digest)")
+    sp.add_argument("--step", action="append", default=None,
+                    help="seed a checklist step (repeatable)")
     sp.add_argument("--force", action="store_true")
     sp.add_argument("--no-attach", dest="no_attach", action="store_true",
                     help="create unattached (empty sessions) — /todo <n> -s fresh-starts")
@@ -3014,6 +3175,18 @@ def main():
     sp.add_argument("--state", default=None,
                     help="set the briefing's 'where it stands / next step' line "
                          "(model-curated; '' clears it)")
+    sp.add_argument("--goal", default=None,
+                    help="one line: what 'done' looks like ('' clears it)")
+    sp.add_argument("--step-add", dest="step_add", action="append", default=None,
+                    help="append a checklist step (repeatable)")
+    sp.add_argument("--step-done", dest="step_done", action="append", type=int, default=None,
+                    metavar="N", help="tick step N (1-based; repeatable)")
+    sp.add_argument("--step-undone", dest="step_undone", action="append", type=int, default=None,
+                    metavar="N", help="untick step N (1-based; repeatable)")
+    sp.add_argument("--decision", action="append", default=None,
+                    help="append a decision note (repeatable, append-only)")
+    sp.add_argument("--pr", action="append", default=None,
+                    help="store a PR URL on the task (repeatable, deduped)")
     sp.add_argument("--color", default=None); sp.add_argument("--effort", default=None)
     sp.set_defaults(fn=cmd_update)
 

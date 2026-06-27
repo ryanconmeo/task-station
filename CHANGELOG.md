@@ -3,6 +3,43 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.18.0] — 2026-06-27
+
+### Added
+- **Structured, stored task digest — resume loads a briefing, the board is a real tracker.**
+  The digest is **first-class stored data** written when the work is summarised (by the
+  model, via CLI flags) — **not derived at render time** — and rides the existing task JSON
+  blob (no schema migration). Five fields:
+  - **`goal`** — one line, *what "done" looks like*. `create --goal '…'` · `update --goal '…'`.
+  - **`state`** — current standing + next step (since 1.15). `update --state '…'`.
+  - **`steps`** — a granular checklist of `{text, done}` with **stable 1-based indices**.
+    Seed at create with repeatable `--step '…'`; maintain with `update --step-add '…'`,
+    `--step-done N`, `--step-undone N` (an out-of-range `N` warns, never crashes).
+  - **`decisions`** — append-only log of choices. `update --decision '…'`.
+  - **`prs`** — PR URLs **now stored** (`update --pr '<url>'`), **merged** with the 1.15
+    auto-extraction from the log/summary/state (deduped, stored-first then first-seen).
+- **Progress rollup on BOTH boards.** A new `step_progress(task)` → `(done, total)` helper
+  drives a compact **`✓N/M`** appended to the Task cell of the terminal `/todo` list
+  (ASCII **and** Markdown — no new column, the grid + verbatim contract are intact) and a
+  **mini progress bar + `N/M`** on each HTML board row that has steps, with the full
+  checklist (✓/☐ + rollup) in the expand.
+
+### Changed
+- **Terminal task detail (`/todo <n>`) is digest-first.** It now leads with
+  **Goal → State (next/standing) → Steps (checklist + `N/M` rollup) → Decisions →
+  Artifacts (files · PRs · repos)**, then the resume one-liner(s), and moves the full
+  **Summary last**. Supersedes (and extends) the 1.15 *Briefing* block — no duplication.
+- **HTML board expand** shows the same digest-first content (goal · steps checklist with
+  rollup · decisions · stored PRs) above the resume block and the scroll-capped Markdown
+  summary. `goal`/`state`/`decisions` render through `mdlite` (HTML-escaped first, so the
+  board stays self-contained).
+- **Guidance steers digest upkeep + content hygiene.** `guidance` now nudges keeping
+  `state` fresh, ticking `steps` (`--step-done N`), and recording `--decision` as you work
+  — *this is how a task stays resumable* — and documents the new flags. It also clarifies
+  that **`summary` is the stable description**: put the running record (progress/ship
+  notes/decisions) in `--state` / `--decision` / the activity log, **not** in
+  `--append-summary` (which stays available, just no longer recommended for progress notes).
+
 ## [1.17.0] — 2026-06-27
 
 ### Added

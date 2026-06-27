@@ -3,7 +3,7 @@
 > A persistent task hub for Claude Code. Every task is a **resumable, colour‑tinted session** — auto‑categorised on a self‑growing board, re‑pinnable, tinted to an OS‑aware theme, with parallel in‑project worker delegation and a Claude Desktop bridge.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-1.17.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-1.18.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -58,13 +58,29 @@ Running `/todo` prints your board — rendered exactly as it appears in the term
 
 - **Tasks that outlive the session.** State lives outside the plugin cache, so `/plugin update` never wipes your board or history.
 - **One‑command resume.** `/todo 286` reopens the task *and* the session that holds its context — cwd auto‑corrected from the transcript, never tainting your current conversation. `/todo 286 -s` jumps straight into it in a fresh window.
-- **Resume a briefing, not just a transcript.** Each task carries a structured **briefing** in its detail view: a model‑curated next‑step/standing line (`update --state`), the repos it touched, PR links, and the files it recently edited. The files are captured *deterministically* (the edit hook records each path); the PR links are *derived* from the activity log; the state is maintained by the model already in the loop — **no LLM, no network**.
-- **A visual board.** `/todo board` (or `task-station board`) writes a self‑contained HTML board to `<data_dir>/board.html` — the **same Open / Closed grid as the terminal `/todo` board** (status · # · task · category · effort · activity), every row **expandable** (native `<details>`, no JavaScript) to reveal — **digest first** — the briefing (next/standing · files · PRs · repos), then the **hub/pinned resume one‑command line with its last‑activity time** (workers in a separate, de‑emphasised subsection), and **last** the full summary, rendered as **light Markdown** (headings, bullets, bold, code, links — HTML‑escaped first, so it stays self‑contained) inside a **scroll‑capped** box so a long blob never dominates the card. Category colours and the page's light/dark chrome track your **active theme + resolved variant** exactly; a **Help** panel at the bottom lists the `/todo` commands and your current config. No server, no dependencies, no external assets. Add `--open` to pop it in your browser (macOS). Want an open tab to stay live? `config --board-autorefresh on` adds a meta‑refresh (the only non‑static element) and quietly regenerates the board on each Stop — still no JS, no network.
+- **Resume a briefing, not just a transcript.** Each task carries a structured, **stored digest** that the detail view and board lead with: a one‑line **goal** (*what "done" looks like*), a model‑curated **next‑step/standing** line (`update --state`), a **steps checklist** with a `N/M` progress rollup, an append‑only **decisions** log, plus the repos it touched, **stored PR links**, and the files it recently edited. The digest is **written when the work is summarised** (by the model, via CLI flags) — not derived at render time. Files are captured *deterministically* (the edit hook records each path); PR links are stored **and** auto‑merged from the activity log; the rest is maintained by the model already in the loop — **no LLM, no network**. See [Structured digest](#structured-digest).
+- **A visual board.** `/todo board` (or `task-station board`) writes a self‑contained HTML board to `<data_dir>/board.html` — the **same Open / Closed grid as the terminal `/todo` board** (status · # · task · category · effort · activity), every row carries a **mini progress bar + `N/M`** when it has steps and is **expandable** (native `<details>`, no JavaScript) to reveal — **digest first** — the digest (goal · next/standing · steps checklist with rollup · decisions · files · PRs · repos), then the **hub/pinned resume one‑command line with its last‑activity time** (workers in a separate, de‑emphasised subsection), and **last** the full summary, rendered as **light Markdown** (headings, bullets, bold, code, links — HTML‑escaped first, so it stays self‑contained) inside a **scroll‑capped** box so a long blob never dominates the card. Category colours and the page's light/dark chrome track your **active theme + resolved variant** exactly; a **Help** panel at the bottom lists the `/todo` commands and your current config. No server, no dependencies, no external assets. Add `--open` to pop it in your browser (macOS). Want an open tab to stay live? `config --board-autorefresh on` adds a meta‑refresh (the only non‑static element) and quietly regenerates the board on each Stop — still no JS, no network.
 - **Your terminal as ambient state.** Each category owns a full colour palette from an **OS‑aware theme** — Dark Sands in dark mode, Light Sands in light mode, switching with your appearance — and the terminal tints the instant a skill runs (`/review` → orange) so you always know what you're in.
 - **Never lose untracked work.** Edit a file and the task auto‑promotes to *active*; a Stop‑gate reminds you before a turn ends with untracked edits.
 - **Delegate into your repos.** Spin up crash‑safe, worktree‑isolated workers that run inside a target repo with its own `CLAUDE.md`, hooks, MCP servers and permissions — one persistent worker per (task, repo).
 - **Code ↔ Desktop, one board.** A dependency‑free MCP bridge shares a single task store between Claude Code and Claude Desktop. Create a task in a Desktop chat; it's there in the CLI, and vice‑versa.
 - **Private by default.** Everything stays on your machine. No telemetry; the version check and repo enrichment are opt‑in and send no task data.
+
+## Structured digest
+
+Every task carries a small, **stored** digest so a resume loads a *briefing* and the board is a real tracker. It is **first‑class data** written as the work is summarised (by the model, via flags) — never derived at render time — and rides the existing task JSON (no schema migration, **no LLM, no network**). Five fields:
+
+| Field | What it is | Set with |
+|---|---|---|
+| **goal** | One line — *what "done" looks like.* | `create --goal '…'` · `update --goal '…'` |
+| **state** | Current standing + the next step. | `update --state '…'` |
+| **steps** | A checklist of `{text, done}` with **stable 1‑based indices** + an `N/M` progress rollup. | `create --step '…'` (repeatable) · `update --step-add '…'` · `--step-done N` · `--step-undone N` |
+| **decisions** | Append‑only log of choices made. | `update --decision '…'` |
+| **prs** | Stored PR URLs, **merged** with the links auto‑extracted from the log/summary/state (deduped). | `update --pr '<url>'` |
+
+An out‑of‑range `--step-done`/`--step-undone N` is warned and ignored — it never crashes the update. The **terminal detail** (`/todo <n>`) leads with **Goal → State → Steps → Decisions → Artifacts (files · PRs · repos)**, then the resume one‑liner(s), and shows the full **summary last**; the terminal list appends a compact **`✓N/M`** to a task's row when it has steps. The **HTML board** mirrors this — a mini progress bar per row and the full checklist + decisions + stored PRs in the expand (`goal`/`state`/`decisions` rendered as light Markdown, HTML‑escaped first).
+
+**Content hygiene:** `summary` is the *stable description* — set it once, amend it when scope changes. Put the running record (progress, ship notes, decisions) in `--state` / `--decision` / the activity log, **not** in `--append-summary` (it still works; it's just no longer the place for progress notes).
 
 ## Install
 

@@ -143,6 +143,8 @@ class BriefingTest(unittest.TestCase):
     # -- detail renders the Briefing block (present + cleanly absent) -----------
 
     def test_detail_shows_briefing_when_present(self):
+        # 1.18: the 1.15 "Briefing:" block is superseded by the fuller digest —
+        # State (next/standing) + Artifacts (files · PRs · repos), digest-first.
         t = self._task()
         t["state"] = "next: open the PR"
         t["files"] = ["/repo/lib/store.py", "/repo/lib/cli.py"]
@@ -150,18 +152,20 @@ class BriefingTest(unittest.TestCase):
         t["log"] = [{"ts": "t1", "note": "pushed https://github.com/o/r/pull/9"}]
         ts.save_task(t)
         detail = ts._format_detail(ts.load_task(t["id"]), "sess")
-        self.assertIn("Briefing:", detail)
+        self.assertIn("State (next / standing):", detail)
         self.assertIn("next: open the PR", detail)
+        self.assertIn("Artifacts:", detail)
         self.assertIn("task-station", detail)
         self.assertIn("https://github.com/o/r/pull/9", detail)
         self.assertIn("store.py", detail)
-        # the briefing sits above the recent-activity log
-        self.assertLess(detail.index("Briefing:"), detail.index("Recent activity"))
+        # the digest sits above the recent-activity log
+        self.assertLess(detail.index("State (next / standing):"), detail.index("Recent activity"))
 
     def test_detail_omits_briefing_when_empty(self):
         t = self._task()
         detail = ts._format_detail(t, "sess")
-        self.assertNotIn("Briefing:", detail)
+        self.assertNotIn("State (next / standing):", detail)
+        self.assertNotIn("Artifacts:", detail)
 
 
 if __name__ == "__main__":
