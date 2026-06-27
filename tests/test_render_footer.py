@@ -63,6 +63,7 @@ class RenderFooterTest(unittest.TestCase):
             "/todo <n1, n2, …> -s    jump into task session(s), in a new window\n"
             "/todo closed [N]        list recent closed (default 20)\n"
             "/todo all               show every task (all open + closed)\n"
+            "/todo board             open the visual HTML board\n"
             "/done                   close the current task\n"
             "/done <n1, n2, …>       close tasks by number\n"
             "/task-station:config    open settings\n"
