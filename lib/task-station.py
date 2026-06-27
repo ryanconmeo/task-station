@@ -2200,8 +2200,9 @@ def cmd_prompt_context(a):
         verb = "attach" if intent == "attach" else "create"
         dlines = [
             "⚡ EXPLICIT TASK INTENT — the user's message explicitly asks to %s a task." % verb,
-            "Use task-station NOW. Do NOT use the built-in/native TaskCreate (session todo) tool — that",
-            "list is ephemeral (this-conversation-only) and is NOT what the user wants.",
+            "Track it on task-station NOW — the cross-session board, bound to THIS session for",
+            "one-command resume. The native task tools are per-session/siloed (no board across",
+            "sessions, no link back to the session that holds the context) — not what's wanted here.",
         ]
         if intent == "create":
             dlines.append("  create: python3 %s/task-station.py create --session %s --color <color> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentences>'"
@@ -2358,8 +2359,9 @@ def cmd_guidance(a):
     else:
         lines.append("  • attach: python3 %s/task-station.py attach --session <session-id> --task <task-id>" % BASE)
         lines.append("  • create: python3 %s/task-station.py create --session <session-id> --effort <xs|s|m|l|xl> --title '<short title>' --summary '<1-3 sentence summary>'" % BASE)
-    lines.append("Always track via task-station (attach/create above) — NEVER the built-in/native "
-                 "TaskCreate session-todo tool; that list is ephemeral and invisible later.")
+    lines.append("Always track via task-station (attach/create above) — it lands on your "
+                 "cross-session board, bound to this session for one-command resume. The native "
+                 "task tools are per-session/siloed (no global board, no session-resume link).")
     lines.append("Do this as a side action, but DO tell the user in one short line when you "
                  "create or attach a task — e.g. \"📋 Tracking this as a new task: <title>\" or "
                  "\"📋 Attached to existing task: <title>\".")

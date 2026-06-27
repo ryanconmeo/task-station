@@ -223,8 +223,8 @@ def color_for_prompt(prompt):
 
 # --- Explicit "create/attach a task" intent in a free-typed prompt -----------
 # When the user literally asks to make/attach a task, the prompt-context hook
-# must hard-steer to task-station and away from the built-in/native TaskCreate
-# (ephemeral session-todo) tool. These run once per prompt, like _CMD_RE.
+# must hard-steer to task-station (the cross-session board + session-resume binding),
+# not the native per-session task tools. These run once per prompt, like _CMD_RE.
 
 # Same-clause guards: a question ABOUT the concept, or a negation, before the
 # matched verb means it is NOT an imperative → no intent.
