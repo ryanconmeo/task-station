@@ -3,6 +3,27 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.15.0] — 2026-06-24
+
+### Added
+- **Per-task context briefing — resume a briefing, not just a transcript.** Each task now
+  carries a deterministic briefing rendered as a **Briefing** block in the task detail
+  (just above the recent-activity log): recently-edited **files** captured deterministically
+  by the PostToolUse hook (`touch-file`, deduped + capped at 15, most-recent-last); **PR
+  links** *derived* on render by scanning the activity log/summary/state for GitHub
+  (`…/pull/<n>`) and Azure DevOps (`…/pullrequest/<n>`) URLs (deduped, never stored); and a
+  model-curated **state**/next-step line maintained with `update --state`. Distinct from the
+  summary (what the task *is*) — state is where it *stands* + what's next. **No LLM, no
+  network, stdlib-only**; the "intelligence" is the model already in the loop keeping `state`
+  fresh. Extra task keys ride along in the existing serialized blob — no schema migration.
+- **`task-station board` — a self-contained visual HTML board.** Renders every task (open +
+  closed) as colour cards using the active theme's per-category palette — status glyph, #seq,
+  title, `[TAG]` category, effort gauge, last activity — plus each task's briefing
+  (state/next-step, repos, PR links, recent files) and its resume one-liner. Writes
+  `<data_dir>/board.html` and prints the path. Reuses the theme-preview HTML approach
+  (`tools/render_board.py`): inline CSS, dark, responsive, no horizontal scroll, **no server,
+  no dependencies, no external assets, no LLM**. `--open` best-effort opens it (macOS).
+
 ## [1.14.5] — 2026-06-24
 
 ### Changed

@@ -44,6 +44,7 @@ PROJECTS_ROOT = os.path.join(
     os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")), "projects")
 
 LOG_KEEP = 25          # max activity-log entries kept per task
+FILES_KEEP = 15        # max recently-edited file paths kept per task (most-recent-last)
 NUDGE_PROMPT_MAX = 120  # chars of the prompt stored in the activity log
 NUDGE_ESCALATE_AFTER = 4   # unattached prompts before the nudge escalates
 SKIP_SENTINEL = "__skip__"  # link value marking a session intentionally untracked
@@ -1180,6 +1181,26 @@ def cmd_mark_edited(a):
         "hookEventName": "PostToolUse", "additionalContext": msg}}))
 
 
+def cmd_touch_file(a):
+    """PostToolUse(Write|Edit|NotebookEdit): append the edited file path to the
+    attached task's `files` briefing list (deduped, capped, most-recent-last).
+
+    Cheap + best-effort: a silent no-op when the session has no attached task (or
+    is skipped) or no path was passed. No log entry, no status change, no reminder
+    — that's mark-edited's job; this only enriches the briefing."""
+    path = getattr(a, "file", None)
+    if not path:
+        return
+    link = get_link(a.session)
+    if not link or link == SKIP_SENTINEL:
+        return
+    task = load_task(link)
+    if not task:
+        return
+    if append_edited_file(task, path):
+        save_task(task)
+
+
 def cmd_stop_gate(a):
     """Stop hook: refuse to end the turn if this session edited files but never
     tracked a task. Self-healing — clears its markers the moment a task is
@@ -1462,6 +1483,63 @@ def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
     return "\n".join(out)
 
 
+# ---------------------------------------------------------------- briefing ----
+# A task's "briefing" is derived/curated context that makes a resume load where
+# the work STANDS — never via an LLM. Three sources:
+#   • files  — recently-edited paths, captured deterministically by the
+#     PostToolUse hook (touch-file), deduped + capped, most-recent-last.
+#   • state  — a short MODEL-curated "where it stands / next step" string,
+#     maintained with `update --state` (the model is already in the loop).
+#   • prs    — DERIVED on render by scanning the activity log/summary/state for
+#     PR URLs (GitHub + Azure DevOps); never stored.
+
+# GitHub `…/pull/<n>` and Azure DevOps `…/pullrequest/<n>` (dev.azure.com and the
+# generic `_git/<repo>/pullrequest/<n>` form). Path chars stay URL-safe so a
+# trailing `.`/`)`/space in a note never gets swallowed; `\d+` bounds the tail.
+_PR_URL_RE = re.compile(
+    r'https://github\.com/[\w.-]+/[\w.-]+/pull/\d+'
+    r'|https://dev\.azure\.com/[\w%./+-]+?/pullrequest/\d+'
+    r'|https://[\w.-]+/[\w%./+-]+?/_git/[\w%./+-]+?/pullrequest/\d+',
+    re.IGNORECASE,
+)
+
+
+def extract_prs(task):
+    """PR URLs mentioned anywhere in a task's text (activity-log notes, summary,
+    state), de-duplicated in first-seen order. Derived on render — never stored.
+    Ignores non-PR URLs (only `/pull/<n>` and `/pullrequest/<n>` forms match)."""
+    parts = [e.get("note", "") for e in task.get("log", [])]
+    parts.append(task.get("summary") or "")
+    parts.append(task.get("state") or "")
+    text = "\n".join(p for p in parts if p)
+    seen, out = set(), []
+    for m in _PR_URL_RE.finditer(text):
+        u = m.group(0)
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def append_edited_file(task, path):
+    """Record `path` as a recently-edited file on the task: dedup (move an
+    existing entry to most-recent-last) and cap at FILES_KEEP. Returns True if the
+    files list changed. Best-effort — a blank path is a silent no-op."""
+    path = (path or "").strip()
+    if not path:
+        return False
+    files = task.setdefault("files", [])
+    if files and files[-1] == path:
+        return False                       # already the most-recent — nothing to do
+    try:
+        files.remove(path)                 # de-dup: drop the older mention…
+    except ValueError:
+        pass
+    files.append(path)                     # …and re-add as most-recent-last
+    del files[:-FILES_KEEP]                # cap to the last FILES_KEEP
+    return True
+
+
 def _format_detail(task, session):
     out = []
     cur = task_status(task)
@@ -1483,6 +1561,29 @@ def _format_detail(task, session):
     out.append("")
     out.append("Summary:")
     out.append(task.get("summary") or "  (no summary recorded)")
+    # Briefing: the deterministic "where it stands / what's next / what it touched"
+    # block, so a resume loads a briefing, not just a transcript. Shown only when
+    # something exists; placed just above the recent-activity log.
+    state = (task.get("state") or "").strip()
+    prs = extract_prs(task)
+    files = task.get("files") or []
+    projects = task.get("projects") or []
+    if state or prs or files or projects:
+        out.append("")
+        out.append("Briefing:")
+        if state:
+            out.append("  Next / standing: %s" % state)
+        if projects:
+            out.append("  Repos touched:   %s" % ", ".join(projects))
+        if prs:
+            out.append("  PRs:")
+            for u in prs:
+                out.append("    %s" % u)
+        if files:
+            out.append("  Recent files (most recent last):")
+            for p in files[-8:]:
+                d = os.path.dirname(p) or "."
+                out.append("    %s  —  %s" % (os.path.basename(p), d))
     log = task.get("log", [])
     if log:
         out.append("")
@@ -1843,6 +1944,13 @@ def _update_one(ref, a):
         add = a.append_summary.strip()
         task["summary"] = (base + "\n" + add) if base else add
         changed.append("summary+")
+    state = getattr(a, "state", None)
+    if state is not None:
+        # The model-curated "where it stands / next step" briefing line. Distinct
+        # from summary (what the task IS); blank clears it. No LLM — the model in
+        # the loop maintains it as it works.
+        task["state"] = state.strip()
+        changed.append("state")
     if a.color is not None and cats:
         task["color"] = cat_color(a.color); changed.append("color")
     if a.effort is not None:
@@ -1853,7 +1961,7 @@ def _update_one(ref, a):
             task["effort"] = e; changed.append("effort")
     label = task.get("seq", task["id"][:8])
     if not changed:
-        msgs.append("update %s: nothing to change (pass --title/--summary/--append-summary/--color/--effort)" % label)
+        msgs.append("update %s: nothing to change (pass --title/--summary/--append-summary/--state/--color/--effort)" % label)
         return "\n".join(msgs)
     clear_provisional(task)   # the model refined it → real work, not a throwaway auto-task
     touch(task, note="scope updated: " + ", ".join(changed))
@@ -2365,6 +2473,8 @@ def cmd_guidance(a):
     lines.append("Do this as a side action, but DO tell the user in one short line when you "
                  "create or attach a task — e.g. \"📋 Tracking this as a new task: <title>\" or "
                  "\"📋 Attached to existing task: <title>\".")
+    lines.append("BRIEFING: keep a tracked task's `update --state '<next step / where it stands>'` "
+                 "fresh when you pause or finish — so resume loads a briefing, not just a transcript.")
 
     # COMMANDS — compact full reference (model-facing source of truth). Use these
     # exact forms instead of reinventing a command. All invoked as:
@@ -2380,12 +2490,14 @@ def cmd_guidance(a):
         "(reopens if closed). FOLD-DON'T-FORK: prefer attach --note over a new create when it "
         "continues an existing task",
         "  detach  --session <s> [--task <ref>]   — unlink the session from its task",
-        "  update  --task <ref> [--title|--summary|--append-summary|--color|--effort]   — amend a task",
+        "  update  --task <ref> [--title|--summary|--append-summary|--state|--color|--effort]   — amend a task "
+        "(--state sets the briefing's next-step/standing line)",
         "  status  --task <ref> [open|active]   — show/set status (close via done)",
         "  pin     --task <ref> [--session <s>] [--new]   ·   unpin --task <ref>   — pin/unpin a resume target",
         "  done    --task <ref>   (or --session <s>)   ·   skip --session <s>   — close a task · mark session untracked",
         "  whoami  --session <s>   ·   render --session <s> [--arg <ref>] [--format ascii|md]   ·   "
         "bump --session <s>   — current task · the /todo board · touch activity",
+        "  board   [--open]   — write a self-contained HTML board of all tasks to <data_dir>/board.html",
         "  config   ·   repos   — settings board · repo index",
     ])
     lines.append("Maintenance (rarely needed — prefer done/close):")
@@ -2594,6 +2706,85 @@ def cmd_repos(a):
         print(f.read())
 
 
+def _board_view_model(task):
+    """Flatten a task into the plain dict the HTML board renders — every field the
+    card shows, including the derived briefing + the resume one-liner. Decouples
+    rendering (tools/render_board.py, stdlib + categories only) from the store."""
+    cur = task_status(task)
+    glyph = STATUS_GLYPH_CLOSED if cur == STATUS_CLOSED else STATUS_GLYPH.get(cur, "○")
+    files = [(os.path.basename(p), os.path.dirname(p) or ".")
+             for p in (task.get("files") or [])[-8:]]
+    color = task.get("color")
+    return {
+        "seq": task.get("seq"),
+        "title": task.get("title", ""),
+        "status": cur,
+        "glyph": glyph,
+        "color": color,
+        "tag": cat_tag(color),
+        "label": (cats.label(color) if (cats and color) else ""),
+        "effort": task.get("effort") or "",
+        "effort_gauge": EFFORT_GAUGE.get(task.get("effort"), EFFORT_GAUGE_EMPTY),
+        "activity": rel_time(task.get("updated_ts")),
+        "state": (task.get("state") or "").strip(),
+        "repos": list(task.get("projects") or []),
+        "prs": extract_prs(task),
+        "files": files,
+        "resume": resume_command(task, None),
+        "workers": [w.strip() for w in worker_lines(task) if w.strip()],
+    }
+
+
+def _open_path(path):
+    """Best-effort open of `path` in the OS default app (macOS `open`). Never
+    raises and returns False off-darwin / on any failure — the board is already
+    written, so opening is purely a convenience."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        return subprocess.run(["open", path], capture_output=True,
+                              timeout=10).returncode == 0
+    except Exception:
+        return False
+
+
+def cmd_board(a):
+    """Write a self-contained HTML board of every task (open + closed) to
+    <data_dir>/board.html and print its path. Reuses the theme-preview HTML
+    approach (tools/render_board.py): inline CSS, no server, no external assets,
+    no LLM. `--open` best-effort opens it in a browser."""
+    ensure_seqs()
+    vms = [_board_view_model(t) for t in sorted_tasks()]
+    here = os.path.dirname(BASE)                       # repo root (BASE = lib/)
+    tools = os.path.join(here, "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import render_board
+    theme = variant = None
+    try:
+        import config
+        theme = config.active_theme()
+    except Exception:
+        pass
+    if cats and hasattr(cats, "resolve_variant"):
+        try:
+            variant = cats.resolve_variant()
+        except Exception:
+            variant = None
+    generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+    html_doc = render_board.render_html(vms, theme=theme, variant=variant,
+                                        generated=generated)
+    out = os.path.join(paths.data_dir(), "board.html")
+    os.makedirs(paths.data_dir(), exist_ok=True)
+    tmp = out + ".tmp." + str(os.getpid())
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(html_doc)
+    os.replace(tmp, out)
+    print(out)
+    if getattr(a, "open", False):
+        _open_path(out)
+
+
 def cmd_session_start(a):
     task_id = get_link(a.session)
     if task_id == SKIP_SENTINEL:
@@ -2668,6 +2859,15 @@ def main():
     sp = sub.add_parser("mark-edited"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_mark_edited)   # PostToolUse(Write|Edit|NotebookEdit) one-shot reminder
 
+    sp = sub.add_parser("touch-file"); sp.add_argument("--session", required=True)
+    sp.add_argument("--file", dest="file", required=True)
+    sp.set_defaults(fn=cmd_touch_file)    # PostToolUse: append an edited path to the task's briefing
+
+    sp = sub.add_parser("board")
+    sp.add_argument("--open", dest="open", action="store_true",
+                    help="best-effort: open the written board.html in a browser (macOS)")
+    sp.set_defaults(fn=cmd_board)         # self-contained HTML board of all tasks
+
     sp = sub.add_parser("stop-gate"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_stop_gate)     # Stop hook: block ending an untracked edit session
 
@@ -2700,6 +2900,9 @@ def main():
     sp = sub.add_parser("update"); sp.add_argument("--task", required=True)
     sp.add_argument("--title", default=None); sp.add_argument("--summary", default=None)
     sp.add_argument("--append-summary", dest="append_summary", default=None)
+    sp.add_argument("--state", default=None,
+                    help="set the briefing's 'where it stands / next step' line "
+                         "(model-curated; '' clears it)")
     sp.add_argument("--color", default=None); sp.add_argument("--effort", default=None)
     sp.set_defaults(fn=cmd_update)
 
