@@ -3,9 +3,11 @@
 
 Mirrors the terminal `/todo` board: TWO sections (Open, then Closed), each a GRID
 with the same columns — status · # · Task · Category · Effort · Activity — and
-every row EXPANDABLE via native <details>/<summary> (NO JS). The expanded row shows
-the task summary, the hub/pinned resume one-liner (with its last-activity time) and
-a de-emphasised Workers subsection, plus the briefing (state · repos · PRs · files).
+every row EXPANDABLE via native <details>/<summary> (NO JS). A row with steps carries a
+compact progress bar + N/M in its Task cell. The expanded row leads with the structured
+digest (goal · next/standing · steps checklist with rollup · decisions · repos · PRs ·
+files), then the hub/pinned resume one-liner (with its last-activity time) and a
+de-emphasised Workers subsection, and LAST the full task summary.
 
 Constraints (same as tools/render_palettes.py): ONE static HTML file, inline CSS,
 NO server, NO external assets / http(s) references, NO deps beyond the stdlib + the
@@ -112,6 +114,13 @@ def _css(pg):
     text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:8px}
   .c-task .disc{color:var(--dim);font-size:11px;transition:transform .12s}
   details.row[open] .c-task .disc{transform:rotate(90deg)}
+  /* compact per-row progress (mini bar + N/M) folded into the Task cell — no new
+     column, so the grid template is untouched. Only rendered when steps exist. */
+  .c-task .prog{flex:none;display:inline-flex;align-items:center;gap:5px;
+    font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+  .c-task .pbar{display:inline-block;width:34px;height:5px;border-radius:99px;
+    background:var(--line);overflow:hidden}
+  .c-task .pbar>span{display:block;height:100%;background:var(--accent)}
   .c-seq{font-family:var(--mono);font-size:12px;color:var(--dim)}
   .c-act{font-family:var(--mono);font-size:11.5px;color:var(--dim)}
   .c-eff{font-family:var(--mono);font-size:12px;color:var(--ink)}
@@ -170,6 +179,11 @@ def _css(pg):
   .brief a{color:var(--accent);overflow-wrap:anywhere}
   .brief .files{font-family:var(--mono);font-size:11.5px;color:var(--ink);display:grid;gap:2px}
   .brief .files .d{color:var(--dim)}
+  .brief ul.steps{margin:0;padding-left:2px;list-style:none;display:grid;gap:3px;min-width:0}
+  .brief ul.steps li{font-family:var(--mono);font-size:12px;color:var(--ink);overflow-wrap:anywhere}
+  .brief ul.steps li.done{color:var(--dim);text-decoration:line-through}
+  .brief ul.decisions{margin:0;padding-left:18px;list-style:disc;min-width:0;display:grid;gap:2px}
+  .brief ul.decisions li{color:var(--ink);overflow-wrap:anywhere}
 
   .help{margin-top:34px}
   .panels{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
@@ -199,6 +213,40 @@ def _css(pg):
 
 def _e(s):
     return html.escape(str(s if s is not None else ""), quote=True)
+
+
+def _rich(text):
+    """Light-markdown (mdlite) render of a SHORT digest string (goal/state/a single
+    decision) — html-escaped first, so it stays self-contained. A single-paragraph
+    result is unwrapped to inline content (these live inside a span / li); falls
+    back to escaped plain text when mdlite is unavailable or yields nothing."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    if _md is not None:
+        try:
+            rendered = _md.render(text)
+        except Exception:
+            rendered = ""
+        if rendered:
+            if (rendered.startswith("<p>") and rendered.endswith("</p>")
+                    and rendered.count("<p>") == 1):
+                return rendered[3:-4]
+            return rendered
+    return _e(text)
+
+
+def _progress_chip(t):
+    """Compact mini-bar + `N/M` for the Task cell — only when the task has steps."""
+    prog = list(t.get("progress") or [])
+    done = prog[0] if len(prog) > 0 else 0
+    total = prog[1] if len(prog) > 1 else 0
+    if not total:
+        return ""
+    pct = int(round(100 * done / total))
+    return ('<span class="prog" title="%d of %d steps done">'
+            '<span class="pbar"><span style="width:%d%%"></span></span>%d/%d</span>'
+            % (done, total, pct, done, total))
 
 
 def _palette_for(color, theme, variant):
@@ -284,13 +332,36 @@ def _resume_detail(t):
 
 
 def _brief_detail(t):
-    state, repos, prs, files = t.get("state"), t.get("repos"), t.get("prs"), t.get("files")
-    if not (state or repos or prs or files):
+    # Digest-first: goal → next/standing → steps checklist (with rollup) →
+    # decisions → repos → stored PRs → files. goal/state/decisions render through
+    # mdlite (escaped first); steps/files/prs are structured.
+    goal = t.get("goal")
+    state = t.get("state")
+    steps = t.get("steps") or []
+    decisions = t.get("decisions") or []
+    repos, prs, files = t.get("repos"), t.get("prs"), t.get("files")
+    if not (goal or state or steps or decisions or repos or prs or files):
         return ""
     rows = ['<div class="brief">']
+    if goal:
+        rows.append('<div class="row"><span class="k">goal</span>'
+                    '<span class="v">%s</span></div>' % _rich(goal))
     if state:
         rows.append('<div class="row"><span class="k">next / standing</span>'
-                    '<span class="v">%s</span></div>' % _e(state))
+                    '<span class="v">%s</span></div>' % _rich(state))
+    if steps:
+        done = sum(1 for s in steps if s.get("done"))
+        items = "".join(
+            '<li class="%s">%s %s</li>'
+            % ("done" if s.get("done") else "todo",
+               "✓" if s.get("done") else "☐", _e(s.get("text", "")))
+            for s in steps)
+        rows.append('<div class="row"><span class="k">steps %d/%d</span>'
+                    '<ul class="steps">%s</ul></div>' % (done, len(steps), items))
+    if decisions:
+        items = "".join('<li>%s</li>' % _rich(d) for d in decisions)
+        rows.append('<div class="row"><span class="k">decisions</span>'
+                    '<ul class="decisions">%s</ul></div>' % items)
     if repos:
         rows.append('<div class="row"><span class="k">repos</span>'
                     '<span class="v">%s</span></div>' % _e(", ".join(repos)))
@@ -346,11 +417,12 @@ def _row(t, theme, variant):
         '<details class="row%s" style="border-left-color:%s">'
         '<summary class="rowsum">%s'
         '<span class="c-seq">%s</span>'
-        '<span class="c-task"><span class="disc">▸</span>%s</span>'
+        '<span class="c-task"><span class="disc">▸</span>%s%s</span>'
         '%s%s'
         '<span class="c-act">%s</span></summary>'
         '%s</details>'
         % (closed, _e(accent), _status_cell(t), seqcell, _e(t.get("title")),
+           _progress_chip(t),
            _tag_cell(t, accent, pal), _effort_cell(t), _e(t.get("activity") or ""),
            "".join(detail))
     )
