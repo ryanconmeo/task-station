@@ -3,6 +3,13 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [1.15.1] — 2026-06-24
+
+### Added
+- **`/todo board`** — open the visual HTML board from the slash command (previously only the
+  `task-station board` CLI subcommand existed, with no obvious way in). `/todo board` renders
+  the board and opens it in your browser by default; listed in the `/todo` Commands help.
+
 ## [1.15.0] — 2026-06-24
 
 ### Added

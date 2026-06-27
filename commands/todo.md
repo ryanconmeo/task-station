@@ -1,6 +1,6 @@
 ---
 description: List tracked tasks; /todo <n> opens & resumes one; /todo closed [N] / all list more closed.
-argument-hint: "[task # · -s to jump (comma-separated #s jump several) · 'closed [N]' / 'all' to list closed]"
+argument-hint: "[task # · -s to jump (comma-separated #s jump several) · 'closed [N]' / 'all' to list closed · 'board' to open the HTML board]"
 allowed-tools: Bash
 disable-model-invocation: true
 ---
@@ -13,6 +13,7 @@ Each task is colour-coded by category (an `<emoji> [TAG]` after the title — th
 
 A task's lifecycle is **one field, `status`, with three values: open (`○`) → active (`●`) → closed (`✕`)**. Each row carries a leading **STATUS column** (before `#`) holding the lifecycle glyph — `○` **open** (a topic merely raised), `●` **active** (work has actually started), or `✕` **closed** (closed rows live in their own section). A task auto-promotes `○ open → ● active` when you delegate `--worktree` for it, edit a file in an attached session, or set it manually with `status --task <ref> active`. New tasks start `○ open` (or `● active` via `create --active`); `/done` closes them (`✕`), and reopening a closed task returns it to `○ open`. The legend under the tables reads `● active · ○ open · ✕ closed`.
 
+- If the output starts with **`[BOARD]`** (`/todo board`), the tracker wrote the self-contained HTML board and tried to open it in the browser. **Print those lines verbatim** (they give the file path and whether it opened) and do nothing else.
 - If it is a **list**, the tracker has already rendered it as GitHub-flavored Markdown — two tables (Open then Closed) whose columns are a centered status glyph, then `#`/`Task`/`Category`/`Effort`/`Activity`, any "… older closed …" note, and a `**Commands**` section: an aligned command help block inside a ``` fence (command-and-description columns plus a `<n>` / `<n1, n2, …>` / `[N]` notation legend), not a bullet list or a table. **Print that block verbatim** to the user — do not re-transcribe it, rebuild the tables, renumber rows, reflow the aligned columns, or reword the commands. Do not take any other action.
 - If it is a **task detail**, this session has just been attached to that task (reopened if it was closed). Do all of the following, in order:
   1. The terminal is tinted to the task's category automatically (full Sands palette via the hooks) — nothing to run by hand.

@@ -105,6 +105,21 @@ class BoardTest(unittest.TestCase):
         # still self-contained
         self.assertNotIn("<script", html)
 
+    def test_todo_board_routes_through_render(self):
+        # `/todo board` → cmd_render writes board.html and announces it with [BOARD].
+        import re
+        self._seed("Routed via /todo board")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ts.cmd_render(_Args(arg="board", format="md", session="s1"))
+        out = buf.getvalue()
+        self.assertIn("[BOARD]", out)
+        m = re.search(r"(\S+board\.html)", out)
+        self.assertTrue(m and os.path.exists(m.group(1)), "board.html should be written")
+
+    def test_todo_board_listed_in_commands_help(self):
+        self.assertTrue(any("/todo board" in c for c, _ in ts._COMMANDS_HELP))
+
     def test_render_html_directly_on_empty_list(self):
         sys.path.insert(0, os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))

@@ -327,6 +327,7 @@ _COMMANDS_HELP = [
     ("/todo <n1, n2, …> -s", "jump into task session(s), in a new window"),
     ("/todo closed [N]",     "list recent closed (default 20)"),
     ("/todo all",            "show every task (all open + closed)"),
+    ("/todo board",          "open the visual HTML board"),
     ("/done",                "close the current task"),
     ("/done <n1, n2, …>",    "close tasks by number"),
     ("/task-station:config", "open settings"),
@@ -1797,6 +1798,14 @@ def cmd_render(a):
             return
         print("\n\n".join(_jump_one(r, a.session) for r in refs))
         return
+    if arg.lower() in ("board", "board open", "board --open"):
+        # /todo board → render the visual HTML board and open it (default).
+        out = write_board()
+        opened = _open_path(out)
+        print("[BOARD] Your visual task board:\n  %s" % out)
+        print("  Opened in your browser." if opened
+              else "  Open it with:  open \"%s\"" % out)
+        return
     task = resolve_ref(arg)
     if not task:
         print("No task matching '%s'.\n\n%s" % (arg, _fmt_list()))
@@ -2748,11 +2757,11 @@ def _open_path(path):
         return False
 
 
-def cmd_board(a):
-    """Write a self-contained HTML board of every task (open + closed) to
-    <data_dir>/board.html and print its path. Reuses the theme-preview HTML
+def write_board():
+    """Render the self-contained HTML board of every task (open + closed) to
+    <data_dir>/board.html and return its path. Reuses the theme-preview HTML
     approach (tools/render_board.py): inline CSS, no server, no external assets,
-    no LLM. `--open` best-effort opens it in a browser."""
+    no LLM. Shared by `board` and `/todo board`."""
     ensure_seqs()
     vms = [_board_view_model(t) for t in sorted_tasks()]
     here = os.path.dirname(BASE)                       # repo root (BASE = lib/)
@@ -2780,6 +2789,12 @@ def cmd_board(a):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(html_doc)
     os.replace(tmp, out)
+    return out
+
+
+def cmd_board(a):
+    """`task-station board [--open]` — write the HTML board and print its path."""
+    out = write_board()
     print(out)
     if getattr(a, "open", False):
         _open_path(out)
