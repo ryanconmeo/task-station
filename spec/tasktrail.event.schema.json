@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ryanconmeo/task-station/spec/tasktrail.event.schema.json",
+  "title": "Tasktrail event envelope",
+  "description": "One JSON object per line in a tasktrail/events/*.jsonl shard. Tasktrail spec_version 1.0. Envelope keys are always JSON-serialised with sorted keys; timestamps are UTC ISO8601 to seconds. See docs/spec/TASKTRAIL.md.",
+  "type": "object",
+  "required": ["v", "ts", "n", "event", "task", "actor", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "v": { "const": 1, "description": "Envelope version (distinct from spec_version). Bumped only on a breaking envelope change." },
+    "ts": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\+00:00$",
+      "description": "UTC ISO8601, seconds precision, always the +00:00 offset."
+    },
+    "n": { "type": "integer", "minimum": 1, "description": "Per-task monotonic counter, gapless 1..N in append order." },
+    "event": {
+      "type": "string",
+      "enum": [
+        "task.created",
+        "task.updated",
+        "task.status",
+        "task.event",
+        "task.relation",
+        "task.checkpoint",
+        "task.snapshot",
+        "task.deleted",
+        "task.redacted"
+      ]
+    },
+    "task": {
+      "type": "object",
+      "required": ["uuid", "seq"],
+      "additionalProperties": false,
+      "properties": {
+        "uuid": { "type": "string", "minLength": 1, "description": "Stable task id — the identity key across the whole stream." },
+        "seq": { "type": ["integer", "null"], "description": "Human-facing per-vault sequence number; may be null." }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "required": ["session"],
+      "additionalProperties": false,
+      "properties": {
+        "session": { "type": ["string", "null"], "description": "Originating Claude session id, or null for a non-session actor (backfill/redact)." },
+        "owner": { "type": "string", "minLength": 1, "description": "Shared-vault owner handle; present only when the producer stamped an owner." }
+      }
+    },
+    "data": {
+      "type": "object",
+      "description": "Event-kind-specific payload; see the conditional subschemas below. Any non-task.redacted event's data may instead be the redaction stub {\"redacted\": true}."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "event": { "const": "task.created" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/createdOrStub" } } }
+    },
+    {
+      "if": { "properties": { "event": { "const": "task.updated" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/updatedOrStub" } } }
+    },
+    {
+      "if": { "properties": { "event": { "const": "task.status" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/statusOrStub" } } }
+    },
+    {
+      "if": { "properties": { "event": { "const": "task.event" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/eventOrStub" } } }
+    },
+    {
+      "if": { "properties": { "event": { "const": "task.relation" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/relationOrStub" } } }
+    },
+    {
+      "if": { "properties": { "event": { "const": "task.checkpoint" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/digestOrStub" } } }
+    },
+    {
+      "if": { "properties": { "event": { "const": "task.snapshot" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/digestOrStub" } } }
+    },
+    {
+      "if": { "properties": { "event": { "const": "task.deleted" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/deletedOrStub" } } }
+    },
+    {
+      "if": { "properties": { "event": { "const": "task.redacted" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/redactedMarker" } } }
+    }
+  ],
+  "$defs": {
+    "redactionStub": {
+      "type": "object",
+      "required": ["redacted"],
+      "additionalProperties": false,
+      "properties": { "redacted": { "const": true } },
+      "description": "The payload left behind after a right-to-be-forgotten redaction rewrites a task's shards."
+    },
+    "glossaryTerm": {
+      "type": "object",
+      "required": ["name", "layer", "state", "def"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string", "description": "The term." },
+        "layer": { "type": "string", "description": "Which layer of the consumer's second brain the term belongs to (e.g. raw, wiki)." },
+        "state": { "type": "string", "description": "Lifecycle state of the term (e.g. draft, stable, deprecated)." },
+        "def": { "type": "string", "description": "The definition." }
+      }
+    },
+    "digest": {
+      "type": "object",
+      "required": ["goal", "state", "steps", "summary", "decisions", "prs", "stories"],
+      "additionalProperties": true,
+      "properties": {
+        "goal": { "type": "string" },
+        "state": { "type": "string" },
+        "steps": { "type": "array" },
+        "summary": { "type": "string" },
+        "decisions": { "type": "array", "items": { "type": "string" } },
+        "prs": { "type": "array" },
+        "stories": { "type": "array" },
+        "glossary": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/glossaryTerm" },
+          "description": "First-class optional field. Carried structured (verbatim) in the digest — contrast the flattened frontmatter rendering."
+        },
+        "brief_path": { "type": "string", "description": "First-class optional field. Path (relative to the note/export root) to a rendered brief artifact." }
+      }
+    },
+    "created": {
+      "type": "object",
+      "required": ["title", "status"],
+      "additionalProperties": true,
+      "properties": {
+        "title": { "type": "string" },
+        "status": { "type": ["string", "null"] },
+        "color": {},
+        "effort": {},
+        "goal": { "type": "string" }
+      }
+    },
+    "updated": {
+      "type": "object",
+      "required": ["changed", "fields"],
+      "additionalProperties": false,
+      "properties": {
+        "changed": { "type": "array", "items": { "type": "string" } },
+        "fields": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "title": { "type": "string" },
+            "summary": { "type": "string" },
+            "state": { "type": "string" },
+            "goal": { "type": "string" },
+            "effort": {},
+            "color": {}
+          }
+        }
+      }
+    },
+    "status": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "type": "string" },
+        "closed_ts": { "type": ["number", "null"] }
+      }
+    },
+    "eventData": {
+      "type": "object",
+      "required": ["kind", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string" },
+        "text": { "type": "string" }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "required": ["kind", "other"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string" },
+        "other": {
+          "type": "object",
+          "required": ["uuid", "seq"],
+          "additionalProperties": false,
+          "properties": {
+            "uuid": { "type": "string" },
+            "seq": { "type": ["integer", "null"] }
+          }
+        }
+      }
+    },
+    "deleted": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "redactedMarker": {
+      "type": "object",
+      "required": ["generation"],
+      "additionalProperties": false,
+      "properties": {
+        "generation": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "createdOrStub": { "oneOf": [{ "$ref": "#/$defs/created" }, { "$ref": "#/$defs/redactionStub" }] },
+    "updatedOrStub": { "oneOf": [{ "$ref": "#/$defs/updated" }, { "$ref": "#/$defs/redactionStub" }] },
+    "statusOrStub": { "oneOf": [{ "$ref": "#/$defs/status" }, { "$ref": "#/$defs/redactionStub" }] },
+    "eventOrStub": { "oneOf": [{ "$ref": "#/$defs/eventData" }, { "$ref": "#/$defs/redactionStub" }] },
+    "relationOrStub": { "oneOf": [{ "$ref": "#/$defs/relation" }, { "$ref": "#/$defs/redactionStub" }] },
+    "digestOrStub": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "$ref": "#/$defs/redactionStub" }] },
+    "deletedOrStub": { "oneOf": [{ "$ref": "#/$defs/deleted" }, { "$ref": "#/$defs/redactionStub" }] }
+  }
+}

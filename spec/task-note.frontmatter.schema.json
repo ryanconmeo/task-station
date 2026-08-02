@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ryanconmeo/task-station/spec/task-note.frontmatter.schema.json",
+  "title": "Tasktrail task-note frontmatter",
+  "description": "The flat YAML frontmatter block of a per-task note in tasktrail/notes/*.md (also the export/vault note contract v2). Values are described by their logical type AFTER the plugin's flat-YAML parse; empty scalars render as the string \"\". Tasktrail spec_version 1.0. See docs/spec/TASKTRAIL.md.",
+  "type": "object",
+  "required": [
+    "managed-by",
+    "schema-version",
+    "uuid",
+    "seq",
+    "status",
+    "category",
+    "effort",
+    "repos",
+    "story",
+    "pr",
+    "created",
+    "updated",
+    "closed",
+    "title",
+    "models",
+    "cost-usd",
+    "time-spent"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "managed-by": { "const": "task-station" },
+    "schema-version": { "const": 2, "description": "Note contract major version. 2 = the v2 contract (uuid/closed/resolvable Related)." },
+    "uuid": { "type": "string", "minLength": 1, "description": "Stable task id — matches the event envelope task.uuid." },
+    "seq": {
+      "anyOf": [{ "type": "integer" }, { "const": "" }],
+      "description": "Human-facing per-vault sequence, or \"\" when unassigned."
+    },
+    "status": { "type": "string", "description": "open | active | closed (free-form; open/closed are the load-bearing values)." },
+    "category": { "type": "string" },
+    "effort": { "type": "string" },
+    "repos": { "type": "array", "items": { "type": "string" } },
+    "story": { "type": "array", "items": { "type": "string" } },
+    "pr": { "type": "array", "items": { "type": "string" } },
+    "created": { "$ref": "#/$defs/dateOrEmpty" },
+    "updated": { "$ref": "#/$defs/dateOrEmpty" },
+    "closed": { "$ref": "#/$defs/dateOrEmpty", "description": "The REAL close date, stamped once from closed_ts; \"\" while open." },
+    "title": { "type": "string" },
+    "models": { "type": "array", "items": { "type": "string" } },
+    "cost-usd": {
+      "anyOf": [{ "type": "number" }, { "const": "" }],
+      "description": "Derived USD, or \"\" when untracked."
+    },
+    "time-spent": { "type": "integer", "minimum": 0, "description": "Active minutes." },
+    "owner": { "type": "string", "minLength": 1, "description": "Shared-vault owner handle; present only when the producer stamped an owner." },
+    "glossary": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "First-class OPTIONAL field. In frontmatter each term is FLATTENED to a single scalar (the plugin's generic renderer stringifies the term object) — NOT machine-structured. The structured {name,layer,state,def} shape lives in the checkpoint/snapshot digest (tasktrail.event.schema.json). Present only when the task carries a glossary."
+    },
+    "brief_path": {
+      "type": "string",
+      "description": "First-class OPTIONAL field. Path (relative to the note/export root) to a rendered brief artifact. Present only when the task carries one."
+    }
+  },
+  "$defs": {
+    "dateOrEmpty": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        { "const": "" }
+      ]
+    }
+  }
+}

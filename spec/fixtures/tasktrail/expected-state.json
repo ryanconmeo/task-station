@@ -1,0 +1,32 @@
+{
+  "generation": 2,
+  "spec_version": "1.0",
+  "tasks": [
+    {
+      "present": true,
+      "seq": 1,
+      "status": "closed",
+      "title": "Ship stream contract",
+      "uuid": "t-0001"
+    },
+    {
+      "present": true,
+      "seq": 4,
+      "status": "open",
+      "title": "Ongoing work",
+      "uuid": "t-0004"
+    },
+    {
+      "present": false,
+      "reason": "redacted",
+      "seq": 2,
+      "uuid": "t-0002"
+    },
+    {
+      "present": false,
+      "reason": "deleted",
+      "seq": 3,
+      "uuid": "t-0003"
+    }
+  ]
+}

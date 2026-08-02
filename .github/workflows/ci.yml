@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    name: tests (${{ matrix.os }} · py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # Task Station is stdlib-only; pytest is the sole dev dependency. pytest.ini
+      # makes it discover the same suite that `unittest` runs (see tests/conftest.py,
+      # which pins TASK_STATION_HOME to a throwaway tmpdir before the engine imports).
+      - name: Install pytest
+        run: python -m pip install --upgrade pytest
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  tasktrail-spec:
+    name: tasktrail spec conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Tasktrail (docs/spec/TASKTRAIL.md) ships a stdlib-only validator. Gate on
+      # the golden fixture bundle validating clean against the published schemas; the
+      # producer self-conformance run lives in the unittest suite above
+      # (tests/test_tasktrail_spec.py).
+      - name: Validate golden fixtures
+        run: python spec/validate.py spec/fixtures/tasktrail
+      # Reference consumer #2 (A-7) must replay the fixtures to a byte-identical
+      # digest.md. The unittest (tests/test_tasktrail_digest.py) also covers
+      # tombstone/generation-bump/idempotency; this is the explicit CLI gate.
+      - name: Reference consumer replays fixtures byte-identically
+        run: |
+          python "spec/consumers/tasktrail-digest.py" \
+            --stream spec/fixtures/tasktrail --out "$RUNNER_TEMP/digest-out"
+          diff -u spec/fixtures/expected-digest.md "$RUNNER_TEMP/digest-out/digest.md"
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      # The hooks and the terminal/window helpers are the shipped shell surface.
+      # severity=warning ignores stylistic info notes (SC2015 &&/|| idioms, etc.)
+      # while still catching real quoting/expansion bugs. Targeted `# shellcheck
+      # disable=` lines live in the scripts where a flagged pattern is intentional.
+      - name: Run shellcheck
+        run: shellcheck --severity=warning hooks/*.sh lib/*.sh lib/delegate/*.sh
+
+  manifest:
+    name: manifest version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Guard against version drift across the two manifests and the changelog —
+      # plugin.json, marketplace.json, and the topmost CHANGELOG release heading
+      # must agree. An "## [Unreleased]" heading above the release is allowed and
+      # skipped (that's where in-flight entries land before the hub cuts a version).
+      - name: Assert versions match
+        run: |
+          python - <<'PY'
+          import json, re, sys
+
+          plugin = json.load(open(".claude-plugin/plugin.json", encoding="utf-8"))
+          market = json.load(open(".claude-plugin/marketplace.json", encoding="utf-8"))
+          plugin_v = plugin["version"]
+          market_v = market["plugins"][0]["version"]
+
+          # Topmost release heading: first `## [x.y.z]`, skipping a leading Unreleased.
+          changelog_v = None
+          for line in open("CHANGELOG.md", encoding="utf-8"):
+              m = re.match(r"^##\s*\[([^\]]+)\]", line)
+              if not m:
+                  continue
+              tag = m.group(1)
+              if tag.strip().lower() == "unreleased":
+                  continue
+              changelog_v = tag.strip()
+              break
+
+          errs = []
+          if market_v != plugin_v:
+              errs.append("marketplace.json %r != plugin.json %r" % (market_v, plugin_v))
+          if changelog_v != plugin_v:
+              errs.append("CHANGELOG top release %r != plugin.json %r" % (changelog_v, plugin_v))
+          if errs:
+              print("Version drift:\n  " + "\n  ".join(errs))
+              sys.exit(1)
+          print("versions agree: %s" % plugin_v)
+          PY
+
+  plugin-validate:
+    name: plugin validate (non-blocking)
+    runs-on: ubuntu-latest
+    # Advisory only: the Claude Code CLI evolves independently, so a validator
+    # change shouldn't red-X the build. Surfaces problems without gating merges.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate plugin
+        run: claude plugin validate .

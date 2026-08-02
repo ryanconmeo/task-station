@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# task-station — thin CLI wrapper around lib/task-station.py.
+#
+# Claude Code adds a plugin's bin/ directory to the Bash tool PATH while the
+# plugin is enabled, so `task-station <cmd>` runs the engine without spelling out
+# the long, version-pinned `python3 <plugin-cache>/lib/task-station.py <cmd>`
+# invocation. Same engine, same args — this only resolves its own location and
+# hands off. The hook scripts still call the absolute path directly (they run
+# with $CLAUDE_PLUGIN_ROOT set and must not depend on PATH); do not route them
+# through here.
+#
+# We resolve THIS script's real path through any symlinks (the marketplace may
+# expose bin/ via a symlink, and users may symlink the wrapper onto their own
+# PATH) so that <root>/lib/task-station.py is found relative to the real file,
+# not the link. No `readlink -f` — it's absent/limited on stock macOS; we walk
+# the symlink chain by hand instead.
+set -euo pipefail
+
+src="${BASH_SOURCE[0]:-$0}"
+# Follow symlinks to the real file. Relative link targets resolve against the
+# link's own directory, so cd there between hops.
+while [ -h "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+  src="$(readlink "$src")"
+  case "$src" in
+    /*) ;;                # absolute target — use as-is
+    *) src="$dir/$src" ;; # relative target — anchor to the link's dir
+  esac
+done
+bin_dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+root="$(cd -P "$bin_dir/.." >/dev/null 2>&1 && pwd)"
+
+exec python3 "$root/lib/task-station.py" "$@"

@@ -1,0 +1,84 @@
+{
+  "title": "LEGACY Key Collation — Strategy",
+  "subtitle": "Projectname domains DB · 2026-07-01 · Feature 3049",
+  "decision": {
+    "label": "Decision",
+    "body": "Rebuild + Centralize. Rebuild the database so text is case-sensitive by default (a Binary-Default (BIN2) Store), and handle case-insensitive search in one place (a Centralized Search Layer). Build the layer first, flip the store second."
+  },
+  "transition": {
+    "today": {
+      "label": "Today",
+      "name": "Patch-and-Guard",
+      "lines": [
+        "Store — Mixed-Collation Store",
+        "Search — Inline Collation (~400 scattered spots)",
+        "State — dev works (shipped fix + gate), but fragile"
+      ]
+    },
+    "goal": {
+      "label": "Goal",
+      "name": "Rebuild + Centralize",
+      "lines": [
+        "Store — Binary-Default (BIN2) Store",
+        "Search — Centralized Search Layer (one place)",
+        "State — errors impossible; search handled once"
+      ]
+    }
+  },
+  "diagrams": [
+    {
+      "type": "svg",
+      "title": "Two choices → four combinations",
+      "intro": "Two independent knobs; we move from one corner to the opposite corner.",
+      "svg": "<svg viewBox=\"0 0 600 240\" role=\"img\" aria-label=\"Strategy matrix\" style=\"width:100%;height:auto;min-width:460px;font-family:inherit\"><rect x=\"150\" y=\"40\" width=\"200\" height=\"70\" rx=\"12\" fill=\"#eef3fc\" stroke=\"#2c5cc5\" stroke-width=\"1.5\"/><text x=\"250\" y=\"80\" text-anchor=\"middle\" font-size=\"15\" font-weight=\"700\" fill=\"#2c5cc5\">Patch-and-Guard</text><rect x=\"370\" y=\"150\" width=\"200\" height=\"70\" rx=\"12\" fill=\"#edf7f0\" stroke=\"#1f8a4c\" stroke-width=\"3\"/><text x=\"470\" y=\"190\" text-anchor=\"middle\" font-size=\"15\" font-weight=\"700\" fill=\"#1f8a4c\">Rebuild + Centralize</text></svg>",
+      "caption": "Safe path: build the layer first, then flip the store."
+    }
+  ],
+  "glossary": "auto",
+  "one_rule": "Build the search layer before flipping the store. Flip first and ~194 searches silently turn case-sensitive — the Centralized Search Layer is the safety net that makes the flip safe.",
+  "plan": [
+    {
+      "state": "done",
+      "title": "Bridge (now).",
+      "body": "Keep Patch-and-Guard live — the shipped fix + Collation Gate keep dev working through the rebuild."
+    },
+    {
+      "state": "1",
+      "title": "Build the Centralized Search Layer",
+      "body": "in apps/api. Route all search / filter / sort through it. The big step."
+    }
+  ],
+  "ado_tree": [
+    {
+      "type": "Feature",
+      "id": 3049,
+      "url": "https://dev.azure.com/companyname/Projectname/_workitems/edit/3049",
+      "title": "LEGACY Key Collation",
+      "verb": "change",
+      "does": "reshape the store into a Binary-Default (BIN2) Store",
+      "state": "active",
+      "children": [
+        {
+          "type": "Story",
+          "id": 3133,
+          "url": "https://dev.azure.com/companyname/Projectname/_workitems/edit/3133",
+          "title": "Collation Gate",
+          "verb": "add",
+          "does": "a Collation Gate that blocks anyone bypassing the layer",
+          "state": "shipped",
+          "children": [
+            {
+              "type": "PR",
+              "id": 931,
+              "url": "https://dev.azure.com/companyname/Projectname/_git/Projectname/pullrequest/931",
+              "title": "Shipped fix (Projectname-3073)",
+              "verb": "remove",
+              "does": "drop the worst Inline Collation hot spots"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "provenance": "Shipped fix: PR 931 (Projectname-3073, 2 approvals). Gate: story 3133. Based on a 2026-07-01 read-only survey of apps/api."
+}

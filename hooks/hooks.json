@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_session_start.sh\"" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_user_prompt.sh\"" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Write|Edit|NotebookEdit", "hooks": [
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_post_tool.sh\"" } ] }
+    ],
+    "Stop": [
+      { "hooks": [
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_stop.sh\"" } ] }
+    ],
+    "PostCompact": [
+      { "matcher": "manual", "hooks": [
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_post_compact.sh\"" } ] },
+      { "matcher": "auto", "hooks": [
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_post_compact.sh\"" } ] }
+    ]
+  }
+}

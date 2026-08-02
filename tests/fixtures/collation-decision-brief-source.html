@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projectname Collation Strategy</title>
+<style>
+  :root{
+    --ink:#1d2430; --muted:#66707e; --line:#e6eaf0; --bg:#f8f9fb; --card:#fff;
+    --accent:#2c5cc5; --good:#1f8a4c; --bad:#c0392b; --warn:#b7791f;
+    --good-bg:#edf7f0; --bad-bg:#fbeeec; --accent-bg:#eef3fc; --warn-bg:#fbf4e5;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:820px;margin:0 auto;padding:48px 24px 80px;}
+  h1{font-size:28px;line-height:1.2;margin:0 0 2px;letter-spacing:-.01em;}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 26px;}
+  h2{font-size:15px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+     margin:40px 0 12px;font-weight:700;}
+  p{margin:10px 0;} b{color:var(--ink);}
+  code{background:#eef1f6;border-radius:4px;padding:1px 5px;font-size:.85em;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+  .term{font-weight:700;color:var(--accent);}
+  .banner{background:var(--good-bg);border:1px solid #bfe4cd;border-left:5px solid var(--good);
+    border-radius:12px;padding:18px 22px;margin:20px 0;}
+  .banner .k{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--good);font-weight:700;margin-bottom:4px;}
+  .banner p{margin:0;font-size:17px;}
+  .glossary{display:grid;grid-template-columns:1fr;gap:10px;margin:14px 0;}
+  .g{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;}
+  .g .name{font-weight:700;color:var(--accent);}
+  .g .where{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;
+    color:var(--muted);border:1px solid var(--line);border-radius:20px;padding:1px 8px;margin-left:8px;}
+  .g .d{color:var(--muted);font-size:14px;margin-top:2px;}
+  .rule{background:var(--bad-bg);border:1px solid #f0c8c2;border-radius:12px;padding:16px 20px;margin:20px 0;}
+  .rule b{color:var(--bad);}
+  figure{margin:22px 0;} .scroll{overflow-x:auto;}
+  figcaption{font-size:13px;color:var(--muted);margin-top:8px;text-align:center;}
+  .phase{display:flex;gap:14px;align-items:flex-start;margin:12px 0;}
+  .phase .num{flex:none;width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;
+    display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;}
+  .phase .b{flex:1;} .phase .b .t{font-weight:700;}
+  .phase.done .num{background:var(--good);}
+  .q{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:14px 0;}
+  .foot{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px;}
+  a{color:var(--accent);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>LEGACY Key Collation — Strategy</h1>
+<p class="sub">Projectname domains DB · 2026-07-01 · Feature 3049</p>
+
+<div class="banner">
+  <div class="k">Decision</div>
+  <p><b>Rebuild + Centralize.</b> Rebuild the database so text is case-sensitive by default (a <span class="term">Binary-Default (BIN2) Store</span>), and handle case-insensitive search in one place (a <span class="term">Centralized Search Layer</span>). Build the layer <b>first</b>, flip the store <b>second</b>.</p>
+</div>
+
+<h2>Where we are → where we're going</h2>
+<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:stretch;margin:14px 0;">
+  <div style="flex:1;min-width:250px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 18px;">
+    <div style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:var(--muted);margin-bottom:8px;">● Today</div>
+    <div style="font-weight:700;color:var(--accent);margin-bottom:8px;">Patch-and-Guard</div>
+    <div style="font-size:14px;color:var(--muted);line-height:1.8;">
+      Store — <b style="color:var(--ink)">Mixed-Collation</b><br>
+      Search — <b style="color:var(--ink)">Inline Collation</b> (~400 scattered spots)<br>
+      State — dev works (shipped fix + gate), but fragile
+    </div>
+  </div>
+  <div style="flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:26px;color:var(--muted);padding:0 4px;">→</div>
+  <div style="flex:1;min-width:250px;background:var(--good-bg);border:1px solid #bfe4cd;border-radius:12px;padding:16px 18px;">
+    <div style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:var(--good);margin-bottom:8px;">◎ Goal</div>
+    <div style="font-weight:700;color:var(--good);margin-bottom:8px;">Rebuild + Centralize</div>
+    <div style="font-size:14px;color:var(--muted);line-height:1.8;">
+      Store — <b style="color:var(--ink)">Binary-Default (BIN2)</b><br>
+      Search — <b style="color:var(--ink)">Centralized Search Layer</b> (one place)<br>
+      State — errors impossible; search handled once
+    </div>
+  </div>
+</div>
+
+<h2>The vocabulary</h2>
+<div class="glossary">
+  <div class="g"><span class="name">Mixed-Collation Store</span><span class="where">db · today</span><div class="d">Keys case-sensitive, everything else not. Where the two meet is what throws the errors.</div></div>
+  <div class="g"><span class="name">Binary-Default (BIN2) Store</span><span class="where">db · target</span><div class="d">All text case-sensitive by default. The error class disappears — but search must be made case-insensitive on purpose.</div></div>
+  <div class="g"><span class="name">Inline Collation</span><span class="where">app · today</span><div class="d">Each query hand-adds case-handling — ~400 scattered spots. Easy to miss; the cause of the repeats.</div></div>
+  <div class="g"><span class="name">Centralized Search Layer</span><span class="where">app · target</span><div class="d">One module all search flows through. Case-insensitivity lives in exactly one place.</div></div>
+  <div class="g"><span class="name">Collation Gate</span><span class="where">CI · shipped</span><div class="d">A build check that blocks anyone reintroducing the problem or bypassing the layer.</div></div>
+  <div class="g"><span class="name">Persisted CI Index</span><span class="where">db</span><div class="d">A stored, indexed case-insensitive copy of a column — keeps search fast on a Binary-Default (BIN2) Store.</div></div>
+</div>
+
+<h2>Two choices → four combinations</h2>
+<p>There are two independent knobs: <b>how the database stores text</b> (case-sensitive or not) and <b>how the app does case-insensitive search</b> (scattered or in one place). Two options each = four combinations. We're in one corner today and moving to the opposite corner.</p>
+<figure>
+  <div class="scroll">
+  <svg viewBox="0 0 600 430" role="img" aria-label="Strategy matrix" style="width:100%;height:auto;min-width:460px;font-family:inherit">
+    <text x="26" y="215" transform="rotate(-90 26 215)" text-anchor="middle" font-size="11" font-weight="700" fill="#66707e">STORAGE (database)</text>
+    <text x="360" y="418" text-anchor="middle" font-size="11" font-weight="700" fill="#66707e">SEARCH (application)</text>
+
+    <text x="132" y="150" text-anchor="end" font-size="12" fill="#66707e">Mixed-<tspan x="132" dy="15">Collation</tspan></text>
+    <text x="132" y="300" text-anchor="end" font-size="12" fill="#66707e">Binary-Default<tspan x="132" dy="15">(BIN2)</tspan></text>
+    <text x="250" y="400" text-anchor="middle" font-size="12" fill="#66707e">Inline Collation</text>
+    <text x="470" y="400" text-anchor="middle" font-size="12" fill="#66707e">Centralized Layer</text>
+
+    <rect x="150" y="70" width="200" height="130" rx="12" fill="#eef3fc" stroke="#2c5cc5" stroke-width="1.5"/>
+    <text x="250" y="128" text-anchor="middle" font-size="11" font-weight="700" fill="#2c5cc5">● TODAY</text>
+    <text x="250" y="150" text-anchor="middle" font-size="15" font-weight="700" fill="#2c5cc5">Patch-and-Guard</text>
+    <text x="250" y="170" text-anchor="middle" font-size="11" fill="#66707e">shipped · bridge</text>
+
+    <rect x="370" y="70" width="200" height="130" rx="12" fill="#fff" stroke="#c9d4e8" stroke-width="1.5"/>
+    <text x="470" y="130" text-anchor="middle" font-size="15" font-weight="700" fill="#5b6472">Centralize-First</text>
+    <text x="470" y="152" text-anchor="middle" font-size="11" fill="#66707e">stepping-stone</text>
+
+    <rect x="150" y="230" width="200" height="130" rx="12" fill="#fbeeec" stroke="#c0392b" stroke-width="1.5"/>
+    <text x="250" y="290" text-anchor="middle" font-size="15" font-weight="700" fill="#c0392b">Bare Rebuild</text>
+    <text x="250" y="312" text-anchor="middle" font-size="11" fill="#c0392b">avoid · silent bugs</text>
+
+    <rect x="370" y="230" width="200" height="130" rx="12" fill="#edf7f0" stroke="#1f8a4c" stroke-width="3"/>
+    <text x="470" y="286" text-anchor="middle" font-size="11" font-weight="700" fill="#1f8a4c">◎ GOAL</text>
+    <text x="470" y="308" text-anchor="middle" font-size="15" font-weight="700" fill="#1f8a4c">Rebuild + Centralize</text>
+    <text x="470" y="328" text-anchor="middle" font-size="11" font-weight="700" fill="#1f8a4c">✓ chosen</text>
+  </svg>
+  </div>
+  <figcaption>Safe path: build the layer first (move right), then flip the store (move down) — <b>through Centralize-First</b>. Straight down (store first, no layer) is <b>Bare Rebuild</b>.</figcaption>
+</figure>
+<p style="font-size:14px;color:var(--muted);margin-bottom:4px">In plain terms:</p>
+<ul style="font-size:14px;color:var(--muted)">
+  <li><b style="color:var(--accent)">Patch-and-Guard</b> (today) — old database, fix each search spot by hand + a gate to catch misses. Works, but fragile.</li>
+  <li><b>Centralize-First</b> — old database, but search handled in one place. A safe half-step we pass <i>through</i>.</li>
+  <li><b style="color:var(--bad)">Bare Rebuild</b> — new database, but still fixing search by hand. The trap: silent wrong results.</li>
+  <li><b style="color:var(--good)">Rebuild + Centralize</b> (goal) — new database <i>and</i> search in one place.</li>
+</ul>
+
+<h2>How it's built</h2>
+<p><b>The search layer lives in the app, not the database.</b> All Projectname SQL is hand-written in <code>apps/api</code> (no ORM), so that's where the one shared search module belongs. The database only <b>stores</b> (case-sensitive) and provides <b>fast indexes</b>. Enforcement is in CI.</p>
+<figure>
+  <div class="scroll">
+  <svg viewBox="0 0 720 400" role="img" aria-label="How it's built today versus the goal" style="width:100%;height:auto;min-width:600px;font-family:inherit">
+    <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#98a2b0"/></marker></defs>
+    <line x1="360" y1="24" x2="360" y2="384" stroke="#e6eaf0" stroke-width="1.5" stroke-dasharray="4 5"/>
+
+    <!-- ===== TODAY ===== -->
+    <text x="185" y="26" text-anchor="middle" font-size="12" font-weight="700" fill="#66707e">● TODAY · scattered</text>
+    <rect x="30" y="40" width="310" height="212" rx="12" fill="#f4f6fa" stroke="#98a2b0" stroke-width="1.5"/>
+    <text x="46" y="60" font-size="11" font-weight="700" fill="#66707e">APP · apps/api</text>
+    <!-- scattered services each with own COLLATE -->
+    <rect x="50" y="72" width="270" height="26" rx="7" fill="#fff" stroke="#c9d1dc"/>
+    <text x="62" y="89" font-size="11" fill="#1d2430">search service</text>
+    <rect x="246" y="76" width="66" height="18" rx="9" fill="#fbf4e5" stroke="#b7791f"/><text x="279" y="89" text-anchor="middle" font-size="9.5" font-weight="700" fill="#b7791f">COLLATE</text>
+    <rect x="50" y="104" width="270" height="26" rx="7" fill="#fff" stroke="#c9d1dc"/>
+    <text x="62" y="121" font-size="11" fill="#1d2430">search service</text>
+    <rect x="246" y="108" width="66" height="18" rx="9" fill="#fbf4e5" stroke="#b7791f"/><text x="279" y="121" text-anchor="middle" font-size="9.5" font-weight="700" fill="#b7791f">COLLATE</text>
+    <rect x="50" y="136" width="270" height="26" rx="7" fill="#fff" stroke="#c9d1dc"/>
+    <text x="62" y="153" font-size="11" fill="#1d2430">search service</text>
+    <rect x="246" y="140" width="66" height="18" rx="9" fill="#fbf4e5" stroke="#b7791f"/><text x="279" y="153" text-anchor="middle" font-size="9.5" font-weight="700" fill="#b7791f">COLLATE</text>
+    <text x="185" y="182" text-anchor="middle" font-size="11" fill="#c0392b" font-weight="700">…repeated in ~34 services · ~400 spots</text>
+    <text x="185" y="200" text-anchor="middle" font-size="10.5" fill="#66707e">easy to miss one → the errors</text>
+    <line x1="185" y1="252" x2="185" y2="276" stroke="#98a2b0" stroke-width="2" marker-end="url(#a)"/>
+    <rect x="30" y="280" width="310" height="64" rx="12" fill="#fff" stroke="#98a2b0" stroke-width="1.5"/>
+    <text x="185" y="308" text-anchor="middle" font-size="13" font-weight="700" fill="#66707e">Mixed-Collation Store</text>
+    <text x="185" y="327" text-anchor="middle" font-size="10.5" fill="#66707e">keys vs. the rest clash → errors</text>
+
+    <!-- ===== GOAL ===== -->
+    <text x="545" y="26" text-anchor="middle" font-size="12" font-weight="700" fill="#1f8a4c">◎ GOAL · one place</text>
+    <rect x="390" y="40" width="310" height="212" rx="12" fill="#eef3fc" stroke="#2c5cc5" stroke-width="1.5"/>
+    <text x="406" y="60" font-size="11" font-weight="700" fill="#2c5cc5">APP · apps/api</text>
+    <rect x="418" y="96" width="254" height="56" rx="10" fill="#fff" stroke="#2c5cc5" stroke-width="1.5"/>
+    <text x="545" y="120" text-anchor="middle" font-size="13.5" font-weight="700" fill="#2c5cc5">Centralized Search Layer</text>
+    <text x="545" y="139" text-anchor="middle" font-size="10.5" fill="#66707e">case-insensitivity, applied once</text>
+    <rect x="418" y="164" width="254" height="24" rx="8" fill="#fbf4e5" stroke="#b7791f" stroke-width="1.2"/>
+    <text x="545" y="180" text-anchor="middle" font-size="10" font-weight="700" fill="#b7791f">Collation Gate — blocks bypass (CI)</text>
+    <text x="545" y="212" text-anchor="middle" font-size="10.5" fill="#66707e">every search routes through here</text>
+    <line x1="545" y1="252" x2="545" y2="276" stroke="#98a2b0" stroke-width="2" marker-end="url(#a)"/>
+    <rect x="390" y="280" width="310" height="64" rx="12" fill="#edf7f0" stroke="#1f8a4c" stroke-width="1.5"/>
+    <rect x="404" y="292" width="140" height="40" rx="8" fill="#fff" stroke="#1f8a4c"/>
+    <text x="474" y="311" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1f8a4c">Binary-Default</text>
+    <text x="474" y="325" text-anchor="middle" font-size="10" fill="#66707e">Store (BIN2)</text>
+    <rect x="552" y="292" width="136" height="40" rx="8" fill="#fff" stroke="#1f8a4c"/>
+    <text x="620" y="311" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1f8a4c">CI Indexes</text>
+    <text x="620" y="325" text-anchor="middle" font-size="10" fill="#66707e">fast search</text>
+  </svg>
+  </div>
+  <figcaption>Same request, two builds. <b>Today:</b> collation copy-pasted into every service. <b>Goal:</b> one search layer, a case-sensitive store, fast indexes — logic in the app, storage + indexes in the DB, enforcement in CI.</figcaption>
+</figure>
+
+<h2>The one rule</h2>
+<div class="rule">
+  <p style="margin:0"><b>Build the search layer before flipping the store.</b> Flip first and ~194 searches silently turn case-sensitive — wrong results, no error, no failing test. The layer is the safety net that makes the flip safe.</p>
+</div>
+
+<h2>The plan</h2>
+<div class="phase done"><div class="num">✓</div><div class="b"><span class="t">Bridge (now).</span> Keep <span class="term">Patch-and-Guard</span> live — the shipped fix + <span class="term">Collation Gate</span> keep dev working through the rebuild.</div></div>
+<div class="phase"><div class="num">1</div><div class="b"><span class="t">Build the Centralized Search Layer</span> in <code>apps/api</code>. Route all search / filter / sort through it. <i>The big step.</i></div></div>
+<div class="phase"><div class="num">2</div><div class="b"><span class="t">Flip the store.</span> Rebuild domains as a <span class="term">Binary-Default (BIN2) Store</span>, reload data, add <span class="term">Persisted CI Indexes</span>.</div></div>
+<div class="phase"><div class="num">3</div><div class="b"><span class="t">Simplify.</span> Remove the old scattered collation; point the gate at "use the layer."</div></div>
+
+<div class="foot">
+  Shipped fix: PR 931 (Projectname-3073, 2 approvals). Gate: story 3133. Based on a 2026-07-01 read-only survey of <code>apps/api</code>: ~400 scattered collation sites, ~34 search services, no shared search module today.
+</div>
+
+</div>
+</body>
+</html>

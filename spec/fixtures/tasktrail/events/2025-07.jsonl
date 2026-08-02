@@ -1,0 +1,4 @@
+{"actor": {"session": "s-2222"}, "data": {"kind": "note", "text": "picked up the thread"}, "event": "task.event", "n": 2, "task": {"seq": 4, "uuid": "t-0004"}, "ts": "2025-07-01T08:00:00+00:00", "v": 1}
+{"actor": {"session": "s-1111"}, "data": {"closed_ts": 1751472000, "status": "closed"}, "event": "task.status", "n": 3, "task": {"seq": 1, "uuid": "t-0001"}, "ts": "2025-07-02T16:00:00+00:00", "v": 1}
+{"actor": {"session": "s-1111"}, "data": {}, "event": "task.deleted", "n": 2, "task": {"seq": 3, "uuid": "t-0003"}, "ts": "2025-07-03T09:00:00+00:00", "v": 1}
+{"actor": {"session": null}, "data": {"generation": 2}, "event": "task.redacted", "n": 2, "task": {"seq": 2, "uuid": "t-0002"}, "ts": "2025-07-04T12:00:00+00:00", "v": 1}
