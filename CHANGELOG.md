@@ -3,6 +3,76 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [2.20.0] — 2026-08-06
+
+`/brief` filled a frozen template: a fixed section list, two parametrized diagram shapes, a blue
+accent on rounded cards, and no dark theme at all. A real design doc was produced with it and then
+rewritten by hand across eight rounds of feedback, because the template's output was not usable.
+Every one of those rounds was a rule the skill did not know. `/brief` now **authors the HTML
+directly** against a shipped stylesheet and a diagram catalogue, and derives its sections from the
+material instead of from a list.
+
+### Added
+- **`skills/brief/assets/brief.css` — the validated house style, shipped as a file.** Cool grey
+  ground; three semantic hues that each carry meaning (green promotes, amber stays or wants
+  attention, oxblood is broken or a limit); three type roles (a system grotesque for body, mono for
+  every path, command and count, a serif italic used **once** for the thesis line). Both themes come
+  from redefining the same tokens, and `data-theme` overrides the media query in **both**
+  directions — the previous template had no `prefers-color-scheme` block at all, so a brief read in
+  dark mode was a white page.
+- **`skills/brief/references/diagrams.md` — four diagram patterns with copyable inline-SVG
+  skeletons.** Promotion ladder (one thing crosses a boundary, another stops at it), lifetime
+  timeline (persistent against disposable), pipeline flow (a sequence with the one box a human
+  authors marked), breadth vs depth (wide-and-shallow against narrow-and-deep). The fourth exists
+  because a table said the thing and the reader still did not feel it. Every skeleton themes through
+  `var(--…)` / `currentColor` with **no hardcoded hex inside the SVG**, carries `role="img"` plus a
+  titled `<desc>`, and sits in a `<figure>` with a `min-width` so a wide diagram degrades to a
+  scroll instead of an illegible squish. It also documents **when not to draw**: if a two-column
+  table says it completely, don't.
+- **A `Limits` section is now mandatory** — two things the design does not solve, each with a
+  concrete example. This is not a hedge slot. A reader's question exposed a real hole one draft had
+  papered over; naming the limits is what earns trust in the rest of the document, and it is where a
+  missing constraint surfaces while it is still cheap to add.
+- **Collapsible implementation detail.** `<details>` closed by default with a `+` / `−` marker, on
+  one rule: **open is what and why, collapsed is how.** Code, route tables and collision mechanics
+  go inside; workflow steps and rules stay out. The exception is a file that *is* the answer to "how
+  do I define this?" — that one is shown open, with the line that links it onward annotated.
+- **Persona badges.** Two audiences means two how-to sections, one each, not one section with "if
+  you're QA…" branches inside it. `<span class="who dev">` / `<span class="who qa">` renders a small
+  mono badge in the heading, colored to the palette, so a reader can skip what is not theirs.
+- **`task-station brief path --task <n>`.** Resolves the task, creates the artifact directory,
+  records `brief_path` so the brief stays findable, and prints the absolute path. Reads no spec and
+  never touches stdin. This is what the authoring flow calls before writing its HTML.
+
+### Changed
+- **`skills/brief/SKILL.md` is rewritten around the fourteen corrections that had to be made by
+  hand.** The former hard rule — *never write HTML or CSS* — is gone; it was the reason the output
+  could not improve. In its place: sections are the reader's questions and are derived every time
+  (there is no fixed list, and **`/brief` is not one template** — material whose natural shape is
+  not a decision one-pager is not forced into one); the change is named with the reader's own
+  before→after tokens (`seeds → test-data`, not "the restructure"); one or two plain sentences per
+  section, then a table, diagram or code block carries the detail; every claim about current state
+  carries its file and line numbers **in the same row**, not in a prose provenance paragraph at the
+  end; no single overloaded verb carries a permission distinction (name each verb, give it a
+  column); load-bearing rules get their own numbered box **in the section they govern**; the plan is
+  a full-width three-column ladder with a line explaining what the amber grouping means; and only
+  commands that actually exist may appear — grep the repo for the script names first, because one
+  invented command costs more trust than the document buys.
+- **The prose budget is stated as a shape, not a word count.** The reference brief is ~1,280 visible
+  words across 9 sections and 4 diagrams, but the number is not the lever: the first hand-written
+  version was ~2,600 words and read as "too verbose", a hard cut to ~1,540 was "0% verbose" and
+  unreadable. Cutting words out of paragraphs produces dense paragraphs. Moving the detail into a
+  table produces short prose *and* scannable detail, and the word count falls out of that.
+- **An explicit do-not list for voice.** Cut rhetorical setups, cadence tricks, section tag labels
+  used as decoration, self-congratulating summaries, stacked em-dash asides, any sentence whose only
+  job is to introduce the next one, and trailing "next steps" editorializing the reader did not ask
+  for.
+- **The skill ends in a fifteen-line self-check** it must run before writing the file.
+- **`brief render --spec <file>` is retained and unchanged** for back-compat. `lib/brief.py`,
+  `lib/brief_template.html` and the golden fixture all stay; `render` is still the default action,
+  so anything already scripted against it keeps working. It is simply no longer the preferred path.
+- The `brief` command's `action` argument now documents both values: `render | path`.
+
 ## [2.19.0] — 2026-08-06
 
 `heal` reconciled the decision log and nothing else — yet a task's **goal** and its **checklist**
