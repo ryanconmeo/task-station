@@ -6970,18 +6970,47 @@ def _brief_provenance_ledger(task, limit=5):
     return out
 
 
-def cmd_brief(a):
-    """`task-station brief render [--task|--session] [--spec FILE]` — render a
-    model-supplied brief-spec (JSON) to the frozen house-style HTML.
+def _brief_persist_path(task, out, session):
+    """Persist task['brief_path'] = out through mutate(), then emit task.updated and
+    sync Obsidian. Shared by the `render` and `path` actions so a brief is findable
+    the same way however it was produced — the contract-v2 note frontmatter carries
+    brief_path automatically once it is on the record."""
+    def _apply(t):
+        t["brief_path"] = out
+    updated = mutate(task["id"], _apply)
+    if updated is not None:
+        _stream_emit("task.updated", updated,
+                     _stream_updated_data(updated, ["brief_path"]), session)
+        _obsidian_sync(updated)
 
-    Resolves the task (--task > --session), reads the spec from --spec FILE or stdin,
-    lazy-imports lib/brief (pure stdlib, host-agnostic), renders with the task's
-    glossary, writes to brief_output_path (makedirs), persists task['brief_path']
-    through mutate() — which the contract-v2 note frontmatter then carries
-    automatically — and prints the path."""
+
+def cmd_brief(a):
+    """`task-station brief [render|path] [--task|--session] [--spec FILE]`.
+
+    **path** — resolve the task, create the artifact dir, persist and print
+    brief_output_path(task). Reads no spec. This is the model-authored flow: the
+    `/brief` skill asks for the path, then writes its own HTML there.
+
+    **render** (default, retained for back-compat) — read a brief-spec (JSON) from
+    --spec FILE or stdin, lazy-import lib/brief (pure stdlib, host-agnostic), render
+    it against the task's glossary into the frozen house-style template, write to
+    brief_output_path (makedirs), persist task['brief_path'] and print the path."""
     task = _resolve_glossary_task(a)
     if not task:
         print("brief: no task — attach a session or pass --task <ref>.")
+        return
+
+    session = getattr(a, "session", None)
+
+    if (getattr(a, "action", None) or "").strip().lower() == "path":
+        out = brief_output_path(task)
+        try:
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+        except OSError as e:
+            print("brief: cannot create %s: %s" % (os.path.dirname(out), e))
+            return
+        _brief_persist_path(task, out, session)
+        print(out)
         return
 
     src = getattr(a, "spec", None)
@@ -7022,15 +7051,7 @@ def cmd_brief(a):
         print("brief: cannot write %s: %s" % (out, e))
         return
 
-    session = getattr(a, "session", None)
-
-    def _apply(t):
-        t["brief_path"] = out
-    updated = mutate(task["id"], _apply)
-    if updated is not None:
-        _stream_emit("task.updated", updated,
-                     _stream_updated_data(updated, ["brief_path"]), session)
-        _obsidian_sync(updated)
+    _brief_persist_path(task, out, session)
     print(out)
 
 
@@ -13153,7 +13174,9 @@ def _add_glossary_args(sp):
 def _add_brief_args(sp):
     """Attach the brief command's args to a parser/subparser. Shared by main()'s
     `brief` subcommand AND the `/todo brief` dispatch, so the two stay identical."""
-    sp.add_argument("action", nargs="?", default="render", help="render (default)")
+    sp.add_argument("action", nargs="?", default="render",
+                    help="render | path — render (default) templates a brief-spec JSON; "
+                         "path creates + records the output path for a model-authored brief")
     sp.add_argument("--task", default=None, help="target task (seq/id); else the session's task")
     sp.add_argument("--session", default=None)
     sp.add_argument("--spec", default=None, help="brief-spec JSON file (default: read stdin)")
