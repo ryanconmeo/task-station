@@ -1,6 +1,6 @@
 ---
 name: heal
-description: Reconcile a task's append-only decision log into current state — supersede what is now wrong, split what is compound, merge what is true but no longer load-bearing, retro-dispose stale acks, and refresh a drifted state line. Use on `/heal`, `/todo heal`, "reconcile this task", or when the SessionStart nag says a task is under-reconciled. Runs the scan first, proposes a plan, and asks once before changing anything.
+description: Reconcile a task's append-only decision log into current state — supersede what is now wrong, split what is compound, merge what is true but no longer load-bearing, retro-dispose stale acks, and refresh a drifted goal or state line. Use on `/heal`, `/todo heal`, "reconcile this task", or when the SessionStart nag says a task is under-reconciled. Runs as ONE uninterrupted pass — scan, judge, apply, verify — and reports the exact one-command undo for every write it made.
 ---
 
 # Heal — the reconcile pass
@@ -15,7 +15,9 @@ Measured on one real task before this existed: **72 decisions, 68 still current,
 
 ## YOU drive this. Run it in this order, and do not deviate.
 
-**A heal is one conversation, not a sequence of flags the user types.** The CLI is one-shot and cannot ask anything, so dry-run-as-default is all the safety it can offer; the ordering, the judgement and the confirm gate are **yours**. Follow these seven steps exactly.
+**A heal is one conversation, not a sequence of flags the user types** — and not a sequence of questions either. The CLI is one-shot and cannot ask anything, so dry-run-as-default is all the safety it can offer; the ordering, the judgement and the finishing are **yours**. `/heal` runs the whole pass and reports when it is done. Follow these five steps exactly.
+
+**There is no approval gate, deliberately.** You do not present a plan and wait for a yes. What replaces the gate is the **undo trail**: the CLI prints the exact reversing command for every write it makes, and step 5 requires you to surface those lines verbatim. Removing the question is only defensible because taking a wrong call back now costs one paste — so never soften those commands into "this is reversible", which is the version nobody can act on.
 
 ### 1. Run `heal --scan` FIRST
 
@@ -25,9 +27,13 @@ python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" heal --scan --task <n>
 
 It is deterministic, about **700 tokens**, and invokes no model at all. It tells you whether there is anything to do before you spend anything finding out. **Never open with the dry run** — that is the expensive block, and reaching for it first is how one heal came to cost two.
 
-### 2. Scan clean? Check the one thing it cannot see, then stamp it and stop.
+The task can be named positionally (`heal --scan 12`), with `--task 12`, with `--all` to sweep the board, or not at all to use the attached task. A positional ref combined with `--all`, or with a `--task` naming a *different* task, is refused rather than resolved — there is deliberately no precedence rule, because the cost of guessing wrong is a reconcile written onto the wrong record.
 
-A clean scan means **the record does not contradict itself**. It does **not** mean the record is complete — see *the one gap the scan cannot cover* below. So before stamping, do the one judgement the deterministic layer structurally cannot: **verify that everything which actually shipped since the last heal has a decision** — a release, a merged PR, a document. The scan prints an `Accrued since last heal` line for exactly this; check it against what you know happened from the conversation and the repo, and record anything missing with `update --decision` (plus `--pr` / `--log`).
+### 2. Scan clean? Check the two things it cannot see, then stamp it and stop.
+
+Read the closing rows before you believe the verdict. The scan now ends on **three**: `Mechanical` (what the checks found), `Judgment` (whether the half no check can do has been *recorded* — a stamp carrying a `--note` — or `NOT RUN`), and only then `Heal due?`. `Heal due? no` on its own reads as *this task is a complete record*, and it has never meant that.
+
+A clean scan means **the record does not contradict itself**. It does **not** mean the record is complete — see *the one gap the scan cannot cover* below — and it does not mean the record is still **true**: re-read the goal line and the live checklist against the newest decisions (step 4, and the section *what a clean scan still cannot see*). So before stamping, do the one judgement the deterministic layer structurally cannot: **verify that everything which actually shipped since the last heal has a decision** — a release, a merged PR, a document. The scan prints an `Accrued since last heal` line for exactly this; check it against what you know happened from the conversation and the repo, and record anything missing with `update --decision` (plus `--pr` / `--log`).
 
 Then record the pass, in one command:
 
@@ -45,33 +51,29 @@ python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" heal --task <n>
 
 A bare `heal` is the dry run and changes nothing. It carries the full current decision set, which is what makes it expensive: on a real 40-decision task it runs to ~47,000 characters (~12,000 tokens) and **94% of that is the decision list**. That cost is the input your judgement actually needs, so it is unavoidable — but it is paid **once**. Never re-render it, and never run `heal` and then `heal --apply` expecting the second to tell you something new: `--apply` deliberately prints only what it did.
 
-### 4. Do the judgement, then write a COMPACT NUMBERED PLAN
+### 4. Do the judgement, then EXECUTE — straight through
 
-Work the block: which decisions are refuted, which are compound, which are true but no longer load-bearing, which acks need retro-disposing, which steps are stale, whether `state` drifted, whether each pinned decision is still accurate, and — the one the scan cannot raise — whether **everything which actually shipped since the last heal has a decision**.
+Work the block: which decisions are refuted, which are compound, which are true but no longer load-bearing, which acks need retro-disposing, which steps are stale, whether `state` drifted, whether each pinned decision is still accurate, and — the ones the scan cannot raise — whether **the goal line and every live step have been overtaken**, and whether **everything which actually shipped since the last heal has a decision**.
 
-Then present the user **one numbered line per proposed operation** — a few hundred tokens in total, not a re-dump of what you just read. Each line says what the operation does and why:
+**The goal and the checklist are printed in the dry run directly under the decision set**, and the question for each is the same: *does the newest evidence retire this?* They sit there because a cold session reads them **first** — the goal says what done looks like, the checklist says what to do, the decisions mostly say why. Rewrite a drifted goal with `update --task <n> --goal '<what done looks like now>'`; retire an overtaken step with `update --task <n> --step-add '<the corrected step>' --step-supersede <k>`.
 
-```
-1. MERGE decisions 4, 9, 17, 23 → one release record. All four are true; none is
-   load-bearing any more.
-2. SUPERSEDE decision 12 — decision 31 refuted it (the store moved to sqlite).
-3. RETIRE step 7 — it names the vocabulary decision 31 retired.
-4. RETRO-DISPOSE 3 acks (noop) — those sessions are gone; nothing durable was needed.
-```
+Then **run the verbs** (below) — every one of them, in this same turn. Do not write the plan out and wait for a yes; the plan and its result are the same report now, and it is written in step 5 once the work is done.
 
-### 5. Ask for confirmation ONCE — for the whole plan
+Then make sure the pass is **recorded**: `--apply` stamps when it performed at least one operation, so if every operation you ran was a judgement verb (`update --decision … --supersedes`, `update --step-supersede`), finish with `heal --mark-healed --note '<what you did>'`.
 
-One question, covering everything above. **Not one per operation.** A per-operation gate turns a four-line plan into four round-trips and trains the user to say yes without reading.
+**What executing does NOT widen.** MERGE CANDIDATES stay proposals. Removing the confirmation removed a *question*, not a *guardrail*: a candidate is a group of decisions that merely open the same way, and merging one from its shape alone writes a false consolidation into the record, where it then reads as reconciled fact. Read each group, decide, and write the surviving summary yourself — exactly as before. The narrow clusters `--apply` already performs are unchanged.
 
-### 6. On confirmation, execute every operation, then stamp
+### 5. Verify, then report — with the undo trail
 
-Run the verbs (below), then make sure the pass is recorded — `--apply` stamps when it performed at least one operation; if every operation you ran was a judgement verb (`update --decision … --supersedes`, `update --step-supersede`), finish with `heal --mark-healed --note '<what you did>'`.
+Run a final `heal --scan --task <n>`. Then one message:
 
-**On refusal, change nothing.** Not a partial application, not "the safe ones". Say what you would have done and stop.
+- the health metric **before → after**;
+- one line per operation, saying what it did;
+- **the exact undo command the CLI printed for each one**, verbatim.
 
-### 7. Verify with a final `heal --scan`, and report before → after
+The CLI generates those commands as it writes — `update --task <n> --restore-decision <k>` for a supersede, split or merge, `update --task <n> --step-restore <k>` for a retired step, `update --task <n> --restore-summary [v]` for a replaced summary, and the pre-heal task-blob path for the one write with no verb of its own (a retro-disposition is never overwritten, so nothing can clear it). Copy them; do not paraphrase them. **"Every heal is reversible" is not an undo** — it is a fact the reader cannot act on without first working out which numbers moved, and that reconstruction is exactly what the approval gate used to make unnecessary.
 
-One line, quoting the health metric from before and after. Do not re-render the `/todo` list.
+Do not re-render the `/todo` list.
 
 ### The user should never need to type `--apply`, `--merge`, `--split`, `--dispose-acks` or `--mark-healed`
 
@@ -81,7 +83,7 @@ One line, quoting the health metric from before and after. Do not re-render the 
 
 ## The two layers
 
-**Layer 1 — the scan.** `heal --scan`. Deterministic, zero tokens, and it **never modifies the task**. Nine checks — eight findings plus the health metric — each reported clean or with findings:
+**Layer 1 — the scan.** `heal --scan`. Deterministic, zero tokens, and it **never modifies the task**. Ten checks — nine findings plus the health metric — each reported clean or with findings:
 
 | Check | What it finds |
 |---|---|
@@ -93,6 +95,7 @@ One line, quoting the health metric from before and after. Do not re-render the 
 | Link rot | Stored PR/story URLs that no longer resolve |
 | Health metric | Current decision count + total chars + how the last heal reads — the number that says a task is under-reconciled. Never healed says exactly that; it does **not** report the whole log as "new since the last heal" |
 | Stale steps | Steps that **declare themselves** dead, and the verb that retires them: `update --step-supersede <n>`. Same two conditions as the row above, same guard: the language **and** a declaration — the keyword opens the step, a line or a clause, or is the predicate of one (`this step is stale`, `steps 3/4/5 above are STALE`, a bare `do not execute`). A step that merely *describes* staleness is **not** reported: a file to delete (`delete stale tracked BRIEF-x.md`), an ancestor a heal already superseded, a rejected dead end it warns you away from. Those three were all a fully-healed task had left, and they kept `Heal due?` on YES with nothing to do |
+| Steps restating a superseded decision | A **live** step whose text restates a decision this task has **superseded** — the checklist still ordering work the log already ruled refuted. Compared by Jaccard overlap of significant words, reusing the same tokenizer the merge shapes use. Reported **provisionally**, in those words: text overlap cannot separate a step that still orders the retired work from the step written to *record* the retirement, so any step carrying correction vocabulary at all is skipped outright and what survives says READ THESE TOGETHER rather than claiming to know which is stale |
 | Re-fragmented consolidations | A decision that **declares itself the one record of several** — `CONSOLIDATED — …`, `this decision consolidates 4, 9 and 17`, or a summary a `merge` wrote — standing in front of **newer** current decisions that share the shape it consolidated. The consolidation was undone by accretion, and the record now says two contradictory things about how many entries that subject has. A **finding**, not a proposal, because an earlier pass already ruled on that subject — but the merge is still never proposed for you. Same guard again: a decision that merely *mentions* consolidation is not one |
 
 ### The rule behind four of those rows: **declare vs describe**
@@ -113,15 +116,23 @@ The fix is the `merge` verb again, with the consolidation folded in: write **one
 
 The drift check ignores anything under a **session scratchpad** or a **system temp root**, and counts them on one line as *expected-ephemeral* instead. On one real task all **seven** drift findings were worker briefs under `/private/tmp/…/<session-uuid>/scratchpad/` that task-station had auto-captured as artifacts. That directory is wiped when the session ends *by construction*, so "the digest points a resumed session at somewhere it cannot go" was true and useless — nobody resumes a task by opening a worker brief out of a deleted temp directory. Seven of them made a heal due on a task with nothing wrong with it. A vanished **repo** path is still reported, and that is the whole distinction: somewhere the system promised to keep, versus somewhere it promised to erase.
 
-### Three sections that are NOT findings
+### Four sections that are NOT findings
 
-The scan also prints these, below the checks. None counts as an issue and none can make `Heal due?` true — a task can carry plenty of all three and be perfectly reconciled.
+The scan also prints these, below the checks. None counts as an issue and none can make `Heal due?` true — a task can carry plenty of all four and be perfectly reconciled.
 
 **MERGE CANDIDATES.** Current decisions grouped by their **leading shape** — a version-like prefix plus the word after it (`<version> shipped`), or the first three significant words (`my process error`) — reported when three or more share one. The judgment list used to say "MERGE what is TRUE BUT NO LONGER LOAD-BEARING" and leave you to go and find them; on one real 99-decision task a human found all sixteen mechanically, by matching exactly these prefixes. **They are proposals, and nothing merges them for you**: read each group, decide whether it really is true-but-not-load-bearing, and write the one surviving summary yourself. A wrong merge is worse than a missed one — it puts a false consolidation in the record, where it reads as reconciled fact.
 
 **PINNED DECISIONS**, each with its age. A pin puts that entry at the head of **every** session's digest, so a line that has quietly gone stale in a pinned decision costs more than the same line anywhere else: on one real task a pinned decision still named two codenames a later decision had retired, and it had been briefing every session with them for days. No check would ever have caught that — none of them asks whether a decision is still *accurate*. So re-read each pin and confirm it still is. Being pinned is not a defect. An `age unknown` means the append predates the bounded event feed, not that the decision is new.
 
+**GOAL REVIEW** — the goal line, plus how many decisions have landed since it was last written. It exists because the goal is the one field that says what *done* looks like and **nothing on the task can contradict it**: there is no second field claiming the same thing, so no check will ever raise a goal that describes a mission already accomplished. On one real task that is exactly what happened, for days, while every check reported clean. The count comes from a baseline written when the goal is set; with no baseline it says **cannot be counted**, never a false zero, and every task that predates the measurement takes that path. A **proposal**: a goal is supposed to outlive the decisions that pursue it, so an untouched one is a reason to *look*, never proof of anything.
+
 **ACCRUED SINCE LAST HEAL** — `+N decisions · +N log entries · +N PR/story links · +N steps`, measured by exact subtraction from the counters the stamp snapshotted. On a never-healed task it says so and gives the totals; on a stamp written before the baseline existed it says *no baseline was recorded* rather than printing four zeros, because zeros read as "nothing happened" when the truth is "nobody measured". It exists to be checked against the section below.
+
+### What a clean scan still cannot see
+
+Every check works by cross-referencing two things the task itself holds. So a decision that was **well-formed and correct when written**, and that reality later refuted, leaves **nothing** internally inconsistent — and neither does the goal line or the checklist it quietly invalidated. Measured on one real task: `heal --scan` reported every check clean and `Heal due? no`, while that task held a goal describing a mission already accomplished and **five live steps naming the two largest work items on it**, both by then provably unnecessary. A cold session reading that checklist would have burned days on retired work.
+
+Two of those are now mechanically visible: a step restating a **superseded** decision is a finding (provisional — read the pair), and the goal review counts what has landed since the goal was written. Neither replaces the reading. That is why the scan closes on `Mechanical` / `Judgment` / `Heal due?` instead of one line: the `Judgment` row cites a heal stamp with a `--note` when there is one and says `NOT RUN` when there is not, because *nothing recorded one* and *it was done* are different claims.
 
 ### The one gap the deterministic layer cannot cover
 
@@ -131,7 +142,7 @@ Every check works by cross-referencing two things the task itself holds — pros
 
 A check for it would be the fifth confidently-wrong check this subsystem has shipped and then had to fix, so there is deliberately none. Instead: read the accrual counts, compare them against what you know happened from the conversation and the repo, and record whatever is missing — `update --decision '<what shipped + why>'`, plus `--pr <url>` / `--log '<vX.Y.Z shipped: what>'`. **A clean scan means the record does not contradict itself. It does not mean the record is complete.**
 
-**Layer 2 — the pass.** `heal` prints the `[HEAL]` block: the findings, the three sections above, the health metric, the **full current decision set**, the mechanical plan, and the judgment list. You work that list — once, per step 3.
+**Layer 2 — the pass.** `heal` prints the `[HEAL]` block: the findings, the four sections above, the health metric, the **full current decision set**, then the **goal line and the live checklist** beside it (the newest decisions are the evidence that retires them), the mechanical plan, and the judgment list. You work that list — once, per step 3.
 
 ## The three verbs
 
@@ -194,7 +205,8 @@ Without that, the record still reads `last heal never`. Measured on one real tas
 ## Hard rules
 
 - **NON-DESTRUCTIVE, always.** No verb deletes a decision. Each one *marks* the original and drops it from the default digest while keeping it in `/todo <n> history`, labelled with what replaced it — `⊘ … — SUPERSEDED by decision 5` / `— SPLIT into decisions 6, 7` / `— MERGED into decision 8`. History's whole job is to stay complete.
-- **Every verb is reversible.** `update --restore-decision <n>` clears any of the three decision marks and returns it to the digest; `update --step-restore <n>` does the same for a step.
+- **Every verb is reversible, and the CLI says HOW, per write.** `update --restore-decision <n>` clears any of the three decision marks and returns it to the digest; `update --step-restore <n>` does the same for a step. Both `heal --apply` and the `update` result line now print the command with the real index filled in, at the moment of the write. **Surface them.** With no approval gate in front of a write, an undo the reader has to reconstruct is not an undo.
+- **One write has no inverse: a retro-disposition.** A heal never overwrites a disposition, so nothing can clear one — the only way back is the pre-heal task blob, whose path `--apply` prints. The report says that in those words rather than letting the reader discover it at the moment they need it.
 - **Nothing is rewritten in place.** No verb edits a decision, a step, or an ack that was already disposed. Supersede and add the corrected one; a retro-fill lands only where nothing was recorded.
 - **`--dry-run` is the DEFAULT.** A bare `heal` changes nothing. `--apply` performs the mechanical plan and **backs the task blob up first** — and refuses outright if that backup cannot be written.
 - **`--apply` reports only what it DID.** No scan block, no decision list, no judgment list: you just read those, and reprinting them charges the same tokens twice for one heal. `--apply --verbose` restores the full block if you genuinely want it.
@@ -213,6 +225,6 @@ Two gates warn without ever blocking:
 
 ## Finishing
 
-Confirm in one line: how many decisions were superseded, split and merged, how many steps were retired and acks retro-disposed, and what the digest went from and to. Do not re-render the `/todo` list.
+Confirm in one line: how many decisions were superseded, split and merged, how many steps were retired and acks retro-disposed, and what the digest went from and to. Then the **undo trail** — one line per write, each carrying the reversing command the CLI printed, verbatim. That list is not optional garnish: it is the whole of what replaced the approval gate, and a pass that omits it has removed a safeguard and put nothing in its place. Do not re-render the `/todo` list.
 
 **Then record the heal.** If an `--apply` performed work, it is already stamped. If the pass was judgement alone, run `heal --mark-healed --note '<what you checked>'` — a reconcile nothing recorded is a reconcile the next session is told never happened.

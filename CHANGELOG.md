@@ -3,6 +3,59 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [2.19.0] — 2026-08-06
+
+`heal` reconciled the decision log and nothing else — yet a task's **goal** and its **checklist**
+are what a cold session reads first to decide what to *do*, while decisions mostly explain *why*.
+One real task scanned clean on every check while its goal described a mission already accomplished
+and five of its steps named work that had since been proved unnecessary. Nothing was internally
+inconsistent, so nothing could see it. This release gives the pass eyes for both, and stops it
+pausing in the middle to ask permission.
+
+### Added
+- **`/heal <n>` works at all.** The command passes its argument positionally while the `heal`
+  subparser accepted only `--task`, so the natural form exited with `unrecognized arguments` and
+  the skill failed before doing anything. There is now an optional positional, resolved through
+  the same resolver `--task` already uses rather than a second parser. `--task`, `--all` and the
+  bare attached-task form are unchanged. A positional beside `--all`, or beside a `--task` naming
+  a different task, is **refused and reads nothing** — there is deliberately no precedence rule,
+  because a silently guessed scope reconciles a record you did not mean.
+- **A tenth check: a live step that restates a decision the task has already superseded.** Scored
+  by shared significant vocabulary against each superseded decision. It skips already-superseded
+  steps, exactly as the stale-step check does and for the same reason — re-reporting a step that
+  was just retired makes a freshly-healed task read as dirty.
+- **A goal review, which is a PROPOSAL and never a finding.** It reports how many decisions have
+  landed since the goal line was last written. An untouched goal is not a defect — a goal is meant
+  to outlive the decisions that pursue it — so it is never counted as an issue and can never make
+  a heal due, the same contract merge candidates and the pinned set already keep. With no recorded
+  baseline it says **"cannot be counted"**, never zero: zero reads as "nothing happened" when the
+  truth is "nobody recorded the baseline".
+- **The verdict is three rows instead of one.** `Mechanical` says what the checks found;
+  `Judgment` says whether the half no check can do has actually been done, quoting the last
+  `--mark-healed` note and how many decisions have landed since; `Heal due?` stays the combined
+  line. `Heal due? no` was doing real damage alone — it reads as "this record is complete" when it
+  only ever meant "eight cross-referencing checks found nothing".
+- **The dry run now briefs the goal and every live step**, beside the newest decisions, with the
+  one question the pass must answer of each: does the newest evidence retire this?
+
+### Changed
+- **`/heal` is one uninterrupted pass and no longer stops for approval.** Scan, judge, apply,
+  verify, report. The gate was removed rather than annotated: the flow went from seven steps to
+  five, and both the skill and the command frontmatter were rewritten, since both still advertised
+  "asks once before changing anything".
+- **Every write now names the one command that reverses it** — this is what replaces the gate.
+  `--apply` prints a per-operation undo, warns that `--restore-decision` repeats rather than
+  taking a list, and names the pre-heal task blob as a whole-task fallback. Nothing was widened:
+  `--apply` still performs only the narrow signature-matched merge clusters, and merge
+  **candidates** remain read by a human and by nothing else.
+
+### Note
+- Check 10's threshold is **unvalidated against the incident that motivated it**, and is marked as
+  such in the code. The task that prompted it had already retired the offending steps by hand
+  before the check existed, and the check skips superseded steps by design — so the original
+  evidence is gone. It is verified to fire on a synthetic reproduction and to stay silent on two
+  real tasks; it has *not* been shown to catch the real case. Expect to tune it on the next one.
+
 ## [2.18.0] — 2026-08-01
 
 Every identifying name belonging to the maintainer's employer is gone from the tree, replaced by

@@ -4233,6 +4233,13 @@ def cmd_create(a):
     goal = getattr(a, "goal", None)
     if goal:
         task["goal"] = goal.strip()
+        # Baseline it here too, not only on `update --goal`. A goal written at creation
+        # has an EXACTLY knowable baseline — this moment, zero decisions — and leaving it
+        # unstamped would make heal's goal review say "cannot be counted" for the whole
+        # life of a task whose goal was never rewritten. Uncountable is the honest answer
+        # when nobody recorded the baseline; it is the wrong answer when we are standing
+        # at the baseline.
+        _heal.stamp_goal_touched(task)
     for s in (getattr(a, "step", None) or []):
         append_step(task, s)
     create_with_seq(task)              # atomically mint the stable number + persist
@@ -7501,9 +7508,11 @@ def _todo_heal(a, rest):
         return                       # argparse already reported the bad flag/usage
     ns.session = a.session
     # A bare leading number is the task ref (`/todo heal 12`), matching how the other
-    # /todo subcommands take one.
-    if ns.task is None and ns.ref:
-        ns.task = ns.ref
+    # /todo subcommands take one. The FOLD ITSELF belongs to `cmd_heal`
+    # (`_heal_positional_ref`), which the top-level `heal` subparser reaches too — one
+    # place deciding what a positional means, and one place refusing the combinations it
+    # cannot mean. A second precedence rule here is how two surfaces start disagreeing
+    # about which task a command was aimed at.
     cmd_heal(ns)
 
 
@@ -8898,6 +8907,15 @@ def _update_one(ref, a):
     def _apply(task):
         msgs = list(relate_warnings)
         changed = []
+        # THE UNDO TRAIL for the two verbs that write IMMEDIATELY. `--supersedes` and
+        # `--step-supersede` never pass through `heal --apply`, so they take no backup —
+        # and since `/heal` stopped asking for approval before it acts, they are the
+        # writes with nothing standing in front of them at all. Each successful one
+        # records the exact command that takes it back, with the index it really touched;
+        # they are printed together below the result line. Every other flag here either
+        # names its own reversal already (`--summary` → `--restore-summary`) or is a
+        # plain field write with nothing to reverse.
+        undos = []
         if a.title is not None:
             task["title"] = a.title.strip(); changed.append("title")
         # `--summary` REPLACES wholesale, and that replacement used to be the one
@@ -8965,8 +8983,22 @@ def _update_one(ref, a):
         goal = getattr(a, "goal", None)
         if goal is not None:
             # One-line "what done looks like." Blank clears it.
+            goal_moved = goal.strip() != (task.get("goal") or "").strip()
             task["goal"] = goal.strip()
             changed.append("goal")
+            if goal_moved:
+                # Baseline for heal's GOAL REVIEW: the moment, plus how many decisions
+                # the log held then. Without it that section can only say "cannot be
+                # counted" — and it must never say "0", which reads as "nothing has
+                # happened since" when the truth is "nobody recorded when this was
+                # written". Stamped only when the TEXT actually moved, the same rule
+                # `state_changed` above follows: re-writing the identical line does not
+                # make a goal that reality has overtaken any fresher, and re-baselining
+                # on a no-op write would hide exactly the drift this measures. A --goal
+                # and a --decision in the SAME call snapshot before that decision lands,
+                # so it reads as one already accrued — an over-count of one, in the
+                # direction that prompts a look rather than the one that hides it.
+                _heal.stamp_goal_touched(task)
         # Granular step ops (stable 1-based indices). --step-add appends; --step-done/
         # --step-undone tick/untick by number; an out-of-range index warns, never crashes.
         # `last_step_idx` is what --step-supersede links to, exactly as
@@ -9005,6 +9037,11 @@ def _update_one(ref, a):
             ok, err = _steps.mark_superseded(task_steps, n, last_step_idx)
             if ok:
                 changed.append("step⊘")
+                undos.append("retired step %s%s → `update --task %s --step-restore %s`"
+                             % (n,
+                                (" (replaced by step %d)" % last_step_idx)
+                                if last_step_idx else "",
+                                ref, n))
                 add_event(task, "step",
                           "step %s superseded%s"
                           % (n, (" by step %d" % last_step_idx) if last_step_idx else ""),
@@ -9048,6 +9085,9 @@ def _update_one(ref, a):
                 ok, err = _dec.mark_superseded(entries, n, last_decision_idx)
                 if ok:
                     changed.append("supersede")
+                    undos.append("superseded decision %s (by decision %s) → `update "
+                                 "--task %s --restore-decision %s`"
+                                 % (n, last_decision_idx, ref, n))
                     add_event(task, "decision",
                               "decision %s superseded by decision %s" % (n, last_decision_idx),
                               session)
@@ -9165,11 +9205,13 @@ def _update_one(ref, a):
             touch(task, session=session, note="scope updated: " + ", ".join(changed),
                   register=False)
         cap["changed"], cap["msgs"], cap["related_new"] = changed, msgs, related_new
+        cap["undos"] = undos
 
     updated = mutate(tid, _apply)
     if updated is None:
         return "update: no task matching %r" % ref
     changed, msgs, related_new = cap["changed"], cap["msgs"], cap["related_new"]
+    undos = cap.get("undos") or []
     label = updated.get("seq", updated["id"][:8])
     if not changed:
         msgs.append("update %s: nothing to change (pass --title/--summary/--append-summary/"
@@ -9205,6 +9247,15 @@ def _update_one(ref, a):
                                 "seq": other.get("seq")}}, session)
     task = updated                       # post-save notices below read the saved task
     msgs.append("updated task %s: %s" % (label, ", ".join(changed)))
+    if undos:
+        # Printed on the WRITE, not left to a skill to remember. These two verbs land
+        # immediately, with no backup and — since `/heal` stopped asking before it acts —
+        # nothing standing in front of them, so the report that says a mark was made is
+        # the right place to say how to take it back.
+        msgs.append("  UNDO — each mark above and the ONE command that reverses it:")
+        msgs.extend("    • %s" % u for u in undos)
+        msgs.append("    Nothing was deleted: the replacement stays on the record either "
+                    "way, and a restore puts the original back BESIDE it.")
     # THE COLD-READ CHECK, MECHANICAL. It used to be advice — "re-read the digest as if
     # you have no memory of this conversation" — which is unfalsifiable: no output ever
     # said whether it was done. Two of its conditions are decidable, so the machine
@@ -11631,6 +11682,51 @@ def cmd_hook_health(a):
     print("Hooks stayed non-fatal throughout. Clear with `task-station hook-health --clear`.")
 
 
+def _heal_positional_ref(a):
+    """Fold a POSITIONAL task ref into `--task`, or return the refusal saying why it
+    cannot be folded. None when there is nothing to fold.
+
+    WHY THE POSITIONAL EXISTS. `commands/heal.md` runs
+    `task-station.py heal --scan --session <sid> $ARGUMENTS`, so a user typing `/heal 12`
+    hands this CLI a bare `12`. The heal subparser had no positional, so argparse exited
+    with `unrecognized arguments: 12` and the command died before the scan ever ran — the
+    ONE form a person actually types was the one form that could not work. The fix cannot
+    live in the command file, either: `$ARGUMENTS` legitimately carries `--task <n>`,
+    `--all`, or nothing at all, and there is no word to insert there that parses all four.
+
+    ONE RESOLVER, NOT TWO. This only ever COPIES the ref into `--task`; `_heal_targets`
+    still does every lookup, so a seq, a hub ordinal and an id prefix behave identically
+    whichever way they were typed and there is no second resolution path to drift.
+
+    TWO REFUSALS, and both of them are "do not guess which record you meant":
+
+      * WITH `--all`. One names a single task and the other sweeps the board. Silently
+        picking either would reconcile a scope nobody asked for, and dropping the ref
+        without a word is how someone comes to believe they healed one task when they
+        swept the whole board.
+      * WITH A `--task` NAMING SOMETHING ELSE. A precedence rule would be invisible at
+        the call site and the cost of it being wrong is a reconcile written onto the
+        wrong task. The SAME ref twice is accepted instead of refused: `/todo heal 12`
+        fills both slots from one word, and two spellings of one task is not a conflict.
+        Compared case-insensitively, because an id prefix typed in either case still
+        resolves to exactly the same record."""
+    ref = str(getattr(a, "ref", None) or "").strip()
+    if not ref:
+        return None
+    if getattr(a, "all", False):
+        return ("heal: `%s` names ONE task and `--all` sweeps every open task, so the two "
+                "cannot be combined — guessing the scope is how the wrong record gets "
+                "reconciled. Pass one or the other. Nothing was read." % ref)
+    named = str(getattr(a, "task", None) or "").strip()
+    if named and named.casefold() != ref.casefold():
+        return ("heal: `--task %s` and the positional `%s` name different tasks, and "
+                "there is deliberately no precedence rule between them — a silent winner "
+                "would reconcile a record you did not mean. Pass ONE of them. Nothing was "
+                "read." % (named, ref))
+    a.task = named or ref
+    return None
+
+
 def _heal_targets(a):
     """The tasks a `heal` invocation acts on, as `(tasks, error_line)`.
 
@@ -11662,20 +11758,25 @@ def _heal_scan_one(task, probe_branches=True, link_probe=None):
 
 
 def _heal_scan_report(task, result):
-    """`heal --scan` output for one task: the eight finding checks, each reported clean
-    or with its hits, plus the health metric that is the ninth. Zero tokens of
+    """`heal --scan` output for one task: the nine finding checks, each reported clean
+    or with its hits, plus the health metric that is the tenth. Zero tokens of
     judgment — this is the deterministic layer, printed verbatim.
 
     Below the checks sit the sections that are NOT checks: the MERGE CANDIDATES proposed
-    from their leading shape, the expected-ephemeral count, the PINNED set to re-read, and
-    what has ACCRUED since the last heal. None is a defect, so none reaches `Heal due?` —
-    that line is computed from the findings alone, and mixing these in would put YES on a
-    perfectly reconciled task.
+    from their leading shape, the expected-ephemeral count, the PINNED set to re-read, the
+    GOAL LINE with what has landed since it was written, and what has ACCRUED since the
+    last heal. None is a defect, so none reaches `Heal due?` — that line is computed from
+    the findings alone, and mixing these in would put YES on a perfectly reconciled task.
 
     THE ACCRUAL SECTION IS PRINTED HERE ON PURPOSE, not only in the dry run. A clean scan
     is where the skill STOPS (stamp it and report), so a gap named only in the dry run is
     one nobody sees on a clean task — and the incident that added it was a task that
-    scanned clean on every check while a shipped release sat recorded nowhere on it."""
+    scanned clean on every check while a shipped release sat recorded nowhere on it.
+
+    IT CLOSES ON THREE ROWS, NOT ONE (`heal.summary_lines`): what the machine checked,
+    whether the half it cannot check has been recorded, and only then the verdict. A lone
+    `Heal due? no` reads as "this task is a complete record", which is the reading that
+    let both of the incidents above pass for healthy."""
     seq = task.get("seq", task["id"][:8])
     out = ["[HEAL-SCAN] Task #%s [%s] — %s" % (seq, task["id"][:8], task["title"])]
     out.append("  %-28s %s" % ("Health", _heal.health_line(result.get("health") or {})))
@@ -11686,20 +11787,28 @@ def _heal_scan_report(task, result):
     out.extend(_heal.merge_candidate_lines(result))
     out.extend(_heal.ephemeral_lines(result))
     out.extend(_heal.pinned_lines(result))
+    out.extend(_heal.goal_review_lines(result))
     out.extend(_heal.accrual_lines(result))
-    is_due, reasons = _heal.due(task, result=result)
-    out.append("  %-28s %s" % ("Heal due?",
-                               ("YES — %s" % "; ".join(reasons)) if is_due else "no"))
+    out.extend(_heal.summary_lines(task, result))
     return "\n".join(out)
 
 
-def _heal_block(task, result, ops, applied=None, backup=None):
+def _heal_block(task, result, ops, applied=None, backup=None, before=None):
     """The model-facing [HEAL] block — layer 2's brief.
 
     Carries the scan findings, the health metric, the FULL current decision set (the
     pass cannot reconcile what it cannot see), the mechanical plan, and the exact verb
     commands for the judgment calls a machine must not make on its own. `applied` is
-    None on a dry run and the `(lines, n, skipped)` triple after an --apply."""
+    None on a dry run and the `(lines, n, skipped)` triple after an --apply.
+
+    IT ALSO CARRIES THE GOAL LINE AND THE LIVE CHECKLIST, printed together right after
+    the decision set. They were absent for the same reason the checks never looked at
+    them: all three verbs here are DECISION verbs. But the goal says what DONE looks
+    like and the checklist says what to DO, so they are what a cold session reads FIRST,
+    while the decisions mostly say WHY — and on one real task both had been overtaken
+    while every check reported clean. They sit BESIDE the newest decisions on purpose:
+    those decisions are the evidence that retires them, and the one question this pass
+    must ask of each is whether it does."""
     seq = task.get("seq", task["id"][:8])
     h = result.get("health") or {}
     out = []
@@ -11708,6 +11817,8 @@ def _heal_block(task, result, ops, applied=None, backup=None):
                % ("APPLIED — the mechanical plan below has been performed"
                   if applied else "DRY RUN — nothing has been changed"))
     out.append("")
+    if before:
+        out.append("HEALTH BEFORE: %s" % _heal.health_line(before))
     out.append("HEALTH: %s" % _heal.health_line(h))
     out.append("")
     out.append("SCAN (layer 1 — deterministic, no judgment):")
@@ -11715,7 +11826,9 @@ def _heal_block(task, result, ops, applied=None, backup=None):
     out.extend(_heal.merge_candidate_lines(result))
     out.extend(_heal.ephemeral_lines(result))
     out.extend(_heal.pinned_lines(result))
+    out.extend(_heal.goal_review_lines(result))
     out.extend(_heal.accrual_lines(result))
+    out.extend(_heal.summary_lines(task, result))
     out.append("")
     out.append("MECHANICAL PLAN (what --apply does on its own):")
     out.extend(_heal.plan_lines(ops))
@@ -11730,8 +11843,14 @@ def _heal_block(task, result, ops, applied=None, backup=None):
                    "next scan counts new decisions from HERE instead of reporting the "
                    "whole log as unreconciled." % _heal.heal_stamp_line(h))
         out.append("  NOTHING was deleted. Every original is still in "
-                   "`/todo %s history`, marked with what replaced it, and each mark is "
-                   "reversible with `update --restore-decision <n>`." % seq)
+                   "`/todo %s history`, marked with what replaced it." % seq)
+        undo = _heal.undo_lines(ops)
+        if undo:
+            out.append("")
+            out.extend(undo)
+            if backup:
+                out.append("  • WHOLE-TASK FALLBACK, for anything above with no verb of "
+                           "its own: the pre-heal blob at %s." % backup)
     out.append("")
     out.append("CURRENT DECISIONS (%d) — reconcile THESE:" % h.get("decisions_current", 0))
     for i, d in _dec.live(task.get("decisions")):
@@ -11739,6 +11858,32 @@ def _heal_block(task, result, ops, applied=None, backup=None):
         out.append("  %2d. %s%s" % (i, DECISION_PIN_MARK if _dec.is_pinned(d) else "", txt))
     if not h.get("decisions_current"):
         out.append("  (none current)")
+    # The GOAL and the CHECKLIST, immediately below the decisions and immediately below
+    # the NEWEST of them, because the newest evidence is what retires them. One question
+    # for both, and it is the question no check can ask.
+    live_steps = _steps.live(task.get("steps"))
+    goal = str(task.get("goal") or "").strip()
+    out.append("")
+    out.append("THE GOAL LINE — does the newest evidence above retire this?")
+    out.append("  %s" % (goal or "(none set)"))
+    out.append("")
+    out.append("THE LIVE CHECKLIST (%d step(s)) — for EACH ONE: does the newest evidence "
+               "above retire this?" % len(live_steps))
+    for i, s in live_steps:
+        out.append("  %s %2d. %s" % ("✓" if _steps.is_done(s) else "☐", i,
+                                     _steps.text(s)))
+    if not live_steps:
+        out.append("  (no steps)")
+    out.append("  WHY THESE TWO ARE HERE. A cold session reads the goal and the checklist "
+               "FIRST — they say what DONE looks like and what to DO, while the decisions "
+               "above mostly say WHY. A decision that was right when written and was "
+               "later refuted by REALITY leaves nothing inconsistent behind, so no check "
+               "can see that the goal describes a mission already accomplished or that a "
+               "step names work a superseded decision retired. One real task held both "
+               "while all its checks reported clean, and the checklist went on reading as "
+               "the plan. Where the wording overlapped enough to spot mechanically, the "
+               "scan lists it above as a STEP RESTATING A SUPERSEDED DECISION — a "
+               "PROVISIONAL finding that still needs your reading.")
     out.append("")
     out.append("NOW DO THE JUDGMENT WORK — the part a machine must not guess at. For "
                "each item below, decide and act; do NOT invent history, and NEVER "
@@ -11784,13 +11929,28 @@ def _heal_block(task, result, ops, applied=None, backup=None):
                "check is whether it is still ACCURATE. If it is not, supersede it (1) or "
                "split it (2); if it no longer needs to lead, `update --task %s "
                "--unpin-decision <n>`." % seq)
-    out.append("  8. Prose that CLAIMS a supersession must become structure — the "
+    out.append("  8. RE-READ THE GOAL LINE AND EVERY LIVE STEP — both are printed below "
+               "the decision set, and the question for each is the same: DOES THE NEWEST "
+               "EVIDENCE RETIRE THIS? A goal describing a mission the record now shows as "
+               "accomplished, and a step naming work a superseded decision retired, are "
+               "read as INSTRUCTIONS by the next cold session, and neither leaves anything "
+               "inconsistent behind for a check to catch. Rewrite a drifted goal with "
+               "`update --task %s --goal '<what done looks like now>'`; retire an "
+               "overtaken step with `update --task %s --step-add '<the corrected step>' "
+               "--step-supersede <n>`. The GOAL REVIEW line in the scan says how many "
+               "decisions have landed since the goal was last written — a count, not an "
+               "accusation. Any STEP RESTATING A SUPERSEDED DECISION listed above IS a "
+               "finding, but a PROVISIONAL one: read the step and the decision together, "
+               "because the step written to RECORD a retirement uses the same words as "
+               "the step that still orders it." % (seq, seq))
+    out.append("  9. Prose that CLAIMS a supersession must become structure — the "
                "digest cannot act on a sentence saying \"decision 4 was wrong\".")
-    out.append("  9. VERIFY THAT EVERYTHING WHICH ACTUALLY SHIPPED SINCE THE LAST HEAL "
+    out.append(" 10. VERIFY THAT EVERYTHING WHICH ACTUALLY SHIPPED SINCE THE LAST HEAL "
                "HAS A DECISION — a release, a merged PR, a document. This is the ONE gap "
-               "the deterministic layer STRUCTURALLY cannot cover, and the second thing "
-               "on this list that no check will ever raise (the other is 7, whether a "
-               "pinned decision is still accurate). Every check works by "
+               "the deterministic layer STRUCTURALLY cannot cover, and the third thing "
+               "on this list that no check will ever raise (the others are 7, whether a "
+               "pinned decision is still accurate, and 8, whether the goal and the "
+               "checklist have been overtaken). Every check works by "
                "cross-referencing two things the task itself holds; work that is recorded "
                "NOWHERE on it leaves nothing to cross-reference, so the scan cannot tell "
                "that apart from nothing having happened. The ACCRUED line above says how "
@@ -11827,7 +11987,7 @@ def _heal_block(task, result, ops, applied=None, backup=None):
     return "\n".join(out)
 
 
-def _heal_applied_block(task, result, applied, backup):
+def _heal_applied_block(task, result, applied, backup, ops=None, before=None):
     """What `--apply` prints: ONLY what it did.
 
     THE COST THIS EXISTS TO STOP. `--apply` used to re-render the entire dry run — the
@@ -11839,11 +11999,21 @@ def _heal_applied_block(task, result, applied, backup):
     paid ~12,000 tokens TWICE for ONE heal, and the second copy told the caller nothing
     it had not just read.
 
-    So this carries the four things only the apply knows: what was performed, what was
-    skipped, where the backup went, and what the task looks like NOW (the health line
-    plus whether anything is still outstanding). The scan, the decision list and the
+    So this carries the things only the apply knows: what was performed, what was
+    skipped, where the backup went, HOW TO TAKE EACH WRITE BACK, and what the task looks
+    like now against what it looked like before. The scan, the decision list and the
     judgment list are deliberately absent — `--verbose` renders the full `_heal_block`
-    for anyone who wants them."""
+    for anyone who wants them.
+
+    THE UNDO SECTION IS WHAT REPLACES THE APPROVAL GATE. `/heal` no longer stops to ask
+    before applying, so this report is the only place a wrong call can be caught — and
+    "every heal is reversible" is not enough to catch one with, because acting on it
+    means first working out which decision numbers moved. `heal.undo_lines` prints the
+    exact command per performed op instead, and says so plainly for the retro-disposition,
+    which has no inverse verb at all.
+
+    `before` is the pre-apply health dict; with it the report reads BEFORE → NOW rather
+    than leaving the reader to remember a number from the previous block."""
     seq = task.get("seq", task["id"][:8])
     h = result.get("health") or {}
     lines, n, skipped = applied
@@ -11863,9 +12033,18 @@ def _heal_applied_block(task, result, applied, backup):
                "scan counts new decisions from HERE instead of reporting the whole log "
                "as unreconciled." % _heal.heal_stamp_line(h))
     out.append("  NOTHING was deleted. Every original is still in `/todo %s history`, "
-               "marked with what replaced it, and each mark is reversible with "
-               "`update --restore-decision <n>`." % seq)
+               "marked with what replaced it." % seq)
+    undo = _heal.undo_lines(ops)
+    if undo:
+        out.append("")
+        out.extend(undo)
+        if backup:
+            out.append("  • WHOLE-TASK FALLBACK, for anything above with no verb of its "
+                       "own: the pre-heal blob at %s is the task exactly as it stood "
+                       "before this run." % backup)
     out.append("")
+    if before:
+        out.append("HEALTH BEFORE: %s" % _heal.health_line(before))
     out.append("HEALTH NOW: %s" % _heal.health_line(h))
     is_due, reasons = _heal.due(task, result=result)
     out.append("STILL OUTSTANDING: %s"
@@ -11926,8 +12105,7 @@ def _heal_no_operations_block(task, result, ops, attempted=None):
                "record of this pass, and it is what stamps." % seq)
     out.append("")
     out.append("HEALTH: %s" % _heal.health_line(h))
-    is_due, reasons = _heal.due(task, result=result)
-    out.append("Heal due? %s" % (("YES — %s" % "; ".join(reasons)) if is_due else "no"))
+    out.extend(_heal.summary_lines(task, result))
     return "\n".join(out)
 
 
@@ -11976,9 +12154,14 @@ def _heal_verb(a):
             else:
                 msgs.append("heal: %s" % e)
         if done:
+            # The indices are known HERE, so the undo names them. This path writes
+            # immediately and takes no backup, so a generic `<n>` would leave the reader
+            # reconstructing which numbers moved at the one moment they need them.
             msgs.append("merged %s into %d — each original is kept in history, marked, "
-                        "and `update --restore-decision <n>` undoes it"
-                        % (", ".join(str(n) for n in done), into[0]))
+                        "and `update --task %s %s` undoes it (the flag repeats; it does "
+                        "not take a list)"
+                        % (", ".join(str(n) for n in done), into[0],
+                           _heal._task_ref(task), _heal._restore_flags(done)))
     if not msgs:
         return "heal: nothing to do (pass --split or --merge with --into)."
     task["decisions"] = entries
@@ -12113,10 +12296,24 @@ def cmd_heal(a):
     THE FLOW IS THE SKILL'S JOB, NOT THE CLI'S. A CLI is one-shot and cannot hold a
     conversation, so dry-run-as-default stays for scripting safety while
     `skills/heal/SKILL.md` orchestrates: scan first, read the dry run at most once,
-    propose a compact numbered plan, confirm once, execute, stamp, re-scan.
+    judge, execute, stamp, re-scan, report. It no longer stops to ask before applying —
+    the approval gate is gone, and what replaces it is the UNDO TRAIL this CLI prints
+    (`heal.undo_lines`, and the `update` result line for the two judgement verbs, which
+    write immediately and take no backup). A gate is only safe to remove if reversing a
+    wrong call costs what approving one did, so every write now names the one command
+    that takes it back, with the index it actually touched.
 
     `--mark-healed` is the judgement-only counterpart, and `--dispose-acks` retro-fills
-    the dispositions of acks recorded before dispositions were required."""
+    the dispositions of acks recorded before dispositions were required.
+
+    THE TASK MAY BE NAMED POSITIONALLY — `heal --scan 12` is `heal --scan --task 12`,
+    because `/heal 12` passes that 12 straight through as a positional. The fold and its
+    two refusals live in `_heal_positional_ref`, and they run FIRST: a refusal there must
+    change nothing, so it has to be answered before any task is loaded."""
+    ref_error = _heal_positional_ref(a)
+    if ref_error:
+        print(ref_error)
+        return
     tasks, err = _heal_targets(a)
     if err:
         print(err)
@@ -12247,9 +12444,15 @@ def cmd_heal(a):
         fresh = _heal_scan_one(task, probe_branches=True, link_probe=link_probe)
         _stream_emit("task.checkpoint", task, _stream_digest(task), session)
         if getattr(a, "verbose", False):
-            blocks.append(_heal_block(task, fresh, ops, applied=applied, backup=path))
+            blocks.append(_heal_block(task, fresh, ops, applied=applied, backup=path,
+                                      before=result.get("health")))
         else:
-            blocks.append(_heal_applied_block(task, fresh, applied, path))
+            # `result` is the PRE-apply scan and `fresh` the post-apply one, so the
+            # report can show health before → after without the reader holding a number
+            # in their head from the previous block. `ops` carries the per-write undo
+            # commands `_heal.apply` recorded as it performed them.
+            blocks.append(_heal_applied_block(task, fresh, applied, path, ops=ops,
+                                              before=result.get("health")))
     print("\n\n".join(blocks))
     if apply_it and not scan_only:
         maybe_refresh_board()
@@ -12427,8 +12630,17 @@ def main():
                         help="reconcile a task's append-only decision log into current "
                              "state (dry run by default)")
     sp.add_argument("--session", default=None)
+    sp.add_argument("ref", nargs="?", default=None, metavar="TASK",
+                    help="the task to reconcile, named POSITIONALLY: `heal --scan 12` is "
+                         "exactly `heal --scan --task 12`, resolved by the same lookup. "
+                         "It exists because /heal passes $ARGUMENTS straight through, so "
+                         "a bare `/heal 12` arrives here as a positional. REFUSED "
+                         "alongside --all (they name different scopes) or alongside a "
+                         "--task naming a DIFFERENT task; the same ref in both places is "
+                         "accepted.")
     sp.add_argument("--task", default=None,
-                    help="task to reconcile by seq/id (default: the attached task)")
+                    help="task to reconcile by seq/id (default: the attached task). May "
+                         "also be given positionally — `heal --scan 12`.")
     sp.add_argument("--scan", action="store_true",
                     help="layer 1 ONLY: the deterministic scan. Zero tokens, and it "
                          "never modifies the task.")

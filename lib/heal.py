@@ -31,8 +31,8 @@ three verbs and this module drives them:
 
 TWO LAYERS, deliberately split by cost:
 
-  LAYER 1 — `scan()`. Deterministic, zero tokens, and it NEVER mutates the task. NINE
-  checks (see CHECKS — eight findings plus the health metric, which is a measurement
+  LAYER 1 — `scan()`. Deterministic, zero tokens, and it NEVER mutates the task. TEN
+  checks (see CHECKS — nine findings plus the health metric, which is a measurement
   rather than a finding) that find what a reconcile would have to look at. `heal --scan`
   and the SessionStart nag both run it and write the result to a per-task GATE FILE.
   Modelled on `hook_health.py`: everything fails open, an unreadable gate means no
@@ -124,6 +124,26 @@ WHAT A REAL RECONCILE RUN EXPOSED (and this module now covers):
     loud, in words, that whether everything which SHIPPED is in there is judgement the
     deterministic layer structurally cannot do. Informational, like the health metric:
     never a finding, never an issue, and it can never make a heal due.
+  * THE GOAL AND THE CHECKLIST DRIFT WHERE NOTHING WAS LOOKING. All three verbs here are
+    DECISION verbs, and every check reads a decision, a memo, a path or a step's own
+    words. Nothing read the GOAL LINE or compared a STEP against a DECISION — so on one
+    real task `--scan` reported every check clean and `Heal due? no` while the task held
+    a goal describing a mission already accomplished AND five live steps naming the two
+    largest work items on it, both by then retired by decisions the task itself had
+    SUPERSEDED. Nothing was internally inconsistent, because a decision that was right
+    when written and was later refuted by reality leaves nothing to cross-reference; and
+    a cold session reads the goal and the checklist FIRST, because that is where the next
+    move lives, while the decisions mostly say WHY. So a step restating a superseded
+    decision is now a FINDING (`steps_restating_superseded`) — the log already ruled that
+    work refuted, and a live step still ordering it is a contradiction — while the goal
+    is a PROPOSAL (`goal_review`), because a goal is supposed to outlive the decisions
+    that pursue it and an untouched one is a reason to LOOK, never proof of anything.
+  * AND `Heal due? no` WAS SAYING MORE THAN IT KNEW. On its own it reads as "this task is
+    a complete record" when all it means is "the cross-referencing checks found nothing" —
+    the reading that let both incidents above pass for healthy. Every surface now closes
+    on `mechanical_line` / `judgment_line` / the verdict, so the half a machine did and
+    the half only a reader can do are two separate answers. RENDERING only: `due()` is
+    untouched, because the nag, the gate file and `gate_line` all read it.
 
 SAFETY — this mutates the decision record on a board holding real work:
 
@@ -178,7 +198,7 @@ SUPERSESSION_LANGUAGE = ("SUPERSEDED", "supersedes", "corrected", "was wrong",
 STALE_STEP_LANGUAGE = ("STALE", "do not execute", "READ-ME-FIRST", "superseded")
 
 # The FINDING checks, in the order every surface reports them — `(slug, title)`. These
-# are eight of the nine; the ninth is the HEALTH METRIC, which is a measurement rather
+# are nine of the ten; the tenth is the HEALTH METRIC, which is a measurement rather
 # than a finding (a task can be perfectly consistent and still be far too big to brief),
 # so it lives in `health()` and renders through `health_line()` above the findings.
 CHECKS = (
@@ -190,6 +210,7 @@ CHECKS = (
     ("link-rot", "Link rot"),
     ("stale-step", "Stale steps"),
     ("refragmented", "Re-fragmented consolidations"),
+    ("step-restates-superseded", "Steps restating a superseded decision"),
 )
 CHECK_ORDER = [c[0] for c in CHECKS]
 CHECK_TITLES = dict(CHECKS)
@@ -1170,6 +1191,181 @@ def refragmented_consolidations(task):
     return out
 
 
+# -- check 10: a LIVE STEP that restates a SUPERSEDED decision ---------------------
+#
+# THE INCIDENT. A real task scanned CLEAN on every check and printed `Heal due? no`,
+# while its checklist still carried five LIVE steps naming the two largest work items on
+# the task — both of them retired by decisions that same task had already SUPERSEDED. A
+# cold session reads the CHECKLIST first, because that is where the next move lives; the
+# decision log is where the REASONS live. So the record was internally consistent and
+# actively misleading at the same instant, and days of retired work sat there reading as
+# the plan.
+#
+# WHY NO EXISTING CHECK COULD SEE IT. Every other check cross-references two things ON
+# THE SAME OBJECT — a decision's prose against its own marks, a memo against its declared
+# target, a step against its own staleness language. Nothing ever compared a STEP against
+# a DECISION, so a step could go on instructing work that a superseded decision had
+# retired without contradicting anything a check reads. "Stale steps clean" (check 8)
+# means STRUCTURALLY stale — the step says so about itself — and a step that is merely
+# WRONG NOW says nothing about itself at all.
+#
+# WHY THIS IS A FINDING AND THE GOAL REVIEW BELOW IS NOT. `merge_candidates`,
+# `pinned_review` and `goal_review` are proposals because nothing on the record is wrong:
+# four release records are not a defect, a pin is not a defect, an untouched goal is not a
+# defect. Here the log ALREADY RULED. A superseded decision is one the task itself marked
+# REFUTED, and a live step ordering the refuted work is the record contradicting its own
+# ruling — the same class as an unlinked supersession, and it is handed to the next
+# session as an INSTRUCTION rather than as background. So it counts as an issue.
+
+# How much of their significant vocabulary a step and a superseded decision must SHARE
+# before the step reads as a restatement of it — Jaccard (see `word_overlap`).
+#
+# UNVALIDATED: REASONED, NOT MEASURED. Every other threshold in this module was tuned
+# against a real task; this one could not be, so it is stated as a starting value and
+# labelled as one rather than dressed up as a measurement. The reasoning: Jaccard is
+# SYMMETRIC, so a short step inside a long decision scores |step| / |decision| even when
+# every word of the step is present — 0.5 when the decision is twice the step, 0.33 at
+# three times, 0.25 at four. 0.30 therefore fires on a step restating a decision up to
+# roughly three times its length, and needs about a third of the combined vocabulary to
+# agree in every other case, which unrelated entries on one task do not reach (they share
+# a handful of project words against a union in the hundreds). It is deliberately on the
+# QUIET side of the trade every check here makes: the failure it accepts is a long
+# superseded decision whose restating step goes unreported, and the failure it refuses is
+# firing on a checklist nobody needs to touch.
+STEP_RESTATEMENT_OVERLAP = 0.30
+
+# Both texts must carry at least this many DISTINCT significant words before their
+# overlap means anything. Below that the ratio is noise: two four-word fragments sharing
+# three words score 0.6 while telling you nothing, and `_stem` already refuses to
+# fingerprint on fewer than STEM_WORDS for the same reason. Six is above the longest
+# fragment that can score high by accident and below any real checklist step, and the
+# skipped short step is the cheap failure — one missed finding, not a false one.
+STEP_RESTATEMENT_MIN_WORDS = 6
+
+# The vocabulary that makes this check STAY SILENT — the union of the two correction
+# sets, deliberately read with the OVER-EAGER `matched_language` rather than the
+# declare-vs-describe guard. See `steps_restating_superseded` for why the guard is not
+# what this check needs.
+RESTATEMENT_SILENCE_LANGUAGE = SUPERSESSION_LANGUAGE + STALE_STEP_LANGUAGE
+
+
+def _jaccard(a, b):
+    """`|A ∩ B| / |A ∪ B|` for two word SETS, 0.0 when either side is empty. Split out
+    from `word_overlap` so a caller comparing one text against many can tokenize the many
+    ONCE — the check below does exactly that."""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / float(len(a | b))
+
+
+def word_overlap(a_text, b_text):
+    """How much of two texts' SIGNIFICANT vocabulary is shared, as a Jaccard ratio in
+    0..1.
+
+    `_significant_words` is reused rather than reimplemented, and that is the whole point:
+    it is already the tokenizer `leading_shape` and `_stem` fingerprint decisions with,
+    stopwords and one-letter fragments dropped, digits never matched at all. A second
+    tokenizer or a second stopword list would be a second thing to keep in step with the
+    first, and the two would drift the first time either was tuned.
+
+    SYMMETRIC, and that cuts both ways. Two texts of similar length that say the same
+    thing score high; a SHORT text fully contained in a LONG one scores only the ratio of
+    their lengths, so this systematically under-reports a one-line step against a
+    paragraph-long decision. That is a known false NEGATIVE and it is the direction this
+    module always errs in — see STEP_RESTATEMENT_OVERLAP."""
+    return _jaccard(set(_significant_words(a_text)), set(_significant_words(b_text)))
+
+
+def steps_restating_superseded(task, minimum=STEP_RESTATEMENT_OVERLAP,
+                               min_words=STEP_RESTATEMENT_MIN_WORDS):
+    """LIVE steps that restate a decision this task has SUPERSEDED — the checklist still
+    ordering work the log already retired.
+
+    SUPERSEDED SPECIFICALLY, not merely replaced (`decisions.is_superseded`, the narrow
+    accessor). Supersession is the one verb that means "this was WRONG"; a SPLIT decision
+    was only reshaped and a MERGED one is still true, so a step restating either is not
+    ordering refuted work and must not be reported.
+
+    THE THRESHOLD IS 0.30 JACCARD (STEP_RESTATEMENT_OVERLAP) AND IT IS UNVALIDATED — read
+    the constant for the full reasoning, which is the honest short version of "this could
+    not be measured". Jaccard is symmetric, so perfect containment of a step inside a
+    decision scores the ratio of their lengths: 0.30 catches a step restating a decision
+    up to roughly three times its length, and otherwise wants about a third of the
+    combined vocabulary to agree — far above the handful of shared project words that
+    unrelated entries on one task manage against a union in the hundreds. It errs QUIET,
+    which is the trade every check in this module makes, and it is one constant to retune
+    when real numbers exist.
+
+    ALREADY-SUPERSEDED STEPS ARE SKIPPED, exactly as `stale_steps` skips them and for the
+    same reason: a retired step has left the checklist, so re-reporting it would make a
+    freshly-healed task read as dirty.
+
+    HOW THIS AVOIDS THE DECLARE-vs-DESCRIBE FAILURE — and it does NOT do it by asking the
+    guard's question. That question ("does this text DECLARE the condition, or merely
+    DESCRIBE it?") cannot be asked here, because the condition is not a word in the text
+    at all: the two cases this check must tell apart are a step that RESTATES retired work
+    and the step written to RECORD that the work was retired, and both legitimately share
+    the retired work's whole vocabulary. Text overlap CANNOT separate them — a corrected
+    step naming what it replaced looks exactly like the thing it replaced.
+
+    So the answer is to stay silent whenever either reading is possible. Any step carrying
+    correction vocabulary at all (RESTATEMENT_SILENCE_LANGUAGE, read with the over-eager
+    `matched_language` on purpose — declaring or merely describing, both mean "this step
+    is talking about a retirement") is skipped outright. The over-eagerness that made
+    `matched_language` useless as a finding condition is exactly what makes it a good
+    SILENCER: there it manufactured false positives, here it can only cost false
+    negatives, which is the trade every check in this module already chose.
+
+    And what survives that filter is still reported as PROVISIONAL, in words, in the
+    finding itself. This check earns its keep by pointing at two entries and saying READ
+    THESE TOGETHER; it does not claim to know which of them is the stale one. Being
+    honest about that in the detail line is what stops it becoming the fifth
+    confidently-wrong check this subsystem has shipped.
+
+    One finding per step, naming the STRONGEST match: a step overlapping three superseded
+    decisions is one thing to read, not three."""
+    entries = task.get("decisions") or []
+    dead = []
+    for i, e in enumerate(entries, 1):
+        if not _dec.is_superseded(e):
+            continue
+        words = set(_significant_words(_dec.text(e)))
+        if len(words) >= min_words:
+            dead.append((i, words))
+    if not dead:
+        return []
+    out = []
+    for i, s in _steps.live(task.get("steps")):
+        body = _steps.text(s)
+        words = set(_significant_words(body))
+        if len(words) < min_words:
+            continue
+        if matched_language(body, RESTATEMENT_SILENCE_LANGUAGE):
+            continue
+        best, score = None, 0.0
+        for n, other in dead:
+            ratio = _jaccard(words, other)
+            if ratio > score:
+                best, score = n, ratio
+        if best is None or score < minimum:
+            continue
+        out.append(_finding(
+            "step-restates-superseded", "step %d" % i,
+            "restates decision %d, which this task has already SUPERSEDED — they share "
+            "%d%% of their significant vocabulary, and nothing else on the record "
+            "contradicts either, so every other check reads this task as clean. "
+            "PROVISIONAL, and it says so on purpose: text overlap cannot tell a step that "
+            "still ORDERS the retired work from the step written to RECORD that it was "
+            "retired, because both name the same thing. READ THE TWO TOGETHER. If the "
+            "step really does still order refuted work, retire it with `update "
+            "--step-add '<the corrected step>' --step-supersede %d` (the step added in "
+            "the same call is recorded as its replacement, and `--step-restore %d` undoes "
+            "it). If the step IS the correction, leave it exactly where it is — it is "
+            "doing its job"
+            % (best, int(round(score * 100)), i, i)))
+    return out
+
+
 # -- informational: the pinned set, for re-review ---------------------------------
 #
 # A PINNED decision leads the digest of EVERY session (`decisions.digest_order`), so
@@ -1241,6 +1437,94 @@ def pinned_review(task, now=None):
                     "preview": (flat[:PINNED_PREVIEW_CHARS - 1] + "…"
                                 if len(flat) > PINNED_PREVIEW_CHARS else flat)})
     return out
+
+
+# -- a PROPOSAL, not a finding: the goal line and what has landed since ------------
+#
+# THE INCIDENT, the same clean scan as check 10. The task's GOAL LINE — the one field
+# that says what DONE looks like — described a mission that had already been accomplished,
+# and had said so for days while every check reported clean. It could not have been
+# otherwise: the goal contradicted nothing, because nothing else on the task claims to say
+# what done looks like, so there is no second thing to cross-reference it against. The
+# only evidence that a goal has been overtaken lives in the DECISIONS written after it,
+# and reading those is judgement.
+#
+# SO THIS COUNTS, AND NOTHING ELSE. How many decisions have landed since the goal was last
+# written. That is a measure of how much evidence the goal has NOT been checked against,
+# and it is the only honest number available.
+#
+# A CANDIDATE IS NOT A DEFECT — the rule stated above `merge_candidates`, and this section
+# obeys it to the letter: never a finding, never counted as an issue, and it can NEVER
+# make `Heal due?` true on its own. A goal is SUPPOSED to outlive the decisions that
+# pursue it; a task can carry one unchanged across forty of them and be exactly right. An
+# untouched goal is a reason to LOOK. Modelled on `pinned_review`, which is the same
+# shape and the same instruction: re-read this and confirm it is still true.
+#
+# NO BASELINE MEANS "CANNOT BE COUNTED", NEVER ZERO. This is `accrual`'s own rule and it
+# is here for the same reason: a zero reads as "nothing has happened since", while the
+# truth is "nobody recorded when the goal was written". Every task that existed before
+# this shipped takes that path, so it is the COMMON case, not an edge one.
+
+GOAL_TOUCHED_FIELD = "goal_touched"    # {"ts": …, "decisions": N} — the write-time baseline
+GOAL_PREVIEW_CHARS = 200               # enough to read the goal, not enough to reprint a page
+
+
+def stamp_goal_touched(task, now=None):
+    """Record that the GOAL LINE was just rewritten: the moment, and how many decisions
+    the log held at that moment. Does NOT save — the caller persists, the same contract
+    `stamp_healed` keeps.
+
+    WHY A WRITE-TIME SNAPSHOT AND NOT A SEARCH. Nothing else on a task can answer this.
+    `updated_ts` moves for every field, so it cannot say when the GOAL moved; the event
+    feed is bounded, so on a busy task the goal's own write ages out of it; and the goal
+    is a single overwritten string with no history of its own. Exact arithmetic against a
+    snapshot is the rule `_recorded_counts` and `save._written_counts` already follow, and
+    for the same reason.
+
+    ADDITIVE KEY, which is what the frozen-format rule allows: a task written by an older
+    version simply has none, and `goal_review` reports it as uncountable rather than
+    inventing a zero."""
+    task[GOAL_TOUCHED_FIELD] = {"ts": time.time() if now is None else now,
+                                "decisions": len(task.get("decisions") or [])}
+
+
+def goal_review(task, now=None):
+    """The goal line and what has accrued against it, as a dict — `{}` when there is
+    nothing honest to say.
+
+    THREE cases, each worded as what it actually is:
+
+      * NO GOAL (never set, or cleared) — `{}`, and the surfaces print nothing. "0
+        decisions since the goal was last written" about a goal nobody wrote is a number
+        about nothing, and a section that appears on every task regardless is one readers
+        learn to skip.
+      * KNOWN — a baseline exists, so `since` is exact subtraction.
+      * UNKNOWN — no baseline, or a garbled one. `since` is None and `known` is False, so
+        the surfaces say CANNOT BE COUNTED. Never zero: see the note above.
+
+    `age` is how long ago the goal was written, or None when the snapshot carries no
+    usable timestamp — unknown, which is not the same claim as recent."""
+    body = str(task.get("goal") or "").strip()
+    if not body:
+        return {}
+    now = time.time() if now is None else now
+    snap = task.get(GOAL_TOUCHED_FIELD)
+    since, known, stamped = None, False, None
+    if isinstance(snap, dict):
+        try:
+            since = max(0, len(task.get("decisions") or []) - int(snap.get("decisions")))
+            known = True
+        except (TypeError, ValueError):
+            since, known = None, False
+        try:
+            stamped = float(snap.get("ts")) or None
+        except (TypeError, ValueError):
+            stamped = None
+    flat = " ".join(body.split())
+    return {"chars": len(body), "since": since, "known": known, "ts": stamped,
+            "age": (max(0.0, now - stamped) if stamped else None),
+            "preview": (flat[:GOAL_PREVIEW_CHARS - 1] + "…"
+                        if len(flat) > GOAL_PREVIEW_CHARS else flat)}
 
 
 # -- informational: what has ACCRUED, and the gap no scan can cover ----------------
@@ -1338,15 +1622,15 @@ def accrual(task, now=None):
 # -- the scan --------------------------------------------------------------------
 
 def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=None):
-    """Run all nine checks, plus the four sections that are deliberately NOT checks.
+    """Run all ten checks, plus the five sections that are deliberately NOT checks.
     NEVER mutates the task — not one field.
 
     `findings` is the only key that means "something is wrong", and it is the only one
-    `due()` counts. `merge_candidates`, `pinned_review`, `ephemeral` and `accrual` ride
-    alongside it as PROPOSALS, INFORMATION and COUNTS: a task can carry plenty of all
-    four and still be perfectly reconciled, so folding any of them into the issue count
-    would put `Heal due? YES` on a healthy task — the exact failure this module has
-    already had to fix four times.
+    `due()` counts. `merge_candidates`, `pinned_review`, `goal_review`, `ephemeral` and
+    `accrual` ride alongside it as PROPOSALS, INFORMATION and COUNTS: a task can carry
+    plenty of all five and still be perfectly reconciled, so folding any of them into the
+    issue count would put `Heal due? YES` on a healthy task — the exact failure this
+    module has already had to fix four times.
 
     `accrual` is the one section that is not about anything the scan FOUND: it is what has
     been recorded since the last heal, printed next to the plain statement that a scan
@@ -1372,6 +1656,7 @@ def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=No
                     for kind, url, state in links if state is False)
     findings.extend(stale_steps(task))
     findings.extend(refragmented_consolidations(task))
+    findings.extend(steps_restating_superseded(task))
     findings.sort(key=lambda f: CHECK_ORDER.index(f["check"])
                   if f["check"] in CHECK_ORDER else len(CHECK_ORDER))
     return {
@@ -1383,6 +1668,7 @@ def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=No
         "links": [{"kind": k, "url": u, "state": s} for k, u, s in links],
         "merge_candidates": merge_candidates(task),
         "pinned_review": pinned_review(task, now=now),
+        "goal_review": goal_review(task, now=now),
         "ephemeral": vanished_ephemeral(task, exists=exists),
         "accrual": accrual(task, now=now),
     }
@@ -1883,6 +2169,63 @@ def with_dispositions(ops, explicit):
     return [o for o in (ops or []) if o.get("verb") != "disposition"] + list(explicit or [])
 
 
+# -- the undo trail: what replaces an approval gate ---------------------------------
+#
+# `/heal` USED TO STOP AND ASK before it applied anything, and that question was where a
+# wrong call got caught. It is gone — the pass now runs scan → judge → apply → verify in
+# one command, because stopping between steps is the cost the user actually feels.
+#
+# REMOVING A GATE IS ONLY DEFENSIBLE IF REVERSING A WRONG CALL IS AS CHEAP AS APPROVING
+# ONE WAS. So every write this module performs now carries the exact command that undoes
+# it, generated at the moment it happens, from the indices it actually touched. Not
+# "every heal is reversible" — the paragraph that was already printed, and which nobody
+# can act on without first working out which decision numbers moved — but
+# `update --task 7 --restore-decision 4`, ready to paste.
+#
+# IT IS GENERATED, NOT WRITTEN DOWN. A guarantee the tool prints is one the pass cannot
+# forget on a long turn; a guarantee in skill prose is one it can skip. `apply()` records
+# `op["undo"]` on the ops it actually PERFORMED, so a skipped or failed op never claims a
+# reversal that would do nothing.
+#
+# AND IT SAYS SO WHEN THERE IS NO VERB. A retro-disposition has no inverse: `heal` never
+# overwrites a disposition, so nothing can clear one. The honest line for that names the
+# pre-heal backup instead of inventing a command — a reversal that does not exist is
+# worse than an admitted gap, because the reader only finds out at the moment they need it.
+
+
+def _task_ref(task):
+    """The shortest ref that names this task on a command line — its `seq`, else an id
+    prefix. One reader, so every generated undo command is addressed the same way."""
+    seq = (task or {}).get("seq")
+    return str(seq) if seq else str((task or {}).get("id") or "")[:8]
+
+
+def _restore_flags(indices, flag="--restore-decision"):
+    """`--restore-decision 3 --restore-decision 7` — REPEATED, not comma-joined, because
+    that is the only form the flag takes (`action="append", type=int`). A comma list
+    would print an undo command that argparse rejects, which is the one failure mode an
+    undo line must not have."""
+    return " ".join("%s %d" % (flag, int(n)) for n in indices)
+
+
+def undo_lines(ops, heading=True):
+    """The reversal for every op that was actually PERFORMED, as display rows.
+
+    Reads `op["undo"]`, which `apply()` writes only on success — so this can never offer
+    a command for an operation that did not happen. Returns [] when nothing was
+    performed, which keeps a no-op report silent rather than printing an empty promise."""
+    rows = [o.get("undo") for o in (ops or []) if o.get("undo")]
+    if not rows:
+        return []
+    out = []
+    if heading:
+        out.append("UNDO — every write above, and the ONE command that reverses it. This "
+                   "is what replaces the approval gate: nothing here was confirmed before "
+                   "it landed, so each line names how to take it back.")
+    out.extend("  • %s" % r for r in rows)
+    return out
+
+
 def _default_append(task, text):
     """Append one decision and return its 1-based index. The test/no-CLI path;
     task-station injects a wrapper around `append_decision` so the event feed stays
@@ -1902,8 +2245,15 @@ def apply(task, ops, append=None):
     planned together can be applied in any order without renumbering.
 
     NOTHING is deleted, `history` and the `--log` trail are not touched, and an op
-    marked `manual` is skipped with a line saying why."""
+    marked `manual` is skipped with a line saying why.
+
+    EACH PERFORMED OP GETS ITS `undo` (see the note above `undo_lines`): the exact
+    command that reverses THAT write, with the indices it really touched, recorded here
+    at the moment of the write and only on success. The return shape is unchanged —
+    callers still unpack `(lines, applied, skipped)` — because the undo rides on the op
+    dicts the caller already holds."""
     append = append or (lambda text: _default_append(task, text))
+    ref = _task_ref(task)
     entries = task.setdefault("decisions", [])
     lines, applied, skipped = [], 0, 0
     for op in (ops or []):
@@ -1918,6 +2268,11 @@ def apply(task, ops, append=None):
             ok, err = _dec.mark_split(entries, op.get("index"), new_idx)
             if ok:
                 applied += 1
+                op["undo"] = ("SPLIT of decision %s → `update --task %s %s` (the parts it "
+                              "became stay on the log; the restore puts the original back "
+                              "beside them, and nothing was deleted either way)"
+                              % (op.get("index"), ref,
+                                 _restore_flags([op.get("index")])))
                 lines.append("split decision %s into %s (original kept in history)"
                              % (op.get("index"), ", ".join(str(n) for n in new_idx)))
             else:
@@ -1934,6 +2289,11 @@ def apply(task, ops, append=None):
                     lines.append("could not merge decision %s — %s" % (i, err))
             if done:
                 applied += 1
+                op["undo"] = ("MERGE of decision(s) %s → `update --task %s %s` (the "
+                              "summary at %d stays; each restore puts one original back "
+                              "beside it — the flag repeats, it does not take a list)"
+                              % (", ".join(str(i) for i in done), ref,
+                                 _restore_flags(done), into))
                 lines.append("merged %s into %d (each original kept in history)"
                              % (", ".join(str(i) for i in done), into))
             else:
@@ -1946,6 +2306,12 @@ def apply(task, ops, append=None):
             status = _set_disposition(task, op.get("memo"), op.get("sid"), disp)
             if status == DISPOSITION_SET:
                 applied += 1
+                op["undo"] = ("RETRO-DISPOSITION of ack %s on memo %s → NO VERB REVERSES "
+                              "THIS ONE. A heal never overwrites a disposition, so there "
+                              "is nothing that can clear it; the only way back is the "
+                              "pre-heal task blob named below. Said plainly here rather "
+                              "than left to be discovered at the moment it is needed"
+                              % (sid8, mid8))
                 lines.append("retro-dispositioned ack %s on memo %s as %s — marked "
                              "RETRO (filled in by this pass, not by the acking session, "
                              "whose sid and timestamp are untouched)"
@@ -2122,6 +2488,42 @@ def pinned_lines(result):
     return out
 
 
+def goal_review_lines(result):
+    """The goal line as display rows, or [] when the task has no goal.
+
+    A PROPOSAL, and the heading has to say so in the same breath as the count, because a
+    number rendered next to nine checks reads as a tenth finding unless something stops
+    it. The wording deliberately matches `accrual_line`'s "cannot be counted": the two
+    sections answer the same shape of question minutes apart, and two different ways of
+    saying "nobody recorded the baseline" would read as two different problems."""
+    g = (result or {}).get("goal_review") or {}
+    if not g:
+        return []
+    if g.get("known"):
+        n = g.get("since") or 0
+        head = ("%d decision(s) since it was last written%s"
+                % (n, (" (%s)" % _fmt_age(g.get("age"))) if g.get("age") is not None
+                   else ""))
+    else:
+        head = ("no baseline was recorded, so what has landed since it was written CANNOT "
+                "BE COUNTED — which is not the same claim as nothing")
+    seq = (result or {}).get("seq")
+    out = ["  %-28s %s  (PROPOSAL — not a finding: never counted as an issue, and it can "
+           "never make a heal due)" % ("Goal review", head)]
+    out.append("      • %s" % (g.get("preview") or ""))
+    out.append("      • READ IT AGAINST THE NEWEST DECISIONS: does this still say what "
+               "DONE looks like, or does the record now show that mission as already "
+               "accomplished — or as one the work has moved past? A cold session reads "
+               "this line FIRST, and no check can raise it: nothing else on the task "
+               "claims to say what done looks like, so there is nothing to "
+               "cross-reference it against. An untouched goal is NOT a defect — a goal is "
+               "supposed to outlive the decisions that pursue it — so this is a reason to "
+               "look, never proof of anything. If it has drifted: `update %s--goal '<what "
+               "done looks like now>'`."
+               % ("--task %s " % seq if seq else ""))
+    return out
+
+
 def _accrual_phrase(src, plus=False):
     """`+3 decisions · +1 log entry · +0 PR/story links · +2 steps` — one wording, used
     for both the since-a-stamp deltas and the never-healed totals."""
@@ -2171,6 +2573,86 @@ def accrual_lines(result):
         "pinned set, and it is the reason a clean scan is not the same as a complete "
         "record.",
     ]
+
+
+# -- the closing verdict: MECHANICAL and JUDGMENT are two different questions ------
+#
+# `Heal due? no` was the last line every heal surface printed, and on its own it reads as
+# "this task is a complete record". It never meant that. It means the cross-referencing
+# checks found nothing — and this module's own history is what proves the two are not the
+# same: one real task scanned clean on every check while a shipped release sat recorded
+# NOWHERE on it, and another scanned clean while its goal described a mission already
+# accomplished and five live steps named work its own superseded decisions had retired. In
+# both, `Heal due? no` was literally true and was read as a verdict on the task.
+#
+# So the verdict is rendered as TWO measurements and then the verdict: what the machine
+# checked, whether the half no machine can check has been RECORDED, and only then whether
+# a heal is due. The Judgment row cites the one piece of evidence a task can actually hold
+# about that — a heal stamp carrying a `--note` — and says NOT RUN otherwise, because
+# "nothing records one" and "it was not done" are different claims and only the first is
+# supported by the record.
+#
+# RENDERING ONLY. `due()` keeps its signature and its return shape untouched: the
+# SessionStart nag, the gate file and `gate_line` all read it, and a change there would
+# ripple well past a report.
+
+SUMMARY_LABEL_WIDTH = 28      # the column every heal surface already aligns its rows on
+
+
+def mechanical_line(result):
+    """`clean` or `3 issue(s)` — what the deterministic checks found, and nothing more.
+
+    On its own row so it cannot be read as a verdict on the whole task, which is exactly
+    what the single `Heal due?` line was being read as."""
+    n = len((result or {}).get("findings") or [])
+    return "clean" if not n else "%d issue(s)" % n
+
+
+def judgment_line(task, result=None):
+    """Whether the half no check can do has been RECORDED, and — when it has not — what
+    the scan structurally cannot see.
+
+    A `--mark-healed --note '<what you checked>'` is the only thing a task can hold that
+    says somebody read the record and ruled on it: `--apply` stamps for performing
+    mechanical operations, which is not the same claim, and neither is a bare timestamp.
+    So a note is the one piece of evidence this line will cite, and without one it says
+    NOT RUN — not as an accusation, but because the record supports "nothing recorded one"
+    and does not support "it was done".
+
+    A recorded pass STILL gets the caveat when decisions have landed since it. That pass
+    ruled on the record as it stood THEN, and the newest evidence is precisely what
+    retires a goal, a step or a pinned line — the incident behind this whole section was a
+    task whose goal had been overtaken by decisions written after the last heal."""
+    h = (result or {}).get("health") or health(task)
+    note = (h.get("last_heal_note") or "").strip()
+    if not note:
+        return ("NOT RUN — nothing records one. The checks above cross-reference the "
+                "record against ITSELF; none of them can see whether the GOAL, the LIVE "
+                "STEPS or a PINNED decision are still TRUE, or whether work that shipped "
+                "was recorded at all.")
+    since = h.get("new_since_heal") or 0
+    return ("last recorded %s — \"%s\"%s"
+            % (_fmt_age(h.get("since_heal")), note,
+               ("" if not since else
+                " · %d decision(s) have landed since, and the newest evidence is what "
+                "retires a goal, a step or a pinned line" % since)))
+
+
+def summary_lines(task, result, now=None, label_width=SUMMARY_LABEL_WIDTH):
+    """The three rows every heal surface closes on — MECHANICAL, JUDGMENT, then the
+    verdict.
+
+    ONE implementation, used by the scan report, the dry-run brief and the
+    zero-operation refusal, so the three surfaces cannot drift into telling a reader
+    three different stories about the same task. The verdict keeps its exact old wording
+    (`YES — <reasons>` / `no`), because the nag, both gates and every existing reader
+    quote it."""
+    is_due, reasons = due(task, result=result, now=now)
+    row = "  %-" + str(int(label_width)) + "s %s"
+    return [row % ("Mechanical", mechanical_line(result)),
+            row % ("Judgment", judgment_line(task, result)),
+            row % ("Heal due?",
+                   ("YES — %s" % "; ".join(reasons)) if is_due else "no")]
 
 
 def plan_lines(ops):

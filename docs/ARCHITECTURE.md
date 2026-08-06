@@ -222,13 +222,13 @@ double-mark — which is what keeps the inverse unambiguous.
 **Two layers, split by cost.**
 
 - **Layer 1 — `heal.scan()`.** Deterministic, zero tokens, and it never mutates the task.
-  Nine checks — eight findings plus the health metric, which is a measurement rather than a
+  Ten checks — nine findings plus the health metric, which is a measurement rather than a
   finding: undispositioned acks · corrections whose target was never updated · unlinked
   supersession language (prose pretending to be structure) · oversized decisions · drift
   (recorded paths/worktrees/branches that vanished) · link rot · the health metric · stale
   steps (which now **name the verb** that retires them, `update --step-supersede <n>`) ·
-  **re-fragmented consolidations**. Results land in a per-task **gate file** under
-  `<data_dir>/heal/`.
+  **re-fragmented consolidations** · **steps restating a superseded decision**. Results
+  land in a per-task **gate file** under `<data_dir>/heal/`.
   Modelled on `hook_health.py`: everything fails open, an unreadable gate means no nag.
   Both network-ish probes default **off** — no git subprocess, no HTTP — so the path the
   SessionStart nag runs is pure Python plus `stat`. Link rot degrades to **unknown** on
@@ -337,7 +337,25 @@ double-mark — which is what keeps the inverse unambiguous.
   quiet on its own fix. What it deliberately does **not** do is propose the merge: naming
   the surviving summary is judgement, and a wrong merge writes a false consolidation into
   the record — the very thing this check exists to catch.
-- **Four report sections that are deliberately NOT checks.** `scan()` returns them
+- **The checklist half of the record** (`heal.steps_restating_superseded`). All three
+  reconcile verbs are DECISION verbs, and every other check reads two things on the SAME
+  object — so nothing ever compared a **step** against a **decision**. On one real task
+  that produced a scan reporting every check clean and `Heal due? no` while five live
+  steps named work the task's own **superseded** decisions had retired, and a cold session
+  reads the checklist *first*. Reported when a live step and a superseded decision share
+  at least `STEP_RESTATEMENT_OVERLAP` of their significant vocabulary (Jaccard over
+  `_significant_words`, the tokenizer the merge shapes already use; both sides need
+  `STEP_RESTATEMENT_MIN_WORDS` distinct words before the ratio means anything). A
+  **finding**, not a proposal — a superseded decision is one the task marked *refuted*, so
+  a live step ordering that work contradicts a ruling the record already carries. But a
+  **provisional** one, and it says so in the detail line: text overlap cannot separate a
+  step that still orders the retired work from the step written to *record* the
+  retirement, because both name the same thing. That is the declare-vs-describe problem
+  in a form the guard cannot answer, so the answer is silence wherever either reading
+  fits — any step carrying correction vocabulary at all is skipped, read with the
+  over-eager `matched_language` on purpose, since here over-eagerness can only cost false
+  negatives. Already-superseded steps are skipped exactly as in the stale-step check.
+- **Five report sections that are deliberately NOT checks.** `scan()` returns them
   beside `findings`, and `due()` counts `findings` alone — folding any of them in would
   put `Heal due? YES` on a healthy task, which is the failure mode this module has
   already had to fix four times. One is the **expected-ephemeral count**
@@ -364,6 +382,17 @@ double-mark — which is what keeps the inverse unambiguous.
   timestamp of its own — so an append older than the bounded event feed reads as **age
   unknown**, never as new. Informational, exactly like the health metric: being pinned is
   not a defect.
+
+  **The goal review** (`heal.goal_review`) names the goal line and counts the decisions
+  that have landed since it was last written. The goal is the one field that says what
+  **done** looks like, and nothing else on the task claims to say it — so there is no
+  second thing to cross-reference it against and no check can ever raise one that
+  describes a mission already accomplished. The baseline is a write-time snapshot,
+  `goal_touched` (`{"ts", "decisions"}`), written by `update --goal` when the text
+  actually moves and by `create --goal`; with no snapshot the section says **cannot be
+  counted** rather than zero, for the same reason `accrual` does, and every task predating
+  the field takes that path. A **proposal**, never a finding: a goal is supposed to
+  outlive the decisions that pursue it.
 
   **What has accrued, and the one gap this layer structurally cannot cover**
   (`heal.accrual`). On the same task as the re-fragmentation above, a **release had shipped
@@ -434,14 +463,51 @@ wants it.
 **The flow belongs to the skill, not the CLI.** A CLI is one-shot and cannot hold a
 conversation, so dry-run-as-default is the only safety it can offer and it stays that way
 for scripting. Everything conversational — run the cheap `--scan` first, read the dry run
-**at most once**, do the judgement, present a compact numbered plan, confirm **once** for
-the whole plan, execute, stamp, re-scan — is prescribed by `skills/heal/SKILL.md`, which
+**at most once**, do the judgement, execute, stamp, re-scan, report — is prescribed by
+`skills/heal/SKILL.md`, which
 also states plainly that **the user should never need to type `--apply`, `--merge`,
 `--split`, `--dispose-acks` or `--mark-healed`**: the skill chooses them. `commands/heal.md`
 opens by running `heal --scan` rather than the dry run, so the expensive block is never
 the first thing anyone pays for. Guard: `--scan` and `--apply` together are refused
 rather than silently scanning, so an `--apply` typed alongside the command's own `--scan`
 can never be swallowed by the read-only path.
+
+**The approval gate is gone, and the undo trail is what replaced it.** `/heal` used to
+stop after the plan and ask before applying; it now runs scan → judge → apply → verify in
+one pass, because stopping between steps is the cost the user actually feels. That is only
+defensible if reversing a wrong call is as cheap as approving one was, so **every write
+now prints the exact command that reverses it, generated from the indices it really
+touched**: `heal.apply` records `op["undo"]` on each op it performs and `heal.undo_lines`
+renders them into the `--apply` report, while `_update_one` does the same for
+`--supersedes` and `--step-supersede` — the two judgement verbs, which write immediately,
+never pass through `--apply`, and therefore take no backup at all. `--restore-decision`
+and `--step-restore` are `action="append"`, so the generated commands **repeat the flag**
+rather than comma-joining (`heal._restore_flags`): an undo line argparse would reject is
+the one failure mode an undo line must not have. One write has no inverse — a
+retro-disposition, which a heal never overwrites — and its line says so and names the
+pre-heal blob instead of inventing a command. **Removing the gate did not widen what gets
+applied**: merge candidates are still proposals, never ops.
+
+**The task may be named positionally.** `commands/heal.md` passes `$ARGUMENTS` straight
+through, so `/heal 12` reaches the CLI as a bare `12` — and with no positional on the
+subparser argparse exited with `unrecognized arguments: 12`, killing the one form a person
+actually types. The fix cannot live in the command file, because `$ARGUMENTS` legitimately
+carries `--task <n>`, `--all` or nothing. `_heal_positional_ref` folds the ref into
+`--task` **before any task is loaded** and refuses two combinations rather than resolving
+them: alongside `--all` (different scopes), and alongside a `--task` naming a different
+task (a silent precedence rule would reconcile the wrong record; the *same* ref twice is
+accepted, since `/todo heal 12` fills both slots itself). Nothing is resolved here —
+`_heal_targets` still does every lookup, so both spellings behave identically.
+
+**`Heal due?` is rendered as three rows, not one** (`heal.summary_lines`, shared by the
+scan report, the dry-run brief and the zero-operation refusal). `Mechanical` is what the
+checks found; `Judgment` is whether the half no check can do has been *recorded* — the
+only evidence a task can hold for that is a stamp carrying a `--note`, so without one it
+says **NOT RUN**, which is a statement about the record and not an accusation; then the
+verdict, in its exact old wording. A lone `Heal due? no` reads as "this task is a complete
+record", and that reading is what let both a shipped-but-unrecorded release and an
+overtaken goal pass for healthy. Rendering only: `due()` keeps its signature and return
+shape, because the nag, the gate file and `gate_line` all read it.
 
 **The heal has to stamp itself.** On one real task, after **17 merges, 5 supersedes and a
 split**, the scan still reported `last heal never` and `97 new decision(s) since the last

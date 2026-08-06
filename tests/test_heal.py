@@ -1,4 +1,4 @@
-"""The reconcile pass — `heal`: the two new verbs, the nine scan checks, the gates.
+"""The reconcile pass — `heal`: the two new verbs, the ten scan checks, the gates.
 
 task-station had capture (`save`) and no reconcile. A task's `decisions` list is
 append-only, so it only grows; the digest truncates it by AGE; and nothing in the record
@@ -83,8 +83,11 @@ SYSTEM_TEMP_FILE = "/tmp/ts-worker-9182/notes.md"
 
 class _Args:
     def __init__(self, **kw):
-        defaults = dict(session=None, task=None, scan=False, apply=False, all=False,
-                        verbose=False,
+        # `ref` is the POSITIONAL task — `heal --scan 12`. It defaults to None here for
+        # the same reason the subparser gives it `nargs="?"`: every existing caller names
+        # its task with --task, and the positional must change nothing for them.
+        defaults = dict(session=None, task=None, ref=None, scan=False, apply=False,
+                        all=False, verbose=False,
                         split=None, merge=None, into=None, mark_healed=False, note=None,
                         dispose_acks=None, decision=None, memory=None, noop=None)
         defaults.update(kw)
@@ -379,7 +382,7 @@ class TestRestoreThroughTheCli(_Base):
 
 
 # ---------------------------------------------------------------------------
-# Layer 1 — the eight deterministic checks. None of them may mutate the task.
+# Layer 1 — the nine deterministic checks. None of them may mutate the task.
 # ---------------------------------------------------------------------------
 
 class TestScanChecks(_Base):
@@ -2168,11 +2171,16 @@ class TestTodoRouting(_Base):
         self.assertIn("ONCE", text)
         self.assertIn("94%", text)
 
-    def test_the_skill_confirms_one_compact_plan_before_executing(self):
+    def test_the_skill_executes_the_plan_without_stopping_to_ask(self):
+        # This test used to assert the OPPOSITE — "Ask for confirmation ONCE" — and it
+        # is inverted rather than deleted, because the gate leaving is a behaviour worth
+        # a regression test of its own: the ask must not creep back in as a "quick
+        # check" on some later pass. What replaces it is the undo trail, so this asserts
+        # both halves of the trade.
         text = self._skill()
-        self.assertIn("numbered plan", text.lower())
-        self.assertIn("Ask for confirmation ONCE", text)
-        self.assertIn("change nothing", text.lower())
+        self.assertNotIn("Ask for confirmation", text)
+        self.assertIn("no approval gate", text.lower())
+        self.assertIn("undo trail", text.lower())
 
     def test_the_skill_says_the_user_never_types_the_flags(self):
         text = self._skill()
@@ -2844,3 +2852,834 @@ class HealVerbPathStamps(unittest.TestCase):
             self._run("update", "--task", "1", "--decision", t)
         self._run("heal", "--task", "1", "--apply", "--split", "1", "--into", "2,3")
         self.assertNotIn("last heal never", self._run("heal", "--task", "1", "--scan"))
+
+
+# ---------------------------------------------------------------------------
+# THE POSITIONAL TASK REF — the form a person actually types.
+#
+# `commands/heal.md` runs `task-station.py heal --scan --session <sid> $ARGUMENTS`, so
+# `/heal 12` reaches the CLI as a bare `12`. The heal subparser had no positional, so
+# argparse exited with `unrecognized arguments: 12` and the whole command died before the
+# scan ran. The fix cannot live in the command file — `$ARGUMENTS` legitimately carries
+# `--task <n>`, `--all`, or nothing at all, and no word inserted there parses all four —
+# so the CLI takes an optional positional and folds it into --task, refusing the two
+# combinations it cannot resolve rather than guessing which record was meant.
+# ---------------------------------------------------------------------------
+
+class TestThePositionalTaskRef(_Base):
+    def test_a_bare_positional_ref_behaves_exactly_like_task(self):
+        # The whole point: `heal --scan 12` IS `heal --scan --task 12`. Byte-identical,
+        # because they run the same scan on the same task through the same resolver —
+        # nothing in this report is wall-clock-derived on a never-healed task.
+        t = self._task(decisions=["chose sqlite for the FTS index"])
+        positional = self._out(ts.cmd_heal, _Args(ref=str(t["seq"]), scan=True))
+        flagged = self._out(ts.cmd_heal, _Args(task=str(t["seq"]), scan=True))
+        # The equality below is the real assertion, so it needs a companion that proves
+        # both sides are a REPORT ABOUT THIS TASK — two identical empty strings, or two
+        # reports about the wrong task, would satisfy equality on their own. It must be
+        # something a --scan actually prints: the report carries check results and
+        # counts, never decision BODIES, so the decision text is not available here.
+        header = "[HEAL-SCAN] Task #%s" % t["seq"]
+        self.assertIn(header, positional)
+        self.assertIn(header, flagged)
+        self.assertIn("Undispositioned acks", positional)
+        self.assertEqual(positional, flagged)
+
+    def test_the_task_flag_still_works_untouched(self):
+        t = self._task(decisions=["alpha decision"])
+        out = self._out(ts.cmd_heal, _Args(task=str(t["seq"]), scan=True))
+        self.assertIn("[HEAL-SCAN]", out)
+        self.assertIn("#%s" % t["seq"], out)
+
+    def test_all_still_sweeps_the_board(self):
+        a = self._task(title="first", decisions=["one call"])
+        b = self._task(title="second", decisions=["another call"])
+        out = self._out(ts.cmd_heal, _Args(all=True, scan=True))
+        self.assertIn("SCOPE", out)
+        self.assertIn("#%s" % a["seq"], out)
+        self.assertIn("#%s" % b["seq"], out)
+
+    def test_a_positional_ref_with_all_is_refused_not_silently_ignored(self):
+        # Two different scopes. Dropping either one without a word is how somebody comes
+        # to believe they healed ONE task when they swept the whole board.
+        t = self._task(decisions=["a call"])
+        out = self._out(ts.cmd_heal, _Args(ref=str(t["seq"]), all=True, scan=True))
+        self.assertIn("cannot be combined", out)
+        self.assertIn("Nothing was read", out)
+        self.assertNotIn("[HEAL-SCAN]", out)
+
+    def test_a_positional_ref_naming_a_different_task_than_task_is_refused(self):
+        # No precedence rule, deliberately: a silent winner reconciles a record the
+        # caller did not mean, and the refusal has to name BOTH so the typo is visible.
+        a = self._task(title="first", decisions=["one call"])
+        b = self._task(title="second", decisions=["another call"])
+        out = self._out(ts.cmd_heal, _Args(task=str(a["seq"]), ref=str(b["seq"]),
+                                           scan=True))
+        self.assertIn("different tasks", out)
+        self.assertIn(str(a["seq"]), out)
+        self.assertIn(str(b["seq"]), out)
+        self.assertNotIn("[HEAL-SCAN]", out)
+
+    def test_the_same_ref_in_both_places_is_accepted(self):
+        # `/todo heal 12` fills both slots from one word, so two spellings of ONE task
+        # is not a conflict.
+        t = self._task(decisions=["alpha decision"])
+        out = self._out(ts.cmd_heal, _Args(task=str(t["seq"]), ref=str(t["seq"]),
+                                           scan=True))
+        self.assertIn("[HEAL-SCAN]", out)
+        self.assertNotIn("different tasks", out)
+
+    def test_the_same_id_prefix_in_either_case_is_still_one_task(self):
+        t = self._task(decisions=["alpha decision"])
+        out = self._out(ts.cmd_heal, _Args(task=t["id"][:8], ref=t["id"][:8].upper(),
+                                           scan=True))
+        self.assertIn("[HEAL-SCAN]", out)
+        self.assertNotIn("different tasks", out)
+
+    def test_an_id_prefix_positional_routes_through_the_same_resolver_as_task(self):
+        # The ref is folded into --task and resolved ONCE, by `_heal_targets`. So every
+        # shape --task accepts — a seq, an id prefix — behaves identically positionally,
+        # and there is no second lookup to drift out of step with the first.
+        t = self._task(title="resolve me", decisions=["alpha decision"])
+        out = self._out(ts.cmd_heal, _Args(ref=t["id"][:8], scan=True))
+        self.assertIn("resolve me", out)
+
+    def test_no_ref_at_all_still_falls_back_to_the_attached_task(self):
+        t = self._task(decisions=["alpha decision"])
+        sid = "sess-positional-fallback"
+        ts.set_link(sid, t["id"])
+        out = self._out(ts.cmd_heal, _Args(session=sid, scan=True))
+        self.assertIn("[HEAL-SCAN]", out)
+        self.assertIn("#%s" % t["seq"], out)
+
+    def test_an_unknown_positional_ref_reports_no_match(self):
+        self._task(decisions=["alpha decision"])
+        out = self._out(ts.cmd_heal, _Args(ref="99999", scan=True))
+        self.assertIn("No task matching", out)
+
+    def test_the_fold_leaves_task_naming_the_ref(self):
+        # The unit underneath the CLI: it COPIES, it never resolves.
+        a = _Args(ref="12")
+        self.assertIsNone(ts._heal_positional_ref(a))
+        self.assertEqual(a.task, "12")
+
+    def test_the_command_files_argument_hint_documents_the_bare_ref(self):
+        path = os.path.join(_REPO_ROOT, "commands", "heal.md")
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        hint = [ln for ln in text.splitlines() if ln.startswith("argument-hint:")][0]
+        self.assertIn("<n>", hint)
+        self.assertIn("--all", hint)
+        # …and it still must not read as a menu of raw operation flags.
+        for flag in ("--apply", "--merge", "--split", "--mark-healed"):
+            self.assertNotIn(flag, hint)
+
+
+class HealPositionalRefOnTheRealCli(unittest.TestCase):
+    """The bug was in ARGPARSE, so the regression test has to reach argparse: an
+    in-process `_Args` can never reproduce `unrecognized arguments: 444`. This runs the
+    real CLI the way `/heal 444` does."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._prev = os.environ.get("TASK_STATION_HOME")
+        os.environ["TASK_STATION_HOME"] = self._tmp.name
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("TASK_STATION_HOME", None)
+        else:
+            os.environ["TASK_STATION_HOME"] = self._prev
+        self._tmp.cleanup()
+
+    def _run(self, *args):
+        eng = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "lib", "task-station.py")
+        return subprocess.run([sys.executable, eng] + list(args),
+                              capture_output=True, text=True)
+
+    def _seed(self):
+        self._run("create", "--title", "positional", "--active")
+        self._run("update", "--task", "1", "--decision", "chose sqlite for the index")
+
+    def test_the_cli_accepts_the_task_as_a_positional(self):
+        self._seed()
+        r = self._run("heal", "--scan", "1")
+        self.assertNotIn("unrecognized arguments", r.stderr)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("[HEAL-SCAN]", r.stdout)
+
+    def test_the_positional_and_the_flag_produce_the_same_report(self):
+        self._seed()
+        self.assertEqual(self._run("heal", "--scan", "1").stdout,
+                         self._run("heal", "--scan", "--task", "1").stdout)
+
+    def test_the_cli_refuses_a_positional_alongside_all(self):
+        self._seed()
+        r = self._run("heal", "--scan", "1", "--all")
+        self.assertIn("cannot be combined", r.stdout)
+        self.assertNotIn("[HEAL-SCAN]", r.stdout)
+
+
+# ---------------------------------------------------------------------------
+# CHECK 10 — a LIVE STEP that restates a SUPERSEDED decision.
+#
+# A real task scanned CLEAN on every check and printed `Heal due? no` while five live
+# steps named the two largest work items on it, both retired by decisions that same task
+# had already superseded. Nothing was inconsistent — a decision that was right when
+# written and was later refuted by reality leaves nothing to cross-reference — and the
+# checklist, which is what a cold session reads FIRST, went on reading as the plan.
+# ---------------------------------------------------------------------------
+
+# A superseded decision and the live step that still orders the work it retired. Written
+# so the arithmetic is checkable by hand: the decision's significant words are
+# {build, nightly, export, pipeline, python, schedule, cron, box} and the step's are
+# {write, nightly, export, pipeline, python, schedule, cron} — 6 shared of 9 distinct,
+# a Jaccard of 0.67 against a 0.30 threshold.
+RETIRED_DECISION = ("Build the nightly export pipeline in python and schedule it with "
+                    "cron on the build box")
+RESTATING_STEP = "Write the nightly export pipeline in python and schedule it with cron"
+
+
+class TestStepsRestatingASupersededDecision(_Base):
+    def _task_with_retired_work(self, step_text=RESTATING_STEP, extra_steps=()):
+        """A task whose decision 1 was SUPERSEDED by decision 2, and whose checklist
+        still carries `step_text`."""
+        t = self._task(decisions=[RETIRED_DECISION,
+                                  "the managed scheduler runs it instead; nothing to build"],
+                       steps=[{"text": step_text, "done": False}]
+                             + [{"text": s, "done": False} for s in extra_steps])
+        dec.mark_superseded(t["decisions"], 1, 2)
+        ts.save_task(t)
+        return self._reload(t)
+
+    def test_a_live_step_restating_a_superseded_decision_is_reported(self):
+        hits = heal.steps_restating_superseded(self._task_with_retired_work())
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["ref"], "step 1")
+        self.assertIn("restates decision 1", hits[0]["detail"])
+
+    def test_the_finding_names_the_concrete_verb_that_retires_the_step(self):
+        hits = heal.steps_restating_superseded(self._task_with_retired_work())
+        self.assertIn("--step-add", hits[0]["detail"])
+        self.assertIn("--step-supersede 1", hits[0]["detail"])
+
+    def test_the_finding_says_it_is_provisional_rather_than_claiming_certainty(self):
+        # Text overlap CANNOT separate a step that still orders retired work from the
+        # step written to record the retirement. Saying so is what stops this becoming
+        # the fifth confidently-wrong check this subsystem has shipped.
+        hits = heal.steps_restating_superseded(self._task_with_retired_work())
+        self.assertIn("PROVISIONAL", hits[0]["detail"])
+        self.assertIn("READ THE TWO TOGETHER", hits[0]["detail"])
+
+    def test_it_joins_findings_and_counts_as_an_issue(self):
+        # Unlike the merge candidates and the goal review, this one IS a defect: the log
+        # already ruled that work refuted, and the checklist still orders it.
+        t = self._task_with_retired_work()
+        result = heal.scan(t)
+        self.assertIn("step-restates-superseded",
+                      [f["check"] for f in result["findings"]])
+        is_due, reasons = heal.due(t, result=result)
+        self.assertTrue(is_due)
+        self.assertTrue(any("issue(s)" in r for r in reasons))
+
+    def test_a_step_restating_a_STILL_CURRENT_decision_is_not_reported(self):
+        # Nothing has been refuted, so a step agreeing with a live decision is the
+        # checklist working exactly as intended.
+        t = self._task(decisions=[RETIRED_DECISION],
+                       steps=[{"text": RESTATING_STEP, "done": False}])
+        self.assertEqual(heal.steps_restating_superseded(self._reload(t)), [])
+
+    def test_a_step_restating_a_MERGED_decision_is_not_reported(self):
+        # SUPERSEDED is the only verb that means "this was WRONG". A merged decision is
+        # still true, so a step restating it is not ordering refuted work.
+        t = self._task(decisions=[RETIRED_DECISION, "one reconciled record of the trail"],
+                       steps=[{"text": RESTATING_STEP, "done": False}])
+        dec.mark_merged(t["decisions"], 1, 2)
+        ts.save_task(t)
+        self.assertEqual(heal.steps_restating_superseded(self._reload(t)), [])
+
+    def test_an_already_superseded_step_is_not_re_reported(self):
+        # Same rule as the stale-step check, same reason: re-flagging a step that was
+        # just retired makes a freshly-healed task read as dirty.
+        t = self._task_with_retired_work()
+        steps.mark_superseded(t["steps"], 1)
+        ts.save_task(t)
+        self.assertEqual(heal.steps_restating_superseded(self._reload(t)), [])
+
+    def test_the_step_that_RECORDS_the_retirement_is_never_reported(self):
+        # The declare-vs-describe failure in a new costume — and the guard cannot answer
+        # it, because both steps name the same work. So any step carrying correction
+        # vocabulary at all is skipped, and the assertion below proves it was the
+        # SILENCER and not the threshold: the overlap clears the bar.
+        text = ("the nightly export pipeline in python was superseded by the managed "
+                "scheduler")
+        self.assertGreaterEqual(heal.word_overlap(text, RETIRED_DECISION),
+                                heal.STEP_RESTATEMENT_OVERLAP)
+        t = self._task_with_retired_work(step_text=text)
+        self.assertEqual(heal.steps_restating_superseded(t), [])
+
+    def test_an_unrelated_step_is_clean(self):
+        t = self._task_with_retired_work(
+            step_text="Ask the reviewer for a second opinion on the migration plan")
+        self.assertEqual(heal.steps_restating_superseded(t), [])
+
+    def test_texts_too_thin_to_compare_are_skipped_however_well_they_match(self):
+        # Two five-word fragments that agree completely tell you nothing — the ratio is
+        # noise below a handful of words, exactly as `_stem` refuses to fingerprint on
+        # fewer than STEM_WORDS.
+        thin = "adopt redis queue workers locally"
+        self.assertEqual(heal.word_overlap(thin, thin), 1.0)
+        t = self._task(decisions=[thin, "the managed queue is used instead"],
+                       steps=[{"text": thin, "done": False}])
+        dec.mark_superseded(t["decisions"], 1, 2)
+        ts.save_task(t)
+        self.assertEqual(heal.steps_restating_superseded(self._reload(t)), [])
+
+    def test_one_finding_per_step_naming_the_strongest_match(self):
+        # A step overlapping two superseded decisions is ONE thing to read, not two.
+        t = self._task(decisions=[RESTATING_STEP,
+                                  "Write the nightly export pipeline by hand every "
+                                  "friday afternoon",
+                                  "the managed scheduler runs it instead"],
+                       steps=[{"text": RESTATING_STEP, "done": False}])
+        dec.mark_superseded(t["decisions"], 1, 3)
+        dec.mark_superseded(t["decisions"], 2, 3)
+        ts.save_task(t)
+        hits = heal.steps_restating_superseded(self._reload(t))
+        self.assertEqual(len(hits), 1)
+        self.assertIn("restates decision 1", hits[0]["detail"])
+
+    def test_the_check_never_mutates_the_task(self):
+        t = self._task_with_retired_work()
+        before = json.dumps(store.strip_rev(t), sort_keys=True, default=str)
+        heal.scan(t)
+        after = json.dumps(store.strip_rev(self._reload(t)), sort_keys=True, default=str)
+        self.assertEqual(before, after)
+
+    def test_the_scan_report_names_the_check_and_its_provisional_finding(self):
+        t = self._task_with_retired_work()
+        out = self._heal(t, scan=True)
+        self.assertIn("Steps restating a superseded decision", out)
+        self.assertIn("PROVISIONAL", out)
+        self.assertIn("YES", out.rsplit("Heal due?", 1)[-1])
+
+    def test_word_overlap_is_jaccard_over_significant_words(self):
+        self.assertEqual(heal.word_overlap("alpha beta gamma", "alpha beta gamma"), 1.0)
+        self.assertEqual(heal.word_overlap("alpha beta", "gamma delta"), 0.0)
+        self.assertEqual(heal.word_overlap("", "alpha beta"), 0.0)
+        # symmetric, and stopwords carry no weight either way
+        self.assertEqual(heal.word_overlap("alpha and beta", "beta with alpha"), 1.0)
+        self.assertEqual(heal.word_overlap("alpha beta gamma", "alpha beta"),
+                         heal.word_overlap("alpha beta", "alpha beta gamma"))
+
+
+# ---------------------------------------------------------------------------
+# THE GOAL REVIEW — a proposal, never a finding.
+#
+# The goal line is the one field that says what DONE looks like, and nothing else on the
+# task claims to say it — so there is no second thing to cross-reference it against and
+# no check can ever raise a goal describing a mission already accomplished. On one real
+# task that is exactly what sat there, for days, while every check reported clean. The
+# honest measure is how many decisions have landed since the goal was last written: a
+# reason to LOOK, and never proof of anything.
+# ---------------------------------------------------------------------------
+
+class TestGoalReview(_Base):
+    def test_update_goal_records_the_baseline(self):
+        t = self._task(decisions=["one call", "another call"])
+        self._update(t, goal="the exporter runs nightly without a human")
+        snap = self._reload(t)[heal.GOAL_TOUCHED_FIELD]
+        self.assertEqual(snap["decisions"], 2)
+        self.assertTrue(snap["ts"])
+
+    def test_the_proposal_counts_the_decisions_that_landed_since(self):
+        t = self._task(decisions=["one call"])
+        self._update(t, goal="the exporter runs nightly without a human")
+        t = self._reload(t)
+        for text in ("a second call", "a third call"):
+            ts.append_decision(t, text)
+        ts.save_task(t)
+        g = heal.goal_review(self._reload(t))
+        self.assertTrue(g["known"])
+        self.assertEqual(g["since"], 2)
+        self.assertIn("exporter runs nightly", g["preview"])
+
+    def test_no_baseline_reads_as_cannot_be_counted_never_as_zero(self):
+        # EVERY task that predates the snapshot takes this path, so it is the common
+        # case. A zero would read as "nothing has happened since"; the truth is "nobody
+        # recorded when the goal was written".
+        t = self._task(decisions=["one call", "another call"],
+                       goal="the exporter runs nightly without a human")
+        g = heal.goal_review(self._reload(t))
+        self.assertFalse(g["known"])
+        self.assertIsNone(g["since"])
+        line = "\n".join(heal.goal_review_lines({"goal_review": g}))
+        self.assertIn("CANNOT BE COUNTED", line)
+        self.assertNotIn("0 decision", line)
+
+    def test_a_garbled_baseline_reads_as_unknown_rather_than_crashing(self):
+        t = self._task(decisions=["one call"], goal="ship the exporter",
+                       goal_touched={"decisions": "not a number"})
+        g = heal.goal_review(self._reload(t))
+        self.assertFalse(g["known"])
+        self.assertIsNone(g["since"])
+
+    def test_a_blank_goal_reports_nothing_at_all(self):
+        # "0 decisions since the goal was last written" about a goal nobody wrote is a
+        # number about nothing.
+        t = self._task(decisions=["one call"])
+        self.assertEqual(heal.goal_review(self._reload(t)), {})
+        self.assertEqual(heal.goal_review_lines({"goal_review": {}}), [])
+
+    def test_rewriting_the_IDENTICAL_goal_does_not_re_baseline_it(self):
+        # The rule `--state` already follows: re-writing the same line does not make a
+        # goal reality has overtaken any fresher, and re-baselining on a no-op write
+        # would hide the very drift this measures.
+        t = self._task(decisions=["one call"])
+        self._update(t, goal="the exporter runs nightly without a human")
+        t = self._reload(t)
+        ts.append_decision(t, "a second call")
+        ts.save_task(t)
+        self._update(t, goal="the exporter runs nightly without a human")
+        self.assertEqual(heal.goal_review(self._reload(t))["since"], 1)
+
+    def test_a_goal_that_actually_changes_re_baselines(self):
+        t = self._task(decisions=["one call"])
+        self._update(t, goal="the exporter runs nightly without a human")
+        t = self._reload(t)
+        ts.append_decision(t, "a second call")
+        ts.save_task(t)
+        self._update(t, goal="the exporter is retired and the managed job owns it")
+        self.assertEqual(heal.goal_review(self._reload(t))["since"], 0)
+
+    def test_a_goal_set_at_creation_is_baselined_too(self):
+        # Uncountable is the honest answer when nobody recorded the baseline. It is the
+        # WRONG answer when we are standing at the baseline: a task created with a goal
+        # knows exactly when it was written and that no decision predates it.
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ts.cmd_create(_Args(session=None, title="Seeded goal", summary="s",
+                                color=None, effort=None,
+                                goal="the exporter runs nightly without a human",
+                                step=None, force=True, no_attach=True, attach=False,
+                                active=False))
+        t = [x for x in ts.all_tasks() if x["title"] == "Seeded goal"][0]
+        g = heal.goal_review(t)
+        self.assertTrue(g["known"])
+        self.assertEqual(g["since"], 0)
+
+    def test_the_goal_review_is_never_a_finding_and_never_makes_a_heal_due(self):
+        t = self._task(decisions=["one call"])
+        self._update(t, goal="the exporter runs nightly without a human")
+        t = self._reload(t)
+        for i in range(6):
+            ts.append_decision(t, "call number %d, recorded" % i)
+        ts.save_task(t)
+        t = self._reload(t)
+        result = heal.scan(t)
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(result["goal_review"]["since"], 6)
+        self.assertFalse(heal.due(t, result=result)[0])
+
+    def test_the_scan_report_names_it_as_a_proposal_and_says_what_to_ask(self):
+        t = self._task(decisions=["one call"])
+        self._update(t, goal="the exporter runs nightly without a human")
+        out = self._heal(self._reload(t), scan=True)
+        self.assertIn("Goal review", out)
+        self.assertIn("PROPOSAL", out)
+        self.assertIn("--goal", out)
+        self.assertNotIn("YES", out.rsplit("Heal due?", 1)[-1])
+
+    def test_a_task_with_no_goal_prints_no_goal_section(self):
+        t = self._task(decisions=["one call"])
+        self.assertNotIn("Goal review", self._heal(t, scan=True))
+
+
+# ---------------------------------------------------------------------------
+# THE CLOSING VERDICT — mechanical and judgment are two different questions.
+#
+# `Heal due? no` reads as "this task is a complete record". It has only ever meant "the
+# cross-referencing checks found nothing", and this module's own history is the proof:
+# one task scanned clean while a shipped release sat recorded nowhere on it, another
+# while its goal described a mission already accomplished.
+# ---------------------------------------------------------------------------
+
+class TestTheClosingVerdict(_Base):
+    def test_a_clean_scan_says_mechanical_clean_and_judgment_not_run(self):
+        t = self._task(decisions=["chose sqlite for the FTS index"])
+        out = self._heal(t, scan=True)
+        self.assertIn("Mechanical", out)
+        self.assertIn("clean", out)
+        self.assertIn("Judgment", out)
+        self.assertIn("NOT RUN", out)
+        self.assertNotIn("YES", out.rsplit("Heal due?", 1)[-1])
+
+    def test_the_judgment_line_names_what_the_scan_structurally_cannot_see(self):
+        t = self._task(decisions=["chose sqlite for the FTS index"])
+        line = heal.judgment_line(self._reload(t))
+        self.assertIn("NOT RUN", line)
+        for word in ("GOAL", "LIVE STEPS", "PINNED"):
+            self.assertIn(word, line)
+
+    def test_the_mechanical_line_counts_the_findings(self):
+        t = self._task(decisions=UNLINKED_PROSE)
+        result = heal.scan(self._reload(t))
+        self.assertEqual(heal.mechanical_line(result),
+                         "%d issue(s)" % len(result["findings"]))
+        self.assertIn("issue(s)", self._heal(t, scan=True))
+
+    def test_a_recorded_judgement_pass_is_cited_instead_of_claiming_not_run(self):
+        # `--mark-healed --note` is the only evidence a task can hold that somebody read
+        # the record and ruled on it, so it is the only thing this line will cite.
+        t = self._task(decisions=["chose sqlite for the FTS index"])
+        self._heal(t, mark_healed=True, note="re-read the goal, the steps and both pins")
+        out = self._heal(self._reload(t), scan=True)
+        self.assertIn("last recorded", out)
+        self.assertIn("re-read the goal, the steps and both pins", out)
+        self.assertNotIn("NOT RUN", out)
+
+    def test_a_recorded_pass_is_still_caveated_by_what_landed_after_it(self):
+        # That pass ruled on the record as it stood THEN, and the newest evidence is
+        # exactly what retires a goal, a step or a pinned line.
+        t = self._task(decisions=["chose sqlite for the FTS index"])
+        self._heal(t, mark_healed=True, note="read the whole log")
+        t = self._reload(t)
+        for text in ("a later call", "a later still call"):
+            ts.append_decision(t, text)
+        ts.save_task(t)
+        line = heal.judgment_line(self._reload(t))
+        self.assertIn("last recorded", line)
+        self.assertIn("2 decision(s) have landed since", line)
+
+    def test_a_stamp_with_no_note_is_not_evidence_that_the_judgement_happened(self):
+        # An --apply stamps for performing MECHANICAL operations. That is a different
+        # claim, and reading it as a judgement pass is what this whole split prevents.
+        t = self._task(decisions=["one", "two", "the surviving summary"])
+        self._heal(t, apply=True, merge="1,2", into="3")
+        self.assertIn("NOT RUN", heal.judgment_line(self._reload(t)))
+
+    def test_the_dry_run_closes_on_the_same_three_rows(self):
+        t = self._task(decisions=["chose sqlite for the FTS index"])
+        out = self._heal(t)
+        self.assertIn("Mechanical", out)
+        self.assertIn("Judgment", out)
+        self.assertIn("Heal due?", out)
+
+    def test_the_zero_operation_refusal_closes_on_them_too(self):
+        t = self._task(decisions=["chose sqlite for the FTS index"])
+        out = self._heal(t, apply=True)
+        self.assertIn("REFUSED", out)
+        self.assertIn("Mechanical", out)
+        self.assertIn("Judgment", out)
+
+    def test_due_keeps_its_signature_and_return_shape(self):
+        # The nag, the gate file and `gate_line` all read this. The split above is a
+        # RENDERING change and must stay one.
+        t = self._task(decisions=["chose sqlite for the FTS index"])
+        is_due, reasons = heal.due(self._reload(t))
+        self.assertIsInstance(is_due, bool)
+        self.assertIsInstance(reasons, list)
+
+    def test_the_summary_rows_are_one_implementation_shared_by_every_surface(self):
+        t = self._task(decisions=["chose sqlite for the FTS index"])
+        rows = heal.summary_lines(self._reload(t), heal.scan(self._reload(t)))
+        self.assertEqual(len(rows), 3)
+        scan_out = self._heal(t, scan=True)
+        for row in rows:
+            self.assertIn(row, scan_out)
+
+
+# ---------------------------------------------------------------------------
+# THE JUDGMENT BRIEF carries the goal and the checklist.
+#
+# All three reconcile verbs are DECISION verbs, so the block briefed the pass on the
+# decision set alone — while the goal and the checklist are what a cold session reads
+# FIRST. They are printed beside the NEWEST decisions because those are the evidence
+# that retires them.
+# ---------------------------------------------------------------------------
+
+class TestTheBlockBriefsTheGoalAndTheChecklist(_Base):
+    def _built(self):
+        t = self._task(decisions=["chose sqlite for the FTS index",
+                                  "the managed scheduler owns the nightly run"],
+                       goal="the exporter runs nightly without a human",
+                       steps=[{"text": "write the exporter tests", "done": False},
+                              {"text": "a retired checklist item", "done": False}])
+        steps.mark_superseded(t["steps"], 2)
+        ts.save_task(t)
+        return self._reload(t)
+
+    def test_the_dry_run_prints_the_goal_line_with_its_question(self):
+        out = self._heal(self._built())
+        self.assertIn("THE GOAL LINE", out)
+        self.assertIn("the exporter runs nightly without a human", out)
+        self.assertIn("does the newest evidence above retire this?", out)
+
+    def test_the_dry_run_prints_the_live_checklist_and_omits_retired_steps(self):
+        out = self._heal(self._built())
+        self.assertIn("THE LIVE CHECKLIST", out)
+        self.assertIn("write the exporter tests", out)
+        self.assertNotIn("a retired checklist item", out)
+
+    def test_a_task_with_no_goal_says_so_rather_than_printing_a_blank(self):
+        t = self._task(decisions=["chose sqlite for the FTS index"])
+        out = self._heal(t)
+        self.assertIn("THE GOAL LINE", out)
+        self.assertIn("(none set)", out)
+
+    def test_the_judgment_list_tells_the_pass_to_re_read_both(self):
+        out = self._heal(self._built())
+        self.assertIn("RE-READ THE GOAL LINE AND EVERY LIVE STEP", out)
+        self.assertIn("--goal '<what done looks like now>'", out)
+        self.assertIn("--step-supersede", out)
+
+    def test_the_skill_documents_the_goal_and_the_checklist_not_only_decisions(self):
+        path = os.path.join(_REPO_ROOT, "skills", "heal", "SKILL.md")
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("goal", text.lower())
+        self.assertIn("does the newest evidence retire this", text.lower())
+        self.assertIn("GOAL REVIEW", text)
+        self.assertIn("Steps restating a superseded decision", text)
+        self.assertIn("Judgment", text)
+
+
+# ---------------------------------------------------------------------------
+# THE UNDO TRAIL — what replaces the approval gate.
+#
+# `/heal` used to stop after the plan and ask before applying anything, and that question
+# was where a wrong call got caught. It is gone: the pass runs scan → judge → apply →
+# verify in one command, because stopping between steps is the cost the user feels.
+#
+# REMOVING A GATE IS ONLY DEFENSIBLE IF REVERSING A WRONG CALL IS AS CHEAP AS APPROVING
+# ONE WAS. So every write now prints the exact command that takes it back, generated from
+# the indices it really touched. "Every heal is reversible" was already printed and is not
+# enough: acting on it means first working out which decision numbers moved, which is
+# precisely the work the gate used to make unnecessary.
+# ---------------------------------------------------------------------------
+
+class TestTheUndoTrailOnApply(_Base):
+    RELEASES = ["2.7.0 SHIPPED: the store moved to sqlite",
+                "2.8.0 SHIPPED: the board view-model",
+                "2.9.0 SHIPPED: decision supersession"]
+
+    def test_a_performed_merge_records_the_exact_reversal(self):
+        t = self._task(decisions=list(self.RELEASES))
+        ops = heal.plan(self._reload(t))
+        heal.apply(self._reload(t), ops)
+        merges = [o for o in ops if o.get("verb") == "merge"]
+        self.assertTrue(merges, "the release signature should have produced a merge op")
+        undo = merges[0]["undo"]
+        # REPEATED flags, not a comma list: `--restore-decision` is action="append",
+        # so a comma-joined command is one argparse rejects.
+        self.assertIn("--restore-decision 1 --restore-decision 2 --restore-decision 3",
+                      undo)
+        self.assertIn("--task %s" % t["seq"], undo)
+
+    def test_a_performed_split_records_the_exact_reversal(self):
+        body = "\n\n".join("paragraph %d %s" % (i, "x" * 1200) for i in range(4))
+        t = self._task(decisions=[body])
+        ops = heal.plan(self._reload(t))
+        heal.apply(self._reload(t), ops)
+        splits = [o for o in ops if o.get("verb") == "split" and not o.get("manual")]
+        self.assertTrue(splits)
+        self.assertIn("--restore-decision 1", splits[0]["undo"])
+
+    def test_a_retro_disposition_says_no_verb_reverses_it(self):
+        # The one write with no inverse — a heal never overwrites a disposition, so
+        # nothing can clear one. Naming the gap beats inventing a command that does
+        # nothing, which the reader would only discover at the moment they need it.
+        t = self._task(decisions=["a call"])
+        self._memo_with_ack(t)
+        t = self._reload(t)
+        ops = heal.disposition_ops(t)
+        heal.apply(t, ops)
+        self.assertIn("NO VERB REVERSES THIS ONE", ops[0]["undo"])
+
+    def test_an_operation_that_was_not_performed_promises_no_undo(self):
+        # A skipped op must never offer a reversal: a command that would undo nothing is
+        # worse than silence, because it reads as a guarantee.
+        t = self._task(decisions=["a call"])
+        ops = [{"verb": "split", "index": 1, "parts": [], "manual": True, "why": "no structure"}]
+        lines, applied, skipped = heal.apply(self._reload(t), ops)
+        self.assertEqual((applied, skipped), (0, 1))
+        self.assertIsNone(ops[0].get("undo"))
+        self.assertEqual(heal.undo_lines(ops), [])
+
+    def test_undo_lines_are_silent_when_nothing_was_performed(self):
+        self.assertEqual(heal.undo_lines([]), [])
+        self.assertEqual(heal.undo_lines(None), [])
+
+    def test_restore_flags_repeat_rather_than_comma_joining(self):
+        self.assertEqual(heal._restore_flags([3, 7]),
+                         "--restore-decision 3 --restore-decision 7")
+        self.assertEqual(heal._restore_flags([2], flag="--step-restore"),
+                         "--step-restore 2")
+
+    def test_the_apply_report_carries_the_undo_section_and_the_backup_fallback(self):
+        t = self._task(decisions=list(self.RELEASES))
+        out = self._heal(t, apply=True)
+        self.assertIn("UNDO", out)
+        self.assertIn("--restore-decision 1", out)
+        self.assertIn("WHOLE-TASK FALLBACK", out)
+        self.assertIn(heal.backup_path(t["id"]), out)
+
+    def test_the_apply_report_shows_health_before_and_after(self):
+        t = self._task(decisions=list(self.RELEASES))
+        out = self._heal(t, apply=True)
+        self.assertIn("HEALTH BEFORE:", out)
+        self.assertIn("HEALTH NOW:", out)
+
+    def test_verbose_carries_the_undo_section_too(self):
+        t = self._task(decisions=list(self.RELEASES))
+        out = self._heal(t, apply=True, verbose=True)
+        self.assertIn("UNDO", out)
+        self.assertIn("--restore-decision 1", out)
+
+    def test_the_named_reversal_actually_restores_the_decision(self):
+        # The strongest form of this test: run the command the report printed and check
+        # the decision came back. An undo line that does not work is a worse lie than no
+        # undo line at all.
+        t = self._task(decisions=list(self.RELEASES))
+        out = self._heal(t, apply=True)
+        self.assertIn("--restore-decision 1", out)
+        self.assertTrue(dec.is_replaced(self._reload(t)["decisions"][0]))
+        self._update(t, restore_decision=[1])
+        self.assertFalse(dec.is_replaced(self._reload(t)["decisions"][0]))
+
+
+class TestTheUndoTrailOnTheJudgementVerbs(_Base):
+    """`update --supersedes` and `update --step-supersede` write IMMEDIATELY: they never
+    pass through `--apply`, so they take no backup, and with the approval gate gone there
+    is nothing at all standing in front of them. They are the writes most in need of a
+    named undo, and they had none."""
+
+    def test_a_supersede_prints_the_command_that_restores_the_decision(self):
+        t = self._task(decisions=["go with flat files"])
+        out = self._update(t, decision=["sqlite it is — the FTS index needs a query engine"],
+                           supersedes=[1])
+        self.assertIn("UNDO", out)
+        self.assertIn("--restore-decision 1", out)
+        self.assertIn("--task %s" % t["seq"], out)
+
+    def test_the_printed_supersede_reversal_actually_works(self):
+        t = self._task(decisions=["go with flat files"])
+        self._update(t, decision=["sqlite it is"], supersedes=[1])
+        self.assertTrue(dec.is_replaced(self._reload(t)["decisions"][0]))
+        self._update(t, restore_decision=[1])
+        self.assertFalse(dec.is_replaced(self._reload(t)["decisions"][0]))
+
+    def test_a_step_supersede_prints_the_command_that_restores_the_step(self):
+        t = self._task(steps=[{"text": "the stale step", "done": False}])
+        out = self._update(t, step_add=["the corrected step"], step_supersede=[1])
+        self.assertIn("UNDO", out)
+        self.assertIn("--step-restore 1", out)
+
+    def test_the_printed_step_reversal_actually_works(self):
+        t = self._task(steps=[{"text": "the stale step", "done": False}])
+        self._update(t, step_add=["the corrected step"], step_supersede=[1])
+        self.assertTrue(steps.is_superseded(self._reload(t)["steps"][0]))
+        self._update(t, step_restore=[1])
+        self.assertFalse(steps.is_superseded(self._reload(t)["steps"][0]))
+
+    def test_an_update_with_no_reconcile_verb_prints_no_undo_section(self):
+        # Proportional noise: a plain field write has nothing to reverse, and an UNDO
+        # heading on every update is one nobody reads on the update that needed it.
+        t = self._task(decisions=["a call"])
+        self.assertNotIn("UNDO", self._update(t, state="NEXT: keep going"))
+
+    def test_the_summary_replacement_still_names_its_own_reversal(self):
+        # Already existed — the undo trail FILLS the gaps rather than duplicating what
+        # the write path already prints.
+        t = self._task()
+        self._update(t, summary="the first summary")
+        out = self._update(t, summary="the second summary")
+        self.assertIn("--restore-summary", out)
+
+
+class TestRemovingTheGateDidNotWidenWhatGetsApplied(_Base):
+    """The failure this class exists to prevent. "Do everything" means "do not stop to
+    ask", NOT "apply more". A merge candidate is a group of decisions that merely OPEN
+    the same way; performing one from its shape alone writes a false consolidation into
+    the record, where it then reads as reconciled fact."""
+
+    # Three decisions sharing a leading SHAPE (three significant words) but not a STEM
+    # (four) and not the named release signature — so `merge_candidates` proposes them
+    # and `merge_clusters` must not touch them.
+    SHAPED = ["my process error alpha, recorded here",
+              "my process error beta, recorded here",
+              "my process error gamma, recorded here"]
+
+    def test_the_group_is_proposed(self):
+        t = self._task(decisions=list(self.SHAPED))
+        cands = heal.merge_candidates(self._reload(t))
+        self.assertEqual([c["indices"] for c in cands], [[1, 2, 3]])
+
+    def test_but_it_is_never_planned_as_an_operation(self):
+        t = self._task(decisions=list(self.SHAPED))
+        self.assertEqual(heal.merge_clusters(self._reload(t)), [])
+        self.assertEqual([o["verb"] for o in heal.plan(self._reload(t))], [])
+
+    def test_and_apply_refuses_rather_than_merging_them(self):
+        t = self._task(decisions=list(self.SHAPED))
+        out = self._heal(t, apply=True)
+        self.assertIn("REFUSED", out)
+        self.assertEqual(len(dec.live(self._reload(t)["decisions"])), 3)
+
+    def test_the_scan_still_calls_them_proposals_not_findings(self):
+        t = self._task(decisions=list(self.SHAPED))
+        result = heal.scan(self._reload(t))
+        self.assertEqual(result["findings"], [])
+        self.assertTrue(result["merge_candidates"])
+
+
+class TestBothSurfacesDroppedTheApprovalGate(_Base):
+    def _read(self, *parts):
+        with open(os.path.join(_REPO_ROOT, *parts), encoding="utf-8") as f:
+            return f.read()
+
+    def _description(self, text):
+        """The YAML frontmatter `description:` line — the one sentence a reader sees
+        before they open either file, and the place the old promise survived longest."""
+        return [ln for ln in text.splitlines() if ln.startswith("description:")][0]
+
+    def test_the_skill_description_no_longer_promises_a_confirmation(self):
+        d = self._description(self._read("skills", "heal", "SKILL.md"))
+        self.assertNotIn("asks once", d)
+        self.assertNotIn("before changing anything", d)
+        self.assertIn("undo", d.lower())
+
+    def test_the_command_description_no_longer_promises_a_confirmation(self):
+        d = self._description(self._read("commands", "heal.md"))
+        self.assertNotIn("asks once", d)
+        self.assertNotIn("before changing anything", d)
+        self.assertIn("undo", d.lower())
+
+    def test_the_skill_body_has_no_confirmation_step_left(self):
+        text = self._read("skills", "heal", "SKILL.md")
+        self.assertNotIn("Ask for confirmation", text)
+        self.assertNotIn("On refusal, change nothing", text)
+        self.assertIn("no approval gate", text.lower())
+
+    def test_the_command_body_has_no_confirmation_step_left(self):
+        text = self._read("commands", "heal.md")
+        self.assertNotIn("Ask once", text)
+        self.assertNotIn("On yes", text)
+
+    def test_both_surfaces_require_the_undo_trail_to_be_surfaced(self):
+        for text in (self._read("skills", "heal", "SKILL.md"),
+                     self._read("commands", "heal.md")):
+            self.assertIn("--restore-decision", text)
+            self.assertIn("--step-restore", text)
+            self.assertIn("--restore-summary", text)
+
+    def test_the_skill_still_forbids_merging_a_candidate_from_its_shape(self):
+        text = self._read("skills", "heal", "SKILL.md")
+        self.assertIn("MERGE CANDIDATES stay proposals", text)
+        self.assertIn("false consolidation", text)
+
+    def test_the_skill_still_stops_early_on_a_clean_scan(self):
+        text = self._read("skills", "heal", "SKILL.md")
+        self.assertIn("--mark-healed --task <n> --note", text)
+        self.assertIn("Do not read the dry run at all", text)
