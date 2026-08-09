@@ -268,7 +268,8 @@ class BoardTest(unittest.TestCase):
 
     def test_view_model_carries_session_tree_and_related(self):
         # _board_view_model exposes the two new keys with the exact shapes; the parent
-        # gets a derived incoming edge, the child an outgoing one.
+        # gets a derived incoming edge, the child an outgoing one. Both sides also
+        # carry the counterpart's `id` (the key canonical_relations dedups on).
         parent, child = self._seed_related_pair()
         raw = ts.sorted_tasks()
         rev_map = {}
@@ -276,15 +277,17 @@ class BoardTest(unittest.TestCase):
             st = ts.task_status(t)
             for r in (t.get("related") or []):
                 rev_map.setdefault(r.get("id"), []).append(
-                    {"seq": t.get("seq"), "kind": r.get("kind"), "status": st})
+                    {"seq": t.get("seq"), "id": t.get("id"), "kind": r.get("kind"),
+                     "status": st})
         pvm = ts._board_view_model(parent, rev_map=rev_map)
         cvm = ts._board_view_model(child, rev_map=rev_map)
         self.assertEqual(cvm["related"]["from"],
-                         [{"seq": 363, "kind": "spawned-from"}])
+                         [{"seq": 363, "kind": "spawned-from", "id": parent["id"]}])
         self.assertEqual(cvm["related"]["in"], [])
         self.assertEqual(pvm["related"]["from"], [])
         self.assertEqual(pvm["related"]["in"],
-                         [{"seq": 365, "kind": "spawned-from", "status": child["status"]}])
+                         [{"seq": 365, "kind": "spawned-from", "status": child["status"],
+                           "id": child["id"]}])
         # bare-task counts are all-zero (renderer omits the row).
         self.assertEqual(pvm["session_tree"], {"hubs": 0, "workers": 0, "live_hubs": 0,
                                                "running": 0, "resumable": 0})
@@ -296,7 +299,8 @@ class BoardTest(unittest.TestCase):
         rel = ts._board_related(parent, tasks=[parent, child])
         self.assertEqual(rel["from"], [])
         self.assertEqual(rel["in"],
-                         [{"seq": 365, "kind": "spawned-from", "status": child["status"]}])
+                         [{"seq": 365, "kind": "spawned-from", "status": child["status"],
+                           "id": child["id"]}])
 
     def test_board_empty_store(self):
         path, html = self._run_board()

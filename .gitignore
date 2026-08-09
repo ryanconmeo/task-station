@@ -4,8 +4,12 @@ store/
 # delegate runtime registry (live worker session ids) — machine-local, not committed.
 delegate/workers.json
 
-# Worker briefs are per-run scratch, not shipped artifacts — they live in the worktree only.
+# Worker briefs and the reports they hand back are per-run scratch, not shipped artifacts —
+# they live in the worktree only. The report half matters as much as the brief: a delegated
+# worker has no Bash, so a report FILE is its only channel back to the hub (a backgrounded
+# run loses its stdout), which means these are written on every delegation, not occasionally.
 BRIEF-*.md
+REPORT-*.md
 
 # macOS Finder metadata
 .DS_Store

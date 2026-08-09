@@ -3767,6 +3767,103 @@ def related_edges(task, tasks=None, semantic=False):
     return result
 
 
+# --- canonical relation resolution -------------------------------------------
+#
+# A task↔task relationship is ONE thing, but the store can record it up to three
+# times: this task's `related` list holds it, the OTHER task's list holds the mirror
+# (a reciprocal pair), and — because `append_related` dedups on id+KIND — the same
+# side may hold it twice under two different kinds. Every consumer that walked the
+# out edges and then the in edges therefore printed the same counterpart two or
+# three times. `canonical_relations` is the ONE resolver they all route through.
+#
+# The dedup key is THE OTHER TASK'S id alone, never (id, kind): keying on the kind
+# is exactly what leaves the mixed-label duplicate standing, since the two records
+# differ precisely in their kind.
+
+# Label precedence when one pair carries several kinds — LOWEST rank wins. A
+# specific claim outranks a vague one: `related` explicitly claims nothing, so it is
+# weakest. This is the LABEL axis and is deliberately NOT the graph's
+# visual-prominence axis (where spawned-from is the dimmest edge) — different
+# questions. `depends-on` / `parent` / `absorbed-by` have no writer yet and are
+# listed now so adding one later needs no edit here.
+_REL_KIND_RANK = {"depends-on": 0, "parent": 1, "absorbed-by": 2,
+                  "spawned-from": 3, "related": 4}
+_REL_KIND_RANK_UNKNOWN = 99
+
+
+def _rel_kind_rank(kind):
+    """Precedence rank for a relation kind — lowest wins. An unknown/future kind
+    sorts last but never raises, so a store written by a newer version degrades to
+    "shown, ranked last" instead of breaking a render."""
+    return _REL_KIND_RANK.get(kind, _REL_KIND_RANK_UNKNOWN)
+
+
+def canonical_relations(task, tasks=None, rev=None, edges=None):
+    """ONE relationship per other task, deduped on the OTHER TASK's id.
+
+    Returns a list of `{"id", "seq", "kind", "dir", "status"}` where `dir` is
+    "out" (this task stored the edge) or "in" (derived from the other side). The
+    shared resolver behind the `Related:` detail line, the board card's relation
+    row and the graph's lineage precedence, so all three agree about what a pair IS.
+
+    The rules, in force order:
+
+      * dedup key = the other task's `id`; an entry carrying no id falls back to a
+        `("seq", n)` key so nothing is ever silently dropped;
+      * lowest `_REL_KIND_RANK` wins the label — a pair recorded as BOTH
+        `spawned-from` and `related` (legal: `append_related` dedups on id+kind)
+        resolves to `spawned-from`, once;
+      * on an equal kind, `dir="out"` beats `dir="in"` — the side that asserted it
+        wins;
+      * a self-edge is dropped, matching `_add_undirected`;
+      * order is kind rank, then the other task's seq — two runs over one store
+        produce identical output.
+
+    Where the raw edges come from, in precedence order: an already-built `edges`
+    (a `related_edges`-shaped `{"out": […], "in": […]}`); else `rev`, this task's
+    reverse-edge list out of the board's O(1) rev_map, with the out side read
+    straight off `task["related"]`; else a `related_edges(task, tasks)` scan. Pure
+    apart from that scan."""
+    if edges is None:
+        if rev is None:
+            edges = related_edges(task, tasks)
+        else:
+            edges = {"out": [{"seq": r.get("seq"), "id": r.get("id"),
+                              "kind": r.get("kind")}
+                             for r in (task.get("related") or [])],
+                     "in": list(rev)}
+
+    def _pick(e):
+        """Which recorded edge REPRESENTS the pair: kind first, then out beats in."""
+        return (_rel_kind_rank(e.get("kind")), 0 if e.get("dir") == "out" else 1)
+
+    def _order(e):
+        """Display order: kind rank, then the counterpart's seq (seq-less last),
+        then its id — a total order, so the output never wobbles between runs."""
+        seq = e.get("seq")
+        return (_rel_kind_rank(e.get("kind")),
+                seq if seq is not None else (1 << 30),
+                str(e.get("id") or ""))
+
+    tid, tseq = task.get("id"), task.get("seq")
+    best = {}
+    for direction in ("out", "in"):
+        for e in (edges.get(direction) or []):
+            oid, oseq = e.get("id"), e.get("seq")
+            if oid:
+                if oid == tid:
+                    continue                    # self-edge
+            elif oseq is not None and oseq == tseq:
+                continue                        # id-less entry pointing at itself
+            key = oid if oid else ("seq", oseq)
+            cand = {"id": oid, "seq": oseq, "kind": e.get("kind"),
+                    "dir": direction, "status": e.get("status")}
+            prev = best.get(key)
+            if prev is None or _pick(cand) < _pick(prev):
+                best[key] = cand
+    return sorted(best.values(), key=_order)
+
+
 # --- WS-D: universal semantic edges + (gated) knowledge co-citation ----------
 #
 # A UNIVERSAL improvement to the task graph — derived, never stored, and computed
@@ -3871,9 +3968,12 @@ def build_board_graph(tasks, knowledge=False):
 
     Only nodes that touch ≥1 edge are returned, so a bare / relation-free store yields
     `{"nodes": [], "edges": []}` and the renderer omits the panel entirely (a public
-    user with no relations sees exactly today's board). Undirected edges are deduped
-    by unordered seq-pair + kind; the strongest weight for a pair wins. Pure and
-    O(N + edges) — no I/O, no config read (the caller resolves `knowledge`)."""
+    user with no relations sees exactly today's board). Lineage collapses to ONE edge
+    per unordered pair, labelled by `_REL_KIND_RANK` — the same precedence
+    `canonical_relations` applies to the text and board surfaces — so a pair recorded
+    under two kinds draws once. The derived tiers stay deduped by unordered seq-pair
+    + kind, strongest weight winning. Pure and O(N + edges) — no I/O, no config read
+    (the caller resolves `knowledge`)."""
     nodes_by_seq = {}
     for t in tasks:
         seq = t.get("seq")
@@ -3887,7 +3987,7 @@ def build_board_graph(tasks, knowledge=False):
     by_id_seq = {t.get("id"): t.get("seq") for t in tasks}
 
     edges = []
-    seen_directed = set()          # (a, b, kind) for lineage (direction meaningful)
+    lineage = {}                   # frozenset({a,b}) → the ONE canonical lineage edge
     undirected = {}                # frozenset({a,b}) + kind → strongest edge dict
 
     def _add_undirected(a, b, kind, weight, via):
@@ -3899,27 +3999,39 @@ def build_board_graph(tasks, knowledge=False):
             undirected[key] = {"a": a, "b": b, "kind": kind, "dir": "none",
                                "weight": weight, "via": via}
 
-    # Lineage edges (directed) from every task's stored `related` list.
+    # Lineage edges from every task's stored `related` list — ONE per unordered pair.
+    # A pair can be recorded up to three times (each side stores the other, and
+    # `append_related` permits a second KIND for the same target), so it is collapsed
+    # here on `_REL_KIND_RANK`. The winning kind decides the arrow: `spawned-from`
+    # stays directed child→parent, anything else stays undirected.
     for t in tasks:
         a = t.get("seq")
         if a is None:
             continue
         for e in (t.get("related") or []):
-            b = e.get("seq")
-            if b is None:
-                b = by_id_seq.get(e.get("id"))
+            # Resolve the counterpart from its `id` — the only machine-portable
+            # handle a stored entry carries. A `seq` is local to one store, so a
+            # stored one is trusted ONLY for a legacy entry that has no id at all.
+            # Preparation, not repair: today every stored entry carries both and
+            # they agree, so this reorder changes nothing about the current graph.
+            eid = e.get("id")
+            b = by_id_seq.get(eid) if eid else e.get("seq")
             if b is None or b == a or b not in nodes_by_seq:
                 continue
             kind = e.get("kind") or "related"
-            if kind == "spawned-from":
-                dkey = (a, b, kind)
-                if dkey in seen_directed:
+            key = frozenset((a, b))
+            prev = lineage.get(key)
+            if prev is not None:
+                prev_rank, rank = _rel_kind_rank(prev["kind"]), _rel_kind_rank(kind)
+                # Equal rank keeps the lexicographically smaller (a, b) so the
+                # surviving orientation does not depend on the input's task order.
+                if prev_rank < rank or (prev_rank == rank
+                                        and (prev["a"], prev["b"]) <= (a, b)):
                     continue
-                seen_directed.add(dkey)
-                edges.append({"a": a, "b": b, "kind": "spawned-from",
-                              "dir": "a->b", "weight": 2, "via": ["lineage"]})
-            else:
-                _add_undirected(a, b, "related", 2, ["lineage"])
+            lineage[key] = {"a": a, "b": b, "kind": kind,
+                            "dir": "a->b" if kind == "spawned-from" else "none",
+                            "weight": 2, "via": ["lineage"]}
+    edges.extend(lineage.values())
 
     # Semantic `touches-same` edges (undirected, weighted).
     for t in tasks:
@@ -4224,23 +4336,20 @@ def _session_block_lines(task):
 
 def _related_line(task, edges=None):
     """The `Related:` artifacts line, or None when the task has no relation edges
-    (either direction). Out edges: `from #N (spawned-from)` / `related #N`; derived
-    reverse edges: `spawned #N` (a child) / `related #N`. A closed edge target gets
-    a trailing ` ✕`."""
-    e = edges if edges is not None else related_edges(task)
+    (either direction). ONE entry per counterpart — a reciprocal pair is a single
+    relationship, so it prints once, resolved through `canonical_relations`. Out
+    edges: `from #N (spawned-from)` / `related #N`; derived reverse edges:
+    `spawned #N` (a child) / `related #N`. A closed edge target gets a trailing
+    ` ✕`."""
     parts = []
-    for r in e.get("out") or []:
+    for r in canonical_relations(task, edges=edges):
         mark = " ✕" if r.get("status") == STATUS_CLOSED else ""
-        if r.get("kind") == "spawned-from":
+        if r.get("kind") != "spawned-from":
+            parts.append("related #%s%s" % (r.get("seq"), mark))
+        elif r.get("dir") == "out":
             parts.append("from #%s (spawned-from)%s" % (r.get("seq"), mark))
         else:
-            parts.append("related #%s%s" % (r.get("seq"), mark))
-    for r in e.get("in") or []:
-        mark = " ✕" if r.get("status") == STATUS_CLOSED else ""
-        if r.get("kind") == "spawned-from":
             parts.append("spawned #%s%s" % (r.get("seq"), mark))
-        else:
-            parts.append("related #%s%s" % (r.get("seq"), mark))
     return ("Related: " + " · ".join(parts)) if parts else None
 
 
@@ -10517,21 +10626,26 @@ def _board_session_counts(task, live_sids=None):
 
 def _board_related(task, tasks=None, rev_map=None):
     """WS4: relation edges for the board card —
-        {"from": [{"seq","kind"}…],           # edges stored ON this task (outgoing)
-         "in":   [{"seq","kind","status"}…]}  # edges pointing AT this task (derived)
+        {"from": [{"seq","kind","id"}…],           # edges stored ON this task
+         "in":   [{"seq","kind","status","id"}…]}  # edges pointing AT this task
+
+    ONE entry per counterpart across BOTH lists: this is a second, independent
+    derivation of the same data the detail line shows, so it routes through
+    `canonical_relations` too — a reciprocal pair lands in whichever list wins the
+    precedence rather than appearing in both. The `id` is emitted on both sides so
+    a consumer can dedup on the task rather than on a machine-local seq; every
+    pre-existing key is retained (purely additive).
 
     `rev_map` (target task id → list of incoming edge dicts) is built ONCE by
     write_board so each card's reverse edges are an O(1) lookup and the board stays
     O(N) — never an N² per-task scan. When `rev_map` is absent (detail path / tests)
     the reverse edges are derived by scanning `tasks` (or `all_tasks()`). Empty lists
     when the task has no relations, so the renderer omits the row."""
-    out = [{"seq": r.get("seq"), "kind": r.get("kind")}
-           for r in (task.get("related") or [])]
     tid = task.get("id")
     if rev_map is not None:
-        inn = list(rev_map.get(tid) or [])
+        rev = list(rev_map.get(tid) or [])
     else:
-        inn = []
+        rev = []
         try:
             scan = tasks if tasks is not None else all_tasks()
         except Exception:
@@ -10541,8 +10655,15 @@ def _board_related(task, tasks=None, rev_map=None):
                 continue
             for r in (other.get("related") or []):
                 if r.get("id") == tid:
-                    inn.append({"seq": other.get("seq"), "kind": r.get("kind"),
-                                "status": task_status(other)})
+                    rev.append({"seq": other.get("seq"), "id": other.get("id"),
+                                "kind": r.get("kind"), "status": task_status(other)})
+    # rev is always a list (never None), so the resolver reuses the O(1) reverse
+    # index / the scan just done and never re-scans the store itself.
+    rels = canonical_relations(task, rev=rev)
+    out = [{"seq": r["seq"], "kind": r["kind"], "id": r["id"]}
+           for r in rels if r["dir"] == "out"]
+    inn = [{"seq": r["seq"], "kind": r["kind"], "status": r["status"], "id": r["id"]}
+           for r in rels if r["dir"] == "in"]
     return {"from": out, "in": inn}
 
 
@@ -11483,8 +11604,10 @@ def write_board(guard_downgrade=False):
     raw = sorted_tasks()
     # WS4: build the reverse relation-edge index ONCE (O(total edges)) so each card's
     # incoming ("spawned #N" / "related ←") edges are an O(1) lookup rather than an
-    # N² per-task scan. Maps a target task id → [{seq, kind, status}] for every task
-    # whose `related` list points at it.
+    # N² per-task scan. Maps a target task id → [{seq, id, kind, status}] for every
+    # task whose `related` list points at it. The SOURCE task's `id` rides along so
+    # `canonical_relations` can dedup a reciprocal pair on the task itself rather
+    # than on its machine-local seq.
     rev_map = {}
     for t in raw:
         st = task_status(t)
@@ -11492,7 +11615,8 @@ def write_board(guard_downgrade=False):
             tgt = r.get("id")
             if tgt:
                 rev_map.setdefault(tgt, []).append(
-                    {"seq": t.get("seq"), "kind": r.get("kind"), "status": st})
+                    {"seq": t.get("seq"), "id": t.get("id"),
+                     "kind": r.get("kind"), "status": st})
     # WS-D: the knowledge (co-citation) tier is SECOND-BRAIN-GATED — active only when
     # the opt-in flag is on AND a consumer (an Obsidian vault) is configured. Off by
     # default, so the graph below carries only the UNIVERSAL edges (lineage + semantic).
