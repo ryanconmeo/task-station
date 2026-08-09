@@ -3508,7 +3508,7 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
     shared PR/repo/story). Layout is deterministic and closed-form (NO physics/JS):
     category hubs sit on a ring, each hub's member tasks pack on a short outward arc, and
     signal hubs sit at the centroid of their members. Edges are styled by kind (lineage,
-    membership, per-signal, touches-same, gated shared-knowledge). Task circles are filled
+    membership, per-signal, gated shared-knowledge). Task circles are filled
     with the category accent (resolved-variant hex); category hubs are rounded rects sized
     to their label; signal hubs are shaped by kind (pr=diamond, repo=hexagon, story=rect).
     Native SVG `<title>` names the REAL shared signal; the whole graph is also embedded as
@@ -3847,7 +3847,7 @@ _MG_ENHANCE_JS = """try{(function(){
   function edgeColor(cls){return rootVar(EDGEVAR[cls]||"--dim")||"#888";}
   function sigColor(kind){return rootVar(SIGVAR[kind]||"--accent")||"#888";}
 
-  var CLS={"spawned-from":"lineage","related":"lineage","related-knowledge":"knowledge","touches-same":"touch","membership":"membership","pr":"pr","repo":"repo","story":"story","xbrain":"xbrain"};
+  var CLS={"spawned-from":"lineage","related":"lineage","related-knowledge":"knowledge","membership":"membership","pr":"pr","repo":"repo","story":"story","xbrain":"xbrain"};
   function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
   function lbl(n){return n.type!=="task"?(n.label||n.id):(n.foreign?(n.handle||n.owner||n.id):("#"+n.seq));}
   var nodes=[],byId={},catLabels={};
@@ -3871,9 +3871,13 @@ _MG_ENHANCE_JS = """try{(function(){
     nodes.push(o);byId[o.id]=o;
   });
   var edges=[];
+  // The fallback class for an unrecognised kind MUST be one that EK still lists, or that
+  // edge draws with no filter row and can never be turned off. "lineage" is the generic
+  // task<->task class and always has a row; it is also where the coming typed kinds
+  // (depends-on / parent / absorbed-by) land until they earn rows of their own.
   rawEdges.forEach(function(e){
     if(!byId[e.a]||!byId[e.b])return;
-    var cls=CLS[e.kind]||"touch",A=byId[e.a],B=byId[e.b],tip;
+    var cls=CLS[e.kind]||"lineage",A=byId[e.a],B=byId[e.b],tip;
     if(cls==="membership")tip=lbl(A)+" — in "+B.label;
     else if(cls==="pr"||cls==="repo"||cls==="story")tip=lbl(A)+" — shares "+B.label;
     else tip=lbl(A)+" — "+lbl(B);
@@ -4009,7 +4013,7 @@ _MG_ENHANCE_JS = """try{(function(){
   var EDGEW={membership:1,lineage:2.1,pr:2.4,repo:1.6,story:1.8,touch:1.6,knowledge:1.8};
   // ---- filter state (C2): all-on by default, EXCEPT solo (unlinked tasks) which is
   // default-OFF; status is the task LIFECYCLE (open/active/closed), all-on. ----
-  var filt={cat:{},sig:{},cathub:true,edge:{},status:{},solo:false};
+  var filt={cat:{},sig:{},edge:{},status:{},solo:false};
   var hover=null,selected=null,screenPos={},query="",terms=[];
   // F2: the shared focus (one brain / person / org, or none) drives BOTH the table and
   // the graph. Read from the same localStorage key the focus strip writes; a focused
@@ -4033,8 +4037,12 @@ _MG_ENHANCE_JS = """try{(function(){
       if(filt.status[n.status]===false)return false;
       return filt.cat[n.cat]!==false;
     }
-    if(n.type==="hub")return filt.cathub!==false;
-    return filt.sig[n.id]!==false;               // per signal-NODE (each repo/PR/story its own filter)
+    // a category hub is a RENDERING of its category, not a separate thing to switch:
+    // hiding the category hides its hub. filt.cat only carries categories present among
+    // the drawn tasks, so a hub whose category has no visible task reads `undefined`,
+    // and undefined!==false stays TRUE — fail-visible, deliberately, not fail-hidden.
+    if(n.type==="hub")return filt.cat[n.key]!==false;
+    return filt.sig[n.kind]!==false;             // per signal KIND (all pr / repo / story hubs together)
   }
   function edgeVisible(e){return filt.edge[e.cls]!==false&&nodeVisible(byId[e.a])&&nodeVisible(byId[e.b]);}
   // C1: robust multi-term (space AND) match across seq / title / category label /
@@ -4344,7 +4352,6 @@ _MG_ENHANCE_JS = """try{(function(){
   function glyphSVG(g,color,dash){
     var inner;
     if(g==="circle")inner='<circle cx="0" cy="0" r="5" fill="'+color+'"></circle>';
-    else if(g==="cathub")inner='<rect x="-7" y="-4.5" width="14" height="9" rx="2.5" fill="none" stroke="'+color+'" stroke-width="1.7"></rect>';
     else if(g==="diamond")inner='<rect x="-4.2" y="-4.2" width="8.4" height="8.4" transform="rotate(45)" fill="'+color+'"></rect>';
     else if(g==="hexagon"){var pts="";for(var i=0;i<6;i++){var a=Math.PI/6+i*Math.PI/3;pts+=(i?" ":"")+(Math.cos(a)*6).toFixed(1)+","+(Math.sin(a)*6).toFixed(1);}inner='<polygon points="'+pts+'" fill="'+color+'"></polygon>';}
     else if(g==="rounded")inner='<rect x="-6" y="-4.5" width="12" height="9" rx="3.5" fill="'+color+'"></rect>';
@@ -4393,8 +4400,7 @@ _MG_ENHANCE_JS = """try{(function(){
   nodes.forEach(function(n){if(n.type==="task"&&!n.solo&&n.cat!=null)catsPresent[n.cat]=(catsPresent[n.cat]||0)+1;});
   nodes.forEach(function(n){if(n.type==="task"){statusPresent[n.status]=(statusPresent[n.status]||0)+1;if(n.solo)soloCount++;}});
   edges.forEach(function(e){edgeKinds[e.cls]=(edgeKinds[e.cls]||0)+1;});
-  function sigCount(id){var c=0;edges.forEach(function(e){if(e.b===id&&byId[e.a].type==="task")c++;});return c;}
-  var catHubN=nodes.filter(function(n){return n.type==="hub";}).length,hasCatHub=catHubN>0;
+  var sigKinds={};sigNodes.forEach(function(s){sigKinds[s.kind]=(sigKinds[s.kind]||0)+1;});
   var SIGGLY={pr:"diamond",repo:"hexagon",story:"rounded"},EDGEDASH={repo:"5,4",story:"2,4",knowledge:"1,4"};
   var soloRow=null,soloGroup=null;
   if(filtersEl){
@@ -4411,11 +4417,21 @@ _MG_ENHANCE_JS = """try{(function(){
     if(soloCount){soloGroup=mkGroup("Unlinked");
       soloRow=mkRow("unlinked tasks",soloCount,"circle",function(){return rootVar("--dim")||"#888";},function(v){filt.solo=v;fitView();});
       pushRow(soloGroup,soloRow);soloRow.set(false);soloGroup.refresh();filtersEl.appendChild(soloGroup.group);}
-    // one filter row PER signal hub (each repo / PR / story individually), not one per kind.
-    if(sigNodes.length){var g2=mkGroup("Signal hubs");sigNodes.forEach(function(s){filt.sig[s.id]=true;
-      (function(sid,kind){pushRow(g2,mkRow(s.label||kind,sigCount(sid),SIGGLY[kind]||"diamond",function(){return sigColor(kind);},function(v){filt.sig[sid]=v;}));})(s.id,s.kind);});filtersEl.appendChild(g2.group);}
-    if(hasCatHub){var g3=mkGroup("Category hubs");pushRow(g3,mkRow("Category hubs",catHubN,"cathub",function(){return rootVar("--dim");},function(v){filt.cathub=v;}));filtersEl.appendChild(g3.group);}
-    var EK=[["lineage","Lineage"],["membership","Membership"],["pr","Shares PR"],["repo","Shares repo"],["story","Shares story"],["touch","Same file"],["knowledge","Co-cited note"]],g4=null;
+    // one filter row per signal KIND (story / repo / pr), each showing+hiding ALL hubs of
+    // that kind — their spokes prune for free via edgeVisible's endpoint check. Per-hub
+    // rows grew without bound as repos and PRs accumulated, until the panel was longer
+    // than the graph it filtered. The count is how many HUBS the row collapses, not their
+    // summed membership: a kind row is about what it folds together.
+    // Ordered story→repo→pr, then any unforeseen kind appended (mirrors the status rows) —
+    // a signal kind with no row would be an unfilterable hub, the same landmine as an edge
+    // kind with no row.
+    var kkeys=["story","repo","pr"].filter(function(k){return sigKinds[k];});
+    Object.keys(sigKinds).forEach(function(k){if(kkeys.indexOf(k)<0)kkeys.push(k);});
+    if(kkeys.length){var g2=mkGroup("Signal hubs");kkeys.forEach(function(k){filt.sig[k]=true;
+      pushRow(g2,mkRow(k,sigKinds[k],SIGGLY[k]||"diamond",function(){return sigColor(k);},function(v){filt.sig[k]=v;}));});filtersEl.appendChild(g2.group);}
+    // No "Category hubs" row: a hub follows its category (see nodeVisible) — toggling a
+    // category off obviously hides the hub that renders it.
+    var EK=[["lineage","Lineage"],["membership","Membership"],["pr","Shares PR"],["repo","Shares repo"],["story","Shares story"],["knowledge","Co-cited note"]],g4=null;
     EK.forEach(function(it){var c=it[0];if(!edgeKinds[c])return;if(!g4)g4=mkGroup("Edges");filt.edge[c]=true;pushRow(g4,mkRow(it[1],edgeKinds[c],"line",function(){return edgeColor(c);},function(v){filt.edge[c]=v;},EDGEDASH[c]||""));});
     if(g4)filtersEl.appendChild(g4.group);
   }
@@ -4428,7 +4444,6 @@ _MG_ENHANCE_JS = """try{(function(){
     Object.keys(filt.sig).forEach(function(k){filt.sig[k]=true;});
     Object.keys(filt.edge).forEach(function(k){filt.edge[k]=true;});
     Object.keys(filt.status).forEach(function(k){filt.status[k]=true;});
-    filt.cathub=true;
     if(filtersEl){var offs=filtersEl.querySelectorAll(".mgf.off");
       Array.prototype.forEach.call(offs,function(b){b.classList.remove("off");});}
     if(soloRow)soloRow.set(false);                 // unlinked tasks default OFF

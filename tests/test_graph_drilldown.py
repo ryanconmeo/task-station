@@ -223,10 +223,13 @@ class _BoardBase(unittest.TestCase):
         store.reset_cache()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _seed(self, title, prs=None):
-        t = ts.new_task(title, "s " + title, color="green", effort="m")
+    def _seed(self, title, prs=None, **fields):
+        t = ts.new_task(title, "s " + title, color=fields.pop("color", "green"),
+                        effort="m")
         if prs:
             t["prs"] = [{"url": u, "desc": ""} for u in prs]
+        for k, v in fields.items():          # projects / files / … set verbatim
+            t[k] = v
         ts.save_task(t)
         ts.ensure_seqs()
         return ts.load_task(t["id"])
@@ -305,6 +308,160 @@ class InterbrainOffParityTest(_BoardBase):
             self.assertNotIn("owner", n)                    # no galaxy grouping leaks
             self.assertNotIn("brain", n)
         self.assertNotIn("foreign", json.dumps(data))       # peer feed never leaks
+
+
+# ============================================ Stage 2: edge registry + graph filters ===
+# Three rulings about the board's dependency graph, all of them PRE-conditions on the
+# later banded-layout rework because they land in the same filter panel and edge registry:
+#
+#   (a) the `touch` / "Same file" edge kind is gone from the GRAPH (the export keeps it),
+#   (b) signal hubs filter by KIND — three rows, not one per hub,
+#   (c) a category hub follows its category instead of carrying its own switch.
+#
+# (b) and (c) are JS inside a Python string, so some assertions must read the emitted
+# source. Where that is unavoidable they assert the OLD control is gone AND the NEW
+# expression is present — never merely that some string appears somewhere — and the
+# substantive claims (how many hubs the fixture really has, whether a hub's key resolves
+# against the category filter) are checked against the emitted mg-data instead.
+
+_PR_B = "https://github.com/o/r/pull/8"
+
+
+def _ek_rows(html):
+    """The `EK` edge-kind registry parsed out of the emitted JS as real data —
+    [[class, label], …]. Structural, so a renamed label cannot fake a match."""
+    m = re.search(r"var EK=(\[\[.*?\]\]),g4=null;", html)
+    assert m, "EK registry not found in the emitted page"
+    return json.loads(m.group(1))
+
+
+class EdgeRegistryTest(_BoardBase):
+    """(a) — the registry lost `touch`, and every class an edge can land in still has
+    a filter row."""
+
+    def _pr_pair_html(self):
+        self._seed("Ledger work", prs=[_PR])
+        self._seed("Ledger tests", prs=[_PR])
+        return self._render("off")
+
+    def test_ek_has_no_touch_row(self):
+        rows = _ek_rows(self._pr_pair_html())
+        self.assertNotIn("touch", [r[0] for r in rows])
+        self.assertNotIn("Same file", [r[1] for r in rows])
+        self.assertIn("lineage", [r[0] for r in rows])     # …the rest is intact
+
+    def test_unknown_edge_kind_fallback_names_a_class_ek_still_lists(self):
+        # THE TRAP, and the highest-value guard here. `CLS[e.kind]||"<fallback>"` decides
+        # the class of any edge kind the renderer does not know, and four typed kinds
+        # (depends-on / parent / absorbed-by / related) are heading for this registry.
+        # If the fallback ever names a class EK has no row for, that edge draws with NO
+        # filter and can never be turned off. Fails if EITHER side of the pair moves.
+        html = self._pr_pair_html()
+        m = re.search(r'var cls=CLS\[e\.kind\]\|\|"([A-Za-z0-9_-]+)"', html)
+        self.assertIsNotNone(m, "edge-class fallback expression not found")
+        self.assertIn(m.group(1), [r[0] for r in _ek_rows(html)])
+
+    def test_every_mapped_edge_class_has_a_filter_row(self):
+        # The same rule one step earlier: a class CLS can PRODUCE also needs a row.
+        # `xbrain` (the cross-brain edge) is the one pre-existing exception — a subset
+        # check, so it may gain a row later without breaking, while a NEW unfiltered
+        # class fails here.
+        html = self._pr_pair_html()
+        m = re.search(r"var CLS=(\{.*?\});", html)
+        self.assertIsNotNone(m, "CLS map not found in the emitted page")
+        classes = set(re.findall(r':"([A-Za-z0-9_-]+)"', m.group(1)))
+        self.assertNotIn("touch", classes)                 # the touches-same mapping is gone
+        unfiltered = classes - {r[0] for r in _ek_rows(html)}
+        self.assertTrue(unfiltered <= {"xbrain"},
+                        "edge classes with no filter row: %s" % sorted(unfiltered))
+
+
+class TouchesSameRemovalTest(_BoardBase):
+    """(a) — the graph stopped drawing it; the export did not."""
+
+    def test_graph_draws_nothing_for_a_shared_file(self):
+        self._seed("Ledger work", files=["/r/ledger.py"])
+        self._seed("Ledger tests", files=["/r/ledger.py"])
+        g = ts.build_board_graph(ts.all_tasks())
+        self.assertEqual([e for e in g["edges"] if e["kind"] == "touches-same"], [])
+        self.assertEqual(g, {"nodes": [], "edges": []})    # a file share is not a relation
+
+    def test_shared_pr_still_reaches_the_graph_as_a_hub(self):
+        # The other half of the ruling: dropping the direct edge must NOT drop the
+        # signal tier. A shared PR still draws — once, as a hub with spokes.
+        self._seed("Ledger work", prs=[_PR])
+        self._seed("Ledger tests", prs=[_PR])
+        g = ts.build_render_graph(ts.all_tasks())
+        self.assertEqual([e for e in g["edges"] if e["kind"] == "touches-same"], [])
+        self.assertIn("sig:pr:%s" % _PR, [n["id"] for n in g["nodes"]])
+        self.assertEqual(len([e for e in g["edges"] if e["kind"] == "pr"]), 2)
+
+    def test_export_still_emits_its_touches_same_pair(self):
+        # `_related_pairs` feeds the vault/markdown export and is deliberately unchanged
+        # — this is the graph dropping a consumer, not the signal being deleted.
+        a = self._seed("Ledger work", prs=[_PR])
+        self._seed("Ledger tests", prs=[_PR])
+        pairs = ts._related_pairs(ts.load_task(a["id"]), ts.all_tasks(), False,
+                                  lambda tid: "stem-" + str(tid)[:8])
+        self.assertIn("touches same", [p[-1] for p in pairs])
+
+
+class SignalHubKindFilterTest(_BoardBase):
+    """(b) — one row per signal KIND, not one per hub."""
+
+    def _multi_hub_html(self):
+        """Two PR hubs + two repo hubs = FOUR hub nodes across TWO kinds. A per-hub
+        implementation would emit four rows against this fixture; the kind rule emits
+        two, and can never emit more than three."""
+        self._seed("Ledger work", prs=[_PR], projects=["projectname"])
+        self._seed("Ledger tests", prs=[_PR], projects=["projectname"])
+        self._seed("Report work", prs=[_PR_B], projects=["OtherProj"])
+        self._seed("Report tests", prs=[_PR_B], projects=["OtherProj"])
+        return self._render("off")
+
+    def test_rows_are_bounded_by_kind_not_by_hub_count(self):
+        html = self._multi_hub_html()
+        hubs = [n for n in self._mgdata(html)["nodes"] if n.get("type") == "signal"]
+        self.assertGreaterEqual(len(hubs), 4)              # the fixture really has 4+ hubs
+        self.assertLessEqual(len({h["kind"] for h in hubs}), 3)   # …across <=3 kinds
+        self.assertIn('var kkeys=["story","repo","pr"].filter', html)   # order: story,repo,pr
+        self.assertIn("filt.sig[k]=true", html)            # one row per KIND key
+        self.assertNotIn("filt.sig[s.id]=true", html)      # the per-hub loop is gone
+
+    def test_node_visibility_keys_on_signal_kind(self):
+        html = self._multi_hub_html()
+        self.assertIn("return filt.sig[n.kind]!==false;", html)
+        self.assertNotIn("filt.sig[n.id]", html)
+
+
+class CategoryHubFollowsCategoryTest(_BoardBase):
+    """(c) — the standalone `filt.cathub` switch is gone; a hub follows its category."""
+
+    def _html(self):
+        self._seed("Ledger work", prs=[_PR])
+        self._seed("Ledger tests", prs=[_PR])
+        return self._render("off")
+
+    def test_no_cathub_control_survives_anywhere(self):
+        html = self._html()
+        self.assertNotIn("cathub", html)                   # state, glyph, row and reset
+        self.assertNotIn("catHubN", html)                  # …and no dead locals
+        self.assertNotIn("hasCatHub", html)
+        self.assertNotIn('mkGroup("Category hubs")', html)
+
+    def test_category_hub_visibility_reads_from_filt_cat(self):
+        html = self._html()
+        self.assertIn('if(n.type==="hub")return filt.cat[n.key]!==false;', html)
+        # The substantive half: the key it reads must be one `filt.cat` actually carries.
+        # filt.cat is keyed by the task's stored `color`; a hub's `key` is that colour
+        # NORMALISED. If those two ever diverged every lookup would be undefined and the
+        # category toggle would silently stop hiding its hub.
+        data = self._mgdata(html)
+        hubs = [n for n in data["nodes"] if n.get("type") == "hub"]
+        cats = {n.get("color") for n in data["nodes"] if n.get("type") == "task"}
+        self.assertTrue(hubs, "fixture must produce a category hub")
+        for h in hubs:
+            self.assertIn(h.get("key"), cats)
 
 
 if __name__ == "__main__":

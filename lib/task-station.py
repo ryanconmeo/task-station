@@ -3961,10 +3961,12 @@ def build_board_graph(tasks, knowledge=False):
 
       * lineage — the stored `related` edges (`spawned-from` directed child→parent,
         `related` undirected); UNIVERSAL.
-      * `touches-same` — derived semantic edges (shared PR/story/file/repo), weighted;
-        UNIVERSAL.
       * `related-knowledge` — task↔task co-citation (both cite the same `[[note]]`),
         weighted by shared-note count; SECOND-BRAIN-GATED, only when `knowledge=True`.
+
+    Derived `touches-same` (shared PR/story/file/repo) edges are NOT emitted — see the
+    note at the loop below. `semantic_edges` itself is untouched and still serves the
+    export and the signal hubs.
 
     Only nodes that touch ≥1 edge are returned, so a bare / relation-free store yields
     `{"nodes": [], "edges": []}` and the renderer omits the panel entirely (a public
@@ -4033,14 +4035,17 @@ def build_board_graph(tasks, knowledge=False):
                             "weight": 2, "via": ["lineage"]}
     edges.extend(lineage.values())
 
-    # Semantic `touches-same` edges (undirected, weighted).
-    for t in tasks:
-        a = t.get("seq")
-        if a is None:
-            continue
-        for se in semantic_edges(t, tasks):
-            _add_undirected(a, se.get("seq"), "touches-same",
-                            se.get("weight", 1), se.get("via") or [])
+    # NO semantic `touches-same` edges. Two tasks touching one file is not a
+    # relationship worth drawing, and the kind was 97% of every edge in the graph —
+    # it buried the lineage it sat next to. Shared PRs / repos / stories are NOT lost:
+    # they still reach the graph as signal HUBS with spokes (`build_render_graph`),
+    # which say the same thing once per signal instead of once per pair. Only a
+    # file-only share now draws nothing at all.
+    #
+    # `semantic_edges` / `_task_signals` / `_SEMANTIC_WEIGHTS` deliberately stay —
+    # the vault/markdown export (`_related_pairs`) still emits its `touches same`
+    # pairs, and the signal hubs still read the same signals. This is the GRAPH
+    # dropping a consumer, not the signal being deleted.
 
     # Co-citation `related-knowledge` edges (undirected) — SECOND-BRAIN-GATED.
     if knowledge:
@@ -4103,8 +4108,9 @@ def shared_signal_groups(tasks):
     Stories are keyed by their `story_ref` id (NOT the raw url) so a hub value matches the
     emitted `stories/<id>` page and a bare-id + full-url reference to the same work item
     collapse together. `file` signals are intentionally excluded — a file-only share forms
-    no hub and stays a direct `touches-same` edge. Pure; deterministic output. Distinct
-    from `_compute_story_group_ids` (different threshold + key space)."""
+    no hub, and since the graph stopped emitting `touches-same` it now draws nothing at
+    all (deliberate: "no need to link tasks on shared files"). Pure; deterministic output.
+    Distinct from `_compute_story_group_ids` (different threshold + key space)."""
     try:
         import obsidian_sync
     except Exception:
@@ -4160,23 +4166,45 @@ def build_render_graph(tasks, knowledge=False):
         nodes; each member task gets a `membership` spoke. The KEY only is carried (the
         renderer resolves the hex via `_highlight_fb`).
       * Signal hub — one per shared pr/story/repo group (>= 2 members in the base graph),
-        each member task getting a kind-tagged spoke.
-      * `touches-same` — a base task<->task edge is DROPPED only when BOTH endpoints connect
-        to the SAME surviving signal hub (redundant). A file-only share (no hub) stays a
-        direct edge; lineage + `related-knowledge` edges stay direct + untouched.
+        each member task getting a kind-tagged spoke. This is now the ONLY way a shared
+        PR / repo / story reaches the graph, since the base stopped emitting the direct
+        `touches-same` edge that used to sit alongside it.
+      * lineage + `related-knowledge` edges are re-mapped direct + untouched.
+
+    A task is DRAWN when it carries a base edge (lineage / co-citation) OR belongs to a
+    >=2-member signal group — the second clause is what keeps the hub tier alive now that
+    the base no longer emits a `touches-same` edge for every shared signal (see the note
+    on `present` below).
 
     Every node carries `deg` (incident-edge count). Nodes are sorted by (type-rank,
     seq/key/value) and edges by (kind, a, b) — type-homogeneous keys only, never mixing
     int/str. Returns `{nodes, edges, singletons}` where `singletons` = `{seq: [labels]}`
     for pr/story/repo signals with exactly one task (renderer reads only nodes/edges). A
-    relation-free / solo board (base has no edges) returns the base unchanged so the panel
-    stays absent."""
+    relation-free / solo board (no base edges AND no shared signal) returns the base
+    unchanged so the panel stays absent."""
     base = build_board_graph(tasks, knowledge)
-    if not base["edges"]:
-        return base
-
     tasks_by_seq = {t.get("seq"): t for t in tasks if t.get("seq") is not None}
-    present = {n["seq"] for n in base["nodes"]}      # base task-node seqs (int)
+
+    # WHICH TASKS THE GRAPH DRAWS. Until the base stopped emitting `touches-same`,
+    # every task sharing a PR/repo/story with another was ALREADY a base node — that
+    # edge put it there — so "base nodes" and "base nodes + signal-group members" were
+    # the same set and this distinction never showed. They are not the same set now:
+    # sourcing `present` from base nodes alone would delete every signal HUB along with
+    # the direct edge, since a hub is only built from tasks already present. Unioning
+    # the >=2-member signal groups back in keeps the hub tier exactly as it renders
+    # today, so the ONLY thing the `touches-same` removal actually drops is a
+    # file-only share — which is precisely the ruling ("no need to link tasks on
+    # shared files"); a file signal forms no hub, so it now draws nothing at all.
+    groups, labels, singletons = shared_signal_groups(tasks)
+    grouped = set()
+    for _gseqs in groups.values():
+        if len(_gseqs) >= 2:
+            grouped.update(_gseqs)
+    if not base["edges"] and not grouped:
+        return base                                 # relation-free / solo → no panel
+
+    base_seqs = {n["seq"] for n in base["nodes"]}
+    present = base_seqs | grouped                   # drawn task seqs (int)
 
     def tid(seq):
         return "t:%d" % seq
@@ -4187,12 +4215,27 @@ def build_render_graph(tasks, knowledge=False):
         nodes.append({"id": tid(n["seq"]), "type": "task", "seq": n["seq"],
                       "title": n.get("title", ""), "color": n.get("color"),
                       "status": n.get("status"), "glyph": n.get("glyph")})
+    # A task that reaches the graph ONLY through a signal hub has no base node, so its
+    # node dict is built here — same fields, same glyph rule as build_board_graph.
+    for seq in sorted(present - base_seqs):
+        t = tasks_by_seq.get(seq)
+        if t is None:
+            continue
+        cur = task_status(t)
+        nodes.append({"id": tid(seq), "type": "task", "seq": seq,
+                      "title": t.get("title", ""), "color": t.get("color"),
+                      "status": cur,
+                      "glyph": (STATUS_GLYPH_CLOSED if cur == STATUS_CLOSED
+                                else STATUS_GLYPH.get(cur, "○"))})
 
     edges = []
 
     # ---- category hubs: one per category with >= 1 present task ----------------
     # (Threshold is >=1 so every category present in the edge graph gets a hub; the
-    # relation-free/solo board is still gated out earlier by `if not base["edges"]`.)
+    # relation-free/solo board is still gated out by the early return above. The hub's
+    # `key` is the NORMALISED category, while a task node carries its stored `color`
+    # raw — the board's filter keys on the latter and looks hubs up by the former, so
+    # the two must stay the same string. They do: every write path normalises `color`.)
     try:
         import categories
     except Exception:
@@ -4225,7 +4268,7 @@ def build_render_graph(tasks, knowledge=False):
                               "via": []})
 
     # ---- signal hubs: shared pr/story/repo groups (>= 2 present members) -------
-    groups, labels, singletons = shared_signal_groups(tasks)
+    # `groups`/`labels`/`singletons` were resolved above, where `present` needed them.
     sig_by_seq = {}                                   # seq -> set(signal hub id)
     for key in sorted(groups):
         kind, value = key
@@ -4241,7 +4284,11 @@ def build_render_graph(tasks, knowledge=False):
                           "weight": w, "via": [labels[key]]})
             sig_by_seq.setdefault(seq, set()).add(sid)
 
-    # ---- re-map base edges; drop redundant touches-same ------------------------
+    # ---- re-map base edges -----------------------------------------------------
+    # The `touches-same` branch is now UNREACHABLE from build_board_graph, which no
+    # longer emits that kind. Kept as a guard so a hand-built or future base graph
+    # carrying one still can't draw an edge that duplicates a signal hub; delete it
+    # (and `sig_by_seq`) if the kind is ever removed from the codebase entirely.
     for e in base["edges"]:
         if e["kind"] == "touches-same":
             shared_hub = sig_by_seq.get(e["a"], set()) & sig_by_seq.get(e["b"], set())
@@ -11691,8 +11738,8 @@ def write_board(guard_downgrade=False):
             foreign_vms = []
     vms = vms + foreign_vms
     # WS-D: the board-level relation graph for the mini-graph panel. build_render_graph
-    # augments build_board_graph (lineage + semantic touches-same, plus gated co-citation)
-    # with category + signal HUB nodes and string ids for the clustered SVG. Empty
+    # augments build_board_graph (lineage, plus gated co-citation) with category +
+    # signal HUB nodes and string ids for the clustered SVG. Empty
     # {nodes:[], edges:[]} on a relation-free store, so the renderer omits the panel.
     try:
         graph = build_render_graph(raw, knowledge=knowledge_on)
