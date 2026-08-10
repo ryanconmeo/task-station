@@ -10,8 +10,11 @@ each non-zero exit as one tab-separated line under <data_dir>/logs/:
 
 This module turns that file into the one-line SessionStart nag, into
 `task-station hook-health`, and provides the clear. Bounding the file is the
-WRITER's job (it keeps the newest TS_HOOK_LOG_MAX lines), so nothing here can let
-it grow: the only writes are the nag stamp and `clear()`.
+WRITER's job (keep the newest TS_HOOK_LOG_MAX lines), and `record()` here is the
+second writer — the python-side twin of the shell one, for the Stop-hook steps
+that now run inside one interpreter (`lib/stop_steps.py`) instead of one process
+each. It honors the same format and the same cap, so the file stays bounded no
+matter which side appended last.
 
 Everything is fail-open. A garbled line is skipped, an unreadable log means no
 nag — a broken health report must never be worse than the silence it replaced.
@@ -25,6 +28,7 @@ import paths
 LOG_NAME = "hook-health.log"
 STAMP_NAME = ".hook-health-nagged"
 RECENT_WINDOW = 86400        # a session start only reports the last 24h
+LOG_MAX_DEFAULT = 200        # mirrors _ts_lib.sh's TS_HOOK_LOG_MAX default
 NAG_LABELS = 3               # distinct labels named inline; the rest roll up as "+N more"
 SUMMARY_LIMIT = 20           # rows `task-station hook-health` prints by default
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
@@ -142,6 +146,73 @@ def nag(now=None, path=None, stamp=None):
     return ("[task-station] %d hook failure(s) recorded in the last %dh: %s. "
             "Hooks stayed non-fatal — see `task-station hook-health` "
             "(clear with `--clear`)." % (len(hits), RECENT_WINDOW // 3600, named))
+
+
+def log_max():
+    """The writer's line cap. `TS_HOOK_LOG_MAX` is the same knob `_ts_lib.sh` reads, so
+    the shell and python writers bound the SAME file identically (tests set it low)."""
+    try:
+        n = int(os.environ.get("TS_HOOK_LOG_MAX") or LOG_MAX_DEFAULT)
+    except (TypeError, ValueError):
+        return LOG_MAX_DEFAULT
+    return n if n > 0 else LOG_MAX_DEFAULT
+
+
+def record(label, code, detail="", path=None, now=None):
+    """Append ONE failure record in `ts_run`'s exact wire format, then bound the file —
+    the python-side twin of `_ts_lib.sh::ts_health_record`.
+
+    Why a second writer exists: hooks/on_stop.sh used to spend a whole python3
+    start-up per best-effort step, partly so the SHELL could see an exit code and log
+    it. Those steps now run in one interpreter (`lib/stop_steps.py`), so the failure
+    log needs a writer on this side of the boundary. Same format, same cap, same
+    fail-open contract — this function never raises, because its callers are hooks.
+
+    Tabs and CRs in `detail` become spaces so a stderr line can never forge a field,
+    and only its last non-blank line is kept: one failure is always exactly one line."""
+    path = path or log_path()
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        code = 1
+    lines = [ln for ln in str(detail or "").replace("\t", " ").replace("\r", " ").splitlines()
+             if ln.strip()]
+    last = lines[-1].strip() if lines else ""
+    # The label is a literal at every call site, but flatten it too — nothing written
+    # into a tab-separated field should be able to invent a field.
+    label = " ".join(str(label or "").replace("\t", " ").split()) or "unknown"
+    stamp = iso(time.time() if now is None else now)
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("%s\t%s\t%d\t%s\n" % (stamp, label, code, last))
+    except (OSError, IOError):
+        return                              # unloggable failure < a broken hook
+    _trim(path)
+
+
+def _trim(path):
+    """Keep only the newest `log_max()` lines — bounding is the WRITER's job (module
+    docstring). A trim that fails must never lose the record just appended."""
+    tmp = None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines(True)
+        cap = log_max()
+        if len(lines) <= cap:
+            return
+        tmp = "%s.tmp.%d" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.writelines(lines[-cap:])
+        os.replace(tmp, path)
+    except (OSError, IOError):
+        if tmp:
+            try:
+                os.remove(tmp)
+            except (OSError, IOError):
+                pass
 
 
 def summary(limit=SUMMARY_LIMIT, path=None):

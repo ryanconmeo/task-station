@@ -20,42 +20,31 @@ fi
 # `jq -r '.path // default'` and is a silent no-op on malformed input.
 session_id=$(printf '%s' "$input" | python3 "${CLAUDE_PLUGIN_ROOT}/lib/hookjson.py" session_id unknown)
 python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" stop-gate --session "$session_id"
-# Opt-in auto-checkpoint: at most ONE non-blocking nudge (additionalContext, not a
-# block), gated in task-station.py so today's Stop behaviour is unchanged by default:
-#   • PROACTIVE — when the session is estimated past --checkpoint-at tokens, prompt a
-#     full structured /todo save NOW (before auto-compaction); fires once per episode.
-#   • else a LIGHT staleness nudge when the digest is merely stale.
-# Prints nothing unless auto-checkpoint is on AND a task is attached. Best-effort —
-# never disrupts Stop. Safe alongside stop-gate: the gate's block only fires on an
-# UNATTACHED edit session, while this nudge only fires when a task IS attached.
-ts_capture stop-nudge python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" stop-nudge --session "$session_id"
-# Opt-in board auto-refresh: keep an already-open board.html fresh so its meta-refresh
-# shows current state. Strictly gated + silent in task-station.py (no flag → nothing;
-# no existing board.html → nothing); best-effort here so the Stop hook is never disrupted.
-ts_run board-refresh python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" board --refresh-if-live
-# Obsidian sandbox auto-flush (Fix B): re-export any tasks whose mid-turn export was
-# SANDBOX-DENIED (a vault under ~/Documents/iCloud is unwritable from a project
-# session). Hooks run UNSANDBOXED — same trust level as monitors — so THIS write
-# succeeds, healing the vault with zero config. Independent of the stop-gate above:
-# never blocks or delays the turn. --quiet ⇒ a silent, cheap no-op when export is off
-# or nothing is pending (it self-gates on a dirty task before doing any work).
-ts_run obsidian-flush python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" obsidian --flush --quiet
-# Usage ledger auto-flush (WS1): incrementally rescan open/active tasks' transcripts
-# so the derived per-model %/$ on /todo detail stays current. Reads only local
-# session files; self-gates on `usage_tracking` (a cheap no-op when off) and
-# swallows all errors (stale numbers never break Stop). Suppressed in workers above.
-ts_run usage-flush python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" usage --flush --quiet
-# F5 subscriptions (correspondence): diff subscribed peer feeds and mint memos for any
-# that advanced. --throttle self-gates in task-station.py (skips if it ran within the
-# interval) and stays silent; fail-open (never disrupts Stop). Suppressed in workers above.
-ts_run subscriptions-check python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" subscriptions check --throttle --session "$session_id"
-# Private weekly recap auto-generate (task 444): once-per-week, throttled by a stamp
-# file, gated on the `recap` config toggle (default OFF → nothing). Runs AFTER the
-# usage flush so last week's numbers are current. Strictly local (writes only under
-# <data_dir>/recaps/), fail-open, and zero tokens unless a curator is configured.
-ts_run recap-auto python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" recap --auto-if-due --quiet
-# Cost HUD (WS7): freeze the just-ended turn's $ delta into the session's snapshot
-# so the idle status bar shows the finished turn until the next prompt re-baselines.
-# Self-gates on `--hud` (cheap no-op when off); best-effort — never disrupts Stop.
-ts_run hud-turn-end python3 "${CLAUDE_PLUGIN_ROOT}/lib/hud.py" turn-end --session "$session_id"
+# ── Everything below the gate, in ONE python3 ────────────────────────────────────
+# These seven best-effort steps used to be seven `ts_run` lines, i.e. seven python3
+# start-ups (~90ms each) plus seven fresh imports of the engine — and, worse, seven
+# cold starts of the in-process transcript caches, so the parsing the board refresh
+# had just done was discarded and redone. lib/stop_steps.py runs the same seven, in
+# the same order, in one interpreter:
+#
+#   stop-nudge           opt-in auto-checkpoint / staleness nudge. The ONLY step that
+#                        prints: its additionalContext is read by the harness, which
+#                        is why the shell used ts_capture (not ts_run) for it alone.
+#   board-refresh        keep an already-open board.html fresh (gated: no flag or no
+#                        existing board.html → nothing).
+#   obsidian-flush       re-export tasks whose mid-turn vault write was sandbox-denied
+#                        (hooks run UNSANDBOXED, so this write succeeds).
+#   usage-flush          rescan open/active transcripts so /todo detail's %/$ is current.
+#   subscriptions-check  diff subscribed peer feeds, mint memos for any that advanced.
+#   recap-auto           once-a-week private recap, stamp-throttled, config-gated OFF.
+#   hud-turn-end         freeze this turn's $ delta into the idle status bar.
+#
+# Per-step isolation is preserved INSIDE stop_steps.py: a step that raises is caught,
+# recorded to <data_dir>/logs/hook-health.log under the same label ts_run used, and
+# the rest still run. The runner is invoked through ts_capture — capture, because the
+# stop-nudge step's stdout must still reach the harness — so a failure of the runner
+# ITSELF is recorded too, under the label `stop-steps`. stop-gate above is deliberately
+# NOT part of this: the harness reads its stdout for the block contract, so it keeps
+# its own process, its own position, and its exact output.
+ts_capture stop-steps python3 "${CLAUDE_PLUGIN_ROOT}/lib/stop_steps.py" --session "$session_id"
 exit 0

@@ -3,6 +3,61 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [2.21.0] — 2026-08-10
+
+The Stop hook blocked the end of every turn for **~22 seconds**. Not because it was doing
+22 seconds of work: because the board regen re-parsed every session transcript on disk, many
+times over, on every single turn. On a real store (375 tasks, 458 session transcripts),
+`board --refresh-if-live` alone took **19.8s** of the 21.7–22.8s the hook spent, and a profile
+put 17.0s of that inside `_session_msgcount` — **4072 calls over 458 distinct files**, driving
+**2,372,260 `json.loads`** (10.75s in `raw_decode` alone). One transcript was re-read **120
+times** in a single render. Nothing about the answers changed between those reads.
+
+### Fixed
+- **Transcript-derived values are now cached on `(st_mtime_ns, st_size)`.** A transcript is
+  append-only and everything derived from one is a pure function of its bytes, so that pair is
+  a COMPLETE cache key — any change to the file changes one of them, which means a hit can
+  never be stale and there is no invalidation window to reason about. Memoizing
+  `_session_msgcount` alone took the board command from **19.43s to 5.98s (−13.5s)** with
+  byte-identical `board.html` output. `_prompt_replies` had the same shape (571 calls, each
+  re-reading a whole transcript for one task's subset of prompts) and now parses each
+  transcript **once**, caching the WHOLE prompt→reply map and filtering per call — equivalent
+  because a reply is bounded by its own turn, so it never depends on which prompts were asked
+  for. `_find_session_path` memoizes a resolved path and re-verifies it with one `os.path.exists`
+  instead of re-scanning every project bucket, which is what the residual `listdir`/`stat`
+  churn actually was (4758 listdirs, 308k stats).
+- **A persistent count cache under `<data_dir>/cache/msgcounts.json`,** so an unchanged
+  transcript is not re-parsed on a LATER turn either — the in-process layer only ever fixed
+  the repeats inside one render. Counts only; reply text is prompt content and is never
+  written to disk. Corruption-tolerant by design: a malformed, truncated, foreign, or
+  unreadable cache file (and a single bad row inside a good file) is ignored and the value
+  recomputed. This code runs inside the Stop hook, where an exception would block the user's
+  turn, so a cache is never allowed to be a correctness dependency. Deleting the directory
+  costs one slow render and nothing else.
+- **The Stop hook's seven best-effort steps now run in ONE interpreter** (`lib/stop_steps.py`):
+  stop-nudge, board refresh, obsidian flush, usage flush, subscriptions check, recap, cost HUD.
+  They were seven `python3` invocations, paying ~90ms of start-up each (~0.6s per turn) and —
+  worse — starting cold seven times, so the transcript parsing the board had just done was
+  thrown away and redone. **`stop-gate` deliberately keeps its own process, position, and
+  exact output:** the harness reads its stdout for the `{"decision":"block"}` contract.
+  Per-step failure isolation survives the merge — a step that raises is caught, recorded to
+  `logs/hook-health.log` under the same label `ts_run` used, and the remaining steps still run.
+
+### Added
+- **`hook_health.record()`** — the python-side twin of `_ts_lib.sh::ts_health_record`, same
+  wire format and same `TS_HOOK_LOG_MAX` cap, because the steps that used to be logged by the
+  shell now fail on the python side of the boundary.
+- **`tests/test_transcript_cache.py`** — cache hit vs. miss on an append AND on an mtime-only
+  change, the count surviving a turn without re-parsing, seven flavours of corrupt persistent
+  cache, reply-map equivalence across uuid subsets from one parse, and the on_stop.sh
+  consolidation leaving `stop-gate` unwrapped, unmoved, and unredirected.
+
+### Note
+- `board --refresh-if-live` is now expected under **1.0s warm** / **7s cold**, and the hook
+  end-to-end under **2s warm**. The 19.8s → 5.98s figure above is measured; the final
+  warm-cache numbers are the thresholds this change was written against and should be
+  confirmed with a timing run against a real `~/.task-station` store.
+
 ## [2.20.0] — 2026-08-06
 
 `/brief` filled a frozen template: a fixed section list, two parametrized diagram shapes, a blue

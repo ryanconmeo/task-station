@@ -221,9 +221,10 @@ class HookConversionTest(unittest.TestCase):
     def test_known_labels_are_wired(self):
         expected = {
             "on_session_start.sh": ("sweep-orphans", "obsidian-flush", "usage-flush"),
-            "on_stop.sh": ("stop-nudge", "board-refresh", "obsidian-flush",
-                           "usage-flush", "subscriptions-check", "recap-auto",
-                           "hud-turn-end"),
+            # on_stop.sh's seven best-effort steps moved INTO lib/stop_steps.py (2.21.0,
+            # one interpreter instead of seven); the shell now has one masked call site.
+            # Their labels are asserted below, at their new home.
+            "on_stop.sh": ("stop-steps",),
             "on_user_prompt.sh": ("prompt-tint", "prompt-title", "hud-turn-start"),
             "on_post_compact.sh": ("auto-checkpoint-get", "post-compact"),
             "on_post_tool.sh": ("touch-file", "capture-artifacts"),
@@ -234,6 +235,15 @@ class HookConversionTest(unittest.TestCase):
                 self.assertTrue("ts_run %s " % label in text
                                 or "ts_capture %s " % label in text,
                                 "%s is missing the %s label" % (name, label))
+
+    def test_stop_step_labels_survived_the_consolidation(self):
+        """The seven Stop labels are the only handle a human gets on which step broke,
+        so they must stay the SAME strings after the move out of the shell."""
+        import stop_steps
+        labels = [label for label, _target, _argv in stop_steps.STEPS]
+        self.assertEqual(labels, ["stop-nudge", "board-refresh", "obsidian-flush",
+                                  "usage-flush", "subscriptions-check", "recap-auto",
+                                  "hud-turn-end"])
 
 
 # ============================================================ the reader =====

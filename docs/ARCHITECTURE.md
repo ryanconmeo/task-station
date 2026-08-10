@@ -687,6 +687,14 @@ replaced on every `/plugin update`; anchoring state outside it is why updates ne
 your board or history (see [README → Why Task Station](../README.md#why-task-station)).
 Tests set `TASK_STATION_HOME` to a tmpdir for isolation.
 
+**`<data_dir>/cache/` is derived, disposable state.** `msgcounts.json` memoizes the per
+transcript user-message count against that file's `(st_mtime_ns, st_size)` — a complete key,
+since a transcript is append-only, so a hit can never be stale. Deleting the directory costs
+one slow render and nothing else: every read path recomputes on a missing, malformed, or
+foreign cache rather than raising (this code runs inside the Stop hook, where an exception
+would block the user's turn). It exists because the board asked the same ~460 transcripts the
+same questions 4072 times per render — see the note above `_session_msgcount`.
+
 ## (a2) Board pipeline (one board · one feed layer)
 
 There is **ONE board** and **ONE feed layer**. No engine flag, no preview, no fallback.
@@ -746,7 +754,7 @@ parse their JSON stdin via `lib/hookjson.py` (`<stdin> | python3 hookjson.py <do
 | `SessionStart` | `on_session_start.sh` | Refresh the `~/.claude/task-station-engine` symlink → the active `lib/`; self-register the status-line segment; (opt-in) install bare `/todo` `/done` `/repos` aliases; emit the open-tasks / attached-task context + one-time setup nudge; set the session title; **tint the originating window** to the attached task's category (`session-tint`). |
 | `UserPromptSubmit` | `on_user_prompt.sh` | Re-point the engine symlink (so bare aliases track an in-session `/plugin update`); **tint instantly when a known skill runs** (`prompt-tint` → escape written to the origin TTY); auto-title the tab `#<seq>: <title>`; inject the compact track-or-fold guidance. |
 | `PostToolUse` (`Write\|Edit\|NotebookEdit`) | `on_post_tool.sh` | Attached session → auto-promote `open → active`; untracked session → a **one-shot** reminder the first time it edits a file (gated by the `edited` marker, ~one injection per session). |
-| `Stop` | `on_stop.sh` | Refuse to end the turn while the session has edited files but tracked no task (`{"decision":"block"}`). Self-healing (attach/create/skip/`/done` clears it) and **capped at two blocks** so a non-complying loop can't wedge the session. |
+| `Stop` | `on_stop.sh` | Refuse to end the turn while the session has edited files but tracked no task (`{"decision":"block"}`). Self-healing (attach/create/skip/`/done` clears it) and **capped at two blocks** so a non-complying loop can't wedge the session. Then `lib/stop_steps.py` runs the seven best-effort turn-end steps (nudge, board refresh, obsidian/usage flush, subscriptions, recap, cost HUD) in **one** interpreter — `stop-gate` keeps its own process because the harness reads its stdout for the block contract. |
 
 The `PostToolUse` + `Stop` pair is the optional enforcement gate; the others are the
 advisory rail. See [README → Commands & components](../README.md#commands--components).
@@ -762,6 +770,12 @@ reads it: `SessionStart` emits one self-capping nag line while the log holds fai
 the last 24h, and `task-station hook-health [--clear]` is the human view. A few sites stay
 masked on purpose and say so inline — heredoc/TTY writes that can't be an argv command, and
 predicates like `readlink` or `origin-tty.sh` whose non-zero exit is normal control flow.
+
+There are two WRITERS for that one log, in the same format and under the same cap:
+`_ts_lib.sh::ts_health_record` for call sites that really are separate processes, and
+`hook_health.record()` for the Stop steps that now run inside `lib/stop_steps.py`. A step
+there that raises is caught, recorded under the SAME label `ts_run` used, and the remaining
+steps still run — the shell's per-step isolation, kept after the calls were merged.
 
 ## (c) Resume logic
 
@@ -1058,8 +1072,9 @@ warning and the hint's "protected folder" framing.
 sandbox only permits writes under the session cwd + `$TMPDIR`, so a vault in `~/Documents` is
 unwritable from a project session — but **hooks run UNSANDBOXED** (same trust level as
 monitors). So `on_stop.sh` and `on_session_start.sh` each invoke `task-station obsidian --flush
---quiet` (routed to `/dev/null`), which re-exports the dirty tasks from outside the sandbox and
-succeeds where the hot path couldn't. This is what makes a protected-folder vault work with no
+--quiet` (routed to `/dev/null`; on the Stop side that call now runs inside `lib/stop_steps.py`
+with the other turn-end steps, one interpreter instead of seven), which re-exports the dirty
+tasks from outside the sandbox and succeeds where the hot path couldn't. This is what makes a protected-folder vault work with no
 configuration. The Stop-hook flush is **independent** of the stop-gate — it never touches the
 gate decision or delays the turn — and both are suppressed inside delegate workers by the
 existing `TASK_STATION_SUPPRESS` early-exit. `--quiet` self-gates (no vault / nothing dirty ⇒

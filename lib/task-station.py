@@ -21,6 +21,7 @@ id-prefix. All writes are atomic (temp file + os.replace).
 """
 
 import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -2809,11 +2810,189 @@ def _project_dir_for(cwd):
     return os.path.join(PROJECTS_ROOT, cwd.replace("/", "-"))
 
 
+# ---------------------------------------------------- transcript-derived caches ----
+# A session transcript is APPEND-ONLY, and everything we derive from one — the user
+# message count, the prompt→reply map — is a pure function of its bytes. So
+# (st_mtime_ns, st_size) is a COMPLETE cache key: any change to the file changes one
+# of them, which means a cache hit can never be stale. There is no invalidation
+# window to reason about, and no need to guess whether a transcript is "done".
+#
+# This matters because the board asks the same questions over and over. Rendering
+# 375 tasks over 458 transcripts called _session_msgcount 4072 times (one file was
+# re-parsed 120 times) and _prompt_replies 571 times, each one re-reading a whole
+# transcript: 2.37M json.loads for ~460 files' worth of information, and a Stop hook
+# that blocked turn end for ~22s.
+#
+# Two layers:
+#   • in-process — collapses the repeats WITHIN one render (4072 parses → 458).
+#   • on-disk    — <data_dir>/cache/msgcounts.json, so a transcript that has not
+#     changed is not re-parsed on the NEXT turn either. Counts ONLY: reply text is
+#     prompt content and is never persisted, and the in-process layer already covers
+#     the single render that needs it.
+#
+# Every layer is fail-open. This code runs inside the Stop hook, where an exception
+# would block the user's turn, so a missing, malformed, or foreign cache file is
+# ignored and the value simply recomputed. A cache is never a correctness dependency.
+
+CACHE_DIR = "cache"                  # <data_dir>/cache — resolved per call (tests repoint DATA)
+MSGCOUNT_CACHE_FILE = "msgcounts.json"
+MSGCOUNT_CACHE_MAX = 4000            # entries kept on disk; least-recently-used dropped past this
+MSGCOUNT_CACHE_TOUCH = 86400         # refresh an entry's last-used stamp at most once a day
+REPLIES_CACHE_MAX = 256              # reply maps held in memory at once (bounds a big render)
+MSGCOUNT_MEM_MAX = 8192              # in-memory counts kept — a growing transcript mints a
+                                     # new key per append, and the MCP server is long-lived
+SESSION_PATH_MEM_MAX = 8192          # resolved transcript paths kept, same reasoning
+
+_MSGCOUNT_MEM = {}       # (path, mtime_ns, size) -> count             [this process]
+_REPLIES_MEM = {}        # (path, mtime_ns, size) -> {uuid: reply}     [this process]
+_SESSION_PATH_MEM = {}   # (projects_root, sid) -> resolved transcript [this process]
+_MSGCOUNT_DISK = None    # {"file", "entries": {path: [mtime_ns, size, count, used]}, "dirty"}
+_MSGCOUNT_ATEXIT = False
+
+
+def _stat_key(path):
+    """(st_mtime_ns, st_size) — a file's version identity — or None when it can't be
+    stat-ed (missing, unreadable, or not a path at all). None means "no valid cache
+    key", and every caller then reads the file unconditionally, so behaviour is
+    exactly what it was before any cache existed."""
+    try:
+        st = os.stat(path)
+    except (OSError, TypeError, ValueError):
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _mem_put(cache, key, value, cap):
+    """Insert into an in-process cache, dropping the oldest-inserted entry at `cap`.
+    Insertion order is dict order (3.7+), so this is a plain FIFO — good enough for
+    caches whose working set is one board render, and it keeps a long-lived process
+    (the MCP server) from growing a key per transcript append forever."""
+    if key not in cache and len(cache) >= cap:
+        cache.pop(next(iter(cache)), None)
+    cache[key] = value
+    return value
+
+
+def _msgcount_cache_path():
+    """Resolved per call, against the DATA global — tests repoint it per test, and a
+    moved CLAUDE_CONFIG_DIR must take its cache with it."""
+    return os.path.join(DATA, CACHE_DIR, MSGCOUNT_CACHE_FILE)
+
+
+def _msgcount_disk():
+    """The on-disk count cache, as {"file", "entries", "dirty"}. Loaded once per
+    process, and re-loaded if DATA is repointed (the old file is flushed first so
+    nothing computed under it is lost).
+
+    A malformed file, a foreign schema, a half-written entry: all silently yield an
+    EMPTY cache. The cost of that is a recompute, which is the thing this file was
+    only ever an optimisation for."""
+    global _MSGCOUNT_DISK
+    f = _msgcount_cache_path()
+    cur = _MSGCOUNT_DISK
+    if cur is not None and cur.get("file") == f:
+        return cur
+    if cur is not None:
+        _msgcount_flush()                     # DATA moved → persist the previous file first
+    entries = {}
+    try:
+        with open(f, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        got = raw.get("entries") if isinstance(raw, dict) else None
+        for k, v in (got or {}).items():
+            # Every field must be an int: a truncated write or a hand-edit can leave
+            # a partial row, and one bad row must not poison the rest of the cache.
+            if (isinstance(k, str) and isinstance(v, list) and len(v) == 4
+                    and all(isinstance(n, int) and not isinstance(n, bool) for n in v)):
+                entries[k] = list(v)
+    except (OSError, ValueError, TypeError, AttributeError):
+        entries = {}
+    _MSGCOUNT_DISK = {"file": f, "entries": entries, "dirty": False}
+    return _MSGCOUNT_DISK
+
+
+def _msgcount_flush():
+    """Persist the count cache atomically. Best-effort by contract — it runs from an
+    atexit handler inside a Stop hook, so every failure path is a silent return.
+
+    Never CREATES the data dir: a cache flush is not what brings a store into being,
+    and a test whose tmpdir has already been removed must not see it resurrected."""
+    st = _MSGCOUNT_DISK
+    if not st or not st.get("dirty"):
+        return
+    st["dirty"] = False                       # one attempt per dirty batch
+    tmp = None
+    try:
+        entries = st["entries"]
+        if len(entries) > MSGCOUNT_CACHE_MAX:              # evict least-recently-used
+            entries = dict(sorted(entries.items(), key=lambda kv: kv[1][3],
+                                  reverse=True)[:MSGCOUNT_CACHE_MAX])
+            st["entries"] = entries
+        f = st["file"]
+        if not os.path.isdir(os.path.dirname(os.path.dirname(f))):   # <data_dir> gone
+            return
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        tmp = "%s.tmp.%d" % (f, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"v": 1, "entries": entries}, fh)
+        os.replace(tmp, f)
+    except (OSError, ValueError, TypeError):
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _msgcount_persist_later():
+    """Register the single atexit flush, lazily — a process that computes no new count
+    never writes the cache file at all."""
+    global _MSGCOUNT_ATEXIT
+    if _MSGCOUNT_ATEXIT:
+        return
+    _MSGCOUNT_ATEXIT = True
+    try:
+        atexit.register(_msgcount_flush)
+    except Exception:
+        pass                                  # a cache that can't persist is still correct
+
+
 def _session_msgcount(path):
     """Count of non-empty, non-system user messages in a transcript (0 if unreadable).
 
     Used to tell a real working session from an empty/stray one — size alone lies
-    (a freshly-spawned empty session can still be several KB of system init)."""
+    (a freshly-spawned empty session can still be several KB of system init).
+
+    Cached on the transcript's (mtime, size) per the note above: in memory first,
+    then <data_dir>/cache/msgcounts.json. The returned value — including the 0 for an
+    unreadable file — is exactly what a direct parse returns. When the file cannot be
+    stat-ed there is no key to cache under, so the parse runs as it always did."""
+    key = _stat_key(path)
+    if key is None:
+        return _session_msgcount_uncached(path)
+    memkey = (path, key[0], key[1])
+    hit = _MSGCOUNT_MEM.get(memkey)
+    if hit is not None:
+        return hit
+    disk = _msgcount_disk()
+    ent = disk["entries"].get(path)
+    if ent is not None and ent[0] == key[0] and ent[1] == key[1]:
+        now = int(_now())
+        if now - ent[3] > MSGCOUNT_CACHE_TOUCH:     # keep LRU honest at ~1 write/day
+            ent[3] = now
+            disk["dirty"] = True
+            _msgcount_persist_later()
+        return _mem_put(_MSGCOUNT_MEM, memkey, ent[2], MSGCOUNT_MEM_MAX)
+    n = _session_msgcount_uncached(path)
+    disk["entries"][path] = [key[0], key[1], n, int(_now())]
+    disk["dirty"] = True
+    _msgcount_persist_later()
+    return _mem_put(_MSGCOUNT_MEM, memkey, n, MSGCOUNT_MEM_MAX)
+
+
+def _session_msgcount_uncached(path):
+    """The actual parse behind _session_msgcount — one full pass over the transcript.
+    Call the cached front door instead unless you are deliberately measuring."""
     n = 0
     try:
         with open(path) as f:
@@ -2850,7 +3029,18 @@ def _find_session_path(sid):
     A session's bucket is its LAUNCH cwd, which can differ from whatever cwd /todo
     happened to record (e.g. you launched from ~ but cd'd into a worktree before the
     task was touched). So we search every bucket by session id rather than trusting
-    the recorded cwd. Returns the `.jsonl` path, or None."""
+    the recorded cwd. Returns the `.jsonl` path, or None.
+
+    A resolved path is memoized per process (keyed by the projects root, which tests
+    repoint) and re-checked with ONE os.path.exists on each hit — that turns a
+    listdir-plus-N-stats scan into a single stat, which is what the board's thousands
+    of lookups actually cost. Only SUCCESSES are cached, so a transcript that appears
+    later is still found; a cached path that disappears falls back to a full rescan,
+    and every consumer pairs the path with a content read that fails closed anyway."""
+    memkey = (PROJECTS_ROOT, sid)
+    hit = _SESSION_PATH_MEM.get(memkey)
+    if hit is not None and os.path.exists(hit):
+        return hit
     try:
         buckets = os.listdir(PROJECTS_ROOT)
     except OSError:
@@ -2858,7 +3048,7 @@ def _find_session_path(sid):
     for b in buckets:
         p = os.path.join(PROJECTS_ROOT, b, sid + ".jsonl")
         if os.path.exists(p):
-            return p
+            return _mem_put(_SESSION_PATH_MEM, memkey, p, SESSION_PATH_MEM_MAX)
     return None
 
 
@@ -8520,18 +8710,20 @@ def _last_bullet_reply(text):
     return "\n".join(out)
 
 
-def _prompt_replies(session_id, uuids):
-    """{prompt_uuid: last-Claude-bullet} for the given user-prompt uuids, read from the
-    session's transcript. For each prompt, the reply is the LAST assistant text block in
-    the turn that FOLLOWS it (before the next real user turn) — tool-result/sidechain
-    lines are skipped so a tool round-trip doesn't split the turn. Best-effort: '' /
-    missing entries when the transcript is unavailable or the turn had no text."""
-    want = {u for u in uuids if u}
-    if not session_id or not want:
-        return {}
-    path = _find_session_path(session_id)
-    if not path:
-        return {}
+def _prompt_replies_all(path):
+    """{prompt_uuid: last-Claude-bullet} for EVERY human prompt in the transcript at
+    `path` — the whole map, from one pass. `_prompt_replies` filters it down.
+
+    Cached whole rather than per requested uuid-set, because a board render asks the
+    same transcript for different subsets of its prompts (once per task that session
+    touched) and the PARSE, not the filtering, is the expense. Whole-map is also
+    exactly equivalent: a reply is bounded by its own turn — `last_text` resets at
+    every real user line — so a prompt's reply never depends on which prompts were
+    asked for.
+
+    Best-effort: a read that fails partway returns what it had, as the per-call
+    version did. An unchanged file fails the same way on a retry, so that partial
+    result is cacheable."""
     replies = {}
     cur = None        # uuid of the human prompt whose reply we're collecting (or None)
     last_text = ""    # the last assistant text block seen in the current turn
@@ -8557,10 +8749,15 @@ def _prompt_replies(session_id, uuids):
                     if cur is not None and last_text:
                         replies[cur] = _last_bullet_reply(last_text)
                     u = o.get("uuid")
-                    cur = u if u in want else None
+                    cur = u if u else None      # a line with no uuid can own no reply
                     last_text = ""
                 elif t == "assistant" and cur is not None:
-                    txt = _assistant_text(o.get("message") or {})
+                    # `cur` is now set for EVERY prompt, not just requested ones, so
+                    # this runs on assistant lines the per-call version skipped. A
+                    # non-dict `message` (malformed transcript) would have raised
+                    # straight out of a Stop hook; treat it as no text instead.
+                    msg = o.get("message")
+                    txt = _assistant_text(msg) if isinstance(msg, dict) else ""
                     if txt.strip():
                         last_text = txt
         if cur is not None and last_text:
@@ -8568,6 +8765,32 @@ def _prompt_replies(session_id, uuids):
     except OSError:
         return replies
     return replies
+
+
+def _prompt_replies(session_id, uuids):
+    """{prompt_uuid: last-Claude-bullet} for the given user-prompt uuids, read from the
+    session's transcript. For each prompt, the reply is the LAST assistant text block in
+    the turn that FOLLOWS it (before the next real user turn) — tool-result/sidechain
+    lines are skipped so a tool round-trip doesn't split the turn. Best-effort: '' /
+    missing entries when the transcript is unavailable or the turn had no text.
+
+    The transcript is parsed at most once per (file, version) per process — see the
+    transcript-cache note above _session_msgcount. Only the requested uuids come back,
+    so the returned dict is identical to what the uncached per-call parse produced."""
+    want = {u for u in uuids if u}
+    if not session_id or not want:
+        return {}
+    path = _find_session_path(session_id)
+    if not path:
+        return {}
+    key = _stat_key(path)
+    if key is None:                             # unstat-able → no key, parse as before
+        return {u: r for u, r in _prompt_replies_all(path).items() if u in want}
+    memkey = (path, key[0], key[1])
+    full = _REPLIES_MEM.get(memkey)             # `{}` is a valid hit, hence `is None`
+    if full is None:
+        full = _mem_put(_REPLIES_MEM, memkey, _prompt_replies_all(path), REPLIES_CACHE_MAX)
+    return {u: r for u, r in full.items() if u in want}
 
 
 def _human_prompts_with_replies(prompts):
@@ -12556,7 +12779,11 @@ def cmd_session_start(a):
 
 # ------------------------------------------------------------------- main ----
 
-def main():
+def main(argv=None):
+    """`argv=None` reads sys.argv, exactly as before. The explicit-list form exists so
+    a caller already holding this module can run a subcommand through the REAL parser
+    and dispatch without paying another interpreter start-up — lib/stop_steps.py runs
+    the Stop hook's seven best-effort steps that way."""
     p = argparse.ArgumentParser(prog="task-station")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -13152,7 +13379,7 @@ def main():
     sp.add_argument("--session", default=None)
     sp.set_defaults(fn=cmd_redact)
 
-    a = p.parse_args()
+    a = p.parse_args(argv)
     a.fn(a)
 
 
