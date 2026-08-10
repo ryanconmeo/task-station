@@ -280,6 +280,16 @@ class InterbrainOnGalaxyTest(_BoardBase):
         self.assertIn("jpark", owners)
         self.assertIn("alee", owners)                       # multiple person galaxies
 
+    def test_breadcrumb_ships_with_the_galaxy_graph(self):
+        # F4a: the breadcrumb element is minted by the enhancement JS (only when the graph
+        # carries galaxy grouping), so what the PAGE has to ship is its style rule and the
+        # code that builds it. Asserted on the real render, not on the JS constant.
+        self._seed_interbrain_graph()
+        html = self._render("on")
+        self.assertIn(".mgcrumb{", html)                    # the style rule ships
+        self.assertIn("function drawCrumb(", html)          # …and the builder
+        self.assertIn('data-crumb="0"', html)               # depth 0 is a real segment
+
     def test_blobs_on_and_off_both_render(self):
         # blobs default-on and the toggle-off path both live in the same guarded enhancement
         # (the whole script is try-caught); the board builds cleanly with the fixture and
@@ -308,6 +318,14 @@ class InterbrainOffParityTest(_BoardBase):
             self.assertNotIn("owner", n)                    # no galaxy grouping leaks
             self.assertNotIn("brain", n)
         self.assertNotIn("foreign", json.dumps(data))       # peer feed never leaks
+
+    def test_off_render_emits_no_breadcrumb_element(self):
+        # F4a: the breadcrumb is minted by the enhancement JS and only when hasGalaxy, so
+        # it must never appear in the served markup — in EITHER render. This guards
+        # against a later move of it into the server-side panel without the gate.
+        self._seed("Local ledger work", prs=[_PR])
+        self._seed("Local ledger tests", prs=[_PR])
+        self.assertNotIn('class="mgcrumb"', self._render("off"))
 
 
 # ============================================ Stage 2: edge registry + graph filters ===
@@ -462,6 +480,202 @@ class CategoryHubFollowsCategoryTest(_BoardBase):
         self.assertTrue(hubs, "fixture must produce a category hub")
         for h in hubs:
             self.assertIn(h.get("key"), cats)
+
+
+# ================================================ Stage 4a: the enum→path refactor ===
+# The graph could zoom through exactly three hardcoded levels — `galaxyLevel()` returned
+# one of "interbrain"/"person"/"brain" and five functions branched on that string. The
+# last of them, `drawGalaxyBlobs`, early-returned unless the level was one of the first
+# two, which is precisely why bubbles could never nest. Nesting makes depth VARIABLE, so
+# the enum becomes a PATH: those three levels are paths of length 0, 1 and 2, and
+# DEPTH IS THE LENGTH.
+#
+# This stage changes no behaviour, with ONE mandated exception recorded in the report
+# (deleting the blob early-return means a blob now draws at the deepest level, where none
+# drew before — that deletion IS the unlock the brief asks for).
+#
+# The four helpers are tested through their PURE PYTHON TWINS, the same carve-out
+# WellRingTest and BlobPathTest above already use: the live versions run inside the
+# <canvas> enhancement, so the RULES are mirrored in render_board and asserted here. The
+# JS side gets structural assertions only for the things a twin cannot show — that a
+# guard was deleted, that a field stayed singular, that a name survived.
+
+_TASK_A = {"type": "task", "id": "t:1", "owner": "ann", "brain": "main"}
+_TASK_A2 = {"type": "task", "id": "t:2", "owner": "ann", "brain": "side"}
+_TASK_B = {"type": "task", "id": "t:3", "owner": "bob", "brain": "main"}
+_TASK_BARE = {"type": "task", "id": "t:4"}                  # no owner, no brain
+
+
+class ContainmentPathTest(unittest.TestCase):
+    """F4a.1 — galaxyPath / nodePath / isDescendant / containerKeyAt, via the twins."""
+
+    def test_galaxy_path_for_the_three_focus_states(self):
+        self.assertEqual(render_board._galaxy_path(None), [])
+        self.assertEqual(render_board._galaxy_path({"kind": "owner", "owner": "ann"}),
+                         ["ann"])
+        self.assertEqual(render_board._galaxy_path(
+            {"kind": "brain", "owner": "ann", "brain": "side"}), ["ann", "side"])
+        # …and their depths are 0 / 1 / 2 — the old enum, now just a length.
+        self.assertEqual([len(render_board._galaxy_path(f)) for f in (
+            None, {"kind": "owner", "owner": "ann"},
+            {"kind": "brain", "owner": "ann", "brain": "side"})], [0, 1, 2])
+
+    def test_a_non_container_focus_reads_as_the_root(self):
+        # `org` is a focus KIND but not a container in the tree, so it is the root —
+        # mirroring the old galaxyLevel() fall-through to "interbrain".
+        self.assertEqual(render_board._galaxy_path({"kind": "org"}), [])
+        self.assertEqual(render_board._galaxy_path({}), [])
+
+    def test_an_empty_path_matches_every_node(self):
+        # This is what makes the unfocused case fall out instead of being special-cased.
+        for n in (_TASK_A, _TASK_A2, _TASK_B, _TASK_BARE):
+            self.assertTrue(render_board._is_descendant(n, []), n["id"])
+
+    def test_is_descendant_walks_the_prefix(self):
+        self.assertTrue(render_board._is_descendant(_TASK_A, ["ann"]))
+        self.assertTrue(render_board._is_descendant(_TASK_A, ["ann", "main"]))
+        self.assertFalse(render_board._is_descendant(_TASK_A, ["ann", "side"]))
+        self.assertFalse(render_board._is_descendant(_TASK_A, ["bob"]))
+        # a path DEEPER than the node's own containment can never match
+        self.assertFalse(render_board._is_descendant(_TASK_A, ["ann", "main", "x"]))
+
+    def test_container_key_at_zero_is_the_owner_and_at_one_adds_the_brain(self):
+        self.assertEqual(render_board._container_key_at(_TASK_A, 0), "ann")
+        self.assertEqual(render_board._container_key_at(_TASK_A, 1),
+                         "ann" + render_board.PATH_SEP + "main")
+
+    def test_depth_zero_is_a_real_depth_not_a_missing_one(self):
+        # The bug class this project has been bitten by twice — hub ordinal `444-0` is a
+        # real ordinal, station numbering starts at 0 — and both needed their own test.
+        # Depth 0 must yield the OUTERMOST container and must never read as "no depth".
+        self.assertEqual(render_board._container_key_at(_TASK_A, 0), "ann")
+        self.assertTrue(bool(render_board._container_key_at(_TASK_A, 0)))
+        self.assertNotEqual(render_board._container_key_at(_TASK_A, 0),
+                            render_board._container_key_at(_TASK_A, 1))
+        # `depth` is positional with NO default, so it cannot be silently skipped into
+        # meaning something else — falsy-testing it would collapse 0 into "unset".
+        with self.assertRaises(TypeError):
+            render_board._container_key_at(_TASK_A)
+
+    def test_a_node_with_no_owner_yields_an_empty_path_and_crashes_nothing(self):
+        self.assertEqual(render_board._node_path(_TASK_BARE), [])
+        self.assertEqual(render_board._container_key_at(_TASK_BARE, 0), "")
+        self.assertEqual(render_board._container_key_at(_TASK_BARE, 5), "")
+        self.assertTrue(render_board._is_descendant(_TASK_BARE, []))
+        self.assertFalse(render_board._is_descendant(_TASK_BARE, ["ann"]))
+        self.assertEqual(render_board._node_path(None), [])
+        self.assertEqual(render_board._node_path({"type": "hub", "key": "green"}), [])
+
+    def test_a_depth_past_the_node_clamps_to_its_deepest_container(self):
+        # The property assignWells and galaxyKey rely on: past a node's own depth the key
+        # stops changing, so "brain level" and anything below it share one well.
+        deepest = render_board._container_key_at(_TASK_A, 1)
+        self.assertEqual(render_board._container_key_at(_TASK_A, 2), deepest)
+        self.assertEqual(render_board._container_key_at(_TASK_A, 9), deepest)
+
+    # -- the three original levels, expressed through the path -------------------
+    def test_level_one_interbrain_groups_a_person_s_brains_together(self):
+        self.assertEqual(render_board._container_key_at(_TASK_A, 0),
+                         render_board._container_key_at(_TASK_A2, 0))     # ann/* together
+        self.assertNotEqual(render_board._container_key_at(_TASK_A, 0),
+                            render_board._container_key_at(_TASK_B, 0))   # bob apart
+
+    def test_level_two_person_splits_a_person_s_brains(self):
+        self.assertNotEqual(render_board._container_key_at(_TASK_A, 1),
+                            render_board._container_key_at(_TASK_A2, 1))
+        self.assertEqual(render_board._container_key_at(_TASK_A, 1),
+                         render_board._container_key_at(
+                             {"type": "task", "id": "t:9", "owner": "ann",
+                              "brain": "main"}, 1))                       # same brain
+
+    def test_level_three_brain_is_below_the_deepest_container(self):
+        # At depth 2 the key has stopped changing, which is exactly why levelMembers
+        # switches to identity (`n===pv`) there — the hover outline hugs the one hovered
+        # task rather than ballooning to its whole brain.
+        self.assertGreaterEqual(2, len(render_board._node_path(_TASK_A)))
+        self.assertEqual(render_board._container_key_at(_TASK_A, 2),
+                         render_board._container_key_at(_TASK_A, 1))
+
+
+class PathRefactorStructureTest(unittest.TestCase):
+    """F4a.2 — the JS side: the level enum is gone from the consumers, the blob guard is
+    gone, `n._well` is still singular, and the breadcrumb is wired."""
+
+    def setUp(self):
+        self.js = render_board._MG_ENHANCE_JS
+
+    def _body(self, name, until):
+        """The source of one JS function, from its declaration to the next named one."""
+        i = self.js.index("function %s(" % name)
+        return self.js[i:self.js.index(until, i)]
+
+    def test_the_four_helpers_exist(self):
+        for fn in ("function galaxyPath(", "function nodePath(",
+                   "function isDescendant(", "function containerKeyAt("):
+            self.assertIn(fn, self.js, fn)
+
+    def test_draw_galaxy_blobs_has_no_level_guard(self):
+        # THE unlock: the early return refused to run past level two, so bubbles could
+        # never nest. It is gone, and grouping is by container key at whatever depth.
+        body = self._body("drawGalaxyBlobs", "function drawHoverOutline")
+        self.assertNotIn("interbrain", body)
+        self.assertNotIn("person", body)
+        self.assertIn("containerKeyAt(n,depth)", body)
+
+    def test_no_consumer_branches_on_a_level_string(self):
+        # The five consumers go through the path helpers. The three NAMES survive only in
+        # galaxyLevel itself (the canvas hint prints one) and in the nav verbs that mint
+        # the focus KINDS the strip shares — neither is a grouping branch.
+        for name, until in (("assignWells", "function levelMembers"),
+                            ("levelMembers", "function galaxyColor"),
+                            ("galaxyKey", "function crossGalaxy"),
+                            ("crossGalaxy", "function jsHull")):
+            body = self._body(name, until)
+            for lit in ('"interbrain"', '"person"', '"brain"'):
+                self.assertNotIn(lit, body, "%s still branches on %s" % (name, lit))
+
+    def test_well_is_still_singular(self):
+        # n._well means "my well at the CURRENT depth", recomputed per depth — never a
+        # list. That is what keeps the physics cost FLAT at any nesting depth, and why
+        # only the focused frame ever needs live simulation.
+        self.assertIn("n._well=wellsByKey[containerKeyAt(n,depth)]", self.js)
+        self.assertNotIn("n._wells", self.js)
+        self.assertNotIn("_well.push", self.js)
+        self.assertNotIn("n._well=[", self.js)
+
+    def test_depth_is_never_falsy_tested_in_the_js(self):
+        for name, until in (("containerKeyAt", "function galaxyLevel"),
+                            ("levelMembers", "function galaxyColor")):
+            body = self._body(name, until)
+            self.assertIn("depth==null", body, name)        # explicit, not truthiness
+            self.assertNotIn("!depth", body, name)
+
+    def test_galaxy_level_is_kept_and_derived_from_the_path(self):
+        # A pre-existing test pins `galaxyLevel`, and the canvas hint still prints the
+        # level NAME — so it stays, now DERIVED from the path rather than authoritative.
+        self.assertIn("function galaxyLevel(", self.js)
+        self.assertIn("galaxyPath(f).length", self._body("galaxyLevel", "function assignWells"))
+
+    def test_the_strip_sync_uses_depth_not_a_rank_table(self):
+        # {interbrain:0,person:1,brain:2} would read `undefined` for any level past the
+        # third, which is exactly what variable depth introduces.
+        self.assertNotIn("rank={interbrain", self.js)
+        self.assertIn("old=galaxyPath().length", self.js)
+
+    def test_breadcrumb_is_present_and_clickable(self):
+        # Variable depth forces one genuinely new control: once "up" can be more than two
+        # steps, blank-click-up has to say where up goes.
+        self.assertIn("function drawCrumb(", self.js)
+        self.assertIn("function focusAtDepth(", self.js)
+        self.assertIn("mgcrumbseg", self.js)
+        self.assertIn("data-crumb", self.js)
+        self.assertIn("drawCrumb();", self.js)              # wired into the level change
+
+    def test_the_breadcrumb_is_absent_from_the_off_render(self):
+        # Built in JS and only when hasGalaxy, so the Interbrain-off page emits no
+        # breadcrumb element at all — the parity law holds without a special case.
+        self.assertIn('if(hasGalaxy){try{var cwrap=panel.querySelector(".mgcanvaswrap")',
+                      self.js)
 
 
 if __name__ == "__main__":

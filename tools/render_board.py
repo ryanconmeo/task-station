@@ -883,6 +883,15 @@ def _css(default_variant, category_css):
   .mgcanvas.grabbing{cursor:grabbing}
   .mghint{position:absolute;left:10px;top:9px;font:500 11px var(--mono);color:var(--dim);
     background:var(--panel2);padding:3px 7px;border-radius:6px;pointer-events:none;opacity:.92}
+  /* F4a: the focus breadcrumb — the focused container path, each segment clickable to
+     focus that ancestor. Created by the enhancement JS only when the graph carries galaxy
+     grouping, so the Interbrain-off render never emits the element and these rules are
+     inert there. Unlike .mghint it must take pointer events: the segments are buttons. */
+  .mgcrumb{position:absolute;left:10px;bottom:9px;display:flex;align-items:center;gap:2px;
+    font:500 11px var(--mono);background:var(--panel2);padding:3px 7px;border-radius:6px;opacity:.92}
+  .mgcrumb .mgcrumbseg{border:0;background:none;padding:0 2px;font:inherit;color:var(--dim);cursor:pointer}
+  .mgcrumb .mgcrumbseg:hover{color:var(--ink);text-decoration:underline}
+  .mgcrumb .mgcrumbsep{color:var(--dim);opacity:.55}
   .mgrail{border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:12px}
   /* C2: grouped multi-select filter panel (replaces the flat legend). */
   .mgfilters{display:flex;flex-direction:column;gap:9px}
@@ -3419,6 +3428,83 @@ def _galaxy_well_ring(keys, radius=1.0):
     return out
 
 
+# ---------------------------------------------------------------------------
+# F4a containment paths — the PURE, TESTED reference twins of the canvas JS
+# helpers (`galaxyPath` / `nodePath` / `isDescendant` / `containerKeyAt`). Same
+# carve-out as the geometry twins above: the live versions run inside the canvas
+# enhancement, so the RULES are mirrored here to make them unit-testable. Keep
+# the two sides in lockstep — a change to one is a change to both.
+#
+# The graph used to zoom through three hardcoded levels ("interbrain"/"person"/
+# "brain") and five functions branched on that string. Nesting makes depth
+# VARIABLE, so the enum becomes a PATH: those three levels are simply paths of
+# length 0, 1 and 2, and DEPTH IS THE LENGTH.
+# ---------------------------------------------------------------------------
+
+# NUL — the one separator an owner alias or a brain name cannot itself contain,
+# which is why joining on a SPACE would be wrong: "a b"+"c" and "a"+"b c" would
+# collide. It is also the separator the existing well keys already use, so the
+# keys this produces stay byte-identical to the ones the JS built before.
+# Spelled chr(0) rather than an escape so this source file stays pure ASCII.
+PATH_SEP = chr(0)
+
+
+def _galaxy_path(focus):
+    """The FOCUSED container path — twin of the JS `galaxyPath`.
+
+    `[]` when nothing is focused (the old "interbrain"), `[owner]` for a person,
+    `[owner, brain]` for one brain. A focus kind that is not a container (`org`)
+    reads as the root, mirroring the old fall-through to "interbrain". Depth is
+    simply `len(path)`, which is what makes depth 0 a real depth rather than a
+    falsy special case."""
+    f = focus or {}
+    kind = f.get("kind")
+    if kind == "owner":
+        return [f.get("owner") or ""]
+    if kind == "brain":
+        return [f.get("owner") or "", f.get("brain") or "main"]
+    return []
+
+
+def _node_path(node):
+    """A task's OWN containment path, outermost first — twin of the JS `nodePath`.
+
+    In this stage exactly `[owner, brain]`; a node carrying neither yields `[]`,
+    and every helper below tolerates that. Parent nesting appends here — one line,
+    mirrored on both sides."""
+    n = node or {}
+    if n.get("type") != "task":
+        return []
+    if n.get("owner") is None and n.get("brain") is None:
+        return []
+    return [n.get("owner") or "", n.get("brain") or "main"]
+
+
+def _is_descendant(node, path):
+    """Whether `node` sits inside `path` — twin of the JS `isDescendant`. An EMPTY
+    path matches EVERY node, which is exactly why the unfocused case needs no
+    special handling anywhere."""
+    if not path:
+        return True
+    np = _node_path(node)
+    if len(np) < len(path):
+        return False
+    return np[:len(path)] == list(path)
+
+
+def _container_key_at(node, depth):
+    """The key of the container `node` sits in one level below `depth` — twin of the
+    JS `containerKeyAt`, and the single thing that replaced every level-string
+    branch. `depth` 0 is the OUTERMOST container (today: the person), 1 the next in
+    (today: the brain). Slicing clamps on its own, so a depth past the node's own
+    deepest container keeps returning that container — the property `assignWells`
+    and `galaxyKey` rely on.
+
+    `depth` is positional with NO default on purpose: 0 is a real depth, and a
+    default would let a caller silently skip it and get a different level."""
+    return PATH_SEP.join(_node_path(node)[:depth + 1])
+
+
 def _convex_hull(pts):
     """Monotone-chain convex hull of (x, y) points, CCW. Collinear vertices are
     dropped (the `<= 0` cross test), so a set of collinear points collapses to its
@@ -4063,9 +4149,9 @@ _MG_ENHANCE_JS = """try{(function(){
   // AND the focus strip exists — so with Interbrain OFF hasGalaxy is false, no well is
   // assigned, no blob/outline is drawn, and the graph behaves EXACTLY as before (parity).
   var hasGalaxy=false;try{hasGalaxy=!!document.getElementById("focus-strip")&&nodes.some(function(n){return n.type==="task"&&(n.owner||n.brain);});}catch(e){}
-  var navApplying=false,blobPhase=0,blobsOn=(pref.blobs!==false),brainWells={},personWells={};
+  var navApplying=false,blobPhase=0,blobsOn=(pref.blobs!==false),brainWells={},personWells={},wellsByKey={};
   function buildWells(){
-    brainWells={};personWells={};if(!hasGalaxy)return;
+    brainWells={};personWells={};wellsByKey={};if(!hasGalaxy)return;
     var keys=[],seen={},pbrains={};
     nodes.forEach(function(n){if(n.type!=="task"||n.solo)return;var o=n.owner||"",b=n.brain||"main",k=o+"\\u0000"+b;
       if(!seen[k]){seen[k]=1;keys.push(k);}(pbrains[o]=pbrains[o]||{})[k]=1;});
@@ -4078,30 +4164,80 @@ _MG_ENHANCE_JS = """try{(function(){
     Object.keys(pbrains).forEach(function(o){var ks=Object.keys(pbrains[o]),sx=0,sz=0,bx=0,by=0;
       ks.forEach(function(k){var w=brainWells[k];sx+=w.ax;sz+=w.az;bx+=w.bx;by+=w.by;});
       var m=ks.length||1;personWells[o]={ax:sx/m,az:sz/m,bx:bx/m,by:by/m};});
+    // ONE lookup keyed by CONTAINER KEY, so assignWells needs no level branch. A depth-0
+    // key is a bare owner and a depth-1 key carries PSEP, so the two can never collide.
+    Object.keys(personWells).forEach(function(o){wellsByKey[o]=personWells[o];});
+    Object.keys(brainWells).forEach(function(k){wellsByKey[k]=brainWells[k];});
   }
-  function galaxyLevel(f){if(f===undefined)f=gfocus;if(!f)return "interbrain";
-    if(f.kind==="owner")return "person";if(f.kind==="brain")return "brain";return "interbrain";}
-  // assign each task its gravity well for the CURRENT level: interbrain → the PERSON well
-  // (a person's brains merge into one galaxy), person/brain → the BRAIN well (brains split
-  // into their own galaxies). Every galaxy stays parked at a stable ring slot regardless of
-  // level; only the camera, focus filter, and blobs change — hidden galaxies never pile up.
-  function assignWells(){buildWells();var lv=galaxyLevel();
+
+  // ---- F4a: containment PATHS (was a three-value level enum) ---------------------
+  // The graph used to zoom through exactly three hardcoded levels and five functions
+  // branched on the literal strings "interbrain"/"person"/"brain". Nesting makes depth
+  // VARIABLE, so the enum becomes a PATH and "equal to my owner" becomes "inside the
+  // focused container". Nothing below knows how long a path is, which is the whole point.
+  //
+  // Segments join on PSEP, NOT a space: an owner alias or a brain name may contain a
+  // space (so "a b"+"c" and "a"+"b c" would collide), while a NUL can appear in neither.
+  // It is also the separator brainWells — and its Python twin _galaxy_well_ring — already
+  // key on, so the keys stay byte-identical to today's.
+  var PSEP="\\u0000";
+  // The FOCUSED container path. [] = nothing focused (the old "interbrain"), [owner] = a
+  // person, [owner,brain] = one brain. DEPTH IS SIMPLY THE LENGTH, so depth 0 is a real
+  // depth and must never be tested for truthiness — `if(!depth)` is a bug, not a shortcut.
+  function galaxyPath(f){if(f===undefined)f=gfocus;if(!f||!f.kind)return [];
+    if(f.kind==="owner")return [f.owner||""];
+    if(f.kind==="brain")return [f.owner||"",f.brain||"main"];
+    return [];}                       // org, or any focus kind that is not a container
+  // A task's OWN containment path, outermost first. In this stage it is exactly
+  // [owner, brain]; a node with neither yields [] and every helper below tolerates that.
+  // TO NEST PARENTS (Stage 4b) this is the ONE line to add, as the last statement before
+  // the return:  p.push.apply(p, n.ancestors||[]);
+  function nodePath(n){if(!n||n.type!=="task")return [];
+    var p=[];if(n.owner==null&&n.brain==null)return p;
+    p.push(n.owner||"");p.push(n.brain||"main");return p;}
+  // Is this node inside `path`? An EMPTY path matches everything, which is exactly why
+  // the unfocused case falls out instead of being special-cased anywhere.
+  function isDescendant(n,path){if(!path||!path.length)return true;
+    var np=nodePath(n);if(np.length<path.length)return false;
+    for(var i=0;i<path.length;i++){if(np[i]!==path[i])return false;}
+    return true;}
+  // The key of the container this node sits in one level below `depth` — the single thing
+  // that replaced every (lv==="…") branch. depth 0 → the outermost container (today: the
+  // person), depth 1 → the next one in (today: the brain). slice() clamps on its own, so a
+  // depth past a node's deepest container keeps returning that container. Explicit ==null,
+  // never !depth, because 0 is a real depth.
+  function containerKeyAt(n,depth){if(depth==null)depth=galaxyPath().length;
+    return nodePath(n).slice(0,depth+1).join(PSEP);}
+  // BACK-COMPAT, deliberately kept: the three level NAMES are still user-visible (the
+  // canvas hint reads "empty to go up (person)") and still name the focus KINDS that
+  // navDescend/navAscend mint. So galaxyLevel survives — derived FROM the path now,
+  // rather than being the mechanism everything branches on.
+  function galaxyLevel(f){var d=galaxyPath(f).length;
+    return d===0?"interbrain":(d===1?"person":"brain");}
+  // assign each task its gravity well for the CURRENT depth: depth 0 → the PERSON well (a
+  // person's brains merge into one galaxy), deeper → the BRAIN well (brains split into
+  // their own galaxies). Every galaxy stays parked at a stable ring slot regardless of
+  // depth; only the camera, focus filter, and blobs change — hidden galaxies never pile up.
+  function assignWells(){buildWells();var depth=galaxyPath().length;
     nodes.forEach(function(n){
       if(!hasGalaxy||n.type!=="task"||n.solo){n._well=null;return;}
-      var o=n.owner||"",b=n.brain||"main";
-      n._well=(lv==="interbrain")?(personWells[o]||null):(brainWells[o+"\\u0000"+b]||null);});}
-  function levelMembers(pv,lv){var pts=[];
-    nodes.forEach(function(n){if(n.type!=="task"||n.solo||!nodeVisible(n)||!n._p)return;var take;
-      if(lv==="interbrain")take=((n.owner||"")===(pv.owner||""));
-      else if(lv==="person")take=((n.owner||"")===(pv.owner||"")&&(n.brain||"main")===(pv.brain||"main"));
-      else take=(n===pv);
-      if(take)pts.push([n._p.sx,n._p.sy]);});return pts;}
+      // SINGULAR BY DESIGN: n._well means "my well at the CURRENT depth", recomputed per
+      // depth — never a list. That is what keeps the physics cost FLAT at any nesting
+      // depth, and why only the focused frame ever needs live simulation.
+      n._well=wellsByKey[containerKeyAt(n,depth)]||null;});}
+  // The hovered node's group at `depth`. Below the deepest container a node HAS, it is its
+  // own group — the old third branch's `n===pv` — so the hover outline still hugs the one
+  // hovered task at the deepest level instead of ballooning to its whole brain.
+  function levelMembers(pv,depth){if(depth==null)depth=galaxyPath().length;
+    var pts=[],own=(depth>=nodePath(pv).length),k=containerKeyAt(pv,depth);
+    nodes.forEach(function(n){if(n.type!=="task"||n.solo||!nodeVisible(n)||!n._p)return;
+      if(own?(n===pv):(containerKeyAt(n,depth)===k))pts.push([n._p.sx,n._p.sy]);});
+    return pts;}
   function galaxyColor(n){return (n.foreign&&n.owner_color)?n.owner_color:(rootVar("--accent")||"#c99b5a");}
   // F3.4: an edge whose endpoints live in DIFFERENT galaxies (at the current level) is
   // drawn curved (quadratic, bowed) so it visibly SPANS the gap; within-galaxy edges stay
   // straight. Inert when Interbrain is OFF (crossGalaxy → false → straight, as before).
-  function galaxyKey(n){if(!n||n.type!=="task")return null;
-    return (galaxyLevel()==="interbrain")?(n.owner||""):((n.owner||"")+"\\u0000"+(n.brain||"main"));}
+  function galaxyKey(n){if(!n||n.type!=="task")return null;return containerKeyAt(n,galaxyPath().length);}
   function crossGalaxy(a,b){if(!hasGalaxy)return false;var ka=galaxyKey(a),kb=galaxyKey(b);
     return ka!=null&&kb!=null&&ka!==kb;}
   // monotone-chain hull — twin of _convex_hull: collinear dropped via <=0, so a degenerate
@@ -4130,17 +4266,20 @@ _MG_ENHANCE_JS = """try{(function(){
     if(fillA){ctx.globalAlpha=fillA;ctx.fillStyle=color;ctx.fill();}
     if(strokeA){ctx.globalAlpha=strokeA;ctx.strokeStyle=color;ctx.lineWidth=lw||2;ctx.stroke();}
     ctx.restore();ctx.globalAlpha=1;}catch(e){try{ctx.restore();ctx.globalAlpha=1;}catch(e2){}}}
-  // persistent per-group boundary blobs at the current level (F3.3): one per person's
-  // system (interbrain) / one per brain (person). None at brain/node level.
-  function drawGalaxyBlobs(){if(!hasGalaxy||!blobsOn)return;var lv=galaxyLevel();if(lv!=="interbrain"&&lv!=="person")return;
+  // persistent per-group boundary blobs at the CURRENT DEPTH (F3.3): one per container the
+  // visible tasks sit in, whatever depth that is. THE LEVEL EARLY-RETURN IS GONE — it used
+  // to refuse to run past level two, which is exactly why bubbles could never nest. Now the
+  // grouping key is containerKeyAt, so depth is whatever is focused and nothing here has to
+  // learn about a new level.
+  function drawGalaxyBlobs(){if(!hasGalaxy||!blobsOn)return;var depth=galaxyPath().length;
     var g={};nodes.forEach(function(n){if(n.type!=="task"||n.solo||!nodeVisible(n)||!n._p)return;
-      var key=(lv==="interbrain")?(n.owner||""):((n.owner||"")+"\\u0000"+(n.brain||"main"));
+      var key=containerKeyAt(n,depth);
       if(!g[key])g[key]={pts:[],color:galaxyColor(n)};g[key].pts.push([n._p.sx,n._p.sy]);});
     Object.keys(g).sort().forEach(function(k){drawBlob(g[k].pts,g[k].color,0.09,0.5,2,20);});}
   // hover affordance: a soft rounded (spherical) outline around the hovered entity's
   // members; reduced-motion = static (no pulse). Drawn ON TOP so it reads as clickable.
   function drawHoverOutline(){if(!hasGalaxy||!hover||hover.type!=="task")return;
-    var lv=galaxyLevel(),pts=levelMembers(hover,lv);if(!pts.length)return;
+    var pts=levelMembers(hover,galaxyPath().length);if(!pts.length)return;
     var cx=0,cy=0,i;for(i=0;i<pts.length;i++){cx+=pts[i][0];cy+=pts[i][1];}cx/=pts.length;cy/=pts.length;
     var r=0;for(i=0;i<pts.length;i++){var d=Math.hypot(pts[i][0]-cx,pts[i][1]-cy);if(d>r)r=d;}
     var pr=(reduce||perfLow)?0:Math.sin(blobPhase*0.11)*3,color=galaxyColor(hover);
@@ -4157,7 +4296,7 @@ _MG_ENHANCE_JS = """try{(function(){
     if(!reduce&&!perfLow){
       if(dir==="down")zoom=Math.max(ZMIN,zoomTarget*0.62);
       else if(dir==="up")zoom=Math.min(ZMAX,zoomTarget*1.6);}
-    updateHint();draw();kick();}
+    updateHint();drawCrumb();draw();kick();}
   // set the shared focus FROM the graph → persist it + notify the strip (graph→strip sync).
   function graphSetFocus(f,dir){gfocus=(f&&f.kind)?f:null;
     try{if(gfocus)localStorage.setItem("ts-board-focus",JSON.stringify(gfocus));else localStorage.removeItem("ts-board-focus");}catch(e){}
@@ -4176,6 +4315,33 @@ _MG_ENHANCE_JS = """try{(function(){
     else if(lv==="person")graphSetFocus(null,"up");
     else if(gfocus&&gfocus.kind==="org")graphSetFocus(null,"up");
     else frameLevel("up");}
+  // ---- F4a: the focus breadcrumb ------------------------------------------------
+  // Variable depth forces the one genuinely new piece of UI in this stage: once "up" can
+  // be more than two steps, blank-click-up has to say where up GOES. Built here in JS
+  // rather than in the server markup, and only when hasGalaxy — so the Interbrain-OFF
+  // render emits no breadcrumb element at all and stays byte-identical.
+  var crumbEl=null;
+  if(hasGalaxy){try{var cwrap=panel.querySelector(".mgcanvaswrap");
+    if(cwrap){crumbEl=document.createElement("div");crumbEl.className="mgcrumb";
+      crumbEl.setAttribute("aria-label","Focus path");cwrap.appendChild(crumbEl);}}catch(e){}}
+  // Focus the ancestor `d` segments deep — the inverse of galaxyPath, and the ONE place
+  // that knows how a path maps back onto the focus object the strip shares. d is a LENGTH,
+  // so 0 is the root and a real value, never "no depth".
+  function focusAtDepth(d){var p=galaxyPath();if(d==null||d>=p.length)return;
+    if(d<=0){graphSetFocus(null,"up");return;}
+    if(d===1){graphSetFocus({kind:"owner",owner:p[0]||"",brain:""},"up");return;}
+    graphSetFocus({kind:"brain",owner:p[0]||"",brain:p[1]||"main"},"up");}
+  // Render the focused path, outermost first, every segment a button that focuses that
+  // ancestor. The root segment always shows, so depth 0 renders a breadcrumb rather than
+  // nothing — the same "0 is a real depth" rule the rest of this file follows.
+  function drawCrumb(){if(!crumbEl)return;var p=galaxyPath(),i,
+    h='<button type="button" class="mgcrumbseg" data-crumb="0">all</button>';
+    for(i=0;i<p.length;i++){h+='<span class="mgcrumbsep" aria-hidden="true">\\u203a</span>'
+      +'<button type="button" class="mgcrumbseg" data-crumb="'+(i+1)+'">'+esc(p[i]||"main")+'</button>';}
+    crumbEl.innerHTML=h;}
+  if(crumbEl)crumbEl.addEventListener("click",function(ev){
+    var b=(ev.target&&ev.target.closest)?ev.target.closest("[data-crumb]"):null;if(!b)return;
+    var d=parseInt(b.getAttribute("data-crumb"),10);if(isNaN(d))return;focusAtDepth(d);});
 
   function render(){
     ctx.clearRect(0,0,Wc,Hc);
@@ -4465,7 +4631,7 @@ _MG_ENHANCE_JS = """try{(function(){
     if(rotBtn)rotBtn.style.display=(m==="3d")?"":"none";
     selected=null;renderInfo(null);yawVel=0;pitchVel=0;pivot.x=0;pivot.y=0;pivot.z=0;
     if(m==="3d"){yaw=0.5;pitch=-0.35;seedZ();}else{flattenZ();}
-    assignWells();settle(200);fitView();updateHint();draw();kick();
+    assignWells();settle(200);fitView();updateHint();drawCrumb();draw();kick();
   }
   if(q2d)q2d.addEventListener("click",function(){setMode("2d");});
   if(q3d)q3d.addEventListener("click",function(){setMode("3d");});
@@ -4497,8 +4663,10 @@ _MG_ENHANCE_JS = """try{(function(){
   // OWN dispatch (graph→strip, in graphSetFocus) from bouncing back. No-op with no strip.
   try{window.addEventListener("ts-focus-change",function(ev){
     if(navApplying)return;
-    var f=(ev&&ev.detail)||null,rank={interbrain:0,person:1,brain:2},old=rank[galaxyLevel()];
-    gfocus=(f&&f.kind)?f:null;var nw=rank[galaxyLevel()];
+    // Depth IS the path length, so the old {interbrain:0,person:1,brain:2} rank table is
+    // gone: it would have read `undefined` for any level past the third.
+    var f=(ev&&ev.detail)||null,old=galaxyPath().length;
+    gfocus=(f&&f.kind)?f:null;var nw=galaxyPath().length;
     frameLevel(nw>old?"down":(nw<old?"up":null));});}catch(e){}
 
   // ---- D3: centerOnSeq exposed for the board's "View in graph" button ----
