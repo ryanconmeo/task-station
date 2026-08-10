@@ -64,6 +64,30 @@ mutate(task_id, lambda t: add_event(t, "worker", "done", session))
 writer committed first it **reloads the fresh task and re-runs your mutator**, so
 both writers' changes survive.
 
+### Two retry layers, for two different failures
+
+`mutate`'s loop handles the **rev race** only — it catches `RevConflict` and nothing else.
+Contention for SQLite's **write lock** is a separate failure with its own layer underneath:
+
+| failure | what it means | handled by |
+|---|---|---|
+| `RevConflict` | another writer committed first; your `rev` is stale | `mutate`'s reload-and-re-run loop |
+| `OperationalError("database is locked")` | the write lock was held past `busy_timeout` (5s) | `_retry_locked` on the `SqliteBackend` write methods |
+
+`_retry_locked` backs off with jitter and retries until `LOCK_RETRY_BUDGET_S` (10s) of
+wall-clock has elapsed, then re-raises the original error. It is bounded by **time, not attempt
+count**, because each attempt can itself block for the full `busy_timeout` — and it only retries
+contention (`"locked"`/`"busy"` in the message); any other `OperationalError` propagates on the
+first attempt, so a schema or SQL bug never gets retried into a timeout.
+
+Two things follow for new code:
+
+- **Don't add a lock retry around `mutate`.** It belongs under it, where it already is; wrapping
+  `mutate` would let a lock wait consume one of its five `RevConflict` attempts.
+- **A new write method on `SqliteBackend` needs the `@_retry_locked` decorator.** Without it that
+  path crashes the process under contention rather than waiting — which is what happened before
+  2.23.0, and it surfaced as an intermittently failing test rather than as an obvious bug.
+
 Rules:
 - **`mutator_fn` must be PURE** — it may only transform the task dict it is handed.
   No I/O, no `save_task`, no reading other mutable state, no cross-task writes:
