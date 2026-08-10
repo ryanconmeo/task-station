@@ -3,6 +3,51 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [2.23.0] — 2026-08-10
+
+One contended writer could kill the whole process. `_connect` opens SQLite with
+`timeout=5.0` and `PRAGMA busy_timeout=5000`, and writes take `BEGIN IMMEDIATE` — so a
+writer that can't get the lock waits exactly 5 seconds and then sqlite3 raises
+`OperationalError("database is locked")`. **Nothing in `lib/` caught it.** It propagated
+out of the write, out of the command, and the process exited 1.
+
+What made this hide is that the concurrency guard *looks* present: `store.mutate()` has a
+reload-and-retry loop, `retries=5`. But it only catches `RevConflict` — the optimistic-rev
+race between two writers on the same revision. Lock contention is a different exception
+class and was never in the loop, so the code read as concurrency-safe while the lock path
+had no handling at all.
+
+The visible symptom was a flaky test — `test_multiprocess_append_is_gapless` failing its
+first assertion, `p.wait(timeout=60)` returning 1 — roughly 1-in-3 during a full-suite run
+and 0-in-10 on an idle machine. That test spawns 4 processes × 20 events against one task,
+so all 80 writes serialize; idle, each takes milliseconds and nothing approaches the 5s
+budget. It was never a test bug: the same `mutate()` path runs from the Stop and
+SessionStart hooks on every turn, across concurrent sessions, on the same 5 seconds with
+the same missing retry.
+
+### Fixed
+- **Writer contention now retries instead of raising.** A `_retry_locked` decorator on the
+  `SqliteBackend` write methods (`save_task`, `create_with_seq`, `delete_task`, the link and
+  counter/marker mutators, `upsert_session_usage`, `upsert_prompt`) rolls back any dangling
+  transaction, backs off exponentially with jitter, and retries.
+- **Bounded by wall-clock, not attempt count.** `LOCK_RETRY_BUDGET_S = 10.0`. Each attempt
+  can itself burn the full 5s `busy_timeout`, so an attempts-only cap would leave an
+  unbounded worst case — and 2.21.0 had just cut a 22s turn-end to ~5s. Once the budget
+  elapses the **original** exception is re-raised, so a genuinely stuck store still fails
+  loudly rather than hanging.
+- **Only contention is retried.** `_is_lock_contention` requires "locked" or "busy" in the
+  message; any other `OperationalError` — a schema or SQL bug — propagates on the first
+  attempt with no delay. Retrying those would convert a clear error into a timeout.
+- **`mutate()` is deliberately not the retry point.** The lock retry sits *under* it, so
+  waiting out a lock doesn't consume one of the five `RevConflict` attempts. The two retry
+  loops are for different failures and now compose instead of masking each other.
+
+### Note
+- Nothing about durability changed, and nothing was at risk: the append-only stream uses a
+  **blocking** `fcntl.flock(LOCK_EX)` with no timeout, so it waits rather than failing.
+  SQLite was the only timeout-bounded path in the write, which is why the flake always hit
+  the exit-code assertion and never the gapless-sequence one.
+
 ## [2.22.0] — 2026-08-10
 
 Every Azure DevOps action since late July was filed under the wrong work phase, and nothing

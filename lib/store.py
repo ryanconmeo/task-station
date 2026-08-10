@@ -18,9 +18,12 @@ degrading. The backend is parameterised by a `store_dir` (the
 It never reads the environment itself, so the tests' temp-home isolation — which
 repoints task-station.py's STORE global — flows through unchanged.
 """
+import functools
 import json
 import os
+import random
 import re
+import time
 
 # sqlite3 is stdlib and required. The guard keeps the module importable so
 # get_backend() can raise a clear RuntimeError instead of an ImportError at load;
@@ -189,6 +192,54 @@ def _fts_match_query(query):
 
 
 # -------------------------------------------------------------- SQLite store ---
+#
+# A writer that can't get the SQLite write lock waits out busy_timeout (5000ms,
+# set in _connect) and then sqlite3 raises OperationalError("database is
+# locked") — nothing caught that, so one contended writer used to crash the
+# whole process. LOCK_RETRY_BUDGET_S bounds retry by WALL-CLOCK time rather than
+# attempt count: each attempt can itself burn the full busy_timeout, so counting
+# attempts alone would leave an unbounded worst case (task-station writes from
+# hooks on every turn — a stall here is a stall of the user's session).
+LOCK_RETRY_BUDGET_S = 10.0
+_LOCK_RETRY_BASE_DELAY_S = 0.1
+_LOCK_RETRY_MAX_DELAY_S = 1.0
+
+
+def _is_lock_contention(exc):
+    """True only for the OperationalError variants a busy writer raises
+    ("database is locked" / "... is busy"). Anything else is a real schema/SQL
+    bug and must surface immediately rather than being retried into a timeout."""
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
+def _retry_locked(fn):
+    """Decorator for SqliteBackend write methods. On OperationalError caused by
+    writer contention: roll back the dangling implicit transaction, back off
+    (exponential + jitter), and retry — until LOCK_RETRY_BUDGET_S of wall-clock
+    time has elapsed, at which point the ORIGINAL exception is re-raised. A
+    non-contention OperationalError re-raises immediately, on the first attempt,
+    with no retry."""
+    @functools.wraps(fn)
+    def _wrapper(self, *args, **kwargs):
+        start = time.monotonic()
+        delay = _LOCK_RETRY_BASE_DELAY_S
+        while True:
+            try:
+                return fn(self, *args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                if not _is_lock_contention(exc):
+                    raise
+                if time.monotonic() - start >= LOCK_RETRY_BUDGET_S:
+                    raise
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                time.sleep(max(0.0, delay + random.uniform(-delay / 2, delay / 2)))
+                delay = min(delay * 2, _LOCK_RETRY_MAX_DELAY_S)
+    return _wrapper
+
 
 class SqliteBackend:
     """Single-file indexed store (`<store>/tasks.db`). The `data` column keeps the
@@ -474,6 +525,7 @@ class SqliteBackend:
         )
         self._sync_fts(conn, task)     # keep the search index in step, same transaction
 
+    @_retry_locked
     def save_task(self, task, expected_rev=None):
         """Persist `task`. Unversioned (expected_rev=None): last-writer-wins upsert
         that bumps rev. Versioned: a conditional UPDATE guarded by rev — if the row's
@@ -524,6 +576,7 @@ class SqliteBackend:
                 if attempt >= retries:
                     raise
 
+    @_retry_locked
     def create_with_seq(self, task):
         """Transactionally allocate the next seq and INSERT `task` under it. BEGIN
         IMMEDIATE serialises concurrent creators so they can't read the same
@@ -553,6 +606,7 @@ class SqliteBackend:
             conn.isolation_level = prev
         return task
 
+    @_retry_locked
     def delete_task(self, task_id):
         conn = self._connect()
         conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
@@ -650,6 +704,7 @@ class SqliteBackend:
             return None
         return row["task_id"] or None
 
+    @_retry_locked
     def set_link(self, session, task_id):
         conn = self._connect()
         # Only the pointer changes — n/edited/blocked for the session survive.
@@ -660,6 +715,7 @@ class SqliteBackend:
         )
         conn.commit()
 
+    @_retry_locked
     def clear_link(self, session):
         # Drop the pointer but keep the row's counters/markers, mirroring the JSON
         # store where clearing the link removes only the `<session>` file.
@@ -686,6 +742,7 @@ class SqliteBackend:
         row = conn.execute("SELECT n FROM links WHERE session=?", (session,)).fetchone()
         return row["n"] if row else 0
 
+    @_retry_locked
     def bump_count(self, session):
         conn = self._connect()
         conn.execute(
@@ -696,12 +753,14 @@ class SqliteBackend:
         conn.commit()
         return self.get_count(session)
 
+    @_retry_locked
     def clear_count(self, session):
         conn = self._connect()
         conn.execute("UPDATE links SET n=0 WHERE session=?", (session,))
         conn.commit()
 
     # -- edit / blocked markers --
+    @_retry_locked
     def mark_edited(self, session):
         conn = self._connect()
         row = conn.execute("SELECT edited FROM links WHERE session=?", (session,)).fetchone()
@@ -725,6 +784,7 @@ class SqliteBackend:
         row = conn.execute("SELECT blocked FROM links WHERE session=?", (session,)).fetchone()
         return row["blocked"] if row else 0
 
+    @_retry_locked
     def bump_blocked(self, session):
         conn = self._connect()
         conn.execute(
@@ -735,6 +795,7 @@ class SqliteBackend:
         conn.commit()
         return self.get_blocked(session)
 
+    @_retry_locked
     def clear_edit_markers(self, session):
         conn = self._connect()
         conn.execute("UPDATE links SET edited=0, blocked=0 WHERE session=?", (session,))
@@ -768,6 +829,7 @@ class SqliteBackend:
                            (session_id,)).fetchone()
         return self._row_to_usage(row) if row else None
 
+    @_retry_locked
     def upsert_session_usage(self, row):
         """Insert/replace one session_usage row from a plain dict (models/sidechain/
         phases may be dicts — they're JSON-encoded here). Missing keys take their
@@ -815,6 +877,7 @@ class SqliteBackend:
             "SELECT * FROM session_usage ORDER BY first_ts").fetchall()
         return [self._row_to_usage(r) for r in rows]
 
+    @_retry_locked
     def upsert_prompt(self, row):
         """Idempotent prompt upsert keyed on the transcript line uuid. Re-scanning
         the same line refreshes its attribution/text rather than duplicating it."""
