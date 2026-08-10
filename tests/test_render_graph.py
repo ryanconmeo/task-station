@@ -443,16 +443,24 @@ class BoardEnhancementTest(_Base):
         self.assertIn("ZMAX=Math.max(2.6,base*6)", html)
         self.assertIn("Math.max(ZMIN,Math.min(ZMAX,zoom*", html)  # wheel uses the dynamic caps
 
-    def test_solo_nodes_and_new_filter_groups(self):
-        # every board task NOT drawn in the graph rides along in mg-data as a static
-        # solo node (default-off "unlinked tasks" filter), and the rail gains a task
-        # lifecycle status group; solo nodes never join the physics.
+    def test_every_task_is_drawn_and_no_unlinked_group_remains(self):
+        # F4b RETIRED the "unlinked tasks" filter: under the concentric layout every
+        # task is drawn — a relation-free one is at most ON THE RIM — so a
+        # relation-free loner is now a real placed node instead of a static solo
+        # decoration behind a default-off row. The status group and the solo
+        # force-exclusion machinery (kept for one release) are unchanged.
         self._seed_pr_pair()
         self._seed("relation-free loner")                       # third task, no relations
         html = self._board_html()
-        self.assertIn('"solo":[', html)                         # solo pool embedded
-        self.assertIn("unlinked tasks", html)                   # the default-off filter row
-        self.assertIn("soloRow.set(false)", html)               # default OFF (and on Reset)
+        self.assertNotIn("unlinked tasks", html)                # the row is gone
+        self.assertNotIn('mkGroup("Unlinked")', html)
+        self.assertNotIn("soloRow", html)                       # …and its locals with it
+        self.assertNotIn('"solo":[', html)                      # nothing left to pool
+        # every task placed — including the loner, which has no edge at all
+        seqs = self._seqs()
+        blob = html.split('id="mg-data">', 1)[1].split("</script>", 1)[0]
+        for seq in seqs.values():
+            self.assertIn('"seq":%d' % seq, blob, "task #%s must be drawn" % seq)
         self.assertIn('mkGroup("Tasks · status")', html)        # lifecycle status group
         self.assertIn("filt.status[n.status]===false", html)    # status drives visibility
         self.assertIn("if(nodes[i].solo||nodes[j].solo)continue", html)  # no forces on solo

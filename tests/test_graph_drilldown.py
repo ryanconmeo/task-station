@@ -678,5 +678,257 @@ class PathRefactorStructureTest(unittest.TestCase):
                       self.js)
 
 
+# ================================================ Stage 4b: the concentric layout ===
+# Four rings, outermost in — rim (category MAGNETS) · middle (tasks + parent BUBBLES) ·
+# story band (MAGNETS) · core (repo BUBBLES holding their PRs) — and two placement axes
+# with one job each: ANGLE from category (loose) or parent (grouped), RADIUS from how
+# entangled a task is in shared work.
+#
+# THE RULE THAT KEEPS BUBBLES INTACT, and the one most of these tests exist to pin: a
+# task inside a group is positioned by its group ALONE — no category pull, no core pull.
+# The live programme has 8 children spanning 5 categories, so a category-driven angle
+# would tear that bubble across five sectors.
+#
+# `_concentric_layout` is pure, so the whole design is testable without a browser — the
+# same twin idiom WellRingTest and the F4a path tests use. What a twin cannot answer is
+# whether it LOOKS right; that is the owner's call on the real render.
+
+
+def _lt(tid, seq, cat, parent=None, artifacts=0):
+    return {"id": tid, "seq": seq, "cat": cat, "parent": parent, "artifacts": artifacts}
+
+
+def _polar(pt, cx=0.0, cy=0.0):
+    """(radius, angle) of a laid-out point about the layout centre."""
+    dx, dy = pt[0] - cx, pt[1] - cy
+    return math.hypot(dx, dy), math.atan2(dy, dx)
+
+
+def _adist(a, b):
+    """Absolute angular distance, wrapped to [0, π]."""
+    d = abs(a - b) % (2 * math.pi)
+    return min(d, 2 * math.pi - d)
+
+
+class ConcentricLayoutTest(unittest.TestCase):
+    """F4b — the four rings and the two axes, through the pure layout function."""
+
+    def test_every_task_gets_a_position_even_with_no_edge_at_all(self):
+        # Category membership — not an edge — is what entitles a task to a position.
+        tasks = [_lt("t:%d" % i, i, "green" if i % 2 else "red") for i in range(1, 13)]
+        lay = render_board._concentric_layout(tasks)
+        self.assertEqual(set(lay["task"]), {t["id"] for t in tasks})
+
+    def test_a_loose_task_takes_its_angle_from_its_category(self):
+        tasks = [_lt("t:1", 1, "green"), _lt("t:2", 2, "green"), _lt("t:3", 3, "red")]
+        lay = render_board._concentric_layout(tasks)
+        a1 = _polar(lay["task"]["t:1"])[1]
+        a2 = _polar(lay["task"]["t:2"])[1]
+        a3 = _polar(lay["task"]["t:3"])[1]
+        # two tasks of one category sit inside one sector…
+        self.assertLessEqual(_adist(a1, a2), render_board.CAT_SPAN + 1e-9)
+        # …and a different category is further away than that sector is wide, so a
+        # sector never bleeds into its neighbour.
+        self.assertGreater(_adist(a1, a3), render_board.CAT_SPAN)
+        # each sits on its own category's magnet bearing
+        self.assertLessEqual(_adist(a1, _polar(lay["cat"]["green"])[1]),
+                             render_board.CAT_SPAN)
+
+    def test_category_angles_are_stable_across_renders(self):
+        # Assigned over SORTED keys, so the rim never wobbles between renders.
+        tasks = [_lt("t:1", 1, "green"), _lt("t:2", 2, "red"), _lt("t:3", 3, "blue")]
+        first = render_board._concentric_layout(tasks)
+        second = render_board._concentric_layout(list(reversed(tasks)))
+        self.assertEqual(first["cat"], second["cat"])
+        self.assertEqual(first["task"], second["task"])
+
+    def test_a_parented_task_is_inside_its_parent_bubble_and_ignores_its_category(self):
+        # The bubble-integrity rule: angle comes from the PARENT, not the category.
+        tasks = [_lt("t:1", 1, "green"),                       # the parent
+                 _lt("t:2", 2, "red", parent="t:1"),
+                 _lt("t:3", 3, "blue", parent="t:1"),
+                 _lt("t:9", 9, "red")]                         # a loose red comparator
+        lay = render_board._concentric_layout(tasks)
+        px, py = lay["task"]["t:1"]
+        for kid in ("t:2", "t:3"):
+            kx, ky = lay["task"][kid]
+            self.assertLessEqual(math.hypot(kx - px, ky - py),
+                                 render_board.R_CHILD + 1e-6)   # inside the bubble
+        # …and the red child is nowhere near the red magnet's bearing, unlike the loose
+        # red task, which is: that difference IS the rule.
+        red = _polar(lay["cat"]["red"])[1]
+        self.assertLessEqual(_adist(_polar(lay["task"]["t:9"])[1], red),
+                             render_board.CAT_SPAN)
+        self.assertGreater(_adist(_polar(lay["task"]["t:2"])[1], red),
+                           render_board.CAT_SPAN)
+        # the bubble is a real group with no node of its own beyond the parent
+        bub = [b for b in lay["bubbles"] if b["kind"] == "parent"]
+        self.assertEqual(len(bub), 1)
+        self.assertEqual(bub[0]["members"], ["t:1", "t:2", "t:3"])
+
+    def test_a_parented_task_feels_no_core_pull(self):
+        # Adding shared artifacts must not move a grouped task: inside a group there is
+        # no core pull, or the bubble would be stretched toward the centre.
+        base = [_lt("t:1", 1, "green"), _lt("t:2", 2, "red", parent="t:1")]
+        with_prs = [_lt("t:1", 1, "green"),
+                    _lt("t:2", 2, "red", parent="t:1", artifacts=9)]
+        self.assertEqual(render_board._concentric_layout(base)["task"],
+                         render_board._concentric_layout(with_prs)["task"])
+
+    def test_a_parent_is_not_magnetised_either(self):
+        # Same reason: a magnetised root would drag its whole subtree to the rim.
+        tasks = [_lt("t:1", 1, "green"), _lt("t:2", 2, "green", parent="t:1"),
+                 _lt("t:9", 9, "green")]
+        lay = render_board._concentric_layout(tasks)
+        r_root = _polar(lay["task"]["t:1"])[0]
+        self.assertAlmostEqual(r_root, render_board.R_GROUP, places=6)
+        self.assertNotAlmostEqual(r_root, _polar(lay["task"]["t:9"])[0], places=3)
+
+    def test_more_entangled_sits_further_in(self):
+        tasks = [_lt("t:1", 1, "green", artifacts=0),
+                 _lt("t:2", 2, "green", artifacts=1),
+                 _lt("t:3", 3, "green", artifacts=4)]
+        lay = render_board._concentric_layout(tasks)
+        r = [_polar(lay["task"]["t:%d" % i])[0] for i in (1, 2, 3)]
+        self.assertGreater(r[0], r[1])
+        self.assertGreater(r[1], r[2])
+
+    def test_zero_artifacts_sits_on_the_rim(self):
+        lay = render_board._concentric_layout([_lt("t:1", 1, "green", artifacts=0)])
+        self.assertAlmostEqual(_polar(lay["task"]["t:1"])[0], render_board.R_TASK_MAX,
+                               places=6)
+        # …just inside the magnets, so a task never lands on top of one.
+        self.assertLess(render_board.R_TASK_MAX, render_board.R_RIM)
+
+    def test_the_radius_scale_is_clamped(self):
+        # A task with twelve PRs must NOT collapse into the centre — log-scaled, then
+        # clamped at R_TASK_MIN, which is still well outside the story band and core.
+        r12 = render_board._entangle_radius(12)
+        self.assertAlmostEqual(r12, render_board.R_TASK_MIN, places=6)
+        self.assertGreater(r12, render_board.R_STORY)
+        self.assertGreater(render_board.R_STORY, render_board.R_CORE)
+        self.assertEqual(render_board._entangle_radius(999),
+                         render_board._entangle_radius(12))
+
+    def test_a_nested_parent_produces_a_bubble_inside_a_bubble(self):
+        # What 4a's path unlocked: nesting is free because each bubble is hulled over
+        # its own subtree.
+        tasks = [_lt("t:1", 1, "green"), _lt("t:2", 2, "green", parent="t:1"),
+                 _lt("t:3", 3, "green", parent="t:2")]
+        lay = render_board._concentric_layout(tasks)
+        kinds = {b["key"]: b["members"] for b in lay["bubbles"]
+                 if b["kind"] == "parent"}
+        self.assertEqual(kinds["t:1"], ["t:1", "t:2", "t:3"])    # outer
+        self.assertEqual(kinds["t:2"], ["t:2", "t:3"])           # …and the inner one
+        # the inner cluster is tighter than the outer one — it has to fit inside it
+        p, c, g = (lay["task"]["t:1"], lay["task"]["t:2"], lay["task"]["t:3"])
+        self.assertLess(math.hypot(g[0] - c[0], g[1] - c[1]),
+                        math.hypot(c[0] - p[0], c[1] - p[1]))
+
+    def test_a_repo_bubble_contains_its_prs_and_a_story_is_a_bare_magnet(self):
+        lay = render_board._concentric_layout(
+            [_lt("t:1", 1, "green")], stories=["sig:story:S1"],
+            repos={"sig:repo:one": ["sig:pr:a", "sig:pr:b"]})
+        bub = [b for b in lay["bubbles"] if b["kind"] == "repo"]
+        self.assertEqual(len(bub), 1)
+        self.assertEqual(bub[0]["members"],
+                         ["sig:pr:a", "sig:pr:b", "sig:repo:one"])
+        for p in ("sig:pr:a", "sig:pr:b"):
+            self.assertIn(p, lay["pr"])
+        # a story is a NODE on the band — never a hull, and never inside a repo bubble
+        self.assertIn("sig:story:S1", lay["story"])
+        self.assertNotIn("sig:story:S1",
+                         [m for b in lay["bubbles"] for m in b["members"]])
+        self.assertAlmostEqual(_polar(lay["story"]["sig:story:S1"])[0],
+                               render_board.R_STORY, places=6)
+
+    def test_a_story_spanning_two_repos_is_in_neither_bubble(self):
+        # 37 of 70 real stories span more than one repo, which is exactly why a story is
+        # a magnet: a story bubble would have to cut through repo boundaries.
+        lay = render_board._concentric_layout(
+            [_lt("t:1", 1, "green", artifacts=2), _lt("t:2", 2, "red", artifacts=2)],
+            stories=["sig:story:wide"],
+            repos={"sig:repo:one": ["sig:pr:a"], "sig:repo:two": ["sig:pr:b"]})
+        members = [m for b in lay["bubbles"] if b["kind"] == "repo"
+                   for m in b["members"]]
+        self.assertNotIn("sig:story:wide", members)
+        self.assertEqual(len([b for b in lay["bubbles"] if b["kind"] == "repo"]), 2)
+        # both repos are in the core, the story out on its own band
+        for k in ("sig:repo:one", "sig:repo:two"):
+            self.assertAlmostEqual(_polar(lay["repo"][k])[0], render_board.R_CORE,
+                                   places=6)
+
+    def test_the_ring_order_is_outermost_in(self):
+        self.assertGreater(render_board.R_RIM, render_board.R_TASK_MAX)
+        self.assertGreater(render_board.R_TASK_MAX, render_board.R_GROUP)
+        self.assertGreater(render_board.R_TASK_MIN, render_board.R_STORY)
+        self.assertGreater(render_board.R_STORY, render_board.R_CORE)
+
+    def test_a_parent_cycle_does_not_hang_the_layout(self):
+        # Stage 3 warns on a parent cycle but ALWAYS stores it, so the layout has to be
+        # cycle-safe by construction rather than by hoping the data is a tree.
+        tasks = [_lt("t:1", 1, "green", parent="t:2"),
+                 _lt("t:2", 2, "green", parent="t:1")]
+        lay = render_board._concentric_layout(tasks)
+        self.assertEqual(set(lay["task"]), {"t:1", "t:2"})
+
+    def test_a_self_parent_is_treated_as_loose(self):
+        lay = render_board._concentric_layout([_lt("t:1", 1, "green", parent="t:1")])
+        self.assertEqual(lay["bubbles"], [])
+        self.assertAlmostEqual(_polar(lay["task"]["t:1"])[0], render_board.R_TASK_MAX,
+                               places=6)
+
+
+class ConcentricRenderTest(_BoardBase):
+    """F4b — the layout reaching the real render: no cap, no Unlinked group, bubbles."""
+
+    def test_sixty_tasks_all_draw(self):
+        # The 40-cap is gone. One task pair shares a PR so the panel has an edge (the
+        # relation-free gate is unchanged); the other 58 have nothing at all and are
+        # promoted onto the rim.
+        self._seed("Shared work one", prs=[_PR])
+        self._seed("Shared work two", prs=[_PR])
+        for i in range(58):
+            self._seed("Loose task %02d" % i)
+        html = self._render("off")
+        drawn = [n for n in self._mgdata(html)["nodes"] if n.get("type") == "task"]
+        self.assertEqual(len(drawn), 60)
+        self.assertNotIn("· showing", html)                # nothing is being withheld
+
+    def test_no_unlinked_filter_group_is_emitted(self):
+        self._seed("Shared work one", prs=[_PR])
+        self._seed("Shared work two", prs=[_PR])
+        self._seed("A relation-free task")
+        html = self._render("off")
+        self.assertNotIn('mkGroup("Unlinked")', html)
+        self.assertNotIn("unlinked tasks", html)
+        self.assertNotIn("soloRow", html)
+
+    def test_the_canvas_pulls_toward_the_layout_but_does_not_pin(self):
+        # The rings have to survive the canvas physics or the layout is invisible: the
+        # server's slot becomes an ATTRACTOR (n._lt), not a pin — so repulsion still
+        # separates co-located nodes and drag-a-node still works.
+        self.assertIn("n._lt={x:n.x,y:n.y}", render_board._MG_ENHANCE_JS)
+        self.assertIn("else if(n._lt){n.vx+=(n._lt.x-n.x)*LAYK", render_board._MG_ENHANCE_JS)
+        self.assertIn("var LAYK=", render_board._MG_ENHANCE_JS)
+        # the galaxy well still WINS when present, so 4a's Interbrain grouping is intact
+        self.assertLess(render_board._MG_ENHANCE_JS.index("if(n._well){"),
+                        render_board._MG_ENHANCE_JS.index("else if(n._lt){"))
+        # …and nothing was converted to a hard pin
+        self.assertNotIn("n.fixed=true;n._lt", render_board._MG_ENHANCE_JS)
+
+    def test_a_parent_bubble_is_drawn_as_a_hull_path(self):
+        parent = self._seed("Programme root", prs=[_PR])
+        self._seed("Sibling sharing the pr", prs=[_PR])
+        for i in range(3):
+            kid = self._seed("Child %d" % i)
+            kid = ts.load_task(kid["id"])
+            ts.append_related(kid, parent, "parent")
+            ts.save_task(kid)
+        html = self._render("off")
+        self.assertIn('class="mg-bubble mg-bubble-parent"', html)
+        self.assertIn(".mg-bubble{", html)                  # …and it has a style rule
+
+
 if __name__ == "__main__":
     unittest.main()

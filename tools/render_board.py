@@ -802,6 +802,12 @@ def _css(default_variant, category_css):
   .minigraph .mgcount{color:var(--dim);font-weight:400;font-size:.85em}
   .mgwrap{padding:6px 14px 14px}
   .mgsvg{width:100%;height:auto;display:block;max-width:640px;margin:0 auto}
+  /* F4b: boundary BUBBLES — a parent's subtree, and a repo's own PRs. A bubble says
+     CONTAINS (a magnet only says SHARES AN ATTRIBUTE), so it is drawn as a filled
+     hull UNDER the edges and nodes, faint enough to read as ground rather than mark. */
+  .mg-bubble{fill:var(--accent);fill-opacity:.07;stroke:var(--accent);stroke-opacity:.42;
+    stroke-width:1.6;stroke-linejoin:round}
+  .mg-bubble-repo{fill:var(--mg-repo);stroke:var(--mg-repo);stroke-dasharray:5 4}
   .mg-edge{stroke:var(--dim);stroke-width:1.4;fill:none;opacity:.55}
   .mg-edge.k-related{stroke:var(--accent);opacity:.5}
   .mg-edge.k-touch{stroke:var(--accent);stroke-dasharray:4 3;opacity:.7}
@@ -3587,6 +3593,193 @@ def _blob_path(pts, pad=18.0):
     return {"kind": "hull", "d": _smooth_closed_path(exp)}
 
 
+# ---------------------------------------------------------------------------
+# F4b: the CONCENTRIC layout — four rings, outermost in, and two placement axes
+# with one job each. Pure and deterministic: same inputs → byte-identical output,
+# which is what lets the whole design be unit-tested without a browser.
+#
+#   rim    (R_RIM)    12 category MAGNETS      — attract, no boundary
+#   middle            task nodes + parent BUBBLES (boundaries)
+#   story  (R_STORY)  story MAGNETS
+#   core   (R_CORE)   repo BUBBLES, each holding its own PRs
+#
+# WHY repo is a boundary and story is a magnet, measured — do not invert it: 37 of
+# 70 stories span more than one repo (one spans five), while a PR always lives in
+# exactly ONE repo. So a PR nests in its repo truthfully, and a story that
+# contained PRs would have to cut through five repo boundaries.
+# A BUBBLE says CONTAINS; a MAGNET says SHARES AN ATTRIBUTE.
+#
+# THE RULE THAT KEEPS BUBBLES INTACT: a task inside a group is positioned by its
+# group ALONE — no category pull, no core pull. Not an optimisation: the live
+# programme has 8 children spanning 5 categories, so a category-driven angle would
+# tear that bubble across five sectors. Parents are unmagnetised for the same
+# reason. Only LOOSE tasks take angle from category and radius from entanglement.
+# ---------------------------------------------------------------------------
+R_RIM = 214.0          # category magnets
+R_TASK_MAX = 194.0     # a loose task with ZERO shared artifacts — "on the rim"
+R_TASK_MIN = 122.0     # …and the most entangled one. Never 0: see _entangle_radius.
+R_GROUP = 156.0        # group roots (a parent with no parent of its own)
+R_STORY = 88.0         # the story band
+R_CORE = 38.0          # repo bubble centres
+# Members of one category fan across this many radians. Kept well under the
+# 2π/12 ≈ 0.52 gap between magnets so a sector never bleeds into its neighbour —
+# which is what makes "two tasks of one category are near each other" true.
+CAT_SPAN = 0.40
+# Children ring radius around their parent, and the shrink factor per nesting level
+# so an inner bubble fits inside its outer one.
+R_CHILD = 46.0
+CHILD_SHRINK = 0.52
+# Artifacts at which entanglement saturates. Log-scaled to here, then CLAMPED, so a
+# task with twelve PRs lands at R_TASK_MIN rather than collapsing into the centre.
+ENTANGLE_FULL = 6
+
+
+def _entangle_radius(artifacts):
+    """Radius for a LOOSE task from how entangled it is in shared work: the count of
+    distinct shared artifacts (PR / story / repo signals it participates in). Zero
+    sits on the rim; more pulls inward, log-scaled and clamped at `R_TASK_MIN` so
+    one task with a dozen PRs never reaches the core."""
+    n = max(0, int(artifacts or 0))
+    if n <= 0:
+        return R_TASK_MAX
+    t = min(1.0, math.log1p(n) / math.log1p(ENTANGLE_FULL))
+    return R_TASK_MAX - t * (R_TASK_MAX - R_TASK_MIN)
+
+
+def _ring_angles(keys, count=None):
+    """Evenly-spaced angles for `keys`, assigned over the SORTED keys so the
+    arrangement is identical across renders — the reason the rim never wobbles.
+    `count` overrides the divisor when slots should stay reserved."""
+    ks = sorted(keys)
+    n = count if count is not None else len(ks)
+    return {k: (-math.pi / 2 + (2 * math.pi * i / n if n else 0.0))
+            for i, k in enumerate(ks)}
+
+
+def _concentric_layout(tasks, stories=(), repos=None, cx=0.0, cy=0.0):
+    """Place every task, category magnet, story magnet, repo bubble and PR.
+
+    `tasks` — one dict per task, `{"id", "seq", "cat", "parent", "artifacts"}`.
+    `parent` is another task's id or None; `artifacts` is the shared-artifact count
+    (ignored for a task that has a parent — a grouped task feels no core pull).
+    `stories` — story keys for the band. `repos` — `{repo key: [pr key, …]}`.
+
+    Returns `{"task", "cat", "story", "repo", "pr"}` position maps plus `"bubbles"`
+    — `[{"kind", "key", "members"}]`, one per parent (its subtree) and one per repo
+    (its PRs), for the caller to hull. Pure: no I/O, no globals, no randomness."""
+    by_id = {t["id"]: t for t in tasks}
+    kids = {}
+    for t in tasks:
+        p = t.get("parent")
+        if p and p in by_id and p != t["id"]:
+            kids.setdefault(p, []).append(t["id"])
+    for p in kids:
+        kids[p].sort(key=lambda i: (by_id[i].get("seq") is None,
+                                    by_id[i].get("seq"), i))
+
+    def _root(tid, seen=None):
+        """The outermost ancestor of `tid`. Cycle-safe by construction — a `parent`
+        cycle is legal in the store (Stage 3 warns but always stores), so a naive
+        walk here would not terminate."""
+        seen = seen or set()
+        cur = tid
+        while True:
+            if cur in seen:
+                return cur                      # a cycle: treat this node as a root
+            seen.add(cur)
+            p = (by_id.get(cur) or {}).get("parent")
+            if not p or p not in by_id or p == cur:
+                return cur
+            cur = p
+
+    grouped = {t["id"] for t in tasks if _root(t["id"]) != t["id"]}
+    roots = sorted((p for p in kids if p not in grouped),
+                   key=lambda i: (by_id[i].get("seq") is None, by_id[i].get("seq"), i))
+    loose = [t for t in tasks if t["id"] not in grouped and t["id"] not in kids]
+
+    pos = {}
+    # -- rim: one magnet per category actually in use, on sorted keys ------------
+    cat_keys = sorted({(t.get("cat") or "") for t in tasks})
+    cat_ang = _ring_angles(cat_keys)
+    cat_pos = {k: (cx + R_RIM * math.cos(a), cy + R_RIM * math.sin(a))
+               for k, a in cat_ang.items()}
+    # -- middle, loose tasks: ANGLE from category, RADIUS from entanglement ------
+    per_cat = {}
+    for t in sorted(loose, key=lambda t: (t.get("seq") is None, t.get("seq"), t["id"])):
+        per_cat.setdefault(t.get("cat") or "", []).append(t)
+    for key, members in per_cat.items():
+        base = cat_ang.get(key, -math.pi / 2)
+        m = len(members)
+        for j, t in enumerate(members):
+            off = 0.0 if m <= 1 else (j / float(m - 1) - 0.5) * CAT_SPAN
+            a = base + off
+            r = _entangle_radius(t.get("artifacts"))
+            pos[t["id"]] = (cx + r * math.cos(a), cy + r * math.sin(a))
+    # -- middle, groups: a root gets a reserved slot, its subtree clusters on it --
+    # The root is NOT magnetised and its children take angle from IT, which is the
+    # whole reason a bubble survives its members spanning five categories.
+    root_ang = _ring_angles(roots) if roots else {}
+
+    def _place_subtree(tid, x, y, radius, seen=None):
+        # `seen` is load-bearing, not an optimisation: Stage 3 warns on a parent cycle
+        # but ALWAYS stores it, so a naive descent here would not terminate.
+        seen = seen if seen is not None else set()
+        if tid in seen:
+            return
+        seen.add(tid)
+        pos[tid] = (x, y)
+        ch = [c for c in (kids.get(tid) or []) if c not in seen]
+        for j, c in enumerate(ch):
+            a = -math.pi / 2 + (2 * math.pi * j / len(ch) if ch else 0.0)
+            _place_subtree(c, x + radius * math.cos(a), y + radius * math.sin(a),
+                           radius * CHILD_SHRINK, seen)
+
+    for r_id in roots:
+        a = root_ang[r_id]
+        _place_subtree(r_id, cx + R_GROUP * math.cos(a), cy + R_GROUP * math.sin(a),
+                       R_CHILD)
+    # A grouped task whose root never got placed (a parent cycle) still needs a spot.
+    for t in tasks:
+        if t["id"] not in pos:
+            a = cat_ang.get(t.get("cat") or "", -math.pi / 2)
+            pos[t["id"]] = (cx + R_TASK_MAX * math.cos(a),
+                            cy + R_TASK_MAX * math.sin(a))
+    # -- story band: magnets only, never a boundary ------------------------------
+    st_ang = _ring_angles(list(stories))
+    story_pos = {k: (cx + R_STORY * math.cos(a), cy + R_STORY * math.sin(a))
+                 for k, a in st_ang.items()}
+    # -- core: one repo BUBBLE per repo, its own PRs inside it -------------------
+    repos = repos or {}
+    rp_ang = _ring_angles(list(repos))
+    repo_pos, pr_pos = {}, {}
+    for k, a in rp_ang.items():
+        rx, ry = cx + R_CORE * math.cos(a), cy + R_CORE * math.sin(a)
+        repo_pos[k] = (rx, ry)
+        prs = sorted(repos.get(k) or [])
+        for j, p in enumerate(prs):
+            pa = -math.pi / 2 + (2 * math.pi * j / len(prs) if prs else 0.0)
+            pr_pos[p] = (rx + 17.0 * math.cos(pa), ry + 17.0 * math.sin(pa))
+
+    def _subtree(tid):
+        out, stack, seen = [], [tid], set()
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue                        # cycle-safe, same reason as _root
+            seen.add(cur)
+            out.append(cur)
+            stack.extend(kids.get(cur) or [])
+        return out
+
+    bubbles = [{"kind": "parent", "key": p, "members": sorted(_subtree(p))}
+               for p in sorted(kids)]
+    bubbles += [{"kind": "repo", "key": k,
+                 "members": sorted([k] + list(repos.get(k) or []))}
+                for k in sorted(repos)]
+    return {"task": pos, "cat": cat_pos, "story": story_pos, "repo": repo_pos,
+            "pr": pr_pos, "bubbles": bubbles}
+
+
 def _minigraph(graph, theme=None, variant=None, solo_pool=None):
     """Step 1: a small, collapsible, clustered 2D SVG of the task-relation graph. The
     graph (from `build_render_graph`) carries typed STRING ids: task nodes (`t:<seq>`),
@@ -3603,91 +3796,139 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
 
     Returns [] when the graph has no edges/nodes, so a relation-free board renders exactly
     as before — the panel simply isn't emitted. The single-positional / empty / None call
-    (`_minigraph(None)` / `_minigraph({"nodes":[],"edges":[]})`) still yields []. Caps the
-    drawn TASK nodes at 40 (highest-degree first, seq tie-break), then prunes signal hubs
-    with <2 surviving members and category hubs with <1.
+    (`_minigraph(None)` / `_minigraph({"nodes":[],"edges":[]})`) still yields [].
 
-    `solo_pool` (optional): every board task as {seq,title,color,status} — the ones NOT
-    drawn above (relation-free, capped-out, or pruned) are embedded in mg-data under
-    `"solo"`, seeded on concentric rings OUTSIDE the layout, for the canvas's default-off
-    "unlinked tasks" filter. They never join the static SVG and never create a panel on
-    their own (panel emission still requires ≥1 edge)."""
+    F4b: **EVERY task is drawn.** There is no draw cap and no "must have an edge"
+    entitlement — every task has exactly one category, and category membership is what
+    entitles it to a position. Placement is `_concentric_layout`: category magnets on the
+    rim, tasks and parent bubbles in the middle, story magnets on their own band, repo
+    bubbles holding their PRs in the core.
+
+    `solo_pool` (optional): every board task as {seq,title,color,status}. Any of them the
+    render graph built no node for is PROMOTED to a real node here and placed on the rim.
+    The `"solo"` mg-data key is therefore empty in practice — the pool is defined as the
+    board tasks this renderer does NOT draw, and it draws all of them — but the key is
+    still computed and emitted so anything reading it keeps a valid shape. Panel emission
+    still requires ≥1 edge."""
     nodes = list((graph or {}).get("nodes") or [])
     edges = list((graph or {}).get("edges") or [])
     if not edges or not nodes:
         return []
     by_id = {n["id"]: n for n in nodes}
 
-    # ---- cap TASK nodes only; then prune hubs left short of members -----------
-    task_nodes = [n for n in nodes if n.get("type") == "task"]
-    total_tasks = len(task_nodes)
-    CAP = 40
-    if total_tasks > CAP:
-        task_nodes = sorted(
-            task_nodes,
-            key=lambda n: (-(n.get("deg") or 0),
-                           n.get("seq") if n.get("seq") is not None else 1 << 30))[:CAP]
-    kept_task_ids = {n["id"] for n in task_nodes}
-    hub_members = {}                                   # hub id -> set(kept task id)
-    for e in edges:
-        tgt = by_id.get(e["b"])
-        if e["a"] in kept_task_ids and tgt and tgt.get("type") in ("hub", "signal"):
-            hub_members.setdefault(e["b"], set()).add(e["a"])
-    kept_ids = set(kept_task_ids)
-    for n in nodes:
-        if n.get("type") == "hub" and len(hub_members.get(n["id"], ())) >= 1:
-            kept_ids.add(n["id"])
-        elif n.get("type") == "signal" and len(hub_members.get(n["id"], ())) >= 2:
-            kept_ids.add(n["id"])
-    draw_edges = [e for e in edges if e["a"] in kept_ids and e["b"] in kept_ids]
-    if not draw_edges:
-        return []
-    draw_nodes = [n for n in nodes if n["id"] in kept_ids]
-
-    # ---- deterministic closed-form layout -------------------------------------
     W, H = 720, 520
     CX, CY = W / 2.0, H / 2.0
+
+    # ---- EVERY task is drawn ---------------------------------------------------
+    # The 40-node cap is GONE, and so is the "must have an edge" entitlement. Every
+    # task has exactly one CATEGORY, and category membership — not an edge — is what
+    # entitles a task to a position. The cap existed because the old force-directed
+    # layout became spaghetti past that size; a deterministic concentric layout
+    # removes the reason for it rather than needing it raised.
+    #
+    # Tasks the render graph built no node for (no lineage edge, no shared signal)
+    # arrive via `solo_pool` and are PROMOTED to real nodes here. They carry no
+    # parent and no shared artifact, so the layout puts them exactly where they
+    # belong: ON THE RIM, which is what having no relation looks like.
+    for p in (solo_pool or []):
+        if p.get("seq") is None or ("t:%s" % p["seq"]) in by_id:
+            continue
+        n = {"id": "t:%s" % p["seq"], "type": "task", "seq": p["seq"],
+             "title": p.get("title", ""), "color": p.get("color"),
+             "status": p.get("status"), "deg": 0}
+        nodes.append(n)
+        by_id[n["id"]] = n
+    # The panel gate is unchanged: a store with no relation at all still renders no
+    # graph, so a relation-free board looks exactly as it does today.
+    draw_edges = list(edges)
+    if not draw_edges:
+        return []
+    draw_nodes = list(nodes)
+    task_nodes = [n for n in draw_nodes if n.get("type") == "task"]
+    total_tasks = len(task_nodes)
+
+    # ---- layout inputs, every one derived from the graph itself ----------------
+    hub_members = {}                       # hub/signal id -> {task id}
+    task_signals = {}                      # task id -> {signal id} = its artifacts
+    parent_of = {}                         # child id -> parent id
+    for e in draw_edges:
+        tgt = by_id.get(e["b"])
+        if tgt and tgt.get("type") in ("hub", "signal"):
+            hub_members.setdefault(e["b"], set()).add(e["a"])
+            if tgt.get("type") == "signal":
+                task_signals.setdefault(e["a"], set()).add(e["b"])
+        # Stage 3 stores a `parent` edge on the CHILD (the subordinate side stores
+        # the edge), so a → b reads child → parent.
+        if e.get("kind") == "parent" and e["a"] in by_id and e["b"] in by_id:
+            parent_of[e["a"]] = e["b"]
+    lay_tasks = [{"id": n["id"], "seq": n.get("seq"), "cat": n.get("color") or "",
+                  "parent": parent_of.get(n["id"]),
+                  "artifacts": len(task_signals.get(n["id"]) or ())}
+                 for n in task_nodes]
+
+    def _sig_of_kind(k):
+        return [s["id"] for s in draw_nodes
+                if s.get("type") == "signal" and s.get("kind") == k]
+
+    story_keys, repo_keys, pr_keys = (_sig_of_kind("story"), _sig_of_kind("repo"),
+                                      _sig_of_kind("pr"))
+    # A PR nests in a repo bubble only when the join is UNAMBIGUOUS: every task on
+    # the PR also sits on exactly one common repo. The store carries no PR→repo
+    # field at all — repo signals come from a task's `projects`, PR signals from a
+    # PR url, which are different namespaces with no key to join on — so this is
+    # derived from shared membership and deliberately REFUSES to guess: an ambiguous
+    # PR stays a free node in the core rather than being nested in the wrong repo.
+    repos = {k: [] for k in repo_keys}
+    for p in pr_keys:
+        tp = hub_members.get(p) or set()
+        cand = [r for r in repo_keys if tp and tp <= (hub_members.get(r) or set())]
+        if len(cand) == 1:
+            repos[cand[0]].append(p)
+    lay = _concentric_layout(lay_tasks, stories=story_keys, repos=repos,
+                             cx=CX, cy=CY)
+
+    # ---- the category RIM: one magnet per category in use ----------------------
+    # build_render_graph only mints a `cat:` hub for a category with an edge-connected
+    # task, so the promoted tasks above would otherwise leave gaps in the rim. Any
+    # missing magnet is synthesised here — a node with no spokes, which is exactly
+    # what a magnet is (it attracts; it is not a boundary).
+    try:
+        import categories as _cats
+    except Exception:
+        _cats = None
+    have_cat = {n.get("key") for n in draw_nodes if n.get("type") == "hub"}
+    for key in sorted(lay["cat"]):
+        if key in have_cat or not key:
+            continue
+        label = key
+        if _cats is not None:
+            try:
+                meta = _cats.hub_meta(key)
+                label = "%s [%s] %s" % (meta["dot"], meta["tag"], meta["label"])
+            except Exception:
+                label = key
+        n = {"id": "cat:%s" % key, "type": "hub", "key": key, "label": label,
+             "status": "open", "deg": 0}
+        draw_nodes.append(n)
+        by_id[n["id"]] = n
     cat_hubs = sorted((n for n in draw_nodes if n.get("type") == "hub"),
                       key=lambda n: n["id"])
     sig_hubs = sorted((n for n in draw_nodes if n.get("type") == "signal"),
                       key=lambda n: n["id"])
-    hub_pos, hub_ang, task_pos = {}, {}, {}
-    C = len(cat_hubs)
-    Rc = 178.0
-    for i, h in enumerate(cat_hubs):
-        ang = -math.pi / 2 + (2 * math.pi * i / C if C else 0)
-        hub_ang[h["id"]] = ang
-        hub_pos[h["id"]] = (CX + Rc * math.cos(ang), CY + Rc * math.sin(ang))
-    r_task = 60.0
-    for h in cat_hubs:
-        members = sorted((t for t in hub_members.get(h["id"], ()) if t in kept_task_ids),
-                         key=lambda tid: by_id[tid].get("seq") or 0)
-        m = len(members)
-        base = hub_ang[h["id"]]
-        span = min(math.pi * 0.9, 0.42 * m)
-        hx, hy = hub_pos[h["id"]]
-        for j, tid_ in enumerate(members):
-            off = 0.0 if m <= 1 else (j / (m - 1) - 0.5) * span
-            a = base + off
-            task_pos[tid_] = (hx + r_task * math.cos(a), hy + r_task * math.sin(a))
-    free = sorted((n for n in draw_nodes
-                   if n.get("type") == "task" and n["id"] not in task_pos),
-                  key=lambda n: n.get("seq") or 0)
-    F = len(free)
-    Ri = 82.0
-    for k, n in enumerate(free):
-        a = -math.pi / 2 + (2 * math.pi * k / F if F else 0)
-        # a lone free task sits dead-centre; otherwise on a small inner ring
-        task_pos[n["id"]] = ((CX, CY) if F == 1 else
-                             (CX + Ri * math.cos(a), CY + Ri * math.sin(a)))
+    task_pos = dict(lay["task"])
+    hub_pos = {h["id"]: lay["cat"].get(h.get("key") or "", (CX, CY - R_RIM))
+               for h in cat_hubs}
     sig_pos = {}
     for s in sig_hubs:
-        pts = [task_pos[t] for t in hub_members.get(s["id"], ()) if t in task_pos]
-        if pts:
-            sig_pos[s["id"]] = (sum(p[0] for p in pts) / len(pts),
-                                sum(p[1] for p in pts) / len(pts))
+        sid, kind = s["id"], (s.get("kind") or "pr")
+        if kind == "story":
+            sig_pos[sid] = lay["story"].get(sid, (CX, CY))
+        elif kind == "repo":
+            sig_pos[sid] = lay["repo"].get(sid, (CX, CY))
         else:
-            sig_pos[s["id"]] = (CX, CY)
+            # A PR the join could not place sits on a small ring of its own so two
+            # unplaced PRs never stack on the exact same point.
+            sig_pos[sid] = lay["pr"].get(sid) or (CX, CY - R_CORE - 20.0)
     pos = {}
     pos.update(task_pos)
     pos.update(hub_pos)
@@ -3701,9 +3942,29 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
             return "#%s" % n.get("seq")
         return n.get("label") or nid
 
-    # ---- SVG: edges under nodes -----------------------------------------------
+    # ---- SVG: boundary BUBBLES, under everything -------------------------------
+    # A bubble says CONTAINS: a parent's subtree, and a repo's own PRs. Drawn with
+    # the same `_blob_path` the canvas twin uses, so a degenerate group (one member,
+    # or collinear ones) falls back to a circle and NEVER runs hull math — the 2.0.0
+    # crash class. Nesting is free: a child that is itself a parent gets its own
+    # inner bubble, because each bubble is hulled independently over its subtree.
     svg = ['<svg class="mgsvg" viewBox="0 0 %d %d" role="img" '
            'aria-label="Task Graph">' % (W, H)]
+    for b in lay["bubbles"]:
+        pts = [pos[m] for m in b["members"] if m in pos]
+        if not pts:
+            continue
+        blob = _blob_path(pts, pad=14.0 if b["kind"] == "repo" else 20.0)
+        if not blob["d"]:
+            continue
+        lbl = ("repo bubble: %s" % (by_id.get(b["key"], {}).get("label") or b["key"])
+               if b["kind"] == "repo" else
+               "children of %s" % _short_hub_label(
+                   "#%s" % (by_id.get(b["key"], {}).get("seq") or "?")))
+        svg.append('<path class="mg-bubble mg-bubble-%s" d="%s"><title>%s</title></path>'
+                   % (b["kind"], blob["d"], _e(lbl)))
+
+    # ---- SVG: edges under nodes -----------------------------------------------
     for e in draw_edges:
         if e["a"] not in pos or e["b"] not in pos:
             continue
@@ -3813,9 +4074,10 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
         data_nodes.append(d)
     svg.append('</svg>')
 
-    # ---- solo (undrawn) tasks for the canvas's default-off "unlinked" filter ----
-    # Concentric rings outside the layout (Rc=178 + task arc ≈ 240 max), deterministic
-    # order (seq asc). Ring capacity grows with circumference so dense stores stay tidy.
+    # ---- the mg-data `solo` pool: board tasks this renderer did not draw -------
+    # Empty in practice, since the promotion above draws every one of them; kept so the
+    # key holds its shape for any reader. An entry would be seeded on rings outside the
+    # rim, in deterministic seq order, with ring capacity growing with circumference.
     solo_data = []
     drawn_seqs = {n.get("seq") for n in draw_nodes if n.get("type") == "task"}
     pool = [p for p in (solo_pool or [])
@@ -3947,9 +4209,10 @@ _MG_ENHANCE_JS = """try{(function(){
     o.r=(n.type==="task")?(6+Math.min(o.deg,6)*1.7):(n.type==="hub")?12:6;
     nodes.push(o);byId[o.id]=o;
   });
-  // UNDRAWN (unlinked/capped) tasks ride along as STATIC solo nodes: pre-seeded on
-  // outer rings, fixed, and excluded from the physics — zero sim cost. Hidden until
-  // the default-off "unlinked tasks" filter turns them on.
+  // The `solo` pool from mg-data. Every board task now arrives as a real placed node
+  // above, so this normally adds nothing; it stays as a guard for any entry the server
+  // still pools. Such a node is STATIC — pre-seeded, fixed, and excluded from the
+  // physics — so it costs the sim nothing.
   rawSolo.forEach(function(n){
     if(byId["t:"+n.seq])return;
     var o={id:"t:"+n.seq,type:"task",solo:true,fixed:true,deg:0,label:"",sx0:n.x||0,sy0:n.y||0,
@@ -3974,7 +4237,13 @@ _MG_ENHANCE_JS = """try{(function(){
 
   function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
   var SW=720,SH=520,SCL=0.78;
-  function seedXY(){var rnd=mulberry32(20260715);nodes.forEach(function(n){n.x=(n.sx0-SW/2)*SCL;n.y=(n.sy0-SH/2)*SCL;n.vx=0;n.vy=0;n.vz=0;});}
+  // F4b: the server's CONCENTRIC layout arrives as each node's sx0/sy0, so the same
+  // transform that seeds a node also gives its layout TARGET. Stamped once, here, and
+  // used by tick() as an attractor — so the four rings read on the canvas while
+  // repulsion, edge springs and drag-a-node all keep working. Pinning every node
+  // would hold the rings harder but would kill dragging and the force layout with it.
+  function seedXY(){var rnd=mulberry32(20260715);nodes.forEach(function(n){n.x=(n.sx0-SW/2)*SCL;n.y=(n.sy0-SH/2)*SCL;n.vx=0;n.vy=0;n.vz=0;
+    if(!n.solo)n._lt={x:n.x,y:n.y};});}
   // B7: a deterministic z spread — 3D ONLY. Switching to 3D / Reset-in-3D re-seeds z + reheats
   // so the forces pull nodes into volume. G1: in 2D z must stay 0 (a leftover z spread made
   // the 2D Reset settle messily with overlaps), so 2D uses flattenZ instead.
@@ -3987,6 +4256,10 @@ _MG_ENHANCE_JS = """try{(function(){
   var simN=0;nodes.forEach(function(n){if(!n.solo)simN++;});
   var SPREAD=Math.max(1,Math.sqrt(simN/10));
   var WELLK=0.032;                                 // F3: per-node galaxy-well attraction
+  // F4b: pull toward the server's concentric layout slot. Firmer than the well (the
+  // layout IS the design, not a grouping hint) but still a SPRING, not a pin — so
+  // repulsion keeps co-located nodes from stacking and a dragged node still settles back.
+  var LAYK=0.05;
   var hubNodes=nodes.filter(function(n){return n.type==="hub";});
   hubNodes.forEach(function(h,i){var a=2*Math.PI*i/Math.max(1,hubNodes.length),tilt=(i%2?1:-1)*70*SPREAD;h.ax=Math.cos(a)*150*SPREAD;h.ay=tilt;h.az=Math.sin(a)*150*SPREAD;});
 
@@ -4014,15 +4287,23 @@ _MG_ENHANCE_JS = """try{(function(){
     });
     nodes.forEach(function(n){
       if(n.solo)return;                              // static — never simulated
-      if(n.type==="hub"){n.vx+=(n.ax-n.x)*0.02;n.vy+=(n.ay-n.y)*0.02;if(mode==="3d")n.vz+=(n.az-n.z)*0.02;}
+      // A hub with a layout target takes it instead of the legacy hub ring — the rim
+      // magnets belong on the rim the tasks were placed against, not on a second ring.
+      if(n.type==="hub"&&!n._lt){n.vx+=(n.ax-n.x)*0.02;n.vy+=(n.ay-n.y)*0.02;if(mode==="3d")n.vz+=(n.az-n.z)*0.02;}
       // stronger centering gravity keeps weakly-connected nodes from drifting far out
       // (which stretched the bbox + made the fit tiny/scattered) → a compact, balanced
       // equilibrium where every node sits reasonably close to the pack.
       // F3: a task assigned to a galaxy well is pulled to it (per-focus-level gravity);
       // everything else (hubs, and every node when Interbrain is OFF → no wells) keeps the
       // original origin-centering, so the OFF layout is physics-identical — the parity law.
+      // F4b: else the CONCENTRIC layout target — the four rings as an attractor. The
+      // galaxy well WINS when present (Interbrain on keeps 4a's galaxy grouping
+      // untouched); the layout drives the default path, which is the store the rings
+      // were designed for. Falling through to plain origin gravity keeps a node that
+      // somehow has neither behaving exactly as it does today.
       if(n._well){var wx=(mode==="2d")?n._well.bx:n._well.ax,wy=(mode==="2d")?n._well.by:0,wz=(mode==="2d")?0:n._well.az;
         n.vx+=(wx-n.x)*WELLK;n.vy+=(wy-n.y)*WELLK;n.vz+=(wz-n.z)*WELLK;}
+      else if(n._lt){n.vx+=(n._lt.x-n.x)*LAYK;n.vy+=(n._lt.y-n.y)*LAYK;n.vz+=(-n.z)*LAYK;}
       else{var grav=0.009/SPREAD;n.vx+=(-n.x)*grav;n.vy+=(-n.y)*grav;n.vz+=(-n.z)*grav;}
       if(mode==="2d")n.vz+=(-n.z)*0.22;               // G1: strong flatten keeps 2D planar
       if(!n.fixed){n.x+=n.vx*0.5*alpha;n.y+=n.vy*0.5*alpha;n.z+=n.vz*0.5*alpha;}
@@ -4097,9 +4378,14 @@ _MG_ENHANCE_JS = """try{(function(){
   }
 
   var EDGEW={membership:1,lineage:2.1,pr:2.4,repo:1.6,story:1.8,touch:1.6,knowledge:1.8};
-  // ---- filter state (C2): all-on by default, EXCEPT solo (unlinked tasks) which is
-  // default-OFF; status is the task LIFECYCLE (open/active/closed), all-on. ----
-  var filt={cat:{},sig:{},edge:{},status:{},solo:false};
+  // ---- filter state (C2): every filter is all-on by default; status is the task
+  // LIFECYCLE (open/active/closed). ----
+  // `solo` is all-on like the rest and has no row of its own: the concentric layout
+  // draws every task — one with no relation at all sits ON THE RIM — so there is no
+  // undrawn population for a toggle to reveal. The flag is kept because mg-data can
+  // still carry a `solo` pool, and default-true is what makes such a node visible
+  // rather than stranded behind a control nothing renders.
+  var filt={cat:{},sig:{},edge:{},status:{},solo:true};
   var hover=null,selected=null,screenPos={},query="",terms=[];
   // F2: the shared focus (one brain / person / org, or none) drives BOTH the table and
   // the graph. Read from the same localStorage key the focus strip writes; a focused
@@ -4560,15 +4846,14 @@ _MG_ENHANCE_JS = """try{(function(){
     row.btn.addEventListener("click",function(){row.set(!row.get());gobj.refresh();kick();});
     gobj.group.appendChild(row.btn);gobj.rows.push(row);
   }
-  var catsPresent={},edgeKinds={},statusPresent={},soloCount=0;
+  var catsPresent={},edgeKinds={},statusPresent={};
   var sigNodes=nodes.filter(function(n){return n.type==="signal";}).sort(function(a,b){
     return (a.kind+a.label).localeCompare(b.kind+b.label);});
   nodes.forEach(function(n){if(n.type==="task"&&!n.solo&&n.cat!=null)catsPresent[n.cat]=(catsPresent[n.cat]||0)+1;});
-  nodes.forEach(function(n){if(n.type==="task"){statusPresent[n.status]=(statusPresent[n.status]||0)+1;if(n.solo)soloCount++;}});
+  nodes.forEach(function(n){if(n.type==="task")statusPresent[n.status]=(statusPresent[n.status]||0)+1;});
   edges.forEach(function(e){edgeKinds[e.cls]=(edgeKinds[e.cls]||0)+1;});
   var sigKinds={};sigNodes.forEach(function(s){sigKinds[s.kind]=(sigKinds[s.kind]||0)+1;});
   var SIGGLY={pr:"diamond",repo:"hexagon",story:"rounded"},EDGEDASH={repo:"5,4",story:"2,4",knowledge:"1,4"};
-  var soloRow=null,soloGroup=null;
   if(filtersEl){
     var ckeys=Object.keys(catsPresent).sort();
     if(ckeys.length){var g1=mkGroup("Tasks · category");ckeys.forEach(function(k){filt.cat[k]=true;pushRow(g1,mkRow(catLabels[k]||k,catsPresent[k],"circle",function(){return catColor(k);},function(v){filt.cat[k]=v;}));});filtersEl.appendChild(g1.group);}
@@ -4578,11 +4863,8 @@ _MG_ENHANCE_JS = """try{(function(){
     Object.keys(statusPresent).forEach(function(k){if(skeys.indexOf(k)<0)skeys.push(k);});
     if(skeys.length){var g1s=mkGroup("Tasks · status");skeys.forEach(function(k){filt.status[k]=true;
       pushRow(g1s,mkRow((STATGLY[k]||"")+" "+k,statusPresent[k],"circle",function(){return rootVar(STATVAR[k]||"--dim")||"#888";},function(v){filt.status[k]=v;}));});filtersEl.appendChild(g1s.group);}
-    // unlinked (undrawn) tasks — default OFF; toggling refits the view around the
-    // shown population (the outer solo ring changes the frame).
-    if(soloCount){soloGroup=mkGroup("Unlinked");
-      soloRow=mkRow("unlinked tasks",soloCount,"circle",function(){return rootVar("--dim")||"#888";},function(v){filt.solo=v;fitView();});
-      pushRow(soloGroup,soloRow);soloRow.set(false);soloGroup.refresh();filtersEl.appendChild(soloGroup.group);}
+    // The rail carries no row for undrawn tasks: the concentric layout draws every
+    // one of them. See the `filt.solo` note above.
     // one filter row per signal KIND (story / repo / pr), each showing+hiding ALL hubs of
     // that kind — their spokes prune for free via edgeVisible's endpoint check. Per-hub
     // rows grew without bound as repos and PRs accumulated, until the panel was longer
@@ -4603,7 +4885,7 @@ _MG_ENHANCE_JS = """try{(function(){
   }
   // initialise each group's smart toggle-all label to the current (all-on) state.
   groups.forEach(function(g){g.refresh();});
-  // restore every filter to its DEFAULT (all-on; unlinked back OFF) + resync the
+  // restore every filter to its DEFAULT (all-on) + resync the
   // toggle-all labels + the swatch colours (used by Reset).
   function resetFilters(){
     Object.keys(filt.cat).forEach(function(k){filt.cat[k]=true;});
@@ -4612,7 +4894,6 @@ _MG_ENHANCE_JS = """try{(function(){
     Object.keys(filt.status).forEach(function(k){filt.status[k]=true;});
     if(filtersEl){var offs=filtersEl.querySelectorAll(".mgf.off");
       Array.prototype.forEach.call(offs,function(b){b.classList.remove("off");});}
-    if(soloRow)soloRow.set(false);                 // unlinked tasks default OFF
     groups.forEach(function(g){g.refresh();});
   }
 
@@ -4671,9 +4952,8 @@ _MG_ENHANCE_JS = """try{(function(){
 
   // ---- D3: centerOnSeq exposed for the board's "View in graph" button ----
   function centerOnSeq(seq){var n=byId["t:"+seq];if(!n)return false;
-    // "View in graph" on an unlinked task auto-enables the solo filter so the
-    // target is actually visible.
-    if(n.solo&&!filt.solo&&soloRow){soloRow.set(true);if(soloGroup)soloGroup.refresh();}
+    // No solo-filter dance any more: every task is drawn, so "View in graph" always
+    // has a visible target.
     selected=n;renderInfo(n);if(perfLow){pivot.x=n.x;pivot.y=n.y;pivot.z=n.z;}kick();return true;}
   try{window.__mgCenterOnSeq=centerOnSeq;}catch(e){}
   if(document.querySelectorAll){var vbs=document.querySelectorAll(".mgviewbtn[data-graph-seq]");Array.prototype.forEach.call(vbs,function(b){if(byId["t:"+b.getAttribute("data-graph-seq")]){var w=b.closest?b.closest(".mgviewwrap"):null;if(w)w.hidden=false;else b.hidden=false;}});}
@@ -4812,9 +5092,10 @@ def render_html(tasks, *, theme=None, variant=None, variant_label=None, generate
         out.extend(_section("Open", open_tasks, theme, variant))
         out.extend(_section("Closed", closed_tasks, theme, variant, see_more_after=5))
         # WS-D: the task-relations mini-graph. Emitted only when the graph has edges
-        # (relation-free / bare stores show nothing — unchanged board). Every board
-        # task rides along as the solo pool so the canvas can offer the default-off
-        # "unlinked tasks" filter (tasks with no drawn relations).
+        # (relation-free / bare stores show nothing — unchanged board). F4b: every board
+        # task rides along here so `_minigraph` can PROMOTE the ones the render graph
+        # built no node for into real, placed nodes — which is what "draw every task"
+        # means.
         solo_pool = [{"seq": t.get("seq"), "title": t.get("title", ""),
                       "color": t.get("color"), "status": t.get("status")}
                      for t in tasks if t.get("seq") is not None]
