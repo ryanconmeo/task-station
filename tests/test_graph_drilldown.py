@@ -380,18 +380,22 @@ class EdgeRegistryTest(_BoardBase):
         self.assertIn(m.group(1), [r[0] for r in _ek_rows(html)])
 
     def test_every_mapped_edge_class_has_a_filter_row(self):
-        # The same rule one step earlier: a class CLS can PRODUCE also needs a row.
-        # `xbrain` (the cross-brain edge) is the one pre-existing exception — a subset
-        # check, so it may gain a row later without breaking, while a NEW unfiltered
-        # class fails here.
+        # The same rule one step earlier: a class CLS can PRODUCE also needs a row, or
+        # that edge draws with no way to turn it off. `xbrain` was the one grandfathered
+        # exception and has its row now, so this is an EXACT check — there is no
+        # exception set left to hide the next one in.
         html = self._pr_pair_html()
         m = re.search(r"var CLS=(\{.*?\});", html)
         self.assertIsNotNone(m, "CLS map not found in the emitted page")
         classes = set(re.findall(r':"([A-Za-z0-9_-]+)"', m.group(1)))
         self.assertNotIn("touch", classes)                 # the touches-same mapping is gone
         unfiltered = classes - {r[0] for r in _ek_rows(html)}
-        self.assertTrue(unfiltered <= {"xbrain"},
-                        "edge classes with no filter row: %s" % sorted(unfiltered))
+        self.assertEqual(unfiltered, set(),
+                         "edge classes with no filter row: %s" % sorted(unfiltered))
+
+    def test_the_cross_brain_edge_has_a_filter_row(self):
+        rows = _ek_rows(self._pr_pair_html())
+        self.assertIn("xbrain", [r[0] for r in rows])
 
 
 class TouchesSameRemovalTest(_BoardBase):
@@ -904,18 +908,15 @@ class ConcentricRenderTest(_BoardBase):
         self.assertNotIn("unlinked tasks", html)
         self.assertNotIn("soloRow", html)
 
-    def test_the_canvas_pulls_toward_the_layout_but_does_not_pin(self):
-        # The rings have to survive the canvas physics or the layout is invisible: the
-        # server's slot becomes an ATTRACTOR (n._lt), not a pin — so repulsion still
-        # separates co-located nodes and drag-a-node still works.
+    def test_the_canvas_holds_nodes_at_their_layout_slot(self):
+        # F4c INVERTED this: the slot is a PIN by default, and the spring back to it is
+        # only for the nodes that still simulate — a focused frame's members.
         self.assertIn("n._lt={x:n.x,y:n.y}", render_board._MG_ENHANCE_JS)
         self.assertIn("else if(n._lt){n.vx+=(n._lt.x-n.x)*LAYK", render_board._MG_ENHANCE_JS)
         self.assertIn("var LAYK=", render_board._MG_ENHANCE_JS)
         # the galaxy well still WINS when present, so 4a's Interbrain grouping is intact
         self.assertLess(render_board._MG_ENHANCE_JS.index("if(n._well){"),
                         render_board._MG_ENHANCE_JS.index("else if(n._lt){"))
-        # …and nothing was converted to a hard pin
-        self.assertNotIn("n.fixed=true;n._lt", render_board._MG_ENHANCE_JS)
 
     def test_a_parent_bubble_is_drawn_as_a_hull_path(self):
         parent = self._seed("Programme root", prs=[_PR])
@@ -928,6 +929,202 @@ class ConcentricRenderTest(_BoardBase):
         html = self._render("off")
         self.assertIn('class="mg-bubble mg-bubble-parent"', html)
         self.assertIn(".mg-bubble{", html)                  # …and it has a style rule
+
+
+# ============================ Stage 4c: pinning, seating, labels, and the two fixes ===
+class PinnedByDefaultTest(unittest.TestCase):
+    """F4c.1 — the canvas pins by default and simulates only the focused subset plus
+    whatever is dragged. 4b made the slot an ATTRACTOR, which left the naive O(n²) pair
+    loop running over 433 nodes: 93,528 pairs per tick and 20.6M in the first settle.
+    Pinning turns that into O(|sim| × n), and |sim| is 0 when nothing is focused."""
+
+    def setUp(self):
+        self.js = render_board._MG_ENHANCE_JS
+
+    def _body(self, name, until):
+        i = self.js.index("function %s(" % name)
+        return self.js[i:self.js.index(until, i)]
+
+    def test_tick_returns_immediately_when_nothing_simulates(self):
+        body = self._body("tick", "// camera:")
+        self.assertIn("if(!simList.length)return;", body)
+        # the pair loop is over simList × nodes, NOT the old nodes × nodes triangle
+        self.assertIn("for(var i=0;i<simList.length;i++)", body)
+        self.assertNotIn("for(var j=i+1;j<nodes.length;j++)", body)
+
+    def test_nothing_is_live_unless_focused_or_dragged(self):
+        body = self._body("rebuildSim", "function tick(")
+        self.assertIn("n===dragNode", body)                  # a dragged node simulates
+        self.assertIn("p.length>0", body)                    # …and only a FOCUSED frame
+        self.assertIn("isDescendant(n,p)", body)             # via 4a's containment test
+        self.assertIn("n.pinned=", body)
+        # the pin is EXACT — snapped to the slot with zero velocity, z included, or the
+        # random 3D z spread would never decay and would smear the rings into a ball
+        self.assertIn("n.x=n._lt.x;n.y=n._lt.y;n.z=0;n.vx=0;n.vy=0;n.vz=0;", body)
+
+    def test_settle_rebuilds_the_live_set_first(self):
+        # …so a settle with nothing focused iterates 220 no-ops instead of 20.6M pairs.
+        self.assertIn("function settle(iter){rebuildSim();", self.js)
+
+    def test_only_live_nodes_integrate(self):
+        body = self._body("tick", "// camera:")
+        self.assertIn("simList.forEach(function(n){", body)  # integration is over simList
+        self.assertIn("if(A.pinned&&B.pinned)return;", body)  # …and a pinned spring is inert
+
+    def test_a_dragged_node_unpins_and_re_pins_where_it_was_dropped(self):
+        # 4b's report flagged that pointerup cleared `fixed` — under pinning that would
+        # leave the node drifting with nothing to settle it.
+        self.assertIn('dragMode="node";dragNode=n;n.fixed=true;rebuildSim();', self.js)
+        self.assertIn("dragNode._lt={x:dragNode.x,y:dragNode.y};dragNode.fixed=false;",
+                      self.js)
+        self.assertNotIn('if(dragMode==="node"&&dragNode){dragNode.fixed=false;reheat(0.7);}',
+                         self.js)
+
+    def test_rotation_is_a_camera_transform_not_a_layout_change(self):
+        # auto-rotate advances yaw in step(); it must never reheat or re-settle.
+        body = self._body("step", "function draw()")
+        self.assertIn("else if(autoRotate){yaw+=0.0022;}", body)
+        self.assertNotIn("reheat", body)
+        self.assertNotIn("settle(", body)
+
+    def test_focus_visibility_routes_through_isDescendant(self):
+        # F4c.6: and it no longer compares `n.brain||""` against a focus minted with
+        # `brain:"main"`, which used to hide the node you had just clicked.
+        body = self._body("focusOkNode", "function nodeVisible")
+        self.assertIn("return isDescendant(n,galaxyPath());", body)
+        self.assertNotIn('n.brain||""', body)
+
+
+class BrainlessFocusTest(unittest.TestCase):
+    """F4c.6 — the node you click stays visible, through the Python twins of the same
+    rules the canvas uses (`nodePath` normalises a missing brain to "main")."""
+
+    def test_a_brainless_node_is_visible_when_focused_into(self):
+        node = {"type": "task", "id": "t:1", "owner": "ann"}      # owner, no brain
+        # navDescend mints exactly this focus for such a node
+        path = render_board._galaxy_path({"kind": "brain", "owner": "ann",
+                                          "brain": "main"})
+        self.assertEqual(path, ["ann", "main"])
+        self.assertTrue(render_board._is_descendant(node, path))
+        # the old comparison was `n.brain || ""` against "main" — this is what it did
+        self.assertNotEqual("", "main")
+
+    def test_a_node_in_another_brain_is_still_hidden(self):
+        node = {"type": "task", "id": "t:2", "owner": "ann", "brain": "side"}
+        path = render_board._galaxy_path({"kind": "brain", "owner": "ann",
+                                          "brain": "main"})
+        self.assertFalse(render_board._is_descendant(node, path))
+
+
+class SectorSeatingTest(unittest.TestCase):
+    """F4c.2 — the rim was clumped because 297 of 379 tasks have zero shared artifacts
+    and so shared ONE radius: 103 tasks in a 0.40 rad sector is 0.0039 rad each, closest
+    pair 0.67 units. Angle cannot fix it (the sector gap caps widening at ~20%), so the
+    band's second dimension does: theatre-seat rows."""
+
+    def _one_category(self, n, artifacts=0):
+        return [_lt("t:%d" % i, i, "orange", artifacts=artifacts)
+                for i in range(1, n + 1)]
+
+    def test_equal_entanglement_tasks_get_different_radii(self):
+        lay = render_board._concentric_layout(self._one_category(40))
+        radii = {round(_polar(p)[0], 3) for p in lay["task"].values()}
+        self.assertGreater(len(radii), 1, "40 identical tasks must not share one circle")
+
+    def test_a_hundred_task_category_is_not_clumped(self):
+        lay = render_board._concentric_layout(self._one_category(100))
+        pts = list(lay["task"].values())
+        self.assertEqual(len(pts), 100)
+        # no pair closer than the 6 units the clump measurement uses
+        closest = min(math.hypot(a[0] - b[0], a[1] - b[1])
+                      for i, a in enumerate(pts) for b in pts[i + 1:])
+        self.assertGreater(closest, 6.0, "closest pair %.2f units" % closest)
+        # …and no row is in clump territory (< 0.004 rad per task at one radius)
+        rows = {}
+        for p in pts:
+            r, a = _polar(p)
+            rows.setdefault(round(r, 3), []).append(a)
+        for r, angs in rows.items():
+            if len(angs) > 1:
+                self.assertGreater(render_board.CAT_SPAN / float(len(angs)), 0.004,
+                                   "row at r=%.1f holds %d" % (r, len(angs)))
+
+    def test_seating_stays_outside_the_story_band(self):
+        # The largest real category holds 103; that must not seat rows across the story
+        # magnets. Rows step strictly inward and are never clamped, because clamping
+        # would make two rows share a radius — the stacking this seating exists to stop.
+        lay = render_board._concentric_layout(self._one_category(103))
+        radii = [_polar(p)[0] for p in lay["task"].values()]
+        self.assertLessEqual(max(radii), render_board.R_TASK_MAX + 1e-6)
+        self.assertGreater(min(radii), render_board.R_STORY)
+
+    def test_entanglement_still_decides_which_row_you_start_in(self):
+        # The radial axis keeps its meaning: a more entangled task is further in, even
+        # when a big zero-entanglement group spills inward past its own first row.
+        tasks = self._one_category(30) + [_lt("t:900", 900, "orange", artifacts=5)]
+        lay = render_board._concentric_layout(tasks)
+        entangled = _polar(lay["task"]["t:900"])[0]
+        for tid, p in lay["task"].items():
+            if tid != "t:900":
+                self.assertGreater(_polar(p)[0], entangled)
+
+    def test_seating_is_deterministic(self):
+        tasks = self._one_category(50)
+        self.assertEqual(render_board._concentric_layout(tasks)["task"],
+                         render_board._concentric_layout(list(reversed(tasks)))["task"])
+
+
+class BoardRelationLabelTest(unittest.TestCase):
+    """F4c.3/4 — the board card labelled every new kind as `related`, and repeated
+    same-kind entries printed the word once per target."""
+
+    def _line(self, frm=(), inn=()):
+        return render_board._related_line({"from": list(frm), "in": list(inn)})
+
+    def test_each_kind_and_its_inverse_reads_correctly(self):
+        for kind, stored, derived in (
+                ("depends-on", "depends on", "blocks"),
+                ("parent", "parent", "children"),
+                ("duplicates", "duplicates", "duplicates"),
+                ("replaces", "replaces", "replaced by"),
+                ("absorbed-by", "absorbed-by", "absorbed"),
+                ("spawned-from", "from", "spawned")):
+            out = self._line(frm=[{"seq": 7, "kind": kind}])
+            self.assertTrue(out.startswith(stored + " "), "%s → %s" % (kind, out))
+            inn = self._line(inn=[{"seq": 8, "kind": kind, "status": "open"}])
+            self.assertTrue(inn.startswith(derived + " "), "%s ← %s" % (kind, inn))
+        # …and nothing is labelled `related` any more just for being unrecognised-adjacent
+        self.assertNotIn("related", self._line(frm=[{"seq": 7, "kind": "parent"}]))
+
+    def test_an_unknown_kind_still_falls_back_to_related(self):
+        self.assertIn("related", self._line(frm=[{"seq": 7, "kind": "invented-later"}]))
+
+    def test_an_outgoing_spawned_from_keeps_its_qualifier(self):
+        self.assertIn("(spawned-from)", self._line(frm=[{"seq": 7, "kind": "spawned-from"}]))
+
+    def test_repeated_same_kind_entries_group_under_one_label(self):
+        out = self._line(inn=[{"seq": 384, "kind": "parent", "status": "open"},
+                              {"seq": 462, "kind": "parent", "status": "open"},
+                              {"seq": 481, "kind": "parent", "status": "closed"}])
+        self.assertEqual(out.count("children"), 1)          # the word once, not three times
+        self.assertIn("#384", out)
+        self.assertIn("#462", out)
+        # the closed mark is PER TARGET and survives the grouping
+        self.assertIn("#481</a> (closed)", out)
+        self.assertNotIn("#384</a> (closed)", out)
+
+    def test_a_run_of_one_renders_exactly_as_before(self):
+        self.assertEqual(self._line(inn=[{"seq": 365, "kind": "spawned-from",
+                                          "status": "open"}]),
+                         render_board._rel_token({"seq": 365, "kind": "spawned-from",
+                                                  "status": "open"}, True))
+
+    def test_different_kinds_do_not_merge(self):
+        out = self._line(inn=[{"seq": 1, "kind": "parent", "status": "open"},
+                              {"seq": 2, "kind": "spawned-from", "status": "open"}])
+        self.assertIn("children", out)
+        self.assertIn("spawned", out)
+        self.assertIn(" · ", out)                            # two separate runs
 
 
 if __name__ == "__main__":

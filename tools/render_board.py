@@ -802,7 +802,7 @@ def _css(default_variant, category_css):
   .minigraph .mgcount{color:var(--dim);font-weight:400;font-size:.85em}
   .mgwrap{padding:6px 14px 14px}
   .mgsvg{width:100%;height:auto;display:block;max-width:640px;margin:0 auto}
-  /* F4b: boundary BUBBLES — a parent's subtree, and a repo's own PRs. A bubble says
+  /* boundary BUBBLES — a parent's subtree, and a repo's own PRs. A bubble says
      CONTAINS (a magnet only says SHARES AN ATTRIBUTE), so it is drawn as a filled
      hull UNDER the edges and nodes, faint enough to read as ground rather than mark. */
   .mg-bubble{fill:var(--accent);fill-opacity:.07;stroke:var(--accent);stroke-opacity:.42;
@@ -889,7 +889,7 @@ def _css(default_variant, category_css):
   .mgcanvas.grabbing{cursor:grabbing}
   .mghint{position:absolute;left:10px;top:9px;font:500 11px var(--mono);color:var(--dim);
     background:var(--panel2);padding:3px 7px;border-radius:6px;pointer-events:none;opacity:.92}
-  /* F4a: the focus breadcrumb — the focused container path, each segment clickable to
+  /* the focus breadcrumb — the focused container path, each segment clickable to
      focus that ancestor. Created by the enhancement JS only when the graph carries galaxy
      grouping, so the Interbrain-off render never emits the element and these rules are
      inert there. Unlike .mghint it must take pointer events: the segments are buttons. */
@@ -1521,31 +1521,73 @@ def _rel_link(seq):
     return '<a class="rellink" href="#task-%s">#%s</a>' % (_e(seq), _e(seq))
 
 
+# How each relation kind READS on the board card, as (stored-here, derived-here). This
+# MIRRORS `_REL_LINE_WORDS` in lib/task-station.py word for word: the terminal detail
+# line and the board must never disagree about what an edge IS. A kind absent from this
+# table falls back to `related`, which is what keeps a store written by a newer version
+# renderable rather than mislabelled or crashing.
+_REL_WORDS = {
+    "depends-on":   ("depends on", "blocks"),
+    "parent":       ("parent", "children"),
+    "duplicates":   ("duplicates", "duplicates"),   # symmetric — reads the same
+    "replaces":     ("replaces", "replaced by"),
+    "absorbed-by":  ("absorbed-by", "absorbed"),
+    "spawned-from": ("from", "spawned"),
+}
+_REL_WORDS_DEFAULT = ("related", "related")
+
+
+def _rel_label(kind, incoming):
+    """The word one relation kind reads as, in the direction it is being viewed from."""
+    return _REL_WORDS.get(kind, _REL_WORDS_DEFAULT)[1 if incoming else 0]
+
+
 def _rel_token(e, incoming):
-    """One relation edge rendered as HTML with a CLICKABLE `#N`. Outgoing (stored on
-    this task): spawned-from → `from #N`, else `related #N`. Incoming (derived — another
-    task points at this one): spawned-from → `spawned #N`, else `related #N`; a closed
-    counterpart gets a ` (closed)` suffix."""
+    """One relation edge rendered as HTML with a CLICKABLE `#N`. The label comes from
+    `_REL_WORDS`; an outgoing `spawned-from` keeps its ` (spawned-from)` qualifier and a
+    closed counterpart its ` (closed)` suffix."""
     link = _rel_link(e.get("seq"))
-    kind = e.get("kind")
-    if not incoming:
-        verb = "from" if kind == "spawned-from" else "related"
-        return "%s %s" % (verb, link)
-    closed = " (closed)" if e.get("status") == "closed" else ""
-    verb = "spawned" if kind == "spawned-from" else "related"
-    return "%s %s%s" % (verb, link, closed)
+    label = _rel_label(e.get("kind"), incoming)
+    qual = " (spawned-from)" if (not incoming and e.get("kind") == "spawned-from") else ""
+    closed = " (closed)" if (incoming and e.get("status") == "closed") else ""
+    return "%s %s%s%s" % (label, link, qual, closed)
+
+
+def _rel_group(entries, incoming):
+    """Relation entries as GROUPED tokens: consecutive entries sharing a label collapse
+    into one `children #Q, #R` run, so a parent with eight children reads the label once
+    rather than eight times.
+
+    The closed mark is PER TARGET, so it rides with its own `#N` and grouping never
+    loses it. A run of one renders through `_rel_token`, so there is a single definition
+    of the ungrouped form."""
+    runs = []
+    for e in entries:
+        if e.get("seq") is None:
+            continue
+        label = _rel_label(e.get("kind"), incoming)
+        ref = _rel_link(e.get("seq"))
+        if incoming and e.get("status") == "closed":
+            ref += " (closed)"
+        if runs and runs[-1][0] == label:
+            runs[-1][1].append(ref)
+        else:
+            # A run of one renders through `_rel_token`, so the single-entry form has
+            # exactly one definition and the two can never drift apart.
+            runs.append([label, [ref], _rel_token(e, incoming)])
+    return [run[2] if len(run[1]) == 1 else "%s %s" % (run[0], ", ".join(run[1]))
+            for run in runs]
 
 
 def _related_line(rel):
     """WS4: the combined relation line (HTML, clickable `#N`) for the brief detail, e.g.
-    `from #363 · spawned #365 (closed) · related #341`. '' when no edges."""
+    `from #363 (spawned-from) · children #365, #370 (closed) · related #341`. Repeated
+    same-kind entries are grouped under one label. '' when no edges."""
     frm = rel.get("from") or []
     inn = rel.get("in") or []
     if not frm and not inn:
         return ""
-    toks = [_rel_token(e, False) for e in frm if e.get("seq") is not None]
-    toks += [_rel_token(e, True) for e in inn if e.get("seq") is not None]
-    return " · ".join(toks)
+    return " · ".join(_rel_group(frm, False) + _rel_group(inn, True))
 
 
 def _row_related_chip(t):
@@ -3435,22 +3477,21 @@ def _galaxy_well_ring(keys, radius=1.0):
 
 
 # ---------------------------------------------------------------------------
-# F4a containment paths — the PURE, TESTED reference twins of the canvas JS
-# helpers (`galaxyPath` / `nodePath` / `isDescendant` / `containerKeyAt`). Same
-# carve-out as the geometry twins above: the live versions run inside the canvas
+# Containment paths — the PURE, TESTED reference twins of the canvas JS helpers
+# (`galaxyPath` / `nodePath` / `isDescendant` / `containerKeyAt`). Same carve-out
+# as the geometry twins above: the live versions run inside the canvas
 # enhancement, so the RULES are mirrored here to make them unit-testable. Keep
 # the two sides in lockstep — a change to one is a change to both.
 #
-# The graph used to zoom through three hardcoded levels ("interbrain"/"person"/
-# "brain") and five functions branched on that string. Nesting makes depth
-# VARIABLE, so the enum becomes a PATH: those three levels are simply paths of
-# length 0, 1 and 2, and DEPTH IS THE LENGTH.
+# Zoom depth is VARIABLE, so a focus is a PATH and DEPTH IS ITS LENGTH: a person
+# is a path of one, a brain a path of two, and a nested container as deep as it
+# needs to be. Nothing here is bounded by a fixed set of levels.
 # ---------------------------------------------------------------------------
 
 # NUL — the one separator an owner alias or a brain name cannot itself contain,
 # which is why joining on a SPACE would be wrong: "a b"+"c" and "a"+"b c" would
-# collide. It is also the separator the existing well keys already use, so the
-# keys this produces stay byte-identical to the ones the JS built before.
+# collide. It is also the separator the well keys use, so a container key and a
+# well key are the same string.
 # Spelled chr(0) rather than an escape so this source file stays pure ASCII.
 PATH_SEP = chr(0)
 
@@ -3458,9 +3499,8 @@ PATH_SEP = chr(0)
 def _galaxy_path(focus):
     """The FOCUSED container path — twin of the JS `galaxyPath`.
 
-    `[]` when nothing is focused (the old "interbrain"), `[owner]` for a person,
-    `[owner, brain]` for one brain. A focus kind that is not a container (`org`)
-    reads as the root, mirroring the old fall-through to "interbrain". Depth is
+    `[]` when nothing is focused, `[owner]` for a person, `[owner, brain]` for one
+    brain. A focus kind that is not a container (`org`) reads as the root. Depth is
     simply `len(path)`, which is what makes depth 0 a real depth rather than a
     falsy special case."""
     f = focus or {}
@@ -3594,7 +3634,7 @@ def _blob_path(pts, pad=18.0):
 
 
 # ---------------------------------------------------------------------------
-# F4b: the CONCENTRIC layout — four rings, outermost in, and two placement axes
+# The CONCENTRIC layout — four rings, outermost in, and two placement axes
 # with one job each. Pure and deterministic: same inputs → byte-identical output,
 # which is what lets the whole design be unit-tested without a browser.
 #
@@ -3624,7 +3664,18 @@ R_CORE = 38.0          # repo bubble centres
 # Members of one category fan across this many radians. Kept well under the
 # 2π/12 ≈ 0.52 gap between magnets so a sector never bleeds into its neighbour —
 # which is what makes "two tasks of one category are near each other" true.
+# Widening this cannot fix a clumped category: the gap caps it at ~20% more, against
+# a category needing 10×. The RADIAL dimension does that instead — see the seating.
 CAT_SPAN = 0.40
+# Theatre seating inside a sector. SEAT_SEP is the minimum arc between neighbours in a
+# row and ROW_PITCH the radial gap between rows, both comfortably above the 6 units the
+# clump measurement uses. Rows step strictly inward and are never clamped to a floor:
+# clamping would make two rows share a radius, which is the stacking this seating exists
+# to prevent. The largest real category (103) bottoms out around r=96, still outside the
+# story band; a category several times that would seat rows across it, which is a legible
+# failure rather than an invisible one.
+SEAT_SEP = 7.5
+ROW_PITCH = 7.5
 # Children ring radius around their parent, and the shrink factor per nesting level
 # so an inner bubble fits inside its outer one.
 R_CHILD = 46.0
@@ -3704,17 +3755,42 @@ def _concentric_layout(tasks, stories=(), repos=None, cx=0.0, cy=0.0):
     cat_pos = {k: (cx + R_RIM * math.cos(a), cy + R_RIM * math.sin(a))
                for k, a in cat_ang.items()}
     # -- middle, loose tasks: ANGLE from category, RADIUS from entanglement ------
+    # THEATRE SEATING. Angle alone cannot separate a big category: the gap between
+    # magnets is only 2π/12 ≈ 0.52 rad, so even the widest sector gives 103 tasks
+    # 0.0039 rad each — they land on top of each other. The band is ~92 units deep and
+    # was entirely unused, because 297 of 379 tasks have zero shared artifacts and so
+    # share one radius. So a sector is seated in ROWS: entanglement still picks which
+    # row a task starts at (more entangled = further in, the axis is unchanged), and a
+    # row that fills spills onto the next one inward. Seats per row scale with the arc
+    # length at that radius, so spacing stays roughly constant however deep it goes.
     per_cat = {}
     for t in sorted(loose, key=lambda t: (t.get("seq") is None, t.get("seq"), t["id"])):
         per_cat.setdefault(t.get("cat") or "", []).append(t)
     for key, members in per_cat.items():
         base = cat_ang.get(key, -math.pi / 2)
-        m = len(members)
-        for j, t in enumerate(members):
-            off = 0.0 if m <= 1 else (j / float(m - 1) - 0.5) * CAT_SPAN
-            a = base + off
-            r = _entangle_radius(t.get("artifacts"))
-            pos[t["id"]] = (cx + r * math.cos(a), cy + r * math.sin(a))
+        # Group by starting radius, then seat outermost group first, carrying a cursor
+        # so a spilling group can never land on the row of a MORE entangled one — which
+        # is what keeps "more entangled sits further in" true however big a group gets.
+        by_r = {}
+        for t in members:
+            by_r.setdefault(_entangle_radius(t.get("artifacts")), []).append(t)
+        cursor = None
+        for r0 in sorted(by_r, reverse=True):
+            group = by_r[r0]
+            r = r0 if cursor is None else min(r0, cursor)
+            i = 0
+            while i < len(group):
+                # seats the arc at THIS radius can hold at the minimum separation
+                seats = max(1, int((r * CAT_SPAN) / SEAT_SEP))
+                row = group[i:i + seats]
+                n = len(row)
+                for j, t in enumerate(row):
+                    off = 0.0 if n <= 1 else (j / float(n - 1) - 0.5) * CAT_SPAN
+                    a = base + off
+                    pos[t["id"]] = (cx + r * math.cos(a), cy + r * math.sin(a))
+                i += seats
+                r -= ROW_PITCH                  # strictly inward — never clamped
+            cursor = r - ROW_PITCH
     # -- middle, groups: a root gets a reserved slot, its subtree clusters on it --
     # The root is NOT magnetised and its children take angle from IT, which is the
     # whole reason a bubble survives its members spanning five categories.
@@ -3798,7 +3874,7 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
     as before — the panel simply isn't emitted. The single-positional / empty / None call
     (`_minigraph(None)` / `_minigraph({"nodes":[],"edges":[]})`) still yields [].
 
-    F4b: **EVERY task is drawn.** There is no draw cap and no "must have an edge"
+    **EVERY task is drawn.** There is no draw cap and no "must have an edge"
     entitlement — every task has exactly one category, and category membership is what
     entitles it to a position. Placement is `_concentric_layout`: category magnets on the
     rim, tasks and parent bubbles in the middle, story magnets on their own band, repo
@@ -3820,11 +3896,9 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
     CX, CY = W / 2.0, H / 2.0
 
     # ---- EVERY task is drawn ---------------------------------------------------
-    # The 40-node cap is GONE, and so is the "must have an edge" entitlement. Every
-    # task has exactly one CATEGORY, and category membership — not an edge — is what
-    # entitles a task to a position. The cap existed because the old force-directed
-    # layout became spaghetti past that size; a deterministic concentric layout
-    # removes the reason for it rather than needing it raised.
+    # There is no draw cap and no "must have an edge" entitlement. Every task has
+    # exactly one CATEGORY, and category membership — not an edge — is what entitles a
+    # task to a position; the layout is deterministic, so size does not degrade it.
     #
     # Tasks the render graph built no node for (no lineage edge, no shared signal)
     # arrive via `solo_pool` and are PROMOTED to real nodes here. They carry no
@@ -4237,11 +4311,10 @@ _MG_ENHANCE_JS = """try{(function(){
 
   function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
   var SW=720,SH=520,SCL=0.78;
-  // F4b: the server's CONCENTRIC layout arrives as each node's sx0/sy0, so the same
-  // transform that seeds a node also gives its layout TARGET. Stamped once, here, and
-  // used by tick() as an attractor — so the four rings read on the canvas while
-  // repulsion, edge springs and drag-a-node all keep working. Pinning every node
-  // would hold the rings harder but would kill dragging and the force layout with it.
+  // The server's CONCENTRIC layout arrives as each node's sx0/sy0, so the same transform
+  // that seeds a node also gives its layout SLOT. Stamped once, here. A pinned node is
+  // held exactly at its slot (see rebuildSim); a node that simulates — a focused frame's
+  // members — is sprung toward it instead.
   function seedXY(){var rnd=mulberry32(20260715);nodes.forEach(function(n){n.x=(n.sx0-SW/2)*SCL;n.y=(n.sy0-SH/2)*SCL;n.vx=0;n.vy=0;n.vz=0;
     if(!n.solo)n._lt={x:n.x,y:n.y};});}
   // B7: a deterministic z spread — 3D ONLY. Switching to 3D / Reset-in-3D re-seeds z + reheats
@@ -4256,9 +4329,8 @@ _MG_ENHANCE_JS = """try{(function(){
   var simN=0;nodes.forEach(function(n){if(!n.solo)simN++;});
   var SPREAD=Math.max(1,Math.sqrt(simN/10));
   var WELLK=0.032;                                 // F3: per-node galaxy-well attraction
-  // F4b: pull toward the server's concentric layout slot. Firmer than the well (the
-  // layout IS the design, not a grouping hint) but still a SPRING, not a pin — so
-  // repulsion keeps co-located nodes from stacking and a dragged node still settles back.
+  // Spring constant back toward the layout slot, for the nodes that DO simulate: the
+  // members of a focused frame. Everything else is pinned to its slot outright.
   var LAYK=0.05;
   var hubNodes=nodes.filter(function(n){return n.type==="hub";});
   hubNodes.forEach(function(h,i){var a=2*Math.PI*i/Math.max(1,hubNodes.length),tilt=(i%2?1:-1)*70*SPREAD;h.ax=Math.cos(a)*150*SPREAD;h.ay=tilt;h.az=Math.sin(a)*150*SPREAD;});
@@ -4273,34 +4345,67 @@ _MG_ENHANCE_JS = """try{(function(){
   var mode=pref.mode,autoRotate=reduce?false:pref.autoRotate;
   if(mode!=="3d")flattenZ();                                     // G1: start 2D strictly planar
 
+  // ---- PIN BY DEFAULT --------------------------------------------------------------
+  // The concentric layout COMPUTES every slot, so a node sitting at its slot has nothing
+  // to solve. It is pinned: out of the repulsion loop and out of the integration. Only
+  // `simList` moves — the members of a FOCUSED frame, plus whatever is being dragged —
+  // because only the focused frame needs live simulation.
+  //
+  // That makes the pair loop O(|sim| × n) rather than O(n²) over every node. With nothing
+  // focused |sim| is 0, so a 400-node graph does ZERO pair work per tick and settle() has
+  // nothing to iterate. Rotation is unaffected: it is a camera transform, not physics.
+  var simList=[];
+  function rebuildSim(){
+    var p=galaxyPath();
+    simList=[];
+    nodes.forEach(function(n){
+      // Nothing focused ⇒ nothing simulates. isDescendant matches everything on an EMPTY
+      // path, so the length check is what makes "unfocused" mean "all pinned".
+      var live=!n.solo&&(n===dragNode||
+                         (p.length>0&&n.type==="task"&&isDescendant(n,p)));
+      n.pinned=!live;                                // a solo node can never be live
+      if(live){simList.push(n);return;}
+      // THE PIN, and it is exact: snap to the computed slot and kill the velocity. z goes
+      // to 0 because the concentric layout is a 2D design and a pinned node has no physics
+      // left to flatten seedZ's 3D spread — so the pin does it, keeping the rings coplanar
+      // instead of smeared into a ball.
+      if(!n.solo&&n._lt){n.x=n._lt.x;n.y=n._lt.y;n.z=0;n.vx=0;n.vy=0;n.vz=0;}
+    });
+  }
   function tick(alpha){
-    for(var i=0;i<nodes.length;i++)for(var j=i+1;j<nodes.length;j++){
-      if(nodes[i].solo||nodes[j].solo)continue;      // solo nodes are static décor — no forces
-      var A=nodes[i],B=nodes[j],dx=A.x-B.x,dy=A.y-B.y,dz=A.z-B.z,d2=dx*dx+dy*dy+dz*dz+0.1,d=Math.sqrt(d2);
-      var f=90000*SPREAD*SPREAD/d2/d,ux=dx/d,uy=dy/d,uz=dz/d;
-      A.vx+=ux*f;A.vy+=uy*f;A.vz+=uz*f;B.vx-=ux*f;B.vy-=uy*f;B.vz-=uz*f;
+    if(!simList.length)return;                       // the pinned case: nothing to solve
+    for(var i=0;i<simList.length;i++){
+      var A=simList[i];
+      for(var j=0;j<nodes.length;j++){
+        var B=nodes[j];
+        if(B===A||B.solo)continue;
+        // Only A takes the force. B is either pinned (it must not move) or is itself in
+        // simList and gets its own turn as A, so the pair is still symmetric.
+        var dx=A.x-B.x,dy=A.y-B.y,dz=A.z-B.z,d2=dx*dx+dy*dy+dz*dz+0.1,d=Math.sqrt(d2);
+        var f=90000*SPREAD*SPREAD/d2/d;
+        A.vx+=dx/d*f;A.vy+=dy/d*f;A.vz+=dz/d*f;
+      }
     }
     edges.forEach(function(e){
-      var A=byId[e.a],B=byId[e.b],dx=B.x-A.x,dy=B.y-A.y,dz=B.z-A.z,d=Math.sqrt(dx*dx+dy*dy+dz*dz)+0.01;
+      var A=byId[e.a],B=byId[e.b];if(!A||!B)return;
+      if(A.pinned&&B.pinned)return;                  // a spring between two pinned ends is inert
+      var dx=B.x-A.x,dy=B.y-A.y,dz=B.z-A.z,d=Math.sqrt(dx*dx+dy*dy+dz*dz)+0.01;
       var rest=((e.cls==="membership")?58:(e.cls==="lineage")?86:78)*SPREAD,f=(d-rest)*0.04,ux=dx/d,uy=dy/d,uz=dz/d;
-      A.vx+=ux*f;A.vy+=uy*f;A.vz+=uz*f;B.vx-=ux*f;B.vy-=uy*f;B.vz-=uz*f;
+      if(!A.pinned){A.vx+=ux*f;A.vy+=uy*f;A.vz+=uz*f;}
+      if(!B.pinned){B.vx-=ux*f;B.vy-=uy*f;B.vz-=uz*f;}
     });
-    nodes.forEach(function(n){
+    simList.forEach(function(n){
       if(n.solo)return;                              // static — never simulated
-      // A hub with a layout target takes it instead of the legacy hub ring — the rim
-      // magnets belong on the rim the tasks were placed against, not on a second ring.
+      // A hub without a layout slot falls back to its own ring; one WITH a slot belongs on
+      // the rim the tasks were placed against, so it takes that instead.
       if(n.type==="hub"&&!n._lt){n.vx+=(n.ax-n.x)*0.02;n.vy+=(n.ay-n.y)*0.02;if(mode==="3d")n.vz+=(n.az-n.z)*0.02;}
       // stronger centering gravity keeps weakly-connected nodes from drifting far out
       // (which stretched the bbox + made the fit tiny/scattered) → a compact, balanced
       // equilibrium where every node sits reasonably close to the pack.
-      // F3: a task assigned to a galaxy well is pulled to it (per-focus-level gravity);
-      // everything else (hubs, and every node when Interbrain is OFF → no wells) keeps the
-      // original origin-centering, so the OFF layout is physics-identical — the parity law.
-      // F4b: else the CONCENTRIC layout target — the four rings as an attractor. The
-      // galaxy well WINS when present (Interbrain on keeps 4a's galaxy grouping
-      // untouched); the layout drives the default path, which is the store the rings
-      // were designed for. Falling through to plain origin gravity keeps a node that
-      // somehow has neither behaving exactly as it does today.
+      // Three gravities, in priority order. A galaxy well wins — that is the per-focus-level
+      // grouping Interbrain draws. Else the node's concentric layout slot, which is the
+      // default path. A node with neither falls back to plain origin-centering, which keeps
+      // weakly-connected nodes from drifting out and stretching the fit.
       if(n._well){var wx=(mode==="2d")?n._well.bx:n._well.ax,wy=(mode==="2d")?n._well.by:0,wz=(mode==="2d")?0:n._well.az;
         n.vx+=(wx-n.x)*WELLK;n.vy+=(wy-n.y)*WELLK;n.vz+=(wz-n.z)*WELLK;}
       else if(n._lt){n.vx+=(n._lt.x-n.x)*LAYK;n.vy+=(n._lt.y-n.y)*LAYK;n.vz+=(-n.z)*LAYK;}
@@ -4327,7 +4432,9 @@ _MG_ENHANCE_JS = """try{(function(){
     return {sx:cx+x1*pz+panX,sy:cy+y2*pz+panY,scale:pz,depth:z2};
   }
   function unproject2d(mx,my,cx,cy){return {x:(mx-cx-panX)/zoom+pivot.x,y:(my-cy-panY)/zoom+pivot.y};}
-  function settle(iter){for(var i=0;i<(iter||220);i++)tick(1);alpha=0;}
+  // Re-derive who is live FIRST: with nothing focused simList is empty and the whole
+  // settle collapses to 220 no-op calls, which is the point of pinning.
+  function settle(iter){rebuildSim();for(var i=0;i<(iter||220);i++)tick(1);alpha=0;}
   // FIT the whole graph into view + scale the zoom caps to its size. First RECENTER the
   // layout's centroid to the origin — the settled layout drifts off-centre (often more
   // mass above centre in 3D), which otherwise clips nodes out of the initial fit. Then
@@ -4396,11 +4503,12 @@ _MG_ENHANCE_JS = """try{(function(){
   function focusOkNode(n){
     if(!gfocus)return true;
     if(n.type!=="task")return true;              // hubs/signals stay; edges prune via endpoints
-    var o=n.owner||"",b=n.brain||"";
-    if(gfocus.kind==="owner")return o===gfocus.owner;
-    if(gfocus.kind==="brain")return o===gfocus.owner&&b===gfocus.brain;
     if(gfocus.kind==="org")return !!n.foreign;   // graph org bucket ≈ shared foreign nodes
-    return true;
+    // Containment, via isDescendant: a task is visible when its own path starts with the
+    // focused path. nodePath normalises a missing brain to "main", the same normalisation
+    // assignWells / galaxyKey / navDescend use — which is what keeps a brain-less node
+    // visible when navDescend focuses into it with brain:"main".
+    return isDescendant(n,galaxyPath());
   }
   function nodeVisible(n){
     if(n.type==="task"){
@@ -4456,20 +4564,19 @@ _MG_ENHANCE_JS = """try{(function(){
     Object.keys(brainWells).forEach(function(k){wellsByKey[k]=brainWells[k];});
   }
 
-  // ---- F4a: containment PATHS (was a three-value level enum) ---------------------
-  // The graph used to zoom through exactly three hardcoded levels and five functions
-  // branched on the literal strings "interbrain"/"person"/"brain". Nesting makes depth
-  // VARIABLE, so the enum becomes a PATH and "equal to my owner" becomes "inside the
-  // focused container". Nothing below knows how long a path is, which is the whole point.
+  // ---- containment PATHS ----------------------------------------------------------
+  // Zoom depth is VARIABLE, so a focus is a PATH and membership is "inside the focused
+  // container" rather than an equality test against a fixed level. Nothing below knows
+  // how long a path is, which is what lets bubbles nest arbitrarily deep.
   //
   // Segments join on PSEP, NOT a space: an owner alias or a brain name may contain a
   // space (so "a b"+"c" and "a"+"b c" would collide), while a NUL can appear in neither.
-  // It is also the separator brainWells — and its Python twin _galaxy_well_ring — already
-  // key on, so the keys stay byte-identical to today's.
+  // It is also the separator brainWells — and its Python twin _galaxy_well_ring — key on,
+  // so a container key and a well key are the same string.
   var PSEP="\\u0000";
-  // The FOCUSED container path. [] = nothing focused (the old "interbrain"), [owner] = a
-  // person, [owner,brain] = one brain. DEPTH IS SIMPLY THE LENGTH, so depth 0 is a real
-  // depth and must never be tested for truthiness — `if(!depth)` is a bug, not a shortcut.
+  // The FOCUSED container path: [] = nothing focused, [owner] = a person, [owner,brain] =
+  // one brain. DEPTH IS SIMPLY THE LENGTH, so depth 0 is a real depth and must never be
+  // tested for truthiness — `if(!depth)` is a bug, not a shortcut.
   function galaxyPath(f){if(f===undefined)f=gfocus;if(!f||!f.kind)return [];
     if(f.kind==="owner")return [f.owner||""];
     if(f.kind==="brain")return [f.owner||"",f.brain||"main"];
@@ -4511,9 +4618,9 @@ _MG_ENHANCE_JS = """try{(function(){
       // depth — never a list. That is what keeps the physics cost FLAT at any nesting
       // depth, and why only the focused frame ever needs live simulation.
       n._well=wellsByKey[containerKeyAt(n,depth)]||null;});}
-  // The hovered node's group at `depth`. Below the deepest container a node HAS, it is its
-  // own group — the old third branch's `n===pv` — so the hover outline still hugs the one
-  // hovered task at the deepest level instead of ballooning to its whole brain.
+  // The hovered node's group at `depth`. Below the deepest container a node HAS, a node is
+  // its OWN group — you cannot group below the deepest container — so at the deepest level
+  // the hover outline hugs the one hovered task rather than its whole brain.
   function levelMembers(pv,depth){if(depth==null)depth=galaxyPath().length;
     var pts=[],own=(depth>=nodePath(pv).length),k=containerKeyAt(pv,depth);
     nodes.forEach(function(n){if(n.type!=="task"||n.solo||!nodeVisible(n)||!n._p)return;
@@ -4601,7 +4708,7 @@ _MG_ENHANCE_JS = """try{(function(){
     else if(lv==="person")graphSetFocus(null,"up");
     else if(gfocus&&gfocus.kind==="org")graphSetFocus(null,"up");
     else frameLevel("up");}
-  // ---- F4a: the focus breadcrumb ------------------------------------------------
+  // ---- the focus breadcrumb -----------------------------------------------------
   // Variable depth forces the one genuinely new piece of UI in this stage: once "up" can
   // be more than two steps, blank-click-up has to say where up GOES. Built here in JS
   // rather than in the server markup, and only when hasGalaxy — so the Interbrain-OFF
@@ -4730,7 +4837,10 @@ _MG_ENHANCE_JS = """try{(function(){
     dragging=true;moved=false;lx=ev.clientX;ly=ev.clientY;yawVel=0;pitchVel=0;try{canvas.setPointerCapture(ev.pointerId);}catch(e){}canvas.classList.add("grabbing");
     var l=localXY(ev),n=hitTest(l.mx,l.my);
     // 2D: drag a node to move it, OR drag empty space to PAN the view. 3D: orbit.
-    if(mode==="2d"&&n){dragMode="node";dragNode=n;n.fixed=true;}
+    // A dragged node leaves the pinned set for the duration of the drag, so it (and
+    // only it) simulates. `fixed` still holds it exactly under the cursor while pointermove
+    // writes its position directly.
+    if(mode==="2d"&&n){dragMode="node";dragNode=n;n.fixed=true;rebuildSim();}
     else if(mode==="2d"){dragMode="pan";dragNode=null;}
     else{dragMode="orbit";dragNode=null;}
     kick();
@@ -4748,7 +4858,12 @@ _MG_ENHANCE_JS = """try{(function(){
   });
   canvas.addEventListener("pointerup",function(ev){
     dragging=false;canvas.classList.remove("grabbing");
-    if(dragMode==="node"&&dragNode){dragNode.fixed=false;reheat(0.7);}
+    // RE-PIN on release: the drop point becomes that node's slot, so the move is what the
+    // user asked for and it stays put rather than drifting with nothing to settle it.
+    // Reset re-seeds `_lt` from the computed layout, which puts it back.
+    if(dragMode==="node"&&dragNode){
+      dragNode._lt={x:dragNode.x,y:dragNode.y};dragNode.fixed=false;
+      dragNode=null;rebuildSim();kick();}
     if(!moved){
       yawVel=0;pitchVel=0;                      // a click must not fling
       var l=localXY(ev),n=hitTest(l.mx,l.my);
@@ -4879,7 +4994,10 @@ _MG_ENHANCE_JS = """try{(function(){
       pushRow(g2,mkRow(k,sigKinds[k],SIGGLY[k]||"diamond",function(){return sigColor(k);},function(v){filt.sig[k]=v;}));});filtersEl.appendChild(g2.group);}
     // No "Category hubs" row: a hub follows its category (see nodeVisible) — toggling a
     // category off obviously hides the hub that renders it.
-    var EK=[["lineage","Lineage"],["membership","Membership"],["pr","Shares PR"],["repo","Shares repo"],["story","Shares story"],["knowledge","Co-cited note"]],g4=null;
+    // Every class CLS can produce needs a row, or that edge draws with no way to turn it
+    // off. `xbrain` (the dashed cross-brain edge) had no row and so was unfilterable
+    // whenever Interbrain was on; it has one now, and there is no exception left.
+    var EK=[["lineage","Lineage"],["membership","Membership"],["pr","Shares PR"],["repo","Shares repo"],["story","Shares story"],["knowledge","Co-cited note"],["xbrain","Cross-brain"]],g4=null;
     EK.forEach(function(it){var c=it[0];if(!edgeKinds[c])return;if(!g4)g4=mkGroup("Edges");filt.edge[c]=true;pushRow(g4,mkRow(it[1],edgeKinds[c],"line",function(){return edgeColor(c);},function(v){filt.edge[c]=v;},EDGEDASH[c]||""));});
     if(g4)filtersEl.appendChild(g4.group);
   }
@@ -4944,8 +5062,8 @@ _MG_ENHANCE_JS = """try{(function(){
   // OWN dispatch (graph→strip, in graphSetFocus) from bouncing back. No-op with no strip.
   try{window.addEventListener("ts-focus-change",function(ev){
     if(navApplying)return;
-    // Depth IS the path length, so the old {interbrain:0,person:1,brain:2} rank table is
-    // gone: it would have read `undefined` for any level past the third.
+    // Direction comes from the change in DEPTH, which is just the path length — so it
+    // stays correct at any nesting depth without a table of level names to look up.
     var f=(ev&&ev.detail)||null,old=galaxyPath().length;
     gfocus=(f&&f.kind)?f:null;var nw=galaxyPath().length;
     frameLevel(nw>old?"down":(nw<old?"up":null));});}catch(e){}
@@ -5092,7 +5210,7 @@ def render_html(tasks, *, theme=None, variant=None, variant_label=None, generate
         out.extend(_section("Open", open_tasks, theme, variant))
         out.extend(_section("Closed", closed_tasks, theme, variant, see_more_after=5))
         # WS-D: the task-relations mini-graph. Emitted only when the graph has edges
-        # (relation-free / bare stores show nothing — unchanged board). F4b: every board
+        # (relation-free / bare stores show nothing — unchanged board). Every board
         # task rides along here so `_minigraph` can PROMOTE the ones the render graph
         # built no node for into real, placed nodes — which is what "draw every task"
         # means.

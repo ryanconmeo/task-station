@@ -4435,6 +4435,19 @@ _REL_LINE_WORDS = {
 }
 _REL_LINE_DEFAULT = ("related #%s", "related #%s")
 
+# The same words as bare LABELS, for the grouped form. A run of one still renders through
+# the format strings above, so a lone `spawned-from` keeps its ` (spawned-from)` qualifier
+# byte-for-byte; only a repeat collapses to `label #a, #b`.
+_REL_LINE_LABELS = {
+    "depends-on":   ("depends on", "blocks"),
+    "parent":       ("parent", "children"),
+    "duplicates":   ("duplicates", "duplicates"),
+    "replaces":     ("replaces", "replaced by"),
+    "absorbed-by":  ("absorbed-by", "absorbed"),
+    "spawned-from": ("from", "spawned"),
+}
+_REL_LINE_LABELS_DEFAULT = ("related", "related")
+
 
 def _related_line(task, edges=None):
     """The `Related:` artifacts line, or None when the task has no relation edges
@@ -4446,13 +4459,26 @@ def _related_line(task, edges=None):
     `replaces #N` / `replaced by #N` · `absorbed-by #N` / `absorbed #N` ·
     `from #N (spawned-from)` / `spawned #N`, with anything else — including `related`
     and any future kind — reading `related #N`. A closed edge target gets a trailing
-    ` ✕`."""
-    parts = []
+    ` ✕`.
+
+    CONSECUTIVE entries sharing a label are GROUPED under it — `children #Q, #R` — so a
+    parent with eight children reads the label once rather than eight times.
+    `canonical_relations` sorts by kind, so same-kind entries are already adjacent. The
+    closed mark is per TARGET, so it rides with its own `#N` and grouping never loses it;
+    a run of one renders through the format strings above, unchanged."""
+    runs = []
     for r in canonical_relations(task, edges=edges):
         mark = " ✕" if r.get("status") == STATUS_CLOSED else ""
-        stored, derived = _REL_LINE_WORDS.get(r.get("kind"), _REL_LINE_DEFAULT)
-        word = stored if r.get("dir") == "out" else derived
-        parts.append((word % r.get("seq")) + mark)
+        out = r.get("dir") == "out"
+        idx = 0 if out else 1
+        label = _REL_LINE_LABELS.get(r.get("kind"), _REL_LINE_LABELS_DEFAULT)[idx]
+        fmt = _REL_LINE_WORDS.get(r.get("kind"), _REL_LINE_DEFAULT)[idx]
+        if runs and runs[-1][0] == label:
+            runs[-1][1].append("#%s%s" % (r.get("seq"), mark))
+        else:
+            runs.append([label, ["#%s%s" % (r.get("seq"), mark)], (fmt % r.get("seq")) + mark])
+    parts = [run[2] if len(run[1]) == 1 else "%s %s" % (run[0], ", ".join(run[1]))
+             for run in runs]
     return ("Related: " + " · ".join(parts)) if parts else None
 
 
