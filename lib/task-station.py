@@ -2794,6 +2794,32 @@ def set_status(task, status, note=None, session=None):
     return True
 
 
+def close_task_inplace(task, note=None, session=None):
+    """Close a task IN PLACE — the pure-dict half of the close path, safe to call
+    inside a `store.mutate` mutator (no I/O, no save). Sets the status, stamps the
+    real close moment, and logs + events the transition exactly as `/done` does.
+    Returns True only if it changed; closing an already-closed task is a no-op.
+
+    WHY THIS EXISTS rather than `set_status(task, STATUS_CLOSED)`: `set_status`
+    deliberately REFUSES `closed` — it guards the settable open⇄active pair so a typo
+    can never mislabel a task — and the two genuine close paths (`_close_one`,
+    `cmd_done`) each hand-roll these same four lines before doing their OWN session
+    and worker teardown. This is that shared core, named once.
+
+    Callers that close as a SIDE EFFECT of a structural write (`--absorbed-by`,
+    `--replaces`) use only this half and deliberately do NOT reap workers or detach
+    sessions: neither verb means "this session is finished", and a structural
+    declaration must not kill someone else's running worker."""
+    prev = task_status(task)
+    if prev == STATUS_CLOSED:
+        return False
+    task["status"] = STATUS_CLOSED
+    stamp_closed(task)                      # the real moment it entered closed
+    add_log(task, note or "closed", session=session)
+    add_event(task, "status", "%s → %s" % (prev, STATUS_CLOSED), session)
+    return True
+
+
 def promote_active(task, note=None, session=None):
     """Promote an OPEN task to active because work has started. Idempotent — a
     no-op (returns False) when the task is already active or closed (an edit never
@@ -3784,10 +3810,23 @@ def related_edges(task, tasks=None, semantic=False):
 # specific claim outranks a vague one: `related` explicitly claims nothing, so it is
 # weakest. This is the LABEL axis and is deliberately NOT the graph's
 # visual-prominence axis (where spawned-from is the dimmest edge) — different
-# questions. `depends-on` / `parent` / `absorbed-by` have no writer yet and are
-# listed now so adding one later needs no edit here.
-_REL_KIND_RANK = {"depends-on": 0, "parent": 1, "absorbed-by": 2,
-                  "spawned-from": 3, "related": 4}
+# questions.
+#
+# The order, and why:
+#   depends-on   an execution-order claim — it gates when work can start, so it is
+#                the most consequential thing a pair can be.
+#   parent       structural containment; every roll-up is computed over it.
+#   absorbed-by  a lifecycle verdict that also TRANSFERS work: mine became theirs.
+#   replaces     the same terminal verdict without the transfer — their approach was
+#                dropped for mine. Ranks just under absorbed-by because it settles the
+#                pair just as firmly but carries nothing across.
+#   duplicates   names the collision without settling it: same work, no statement about
+#                which survives. Weaker than either verdict, far stronger than `related`.
+#   spawned-from a HISTORICAL fact about where a task came from, not what the pair is
+#                now — which is why both verdicts and even `duplicates` outrank it.
+#   related      claims nothing at all.
+_REL_KIND_RANK = {"depends-on": 0, "parent": 1, "absorbed-by": 2, "replaces": 3,
+                  "duplicates": 4, "spawned-from": 5, "related": 6}
 _REL_KIND_RANK_UNKNOWN = 99
 
 
@@ -4381,22 +4420,39 @@ def _session_block_lines(task):
     return out
 
 
+# How each relation kind READS on the `Related:` line, as (stored-here, derived-here).
+# The second word is the inverse a reader sees from the OTHER end: only the subordinate
+# side ever stores an edge, so every superior side is a derived reading. Kinds absent
+# from this table fall back to `related #N` both ways, which is what keeps a store
+# written by a newer version renderable.
+_REL_LINE_WORDS = {
+    "depends-on":   ("depends on #%s", "blocks #%s"),
+    "parent":       ("parent #%s",     "children #%s"),
+    "duplicates":   ("duplicates #%s", "duplicates #%s"),   # symmetric — reads the same
+    "replaces":     ("replaces #%s",   "replaced by #%s"),
+    "absorbed-by":  ("absorbed-by #%s", "absorbed #%s"),
+    "spawned-from": ("from #%s (spawned-from)", "spawned #%s"),
+}
+_REL_LINE_DEFAULT = ("related #%s", "related #%s")
+
+
 def _related_line(task, edges=None):
     """The `Related:` artifacts line, or None when the task has no relation edges
     (either direction). ONE entry per counterpart — a reciprocal pair is a single
-    relationship, so it prints once, resolved through `canonical_relations`. Out
-    edges: `from #N (spawned-from)` / `related #N`; derived reverse edges:
-    `spawned #N` (a child) / `related #N`. A closed edge target gets a trailing
+    relationship, so it prints once, resolved through `canonical_relations`.
+
+    Each kind renders as its stored word or its derived inverse (`_REL_LINE_WORDS`):
+    `depends on #N` / `blocks #N` · `parent #P` / `children #Q` · `duplicates #N` ·
+    `replaces #N` / `replaced by #N` · `absorbed-by #N` / `absorbed #N` ·
+    `from #N (spawned-from)` / `spawned #N`, with anything else — including `related`
+    and any future kind — reading `related #N`. A closed edge target gets a trailing
     ` ✕`."""
     parts = []
     for r in canonical_relations(task, edges=edges):
         mark = " ✕" if r.get("status") == STATUS_CLOSED else ""
-        if r.get("kind") != "spawned-from":
-            parts.append("related #%s%s" % (r.get("seq"), mark))
-        elif r.get("dir") == "out":
-            parts.append("from #%s (spawned-from)%s" % (r.get("seq"), mark))
-        else:
-            parts.append("spawned #%s%s" % (r.get("seq"), mark))
+        stored, derived = _REL_LINE_WORDS.get(r.get("kind"), _REL_LINE_DEFAULT)
+        word = stored if r.get("dir") == "out" else derived
+        parts.append((word % r.get("seq")) + mark)
     return ("Related: " + " · ".join(parts)) if parts else None
 
 
@@ -5920,6 +5976,131 @@ def append_related(task, other, kind):
         return False
     rel.append({"id": other.get("id"), "seq": other.get("seq"), "kind": kind, "ts": _now()})
     return True
+
+
+# --- the typed-edge write surface --------------------------------------------
+#
+# THE UNIFYING RULE, so there is one thing to remember rather than five: the
+# SUBORDINATE side stores the edge — the dependent, the child, the absorbed task.
+# That is already `spawned-from`'s child→origin convention, and it is what keeps
+# every one of these a single-task write with a derived reverse direction.
+#
+# `--relate` and the `related` kind are untouched: 23 live edges still need their
+# writer until a separate migration converts them.
+
+# OWNERSHIP RULE — decided, not an accident of there being nothing to check yet.
+# `related` (and the later `mentions`) may name a task in ANOTHER person's brain;
+# `depends-on` and `parent` may NOT, because both are COMPUTED OVER — roll-ups and
+# unblocked-work queries — and compute requires freshness. A stale foreign edge would
+# make those answers silently wrong rather than loudly unavailable. v1 has no
+# resolvable foreign handle at all (none can exist before sync lands), so today this
+# only sharpens the error message; it is written as the named rule because this is the
+# ONE place sync has to teach when foreign refs become real.
+_LOCAL_ONLY_KINDS = frozenset(("depends-on", "parent"))
+
+# An interbrain handle is `<owner>-<seq>` (see the board's handle chip). A local seq is
+# all-digits and a local `<seq>-<ordinal>` starts with a digit, so requiring a leading
+# LETTER separates the two grammars. Only consulted after local resolution has already
+# failed, so a false positive can never mis-resolve a real task — at worst it picks the
+# more specific of two "no such task" messages.
+_FOREIGN_HANDLE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.]*-\d+$")
+
+
+def _looks_foreign_ref(ref):
+    """Whether `ref` is shaped like another brain's task handle rather than a local
+    seq/id. See the ownership rule above — this is the hook sync extends."""
+    return bool(_FOREIGN_HANDLE_RE.match((ref or "").strip()))
+
+
+def _resolve_edge_ref(ref, self_id, flag, kind):
+    """Resolve one `<flag> <ref>` to a target task, or explain why not.
+
+    Returns `(task, None)` on success and `(None, reason)` otherwise. The three
+    refusals, all non-fatal so a batch keeps going: no such task; a SELF-edge (a task
+    depending on / parenting / duplicating itself is meaningless, not a judgement
+    call — `_add_undirected` already drops `a == b`); and a foreign ref for a
+    local-only kind."""
+    other = resolve_ref(ref) or load_task(ref)
+    if not other:
+        if kind in _LOCAL_ONLY_KINDS and _looks_foreign_ref(ref):
+            return None, ("ignoring %s %s — %s accepts LOCAL tasks only: it is computed "
+                          "over, and compute needs freshness no foreign edge can promise"
+                          % (flag, ref, flag))
+        return None, "ignoring %s %s (no such task)" % (flag, ref)
+    if other.get("id") == self_id:
+        return None, ("ignoring %s %s (a task can't point %s at itself)"
+                      % (flag, ref, flag))
+    return other, None
+
+
+def _relation_cycle_path(task, other, kind, tasks=None):
+    """The cycle that adding `task --kind--> other` would close, as a list of seqs
+    reading `[task, other, …, task]`, or None when it closes none.
+
+    Walks only STORED edges of the same `kind`, starting at `other` and looking for a
+    way back to `task`. Cheap by construction — the whole store holds a few dozen
+    relation entries — and it is why the write can warn without refusing.
+
+    STRUCTURALLY INCOMPLETE, deliberately: this sees only the edge being written now,
+    so a cycle closed by a later write on a DIFFERENT task goes unnoticed here. The
+    complete answer is a topological sort over the whole graph, which does not exist
+    yet; when it does, it — not this — becomes the authority.
+
+    CYCLE-SAFE BY CONSTRUCTION: the `seen` set is load-bearing, not an optimisation.
+    A `parent` cycle is allowed to exist in the store (the write always succeeds), so
+    naive recursion over a parent chain does not terminate. Every future walker of
+    these edges needs the same guard."""
+    scan = tasks if tasks is not None else all_tasks()
+    by_id = {t.get("id"): t for t in scan}
+    start, goal = other.get("id"), task.get("id")
+    if not start or not goal:
+        return None
+    stack, seen = [(start, [start])], set()
+    while stack:
+        cur, path = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        node = by_id.get(cur)
+        if node is None:
+            continue
+        for e in (node.get("related") or []):
+            if e.get("kind") != kind:
+                continue
+            nxt = e.get("id")
+            if not nxt:
+                continue
+            if nxt == goal:
+                seqs = [(by_id.get(i) or {}).get("seq") for i in path]
+                return [task.get("seq")] + seqs + [task.get("seq")]
+            stack.append((nxt, path + [nxt]))
+    return None
+
+
+def _parent_children(task, tasks=None):
+    """Tasks whose stored `parent` edge points at `task` — its children in the tree,
+    derived like every other reverse direction. Sorted by seq for a stable notice."""
+    tid = task.get("id")
+    kids = [t for t in (tasks if tasks is not None else all_tasks())
+            if t.get("id") != tid
+            and any(r.get("kind") == "parent" and r.get("id") == tid
+                    for r in (t.get("related") or []))]
+    return sorted(kids, key=lambda t: t.get("seq") if t.get("seq") is not None else 1 << 30)
+
+
+def remove_related(task, other_id):
+    """Drop EVERY stored edge from `task` to `other_id`, whatever its kind, and return
+    the sorted list of kinds removed ([] when there was none). The one removal verb:
+    an edge is a statement of PRESENT STRUCTURE, not a historical belief, so unlike a
+    decision it must be correctable rather than superseded.
+
+    Only ever touches this task's own list. It cannot reach the DERIVED reverse
+    direction and must not try — that edge is owned by the task that stored it."""
+    rel = task.get("related") or []
+    kinds = sorted({r.get("kind") or "related" for r in rel if r.get("id") == other_id})
+    if kinds:
+        task["related"] = [r for r in rel if r.get("id") != other_id]
+    return kinds
 
 
 # -- digest staleness: cheap dirty-tracking for opt-in auto-checkpointing ------
@@ -9302,6 +9483,59 @@ def _update_one(ref, a):
         else:
             relate_targets.append(other)
 
+    # The TYPED edges, resolved the same way and for the same reason: reads happen
+    # here, the writes land inside the optimistic-locked self-update below, and the
+    # ONE cross-task write (--replaces closing its target) is a deferred side effect.
+    # A single value arrives as a string, a repeatable one as a list — normalise both,
+    # and stringify: `resolve_ref` strips its argument, so a caller handing us a bare
+    # int seq (a test, a future non-argparse entry point) must not blow up.
+    def _reflist(v):
+        vals = [] if v is None else (list(v) if isinstance(v, list) else [v])
+        return [s for s in (str(x).strip() for x in vals if x is not None) if s]
+
+    edge_targets, unrelate_targets = {}, []
+    for flag, kind, vals in (
+            ("--depends-on", "depends-on", _reflist(getattr(a, "depends_on", None))),
+            ("--parent", "parent", _reflist(getattr(a, "parent", None))),
+            ("--absorbed-by", "absorbed-by", _reflist(getattr(a, "absorbed_by", None))),
+            ("--replaces", "replaces", _reflist(getattr(a, "replaces", None))),
+            ("--duplicates", "duplicates", _reflist(getattr(a, "duplicates", None)))):
+        for r2 in vals:
+            other, why = _resolve_edge_ref(r2, tid, flag, kind)
+            if other is None:
+                relate_warnings.append("update %s: %s" % (ref, why))
+            else:
+                edge_targets.setdefault(kind, []).append(other)
+    for r2 in _reflist(getattr(a, "unrelate", None)):
+        other = resolve_ref(r2) or load_task(r2)
+        if not other:
+            relate_warnings.append("update %s: ignoring --unrelate %s (no such task)" % (ref, r2))
+        else:
+            unrelate_targets.append(other)
+
+    # CYCLE CHECK — a WARNING, never a refusal. Direct precedent: the 600-char decision
+    # advisory always stores, because a refusal makes the author drop a fact or fake two
+    # entries out of one. The same holds here: refusing the write does not remove the
+    # dependency, it only stops it being written down. See `_relation_cycle_path` for why
+    # this is structurally incomplete and why every parent-chain walker must be cycle-safe.
+    # The scan is lazy, so a plain --title update still reads nothing extra.
+    cycle_warnings, _scan, absorb_children = [], None, set()
+    for kind in ("depends-on", "parent"):
+        for other in edge_targets.get(kind, []):
+            if _scan is None:
+                _scan = all_tasks()
+            chain = _relation_cycle_path(base, other, kind, _scan)
+            if chain:
+                cycle_warnings.append(
+                    "warning: this creates a %s cycle %s. Stored anyway."
+                    % (kind, " → ".join("#%s" % s for s in chain)))
+    # An absorbed task's children are NAMED in the handoff — never moved. Read before
+    # the write, since the reconcile has to know what is now orphaned.
+    if edge_targets.get("absorbed-by"):
+        if _scan is None:
+            _scan = all_tasks()
+        absorb_children = {c.get("seq") for c in _parent_children(base, _scan)}
+
     cap = {}
 
     def _apply(task):
@@ -9316,6 +9550,9 @@ def _update_one(ref, a):
         # names its own reversal already (`--summary` → `--restore-summary`) or is a
         # plain field write with nothing to reverse.
         undos = []
+        # Typed-edge targets that earned a post-save notice: a replaced parent, and an
+        # absorb (whose reconcile handoff is REQUIRED output, not decoration).
+        parent_notes, absorb_notes = [], []
         if a.title is not None:
             task["title"] = a.title.strip(); changed.append("title")
         # `--summary` REPLACES wholesale, and that replacement used to be the one
@@ -9544,6 +9781,57 @@ def _update_one(ref, a):
             if append_related(task, other, "related"):
                 changed.append("relate")
                 related_new.append(other)
+        # --- the typed edges ---------------------------------------------------
+        # Every one writes on THIS task (the subordinate side stores the edge), so the
+        # whole block stays inside the one optimistic-locked mutation. The result token
+        # each appends to `changed` IS the reported line — `parent #503 (REPLACED #499)`
+        # reads back verbatim through the "updated task N: …" join below.
+        for kind in ("depends-on", "duplicates", "replaces"):
+            for other in edge_targets.get(kind, []):
+                if append_related(task, other, kind):
+                    changed.append("%s #%s" % (kind, other.get("seq")))
+        # --parent: at most ONE. A second write REPLACES the first and NEVER silently
+        # swaps — a task under two parents double-counts in every roll-up, so this is a
+        # tree, not a DAG.
+        for other in edge_targets.get("parent", []):
+            replaced = [r.get("seq") for r in (task.get("related") or [])
+                        if r.get("kind") == "parent" and r.get("id") != other.get("id")]
+            if replaced:
+                task["related"] = [r for r in (task.get("related") or [])
+                                   if not (r.get("kind") == "parent"
+                                           and r.get("id") != other.get("id"))]
+            added = append_related(task, other, "parent")
+            if added or replaced:
+                changed.append("parent #%s%s"
+                               % (other.get("seq"),
+                                  (" (REPLACED %s)"
+                                   % ", ".join("#%s" % s for s in replaced))
+                                  if replaced else ""))
+                parent_notes.append(other)
+        # --absorbed-by: THIS task's work became part of the other one, so THIS task
+        # closes — which is what keeps it a single-task write, no cross-task write in
+        # either direction. Steps are NOT merged and children are NOT moved; the
+        # reconcile handoff printed below is the deliverable, not decoration.
+        for other in edge_targets.get("absorbed-by", []):
+            was = task_status(task)
+            added = append_related(task, other, "absorbed-by")
+            shut = close_task_inplace(
+                task, note="absorbed by #%s" % other.get("seq"), session=session)
+            if added or shut:
+                changed.append("absorbed-by #%s%s"
+                               % (other.get("seq"),
+                                  (" · task CLOSED (was %s)" % status_display(was))
+                                  if shut else " · task was already closed"))
+                absorb_notes.append((other, shut))
+        # --unrelate: the ONE removal verb. Reports what went; removing nothing is a
+        # plain report, not an error.
+        for other in unrelate_targets:
+            gone = remove_related(task, other.get("id"))
+            if gone:
+                changed.append("unrelated #%s (removed: %s)"
+                               % (other.get("seq"), ", ".join(gone)))
+            else:
+                msgs.append("update %s: no edge to #%s" % (ref, other.get("seq")))
         # --pr [--pr-desc]: the desc applies to the url(s) given in the SAME update;
         # a --pr-desc with NO --pr applies to the most-recent stored pr instead.
         pr_urls = getattr(a, "pr", None) or []
@@ -9606,6 +9894,7 @@ def _update_one(ref, a):
                   register=False)
         cap["changed"], cap["msgs"], cap["related_new"] = changed, msgs, related_new
         cap["undos"] = undos
+        cap["parent_notes"], cap["absorb_notes"] = parent_notes, absorb_notes
 
     updated = mutate(tid, _apply)
     if updated is None:
@@ -9613,18 +9902,50 @@ def _update_one(ref, a):
     changed, msgs, related_new = cap["changed"], cap["msgs"], cap["related_new"]
     undos = cap.get("undos") or []
     label = updated.get("seq", updated["id"][:8])
+    # Cycle warnings ride out even when nothing changed (a re-run of an already-stored
+    # edge still describes a cycle the reader should know about).
+    msgs.extend(cycle_warnings)
     if not changed:
         msgs.append("update %s: nothing to change (pass --title/--summary/--append-summary/"
                     "--restore-summary/--goal/--state/--step-add/--step-done/--step-undone/"
                     "--step-supersede/--step-restore/--decision/--supersedes/--pin/"
                     "--pin-decision/--unpin-decision/--restore-decision/--log/--relate/"
-                    "--pr/--pr-desc/--story/--story-desc/--color/--effort)" % label)
+                    "--depends-on/--parent/--absorbed-by/--replaces/--duplicates/"
+                    "--unrelate/--pr/--pr-desc/--story/--story-desc/--color/--effort)" % label)
         return "\n".join(msgs)
     # Reciprocal `child` post on each newly-related task — a side effect, so it runs
     # AFTER the self-update, each write itself optimistic-locked.
     for other in related_new:
         mutate(other["id"], lambda o, seq=updated.get("seq"), title=updated.get("title"):
                add_event(o, "child", "related ← #%s: %s" % (seq, title), session))
+    # --replaces closes the TARGET — the opposite direction from --absorbed-by, which
+    # closes the task being updated. That makes it the one typed edge with a cross-task
+    # write, so it runs HERE (after the atomic self-update) and is itself
+    # optimistic-locked, exactly like --relate's reciprocal posts above. Its notices are
+    # collected rather than appended, so they print under the result line, not above it.
+    replace_notes = []
+    for other in edge_targets.get("replaces", []):
+        was, shut = task_status(other), {"v": False}
+
+        def _shut(o, _seq=updated.get("seq"), _title=updated.get("title"), _f=shut):
+            _f["v"] = close_task_inplace(o, note="replaced by #%s" % _seq, session=session)
+            add_event(o, "child", "replaced by #%s: %s" % (_seq, _title), session)
+        target = mutate(other["id"], _shut)
+        if target is None:
+            continue
+        if shut["v"]:
+            # NO reconcile notice, and that is the point: replacing says the approach was
+            # dropped, so nothing was inherited and nothing needs recalculating. The
+            # asymmetry with --absorbed-by is the whole reason both verbs exist.
+            replace_notes.append("  ↳ #%s CLOSED (was %s) — its approach was replaced, so "
+                                 "no work carried over." % (other.get("seq"),
+                                                            status_display(was)))
+            _obsidian_event(target, "closed")
+            _stream_emit("task.status", target,
+                         {"status": target.get("status"),
+                          "closed_ts": target.get("closed_ts")}, session)
+        else:
+            replace_notes.append("  ↳ #%s was already closed." % other.get("seq"))
     # F6.2: a manually-added PR/story signal triggers the same cross-person auto-link as
     # capture — pair with any peer task carrying the same signal (idempotent). Only when
     # this update actually touched a signal, so a pure --title edit does no feed scan.
@@ -9656,6 +9977,37 @@ def _update_one(ref, a):
         msgs.extend("    • %s" % u for u in undos)
         msgs.append("    Nothing was deleted: the replacement stays on the record either "
                     "way, and a restore puts the original back BESIDE it.")
+    msgs.extend(replace_notes)
+    # --parent: warn when the NEW parent carries an authored `state`. A task with
+    # children has a COMPUTED state, which authors cannot write — so say now that the
+    # hand-written line is going to be replaced rather than folded in.
+    for other in (cap.get("parent_notes") or []):
+        if (other.get("state") or "").strip():
+            msgs.append("note: #%s now has children — its state becomes DERIVED when "
+                        "computed state ships;\n      the current hand-written state "
+                        "will be replaced, not merged." % other.get("seq"))
+    # --absorbed-by: the REQUIRED handoff. Absorbing is a reconcile, not a mechanical
+    # move: a survivor whose checklist is the blind union of two plans describes work
+    # nobody intends to do. So steps are never merged, children are never moved, and
+    # nothing is written on the survivor at all (absorb stays a single-task write) —
+    # this notice is the entire deliverable on that side.
+    for other, shut in (cap.get("absorb_notes") or []):
+        if not shut:
+            continue
+        osq = other.get("seq")
+        msgs.append("RECONCILE NEEDED on #%s: absorbing inherits work, so #%s's steps "
+                    "must be recalculated —\n  some of #%s's are already done there, "
+                    "some are now redundant, some conflict.\n"
+                    "  Run: task-station heal --task %s" % (osq, osq, label, osq))
+        kids = sorted(s for s in absorb_children if s is not None)
+        if kids:
+            msgs.append("  #%s's children were NOT moved and are now orphaned: %s — where "
+                        "each belongs is part of the reconcile, not a mechanical reparent."
+                        % (label, ", ".join("#%s" % s for s in kids)))
+        _obsidian_event(updated, "closed")
+        _stream_emit("task.status", updated,
+                     {"status": updated.get("status"),
+                      "closed_ts": updated.get("closed_ts")}, session)
     # THE COLD-READ CHECK, MECHANICAL. It used to be advice — "re-read the digest as if
     # you have no memory of this conversation" — which is unfalsifiable: no output ever
     # said whether it was done. Two of its conditions are decidable, so the machine
@@ -13379,6 +13731,45 @@ def main(argv=None):
     sp.add_argument("--relate", action="append", default=None,
                     help="record a relation edge to another task by seq/id (repeatable, "
                          "idempotent). The related task's event feed hears about it too.")
+    # The TYPED edge flags. One rule covers all of them: the SUBORDINATE side stores
+    # the edge — the dependent, the child, the absorbed task — so every one of these
+    # writes on the task being updated, and the reverse direction is derived.
+    sp.add_argument("--depends-on", dest="depends_on", action="append", default=None,
+                    metavar="TASK",
+                    help="THIS task depends on TASK — TASK must land first (repeatable, "
+                         "idempotent). Stored on the dependent, which is this task. "
+                         "There is no --blocks: that is this edge read backwards, and "
+                         "reverse edges are always derived, never stored. Local tasks "
+                         "only. A cycle warns and still stores.")
+    sp.add_argument("--parent", default=None, metavar="TASK",
+                    help="TASK is THIS task's parent — at most ONE, because a task under "
+                         "two parents double-counts in every roll-up. Writing a second "
+                         "one REPLACES the first and says which it replaced. Stored on "
+                         "the child, which is this task. Local tasks only.")
+    sp.add_argument("--absorbed-by", dest="absorbed_by", default=None, metavar="TASK",
+                    help="THIS task's work became part of TASK, so THIS task CLOSES. "
+                         "Absorbing inherits work, so it prints a reconcile handoff for "
+                         "TASK — steps are never merged automatically, and children are "
+                         "never moved. (Compare --replaces, which closes the OTHER task.)")
+    sp.add_argument("--replaces", action="append", default=None, metavar="TASK",
+                    help="THIS task replaces TASK, so TASK CLOSES — its approach was "
+                         "dropped, not absorbed, so nothing is inherited and no reconcile "
+                         "is needed (repeatable). Note the direction: --replaces closes "
+                         "the OTHER task, --absorbed-by closes THIS one. Spelled "
+                         "`replaces`, not `supersedes`, because --supersedes already "
+                         "retires a DECISION and both are valid in one command.")
+    sp.add_argument("--duplicates", action="append", default=None, metavar="TASK",
+                    help="THIS task and TASK are the same work (repeatable). Symmetric — "
+                         "either side may declare it, it is stored once, and the reverse "
+                         "reads the same. Closes nothing and decides nothing: it makes "
+                         "duplication a warning instead of something someone must notice.")
+    sp.add_argument("--unrelate", action="append", default=None, metavar="TASK",
+                    help="remove EVERY edge this task stores to TASK, whatever the kind "
+                         "(repeatable). An edge states present structure, not a "
+                         "historical belief, so it is corrected rather than superseded. "
+                         "Removing nothing is reported, not an error. Only touches this "
+                         "task's own edges — a derived reverse edge belongs to the task "
+                         "that stored it.")
     sp.add_argument("--session", default=None,
                     help="session id to attribute --relate / --summary events to (optional)")
     sp.set_defaults(fn=cmd_update)
