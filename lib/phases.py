@@ -38,7 +38,9 @@ PHASES = ("planning", "research", "implementation", "verification", "delivery", 
 # v4: classification unchanged — bumped to force the one-time full rescan that
 # re-files each stored prompt under its span-matched task (usage._prompt_owner_id;
 # shared sessions used to dump their whole trail on one owner task).
-PHASES_VERSION = 4
+# v5: ADO MCP server 2.9.0 renamed its tools (see the ADO heuristics comment below) —
+# bumped to force a full rescan so sessions using the new tool names reclassify.
+PHASES_VERSION = 5
 
 # attributionSkill substring → phase, first match wins. Skill ids carry plugin
 # prefixes/suffixes (e.g. "superpowers:writing-plans", "requesting-code-review"),
@@ -87,10 +89,23 @@ _RESEARCH_TOOLS = frozenset({"Read", "Grep", "Glob", "WebSearch", "WebFetch",
 # MCP tool suffix heuristics (v2): an `mcp__<server>__<verb_noun>` name maps by the
 # verb it carries. Read-ish verbs are research; write-ish verbs are implementation.
 # ADO PR/work-item mutations (create/update/vote/link) are DELIVERY and win first.
+# ADO MCP server 2.9.0 collapsed ~90 verb-named tools into 37 action-dispatched ones
+# (repo_* alone went from 22 tools down to 9), so the resource name — not a verb — now
+# carries the phase: a bare resource name (e.g. `repo_pull_request`) is a read and goes
+# to _MCP_RESEARCH below, while its `_write` sibling (`repo_pull_request_write`) is the
+# one action-dispatch entry point for creates/updates/deletes on that resource, so the
+# `_write` suffix is what marks it DELIVERY here. Both old verb-named tools (matched by
+# the entries above) and new resource+action names (matched below) are kept side by
+# side on purpose: historical session transcripts on disk still use the old names, and
+# the usage scan re-reads those files, so both generations must classify correctly.
 _ADO_DELIVERY = ("create_pull_request", "update_pull_request", "vote",
-                 "wit_create", "wit_update", "link")
+                 "wit_create", "wit_update", "link",
+                 "pull_request_write", "work_item_write", "comment_write",
+                 "thread_write")
 _MCP_RESEARCH = ("find", "read", "search", "list", "get", "overview", "discover", "query",
-                 "show", "profile", "analyze", "status", "test", "inspect", "fetch")
+                 "show", "profile", "analyze", "status", "test", "inspect", "fetch",
+                 "pull_request", "work_item", "repo_file", "repo_branch",
+                 "repo_repository", "definition")
 _MCP_IMPL = ("replace", "insert", "edit", "rename", "write", "update", "delete", "execute",
              "create", "add", "remove", "run", "set", "assign", "upsert", "build")
 

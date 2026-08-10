@@ -3,6 +3,48 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [2.22.0] — 2026-08-10
+
+Every Azure DevOps action since late July was filed under the wrong work phase, and nothing
+surfaced it. Microsoft's `@azure-devops/mcp` **2.9.0** (published 2026-07-29) collapsed ~90
+verb-named tools into **37** action-dispatched ones — `repo_*` alone went from 22 down to 9 —
+and `phases.py` classifies MCP tools by **substring**. None of its ADO keys matched the new
+names, so the classifier silently fell through to its generic verb heuristics:
+
+| tool (2.9.0) | was filed as | should be |
+|---|---|---|
+| `repo_pull_request_write` (create/update/vote) | implementation — matched `_MCP_IMPL` on `"write"` | **delivery** |
+| `repo_pull_request_thread_write` (post a review thread) | implementation | **delivery** |
+| `wit_work_item_write` (create/update a story) | implementation | **delivery** |
+| `repo_pull_request` (get/list) | **other** — matched nothing at all | research |
+| `repo_file` (read a file at a ref) | **other** | research |
+| `repo_branch`, `repo_repository`, `wit_work_item`, `pipelines_definition` | **other** | research |
+
+Shipping a PR read as writing code, and reading a PR read as nothing. The rename reached this
+machine with no action on our side because the server runs as `npx -y @azure-devops/mcp` with
+no version pin, so npx resolves latest at each launch.
+
+### Fixed
+- **`phases.py` now classifies the 2.9.0 action-dispatched ADO tools.** Under action dispatch the
+  *resource name* carries the phase and the `_write` suffix is what separates a delivery write
+  from a research read, so `_ADO_DELIVERY` gained `pull_request_write`, `thread_write`,
+  `work_item_write` and `comment_write`, and `_MCP_RESEARCH` gained the bare resource names
+  (`pull_request`, `work_item`, `repo_file`, `repo_branch`, `repo_repository`, `definition`).
+  `_phase_for_mcp` still tests delivery **before** research, which is what keeps
+  `repo_pull_request_write` → delivery while `repo_pull_request` → research.
+- **Both tool-name generations are matched, deliberately.** The old verb-named keys are kept
+  rather than replaced: historical session transcripts on disk still contain them and the usage
+  scan re-reads those files, so dropping the old keys would have re-broken every past session
+  while fixing the new ones. Guarded by a dedicated regression test.
+- **`PHASES_VERSION` → 5**, so `usage._phases_stale` forces a full rescan and already-stored
+  `session_usage.phases` blobs recompute under the corrected logic instead of keeping their
+  mis-filed split.
+
+### Note
+- `thread_write` needs its own key: `pull_request_write` does **not** substring-match
+  `repo_pull_request_thread_write` — `_thread` breaks it. Easy one to get wrong when adding the
+  next resource.
+
 ## [2.21.0] — 2026-08-10
 
 The Stop hook blocked the end of every turn for **~22 seconds**. Not because it was doing

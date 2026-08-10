@@ -169,7 +169,11 @@ class ClassifyV2Test(unittest.TestCase):
     def test_mcp_read_tools_are_research(self):
         for name in ("mcp__serena__find_symbol", "mcp__serena__get_symbols_overview",
                      "mcp__ado__search_workitem", "mcp__ado__repo_get_file_content",
-                     "mcp__mssql__DiscoverData", "mcp__serena__list_memories"):
+                     "mcp__mssql__DiscoverData", "mcp__serena__list_memories",
+                     "mcp__ado__repo_pull_request", "mcp__ado__repo_pull_request_thread",
+                     "mcp__ado__repo_file", "mcp__ado__repo_branch",
+                     "mcp__ado__repo_repository", "mcp__ado__wit_work_item",
+                     "mcp__ado__pipelines_definition"):
             self.assertEqual(phases.classify_message(_asst(tools=[name])), "research", name)
 
     def test_mcp_write_tools_are_implementation(self):
@@ -183,8 +187,22 @@ class ClassifyV2Test(unittest.TestCase):
                      "mcp__ado__repo_update_pull_request",
                      "mcp__ado__repo_vote_pull_request",
                      "mcp__ado__wit_create_work_item",
-                     "mcp__ado__wit_link_work_item_to_pull_request"):
+                     "mcp__ado__wit_link_work_item_to_pull_request",
+                     "mcp__ado__repo_pull_request_write",
+                     "mcp__ado__repo_pull_request_thread_write",
+                     "mcp__ado__wit_work_item_write",
+                     "mcp__ado__wit_work_item_comment_write"):
             self.assertEqual(phases.classify_message(_asst(tools=[name])), "delivery", name)
+
+    def test_ado_2_9_0_rename_keeps_both_generations(self):
+        """ADO MCP server 2.9.0 renamed its tools from one-per-verb to
+        one-per-resource + an action parameter. Old verb-named tools must keep
+        classifying exactly as before, since historical transcripts on disk
+        still use them and the usage scan re-reads those files."""
+        for name in ("mcp__ado__repo_create_pull_request", "mcp__ado__wit_create_work_item"):
+            self.assertEqual(phases.classify_message(_asst(tools=[name])), "delivery", name)
+        for name in ("mcp__ado__repo_get_file_content", "mcp__ado__repo_get_pull_request_by_id"):
+            self.assertEqual(phases.classify_message(_asst(tools=[name])), "research", name)
 
     def test_task_and_todo_tools(self):
         self.assertEqual(phases.classify_message(_asst(tools=["TodoWrite"])), "planning")
@@ -209,10 +227,10 @@ class ClassifyV2Test(unittest.TestCase):
         # an MCP tool whose verb matches nothing also falls through to other.
         self.assertEqual(phases.classify_message(_asst(tools=["mcp__x__zzz"])), "other")
 
-    def test_phases_version_is_four(self):
-        # v4 = classification unchanged; bumped to force the one-time rescan that
-        # re-files stored prompts under their span-matched task.
-        self.assertEqual(phases.PHASES_VERSION, 4)
+    def test_phases_version_is_five(self):
+        # v5 = ADO MCP 2.9.0 tool rename support added; bumped to force a rescan
+        # so sessions using the new tool names reclassify.
+        self.assertEqual(phases.PHASES_VERSION, 5)
 
 
 class VersionTest(unittest.TestCase):
