@@ -1226,7 +1226,7 @@ class SphericalLayoutTest(unittest.TestCase):
         sph = render_board._concentric_layout(tasks)["sphere"]
         self.assertLess(_d3(sph["t:3"], sph["t:2"]), _d3(sph["t:2"], sph["t:1"]))
 
-    def test_magnets_and_the_core_sit_on_their_own_equator(self):
+    def test_magnets_and_the_core_sit_on_their_own_shell(self):
         lay = render_board._concentric_layout(
             [_lt("t:1", 1, "green")], stories=["sig:story:S1"],
             repos={"sig:repo:one": ["sig:pr:a"]})
@@ -1234,7 +1234,6 @@ class SphericalLayoutTest(unittest.TestCase):
         self.assertAlmostEqual(_r3(sph["cat:green"]), render_board.R_RIM, places=6)
         self.assertAlmostEqual(_r3(sph["sig:story:S1"]), render_board.R_STORY, places=6)
         self.assertAlmostEqual(_r3(sph["sig:repo:one"]), render_board.R_CORE, places=6)
-        self.assertAlmostEqual(sph["cat:green"][1], 0.0, places=6)      # on the equator
         self.assertIn("sig:pr:a", sph)                                  # PR rides its repo
         self.assertLess(_d3(sph["sig:pr:a"], sph["sig:repo:one"]), 18.0)
 
@@ -1285,6 +1284,224 @@ class ShellWiringTest(unittest.TestCase):
         # 4c's guarantee is untouched by adding depth.
         self.assertIn("if(!simList.length)return;", self.js)
         self.assertIn("function settle(iter){rebuildSim();", self.js)
+
+
+# ============================================ Stage 4e: category caps over the sphere ===
+# A category stops being a wedge of longitude and becomes a PATCH placed anywhere on the
+# sphere. Longitude-as-category could only ever arrange categories AROUND one axis, which
+# is why every centre sat at latitude ~0 and the poles were empty.
+
+
+def _unit(p):
+    L = math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]) or 1.0
+    return (p[0] / L, p[1] / L, p[2] / L)
+
+
+def _ang(a, b):
+    """Great-circle angle between two directions, in radians."""
+    d = max(-1.0, min(1.0, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))
+    return math.acos(d)
+
+
+def _aspect_in_tangent_plane(dirs, centre):
+    """The ratio of the two principal spreads of `dirs` in the plane TANGENT to the
+    sphere at `centre` — 1.0 for a round patch, far from 1 for a stripe.
+
+    Raw theta/phi spans are NOT a valid measure of patch-ness: theta compresses toward
+    the poles, so the same physical patch reports a wildly different longitude span
+    depending on where it sits. Great-circle geometry in the tangent plane does not
+    care where on the sphere it is."""
+    u, v = render_board._dir_basis(centre)
+    pts = [(sum(d[i] * u[i] for i in range(3)),
+            sum(d[i] * v[i] for i in range(3))) for d in dirs]
+    n = len(pts)
+    if n < 2:
+        return 1.0
+    mx = sum(p[0] for p in pts) / n
+    my = sum(p[1] for p in pts) / n
+    sxx = sum((p[0] - mx) ** 2 for p in pts) / n
+    syy = sum((p[1] - my) ** 2 for p in pts) / n
+    sxy = sum((p[0] - mx) * (p[1] - my) for p in pts) / n
+    # eigenvalues of the 2x2 covariance
+    tr, det = sxx + syy, sxx * syy - sxy * sxy
+    disc = math.sqrt(max(0.0, tr * tr / 4.0 - det))
+    hi, lo = tr / 2.0 + disc, tr / 2.0 - disc
+    if hi <= 0:
+        return 1.0
+    return math.sqrt(max(0.0, lo) / hi)
+
+
+_CATS_12 = ("black", "blue", "brown", "gold", "green", "orange",
+            "pink", "purple", "red", "silver", "white", "yellow")
+
+
+def _twelve_categories(per=8):
+    tasks, seq = [], 1
+    for c in _CATS_12:
+        for _ in range(per):
+            tasks.append(_lt("t:%d" % seq, seq, c))
+            seq += 1
+    return tasks
+
+
+class SphereCoverageTest(unittest.TestCase):
+    """4e.1/2 — the centres cover the sphere and each category reads as a patch."""
+
+    def test_the_category_centres_span_the_sphere_in_latitude(self):
+        lay = render_board._concentric_layout(_twelve_categories())
+        lats = [math.asin(max(-1.0, min(1.0, _unit(c["dir"])[1])))
+                for c in lay["caps"].values()]
+        self.assertEqual(len(lats), 12)
+        self.assertGreater(max(lats) - min(lats), 2.0)
+
+    def test_the_poles_are_used(self):
+        lay = render_board._concentric_layout(_twelve_categories())
+        ys = [_unit(c["dir"])[1] for c in lay["caps"].values()]
+        self.assertGreater(max(ys), 0.8)          # something near the north pole
+        self.assertLess(min(ys), -0.8)            # …and the south
+
+    def test_no_two_caps_overlap(self):
+        lay = render_board._concentric_layout(_twelve_categories(per=20))
+        caps = list(lay["caps"].values())
+        for i, a in enumerate(caps):
+            for b in caps[i + 1:]:
+                sep = _ang(_unit(a["dir"]), _unit(b["dir"]))
+                self.assertGreater(sep, a["alpha"] + b["alpha"],
+                                   "caps overlap: sep %.3f vs %.3f + %.3f"
+                                   % (sep, a["alpha"], b["alpha"]))
+
+    def test_every_task_lies_inside_its_own_cap(self):
+        tasks = _twelve_categories(per=12)
+        lay = render_board._concentric_layout(tasks)
+        sph, caps = lay["sphere"], lay["caps"]
+        for t in tasks:
+            cap = caps[t["cat"]]
+            self.assertLessEqual(_ang(_unit(sph[t["id"]]), _unit(cap["dir"])),
+                                 cap["alpha"] + 1e-9, t["id"])
+
+    def test_each_category_reads_as_a_patch_not_a_stripe(self):
+        tasks = _twelve_categories(per=25)
+        lay = render_board._concentric_layout(tasks)
+        sph, caps = lay["sphere"], lay["caps"]
+        for cat in _CATS_12:
+            dirs = [_unit(sph[t["id"]]) for t in tasks if t["cat"] == cat]
+            ratio = _aspect_in_tangent_plane(dirs, _unit(caps[cat]["dir"]))
+            self.assertGreater(ratio, 0.5, "%s is a stripe (%.2f)" % (cat, ratio))
+            self.assertLess(ratio, 2.0, "%s is a stripe (%.2f)" % (cat, ratio))
+
+
+class CapSizingTest(unittest.TestCase):
+    """4e.4/5 — caps grow with population and stop at the clamp."""
+
+    def test_a_cap_grows_with_task_count(self):
+        small = render_board._concentric_layout(_twelve_categories(per=3))
+        big = render_board._concentric_layout(_twelve_categories(per=40))
+        self.assertGreater(big["caps"]["orange"]["alpha"],
+                           small["caps"]["orange"]["alpha"])
+
+    def test_a_cap_never_exceeds_the_clamp(self):
+        lay = render_board._concentric_layout(_twelve_categories(per=200))
+        for cat, cap in lay["caps"].items():
+            self.assertLessEqual(cap["alpha"], lay["cap_max"] + 1e-9, cat)
+
+    def test_the_clamp_is_below_half_the_measured_centre_separation(self):
+        lay = render_board._concentric_layout(_twelve_categories())
+        dirs = [_unit(c["dir"]) for c in lay["caps"].values()]
+        sep = min(_ang(a, b) for i, a in enumerate(dirs) for b in dirs[i + 1:])
+        self.assertLess(lay["cap_max"], sep / 2.0)
+
+    def test_an_over_large_category_packs_tighter_rather_than_spilling_out(self):
+        # THE CLAMP IS A GUARD REAL DATA DOES NOT REACH. The largest real category is 103
+        # tasks on the outer shell, which needs a cap of 0.248 against a clamp of 0.443 —
+        # so the branch only exists for a store far denser than today's, and a fixture
+        # has to be deliberately extreme to exercise it at all.
+        #
+        # Two levers make a cap want to be big: task count, and a SMALL shell radius (the
+        # same count needs more angle the further in it sits). So: twelve categories to
+        # fix the centre geometry, and 160 tasks piled onto one category's INNERMOST
+        # shell — 6 artifacts puts them at R_TASK_MIN.
+        tasks = [_lt("t:%d" % (i + 1), i + 1, c) for i, c in enumerate(_CATS_12)]
+        tasks += [_lt("t:%d" % (100 + i), 100 + i, "orange", artifacts=6)
+                  for i in range(160)]
+        lay = render_board._concentric_layout(tasks)
+        # …which wants a cap wider than the clamp allows
+        wanted = render_board._cap_alpha(160, render_board.R_TASK_MIN, 10.0)
+        self.assertGreater(wanted, lay["cap_max"], "fixture is not over-large")
+        # …so the cap stops AT the clamp rather than growing into its neighbour
+        self.assertAlmostEqual(lay["caps"]["orange"]["alpha"], lay["cap_max"], places=9)
+        # …and every one of those tasks is still inside it: they packed, not spilled.
+        centre = _unit(lay["caps"]["orange"]["dir"])
+        for i in range(160):
+            self.assertLessEqual(_ang(_unit(lay["sphere"]["t:%d" % (100 + i)]), centre),
+                                 lay["cap_max"] + 1e-9)
+
+
+class SphereInvariantsTest(unittest.TestCase):
+    """4e.3/4/6/7 — what 4d established must survive the reshaping."""
+
+    def test_radius_is_still_a_pure_function_of_entanglement(self):
+        tasks = []
+        seq = 1
+        for cat in ("orange", "green", "blue"):
+            for a in (0, 0, 2, 2, 5):
+                tasks.append(_lt("t:%d" % seq, seq, cat, artifacts=a))
+                seq += 1
+        sph = render_board._concentric_layout(tasks)["sphere"]
+        by_art = {}
+        for t in tasks:
+            by_art.setdefault(t["artifacts"], set()).add(
+                round(_r3(sph[t["id"]]), 6))
+        for a, radii in by_art.items():
+            self.assertEqual(len(radii), 1, "entanglement %d spans %s" % (a, radii))
+        self.assertGreater(min(by_art[0]), min(by_art[2]))
+        self.assertGreater(min(by_art[2]), min(by_art[5]))
+
+    def test_no_crowding_in_three_space(self):
+        tasks = _twelve_categories(per=25)
+        pts = [render_board._concentric_layout(tasks)["sphere"][t["id"]] for t in tasks]
+        closest = min(_d3(a, b) for i, a in enumerate(pts) for b in pts[i + 1:])
+        self.assertGreater(closest, 6.0, "closest 3D pair %.2f units" % closest)
+
+    def test_neighbouring_shells_stay_apart(self):
+        # The log radius scale saturates, so 5 and 6 artifacts are only ~6 units apart
+        # radially; each shell's spiral is turned so they cannot share a bearing.
+        tasks = [_lt("t:1", 1, "orange", artifacts=5),
+                 _lt("t:2", 2, "orange", artifacts=6)]
+        sph = render_board._concentric_layout(tasks)["sphere"]
+        self.assertGreater(_d3(sph["t:1"], sph["t:2"]), 6.0)
+
+    def test_depth_is_substantial(self):
+        sph = render_board._concentric_layout(_twelve_categories())["sphere"]
+        self.assertGreater(max(abs(p[2]) for p in sph.values()),
+                           render_board.R_TASK_MAX * 0.3)
+
+    def test_a_parents_children_stay_a_compact_neighbourhood(self):
+        tasks = [_lt("t:1", 1, "green")] + [
+            _lt("t:%d" % i, i, "orange", parent="t:1") for i in range(2, 10)]
+        sph = render_board._concentric_layout(tasks)["sphere"]
+        root = sph["t:1"]
+        for i in range(2, 10):
+            self.assertLessEqual(_d3(sph["t:%d" % i], root),
+                                 render_board.R_CHILD + 1e-6)
+
+    def test_the_placement_is_deterministic(self):
+        tasks = _twelve_categories(per=9)
+        a = render_board._concentric_layout(tasks)
+        b = render_board._concentric_layout(list(reversed(tasks)))
+        self.assertEqual(a["sphere"], b["sphere"])
+        self.assertEqual(a["caps"], b["caps"])
+
+    def test_magnets_ride_their_own_cap_centre(self):
+        lay = render_board._concentric_layout(_twelve_categories())
+        sph, caps = lay["sphere"], lay["caps"]
+        for cat in _CATS_12:
+            magnet = sph["cat:%s" % cat]
+            self.assertAlmostEqual(_r3(magnet), render_board.R_RIM, places=6)
+            self.assertLess(_ang(_unit(magnet), _unit(caps[cat]["dir"])), 1e-9)
+
+    def test_nothing_simulates_when_nothing_is_focused(self):
+        self.assertIn("if(!simList.length)return;", render_board._MG_ENHANCE_JS)
+        self.assertIn("function settle(iter){rebuildSim();", render_board._MG_ENHANCE_JS)
 
 
 if __name__ == "__main__":

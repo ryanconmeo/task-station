@@ -3707,13 +3707,98 @@ def _ring_angles(keys, count=None):
             for i, k in enumerate(ks)}
 
 
-def _sph(r, theta, phi, cx=0.0, cy=0.0):
-    """A spherical slot as `(x, y, z)`. Longitude `theta` runs around the VERTICAL y
-    axis and latitude `phi` lifts off the equator, matching the gravity-well
-    convention (ring in x–z, y up) — so orbiting yaw sweeps through the categories."""
-    c = math.cos(phi)
-    return (cx + r * c * math.cos(theta), cy + r * math.sin(phi),
-            r * c * math.sin(theta))
+# The golden angle. Successive multiples of it never repeat a bearing, which is what
+# makes both the sphere distribution and the sunflower seating below fill evenly.
+GOLDEN_ANGLE = math.pi * (3.0 - math.sqrt(5.0))
+# A cap is sized to hold `n * SEAT_SEP^2 * CAP_FILL` of surface. The margin above 1.0 is
+# what puts the nearest-neighbour distance clear of the 6-unit crowding bar rather than
+# exactly on it.
+CAP_FILL = 1.25
+# Floor on a cap's angular radius, so a shell holding one or two tasks still has a real
+# patch — two nearly-touching shells rely on their seats being off-centre to separate.
+CAP_MIN = 0.06
+# Caps of angular radius a and b are disjoint iff a + b < their centre separation. Every
+# cap is clamped to this fraction of the MEASURED minimum separation, so the worst pair
+# sums to 0.96 of it and no two caps can ever touch.
+CAP_SAFETY = 0.48
+
+
+def _fib_sphere(keys):
+    """Near-uniform directions over the WHOLE sphere, one per key — the Fibonacci /
+    golden-angle construction, assigned over SORTED keys so the arrangement never
+    wobbles between renders. Returns `{key: (x, y, z)}` unit vectors.
+
+    Height is stepped uniformly, which makes the bands equal-area, and each successive
+    point is turned by the golden angle. That is what distributes categories over the
+    sphere instead of around one axis."""
+    ks = sorted(keys)
+    n = len(ks)
+    out = {}
+    for i, k in enumerate(ks):
+        y = 1.0 - 2.0 * (i + 0.5) / n if n else 0.0
+        rad = math.sqrt(max(0.0, 1.0 - y * y))
+        a = i * GOLDEN_ANGLE
+        out[k] = (rad * math.cos(a), y, rad * math.sin(a))
+    return out
+
+
+def _min_separation(dirs):
+    """The smallest angle between any two of `dirs` (unit vectors), in radians. π when
+    there are fewer than two — nothing can collide with itself. MEASURED rather than
+    assumed, because it is what every cap radius is clamped against."""
+    vs = list(dirs)
+    best = math.pi
+    for i in range(len(vs)):
+        for j in range(i + 1, len(vs)):
+            a, b = vs[i], vs[j]
+            d = max(-1.0, min(1.0, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))
+            best = min(best, math.acos(d))
+    return best
+
+
+def _cap_alpha(n, r, alpha_max):
+    """The angular radius of a spherical cap on a shell of radius `r` big enough to seat
+    `n` tasks at roughly `SEAT_SEP` apart, clamped into `[CAP_MIN, alpha_max]`.
+
+    A cap of angular radius α has area `2πr²(1 − cos α)`, so solving for the area `n`
+    tasks need inverts directly. When a category is too big for its clamp the cap stops
+    growing and the seats simply pack tighter — a cap that grew past the clamp would
+    overlap its neighbour, and two categories bleeding into each other is a worse
+    failure than one dense patch."""
+    if r <= 0:
+        return alpha_max
+    need = max(1, int(n)) * SEAT_SEP * SEAT_SEP * CAP_FILL
+    cosa = 1.0 - need / (2.0 * math.pi * r * r)
+    a = math.acos(max(-1.0, min(1.0, cosa)))
+    return max(CAP_MIN, min(alpha_max, a))
+
+
+def _cap_seat(centre, u, v, alpha, k, n, phase=0.0):
+    """Unit direction for seat `k` of `n` in a cap — a golden-angle SUNFLOWER laid out in
+    the cap's tangent plane and mapped onto the sphere along great circles.
+
+    `sqrt((k+0.5)/n)` spaces the rings by equal area, so the disc fills evenly instead of
+    banding, and that even fill is what makes a category read as a patch rather than
+    rows. `phase` turns the whole spiral, keeping two shells of one category from putting
+    their seats on the same bearing."""
+    rho = alpha * math.sqrt((k + 0.5) / float(max(1, n)))
+    psi = k * GOLDEN_ANGLE + phase
+    cr, sr = math.cos(rho), math.sin(rho)
+    cp, sp = math.cos(psi), math.sin(psi)
+    return (centre[0] * cr + (u[0] * cp + v[0] * sp) * sr,
+            centre[1] * cr + (u[1] * cp + v[1] * sp) * sr,
+            centre[2] * cr + (u[2] * cp + v[2] * sp) * sr)
+
+
+def _dir_basis(d):
+    """Two orthonormal vectors spanning the plane tangent to the unit sphere at `d`."""
+    ax, ay, az = (0.0, 1.0, 0.0) if abs(d[1]) < 0.9 else (1.0, 0.0, 0.0)
+    ux, uy, uz = d[1] * az - d[2] * ay, d[2] * ax - d[0] * az, d[0] * ay - d[1] * ax
+    L = math.hypot(math.hypot(ux, uy), uz) or 1.0
+    u = (ux / L, uy / L, uz / L)
+    v = (d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2],
+         d[0] * u[1] - d[1] * u[0])
+    return u, v
 
 
 def _tangent_basis(x, y, z, cx=0.0, cy=0.0):
@@ -3748,14 +3833,13 @@ def _concentric_layout(tasks, stories=(), repos=None, cx=0.0, cy=0.0):
 
     TWO PLACEMENTS, one per view. The planar map seats a category in rows that spill
     inward when a row fills, which separates a crowded category but costs radius its
-    meaning. On a SHELL there is no need to spill: a shell has AREA, so a category is
-    a wedge of it and the second dimension is latitude. That makes radius a PURE
-    function of entanglement in 3-space — from any orbit angle, closer to the centre
-    means more entangled in shared work.
+    meaning. A SHELL has AREA, so nothing needs to spill: a category is a spherical CAP
+    somewhere on that shell, and its tasks fill the cap. Radius is then a PURE function
+    of entanglement in 3-space — from any orbit angle, closer to the centre means more
+    entangled in shared work.
 
-      longitude θ — the task's category sector
-      latitude  φ — spread within that sector
-      radius    r — entanglement, and nothing else"""
+      direction — which category CAP a task belongs to, and where in it
+      radius    — entanglement, and nothing else"""
     by_id = {t["id"]: t for t in tasks}
     kids = {}
     for t in tasks:
@@ -3886,31 +3970,41 @@ def _concentric_layout(tasks, stories=(), repos=None, cx=0.0, cy=0.0):
         return out
 
     # ---- the SHELL placement, for the 3D view ---------------------------------
-    # Same θ per category, same radius rule — but the second seating dimension is
-    # LATITUDE, not an inward step, so a crowded category spreads over a patch of its
-    # shell and radius carries entanglement alone.
     sph = {}
+    # A category is a PATCH placed anywhere on the sphere: its centre is one of twelve
+    # golden-angle directions, and its tasks are seated in a spherical CAP around that
+    # centre. Distributing the centres over the whole sphere is what stops the layout
+    # being a barrel — a category is no longer a wedge of longitude, so nothing forces
+    # them all onto one band and the poles fill like everywhere else.
+    cat_dir = _fib_sphere(cat_keys)
+    # Every cap is clamped to a fraction of the MEASURED minimum separation between
+    # centres, so the widest possible pair still sums to less than the gap between them
+    # and two categories can never bleed into each other.
+    cap_max = CAP_SAFETY * _min_separation(cat_dir.values())
+    caps = {}
     for key, members in per_cat.items():
-        base = cat_ang.get(key, -math.pi / 2)
+        centre = cat_dir.get(key) or (0.0, 1.0, 0.0)
+        u, v = _dir_basis(centre)
         by_r = {}
         for t in members:
             by_r.setdefault(_entangle_radius(t.get("artifacts")), []).append(t)
+        alpha_seen = CAP_MIN
         for shell, r in enumerate(sorted(by_r, reverse=True)):
             group = by_r[r]
-            cols = max(1, int((r * CAT_SPAN) / SEAT_SEP))
-            dphi = SEAT_SEP / r if r else 0.0
-            rows = int(math.ceil(len(group) / float(cols)))
-            # Half-step latitude offset on alternate shells, so two neighbouring
-            # entanglement levels cannot land on the same θ/φ slot and rely on the
-            # radial gap alone — which narrows as the log scale saturates.
-            phase = (shell % 2) * dphi * 0.5
-            for i in range(rows):
-                row = group[i * cols:(i + 1) * cols]
-                m = len(row)
-                phi = (i - (rows - 1) / 2.0) * dphi + phase
-                for j, t in enumerate(row):
-                    off = 0.0 if m <= 1 else (j / float(m - 1) - 0.5) * CAT_SPAN
-                    sph[t["id"]] = _sph(r, base + off, phi, cx, cy)
+            alpha = _cap_alpha(len(group), r, cap_max)
+            alpha_seen = max(alpha_seen, alpha)
+            # Turn each shell's spiral by the golden angle so two shells of one category
+            # never put a seat on the same bearing. The radial gap between neighbouring
+            # entanglement levels narrows as the log scale saturates, so that bearing
+            # offset is what keeps the closest pair clear.
+            phase = shell * GOLDEN_ANGLE
+            for k, t in enumerate(group):
+                d = _cap_seat(centre, u, v, alpha, k, len(group), phase)
+                sph[t["id"]] = (cx + r * d[0], cy + r * d[1], r * d[2])
+        caps[key] = {"dir": centre, "alpha": alpha_seen}
+    for key in cat_keys:
+        caps.setdefault(key, {"dir": cat_dir.get(key) or (0.0, 1.0, 0.0),
+                              "alpha": CAP_MIN})
 
     def _place_subtree_3d(tid, x, y, z, radius, seen=None):
         # Children ride a small disc TANGENT to the shell at their parent, so a whole
@@ -3932,21 +4026,30 @@ def _concentric_layout(tasks, stories=(), repos=None, cx=0.0, cy=0.0):
             _place_subtree_3d(c, x + ux * ca + vx * sa, y + uy * ca + vy * sa,
                               z + uz * ca + vz * sa, radius * CHILD_SHRINK, seen)
 
+    # A group root gets its own direction on the sphere, not a slot in its category's
+    # cap — a parent takes no category pull, so it is placed by the tree it heads. Its
+    # subtree then rides a tangent disc around it, which is what keeps a bubble's hull
+    # tight from every orbit angle.
+    root_dir = _fib_sphere(roots)
     for r_id in roots:
-        gx, gy, gz = _sph(R_GROUP, root_ang[r_id], 0.0, cx, cy)
-        _place_subtree_3d(r_id, gx, gy, gz, R_CHILD)
+        d = root_dir[r_id]
+        _place_subtree_3d(r_id, cx + R_GROUP * d[0], cy + R_GROUP * d[1],
+                          R_GROUP * d[2], R_CHILD)
     for t in tasks:
         if t["id"] not in sph:
-            sph[t["id"]] = _sph(R_TASK_MAX, cat_ang.get(t.get("cat") or "",
-                                                        -math.pi / 2), 0.0, cx, cy)
-    # Magnets and the core sit on the equator of their own shell: their meaning is the
-    # ring they name, and latitude is the tasks' dimension.
-    for k, a in cat_ang.items():
-        sph["cat:%s" % k] = _sph(R_RIM, a, 0.0, cx, cy)
-    for k, a in st_ang.items():
-        sph[k] = _sph(R_STORY, a, 0.0, cx, cy)
-    for k, a in rp_ang.items():
-        rx, ry, rz = _sph(R_CORE, a, 0.0, cx, cy)
+            d = cat_dir.get(t.get("cat") or "") or (0.0, 1.0, 0.0)
+            sph[t["id"]] = (cx + R_TASK_MAX * d[0], cy + R_TASK_MAX * d[1],
+                            R_TASK_MAX * d[2])
+    # A category magnet sits at its own cap centre on the outer shell, so the labels
+    # distribute over the sphere with the patches they name.
+    for k, d in cat_dir.items():
+        sph["cat:%s" % k] = (cx + R_RIM * d[0], cy + R_RIM * d[1], R_RIM * d[2])
+    # Story magnets and repo cores take their own golden-angle directions on their own
+    # shells, for the same reason: a ring of them would put the sphere back on one axis.
+    for k, d in _fib_sphere(list(st_ang)).items():
+        sph[k] = (cx + R_STORY * d[0], cy + R_STORY * d[1], R_STORY * d[2])
+    for k, d in _fib_sphere(list(rp_ang)).items():
+        rx, ry, rz = cx + R_CORE * d[0], cy + R_CORE * d[1], R_CORE * d[2]
         sph[k] = (rx, ry, rz)
         prs = sorted(repos.get(k) or [])
         if not prs:
@@ -3964,7 +4067,8 @@ def _concentric_layout(tasks, stories=(), repos=None, cx=0.0, cy=0.0):
                  "members": sorted([k] + list(repos.get(k) or []))}
                 for k in sorted(repos)]
     return {"task": pos, "cat": cat_pos, "story": story_pos, "repo": repo_pos,
-            "pr": pr_pos, "bubbles": bubbles, "sphere": sph}
+            "pr": pr_pos, "bubbles": bubbles, "sphere": sph, "caps": caps,
+            "cap_max": cap_max}
 
 
 def _minigraph(graph, theme=None, variant=None, solo_pool=None):
@@ -4433,8 +4537,8 @@ _MG_ENHANCE_JS = """try{(function(){
   function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
   var SW=720,SH=520,SCL=0.78;
   // The server sends TWO slots per node: the planar one as sx0/sy0, and the SHELL one as
-  // lt3 — same entity, one placement per view. 3D takes the shell, where latitude carries
-  // the within-category spread and radius therefore carries entanglement alone; 2D takes
+  // lt3 — same entity, one placement per view. 3D takes the shell, where a category is a
+  // cap and radius therefore carries entanglement alone; 2D takes
   // the planar map, whose row seating is what separates a crowded category on a flat
   // surface. The mode switch re-seeds, so each view gets the placement built for it.
   function slotFor(n){
