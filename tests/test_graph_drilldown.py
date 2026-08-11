@@ -911,7 +911,7 @@ class ConcentricRenderTest(_BoardBase):
     def test_the_canvas_holds_nodes_at_their_layout_slot(self):
         # F4c INVERTED this: the slot is a PIN by default, and the spring back to it is
         # only for the nodes that still simulate — a focused frame's members.
-        self.assertIn("n._lt={x:n.x,y:n.y}", render_board._MG_ENHANCE_JS)
+        self.assertIn("var s=slotFor(n);n._lt=s;", render_board._MG_ENHANCE_JS)
         self.assertIn("else if(n._lt){n.vx+=(n._lt.x-n.x)*LAYK", render_board._MG_ENHANCE_JS)
         self.assertIn("var LAYK=", render_board._MG_ENHANCE_JS)
         # the galaxy well still WINS when present, so 4a's Interbrain grouping is intact
@@ -958,9 +958,9 @@ class PinnedByDefaultTest(unittest.TestCase):
         self.assertIn("p.length>0", body)                    # …and only a FOCUSED frame
         self.assertIn("isDescendant(n,p)", body)             # via 4a's containment test
         self.assertIn("n.pinned=", body)
-        # the pin is EXACT — snapped to the slot with zero velocity, z included, or the
-        # random 3D z spread would never decay and would smear the rings into a ball
-        self.assertIn("n.x=n._lt.x;n.y=n._lt.y;n.z=0;n.vx=0;n.vy=0;n.vz=0;", body)
+        # the pin is EXACT — snapped to the slot with zero velocity, in all three axes,
+        # because the slot is what defines a node's depth
+        self.assertIn("n.x=n._lt.x;n.y=n._lt.y;n.z=n._lt.z||0;n.vx=0;n.vy=0;n.vz=0;", body)
 
     def test_settle_rebuilds_the_live_set_first(self):
         # …so a settle with nothing focused iterates 220 no-ops instead of 20.6M pairs.
@@ -1125,6 +1125,166 @@ class BoardRelationLabelTest(unittest.TestCase):
         self.assertIn("children", out)
         self.assertIn("spawned", out)
         self.assertIn(" · ", out)                            # two separate runs
+
+
+# ==================================================== Stage 4d: the spherical shells ===
+# A shell has AREA, so a crowded category spreads over a patch of it rather than spilling
+# inward — which is what lets radius carry entanglement and nothing else. One meaning per
+# axis: longitude = category, latitude = spread within it, radius = entanglement.
+
+
+def _r3(p):
+    """Distance of a 3D slot from the layout centre."""
+    return math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2])
+
+
+def _d3(a, b):
+    return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
+
+
+class SphericalLayoutTest(unittest.TestCase):
+    def _cat(self, n, cat="orange", artifacts=0, start=1):
+        return [_lt("t:%d" % i, i, cat, artifacts=artifacts)
+                for i in range(start, start + n)]
+
+    def test_equal_entanglement_shares_a_radius_and_differs_in_angle(self):
+        lay = render_board._concentric_layout(self._cat(40))
+        sph = lay["sphere"]
+        radii = {round(_r3(sph["t:%d" % i]), 6) for i in range(1, 41)}
+        self.assertEqual(len(radii), 1, "one entanglement level is ONE shell")
+        pts = [sph["t:%d" % i] for i in range(1, 41)]
+        self.assertEqual(len({tuple(p) for p in pts}), 40)   # …separated by θ and φ
+
+    def test_radius_is_a_function_of_entanglement_alone(self):
+        # Across categories too: the shell a task sits on depends on nothing else.
+        tasks = (self._cat(5, "orange", artifacts=2, start=1)
+                 + self._cat(5, "green", artifacts=2, start=100)
+                 + self._cat(30, "blue", artifacts=2, start=200))
+        sph = render_board._concentric_layout(tasks)["sphere"]
+        radii = {round(_r3(sph[t["id"]]), 6) for t in tasks}
+        self.assertEqual(len(radii), 1)
+        self.assertAlmostEqual(radii.pop(), render_board._entangle_radius(2), places=6)
+
+    def test_a_large_category_does_not_move_anyone_off_their_shell(self):
+        # The flaw this replaces: rows that spill inward make a zero-edge task sit
+        # deeper than a well-connected one. On a shell there is nowhere to spill TO.
+        small = render_board._concentric_layout(self._cat(3))["sphere"]
+        big = render_board._concentric_layout(self._cat(120))["sphere"]
+        r_small = _r3(small["t:1"])
+        for i in range(1, 121):
+            self.assertAlmostEqual(_r3(big["t:%d" % i]), r_small, places=6)
+
+    def test_radius_still_falls_as_entanglement_rises(self):
+        tasks = [_lt("t:1", 1, "orange", artifacts=0),
+                 _lt("t:2", 2, "orange", artifacts=3),
+                 _lt("t:3", 3, "orange", artifacts=6)]
+        sph = render_board._concentric_layout(tasks)["sphere"]
+        self.assertGreater(_r3(sph["t:1"]), _r3(sph["t:2"]))
+        self.assertGreater(_r3(sph["t:2"]), _r3(sph["t:3"]))
+
+    def test_depth_is_substantial(self):
+        # "make it actually 3d": max|z| must be a real fraction of the layout radius.
+        tasks = []
+        for k, cat in enumerate(("orange", "green", "blue", "red")):
+            tasks += self._cat(25, cat, start=1 + k * 100)
+        sph = render_board._concentric_layout(tasks)["sphere"]
+        zmax = max(abs(p[2]) for p in sph.values())
+        self.assertGreater(zmax, render_board.R_TASK_MAX * 0.3)
+
+    def test_no_crowding_in_three_space(self):
+        tasks = []
+        for k, cat in enumerate(("orange", "green", "blue")):
+            tasks += self._cat(35, cat, start=1 + k * 100)
+        pts = [render_board._concentric_layout(tasks)["sphere"][t["id"]] for t in tasks]
+        closest = min(_d3(a, b)
+                      for i, a in enumerate(pts) for b in pts[i + 1:])
+        self.assertGreater(closest, 6.0, "closest 3D pair %.2f units" % closest)
+
+    def test_neighbouring_shells_do_not_share_a_slot(self):
+        # The log radius scale saturates, so two adjacent high entanglement levels sit
+        # close together; a half-step of latitude keeps them off the same bearing.
+        tasks = [_lt("t:1", 1, "orange", artifacts=5), _lt("t:2", 2, "orange", artifacts=6)]
+        sph = render_board._concentric_layout(tasks)["sphere"]
+        self.assertGreater(_d3(sph["t:1"], sph["t:2"]), 6.0)
+
+    def test_a_parents_children_stay_a_compact_neighbourhood(self):
+        # drawGalaxyBlobs hulls PROJECTED positions, so children scattered across the
+        # shell would produce a hull that swallows half the graph.
+        tasks = [_lt("t:1", 1, "green")] + [
+            _lt("t:%d" % i, i, "orange", parent="t:1") for i in range(2, 10)]
+        sph = render_board._concentric_layout(tasks)["sphere"]
+        root = sph["t:1"]
+        for i in range(2, 10):
+            self.assertLessEqual(_d3(sph["t:%d" % i], root),
+                                 render_board.R_CHILD + 1e-6)
+        # …and the cluster is far smaller than the shell it sits on
+        self.assertLess(2 * render_board.R_CHILD, render_board.R_GROUP)
+
+    def test_a_nested_child_cluster_is_tighter_than_its_parent_s(self):
+        tasks = [_lt("t:1", 1, "green"), _lt("t:2", 2, "green", parent="t:1"),
+                 _lt("t:3", 3, "green", parent="t:2")]
+        sph = render_board._concentric_layout(tasks)["sphere"]
+        self.assertLess(_d3(sph["t:3"], sph["t:2"]), _d3(sph["t:2"], sph["t:1"]))
+
+    def test_magnets_and_the_core_sit_on_their_own_equator(self):
+        lay = render_board._concentric_layout(
+            [_lt("t:1", 1, "green")], stories=["sig:story:S1"],
+            repos={"sig:repo:one": ["sig:pr:a"]})
+        sph = lay["sphere"]
+        self.assertAlmostEqual(_r3(sph["cat:green"]), render_board.R_RIM, places=6)
+        self.assertAlmostEqual(_r3(sph["sig:story:S1"]), render_board.R_STORY, places=6)
+        self.assertAlmostEqual(_r3(sph["sig:repo:one"]), render_board.R_CORE, places=6)
+        self.assertAlmostEqual(sph["cat:green"][1], 0.0, places=6)      # on the equator
+        self.assertIn("sig:pr:a", sph)                                  # PR rides its repo
+        self.assertLess(_d3(sph["sig:pr:a"], sph["sig:repo:one"]), 18.0)
+
+    def test_the_shell_placement_is_deterministic(self):
+        tasks = self._cat(60) + self._cat(20, "green", start=500)
+        a = render_board._concentric_layout(tasks)["sphere"]
+        b = render_board._concentric_layout(list(reversed(tasks)))["sphere"]
+        self.assertEqual(a, b)
+
+    def test_the_planar_placement_still_separates_tasks(self):
+        # 2D keeps the row seating, which is what separates a crowded category on a
+        # flat surface; the shell would collapse two tasks differing only in latitude.
+        lay = render_board._concentric_layout(self._cat(100))
+        pts = list(lay["task"].values())
+        closest = min(math.hypot(a[0] - b[0], a[1] - b[1])
+                      for i, a in enumerate(pts) for b in pts[i + 1:])
+        self.assertGreater(closest, 6.0)
+
+
+class ShellWiringTest(unittest.TestCase):
+    """The shell has to reach the canvas, and the pin has to hold it."""
+
+    def setUp(self):
+        self.js = render_board._MG_ENHANCE_JS
+
+    def test_the_slot_is_chosen_per_view_mode(self):
+        self.assertIn('if(mode==="3d"&&n.lt3)return {x:(n.lt3[0]-SW/2)*SCL,'
+                      'y:(n.lt3[1]-SH/2)*SCL,z:n.lt3[2]*SCL};', self.js)
+        self.assertIn("var s=slotFor(n);n._lt=s;n.x=s.x;n.y=s.y;n.z=s.z;", self.js)
+
+    def test_the_pin_holds_all_three_axes(self):
+        self.assertIn("n.x=n._lt.x;n.y=n._lt.y;n.z=n._lt.z||0;", self.js)
+
+    def test_no_z_flattening_spring_was_reintroduced(self):
+        # The slot defines z. A spring pulling z toward 0 would drag a simulating node
+        # off its shell — the layout spring has to target the slot's z, not the plane.
+        self.assertNotIn("n.vz+=(-n.z)*LAYK", self.js)
+        self.assertIn("n.vz+=((n._lt.z||0)-n.z)*LAYK", self.js)
+
+    def test_a_random_z_spread_never_overwrites_a_slot(self):
+        self.assertIn("nodes.forEach(function(n){if(n._lt)return;n.z=n.solo?0:", self.js)
+
+    def test_the_mode_switch_reseeds_from_the_right_slot(self):
+        self.assertIn("seedXY();", self.js)
+        self.assertIn('if(m==="3d")seedZ();else flattenZ();', self.js)
+
+    def test_nothing_simulates_when_nothing_is_focused(self):
+        # 4c's guarantee is untouched by adding depth.
+        self.assertIn("if(!simList.length)return;", self.js)
+        self.assertIn("function settle(iter){rebuildSim();", self.js)
 
 
 if __name__ == "__main__":

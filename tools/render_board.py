@@ -3707,6 +3707,32 @@ def _ring_angles(keys, count=None):
             for i, k in enumerate(ks)}
 
 
+def _sph(r, theta, phi, cx=0.0, cy=0.0):
+    """A spherical slot as `(x, y, z)`. Longitude `theta` runs around the VERTICAL y
+    axis and latitude `phi` lifts off the equator, matching the gravity-well
+    convention (ring in x–z, y up) — so orbiting yaw sweeps through the categories."""
+    c = math.cos(phi)
+    return (cx + r * c * math.cos(theta), cy + r * math.sin(phi),
+            r * c * math.sin(theta))
+
+
+def _tangent_basis(x, y, z, cx=0.0, cy=0.0):
+    """Two orthonormal vectors spanning the plane TANGENT to the shell at
+    `(x, y, z)`. A child cluster laid out on this plane hugs the shell instead of
+    cutting through it, and stays compact from any viewing angle — which is what
+    keeps a parent bubble's hull tight."""
+    rx, ry, rz = x - cx, y - cy, z
+    L = math.hypot(math.hypot(rx, ry), rz) or 1.0
+    rx, ry, rz = rx / L, ry / L, rz / L
+    # any vector not parallel to the radial one; swap the seed when it is
+    ax, ay, az = (0.0, 1.0, 0.0) if abs(ry) < 0.9 else (1.0, 0.0, 0.0)
+    ux, uy, uz = ry * az - rz * ay, rz * ax - rx * az, rx * ay - ry * ax
+    L = math.hypot(math.hypot(ux, uy), uz) or 1.0
+    ux, uy, uz = ux / L, uy / L, uz / L
+    vx, vy, vz = ry * uz - rz * uy, rz * ux - rx * uz, rx * uy - ry * ux
+    return (ux, uy, uz), (vx, vy, vz)
+
+
 def _concentric_layout(tasks, stories=(), repos=None, cx=0.0, cy=0.0):
     """Place every task, category magnet, story magnet, repo bubble and PR.
 
@@ -3717,7 +3743,19 @@ def _concentric_layout(tasks, stories=(), repos=None, cx=0.0, cy=0.0):
 
     Returns `{"task", "cat", "story", "repo", "pr"}` position maps plus `"bubbles"`
     — `[{"kind", "key", "members"}]`, one per parent (its subtree) and one per repo
-    (its PRs), for the caller to hull. Pure: no I/O, no globals, no randomness."""
+    (its PRs), for the caller to hull — and `"sphere"`, the SAME entities placed in
+    3-space. Pure: no I/O, no globals, no randomness.
+
+    TWO PLACEMENTS, one per view. The planar map seats a category in rows that spill
+    inward when a row fills, which separates a crowded category but costs radius its
+    meaning. On a SHELL there is no need to spill: a shell has AREA, so a category is
+    a wedge of it and the second dimension is latitude. That makes radius a PURE
+    function of entanglement in 3-space — from any orbit angle, closer to the centre
+    means more entangled in shared work.
+
+      longitude θ — the task's category sector
+      latitude  φ — spread within that sector
+      radius    r — entanglement, and nothing else"""
     by_id = {t["id"]: t for t in tasks}
     kids = {}
     for t in tasks:
@@ -3847,13 +3885,86 @@ def _concentric_layout(tasks, stories=(), repos=None, cx=0.0, cy=0.0):
             stack.extend(kids.get(cur) or [])
         return out
 
+    # ---- the SHELL placement, for the 3D view ---------------------------------
+    # Same θ per category, same radius rule — but the second seating dimension is
+    # LATITUDE, not an inward step, so a crowded category spreads over a patch of its
+    # shell and radius carries entanglement alone.
+    sph = {}
+    for key, members in per_cat.items():
+        base = cat_ang.get(key, -math.pi / 2)
+        by_r = {}
+        for t in members:
+            by_r.setdefault(_entangle_radius(t.get("artifacts")), []).append(t)
+        for shell, r in enumerate(sorted(by_r, reverse=True)):
+            group = by_r[r]
+            cols = max(1, int((r * CAT_SPAN) / SEAT_SEP))
+            dphi = SEAT_SEP / r if r else 0.0
+            rows = int(math.ceil(len(group) / float(cols)))
+            # Half-step latitude offset on alternate shells, so two neighbouring
+            # entanglement levels cannot land on the same θ/φ slot and rely on the
+            # radial gap alone — which narrows as the log scale saturates.
+            phase = (shell % 2) * dphi * 0.5
+            for i in range(rows):
+                row = group[i * cols:(i + 1) * cols]
+                m = len(row)
+                phi = (i - (rows - 1) / 2.0) * dphi + phase
+                for j, t in enumerate(row):
+                    off = 0.0 if m <= 1 else (j / float(m - 1) - 0.5) * CAT_SPAN
+                    sph[t["id"]] = _sph(r, base + off, phi, cx, cy)
+
+    def _place_subtree_3d(tid, x, y, z, radius, seen=None):
+        # Children ride a small disc TANGENT to the shell at their parent, so a whole
+        # subtree stays a compact 3D neighbourhood. The hull that draws its bubble is
+        # taken over projected positions, and a compact cluster projects compactly
+        # from every orbit angle. `seen` is load-bearing — a parent cycle is legal.
+        seen = seen if seen is not None else set()
+        if tid in seen:
+            return
+        seen.add(tid)
+        sph[tid] = (x, y, z)
+        ch = [c for c in (kids.get(tid) or []) if c not in seen]
+        if not ch:
+            return
+        (ux, uy, uz), (vx, vy, vz) = _tangent_basis(x, y, z, cx, cy)
+        for j, c in enumerate(ch):
+            a = -math.pi / 2 + 2 * math.pi * j / len(ch)
+            ca, sa = math.cos(a) * radius, math.sin(a) * radius
+            _place_subtree_3d(c, x + ux * ca + vx * sa, y + uy * ca + vy * sa,
+                              z + uz * ca + vz * sa, radius * CHILD_SHRINK, seen)
+
+    for r_id in roots:
+        gx, gy, gz = _sph(R_GROUP, root_ang[r_id], 0.0, cx, cy)
+        _place_subtree_3d(r_id, gx, gy, gz, R_CHILD)
+    for t in tasks:
+        if t["id"] not in sph:
+            sph[t["id"]] = _sph(R_TASK_MAX, cat_ang.get(t.get("cat") or "",
+                                                        -math.pi / 2), 0.0, cx, cy)
+    # Magnets and the core sit on the equator of their own shell: their meaning is the
+    # ring they name, and latitude is the tasks' dimension.
+    for k, a in cat_ang.items():
+        sph["cat:%s" % k] = _sph(R_RIM, a, 0.0, cx, cy)
+    for k, a in st_ang.items():
+        sph[k] = _sph(R_STORY, a, 0.0, cx, cy)
+    for k, a in rp_ang.items():
+        rx, ry, rz = _sph(R_CORE, a, 0.0, cx, cy)
+        sph[k] = (rx, ry, rz)
+        prs = sorted(repos.get(k) or [])
+        if not prs:
+            continue
+        (ux, uy, uz), (vx, vy, vz) = _tangent_basis(rx, ry, rz, cx, cy)
+        for j, p in enumerate(prs):
+            pa = -math.pi / 2 + 2 * math.pi * j / len(prs)
+            ca, sa = math.cos(pa) * 17.0, math.sin(pa) * 17.0
+            sph[p] = (rx + ux * ca + vx * sa, ry + uy * ca + vy * sa,
+                      rz + uz * ca + vz * sa)
+
     bubbles = [{"kind": "parent", "key": p, "members": sorted(_subtree(p))}
                for p in sorted(kids)]
     bubbles += [{"kind": "repo", "key": k,
                  "members": sorted([k] + list(repos.get(k) or []))}
                 for k in sorted(repos)]
     return {"task": pos, "cat": cat_pos, "story": story_pos, "repo": repo_pos,
-            "pr": pr_pos, "bubbles": bubbles}
+            "pr": pr_pos, "bubbles": bubbles, "sphere": sph}
 
 
 def _minigraph(graph, theme=None, variant=None, solo_pool=None):
@@ -4148,6 +4259,15 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
         data_nodes.append(d)
     svg.append('</svg>')
 
+    # The SHELL slot for every drawn entity, carried alongside the planar one. The static
+    # SVG is flat, so it uses only the planar map; the canvas picks per view mode. Rounded
+    # to keep mg-data compact and byte-stable across renders.
+    _sphere = lay.get("sphere") or {}
+    for d in data_nodes:
+        p = _sphere.get(d["id"])
+        if p:
+            d["lt3"] = [round(p[0], 1), round(p[1], 1), round(p[2], 1)]
+
     # ---- the mg-data `solo` pool: board tasks this renderer did not draw -------
     # Empty in practice, since the promotion above draws every one of them; kept so the
     # key holds its shape for any reader. An entry would be seeded on rings outside the
@@ -4275,6 +4395,7 @@ _MG_ENHANCE_JS = """try{(function(){
   var nodes=[],byId={},catLabels={};
   rawNodes.forEach(function(n){
     var o={id:n.id,type:n.type,deg:n.deg||0,label:n.label||"",sx0:n.x||0,sy0:n.y||0};
+    if(n.lt3&&n.lt3.length===3)o.lt3=n.lt3;              // the shell slot, for 3D
     if(n.type==="task"){o.seq=n.seq;o.title=n.title||"";o.cat=n.color;o.status=n.status||"open";o.closed=(n.status==="closed");
       if(n.owner)o.owner=n.owner;if(n.brain)o.brain=n.brain;
       if(n.foreign){o.foreign=true;o.owner_color=n.owner_color||"";o.handle=n.handle||"";}}
@@ -4311,16 +4432,25 @@ _MG_ENHANCE_JS = """try{(function(){
 
   function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
   var SW=720,SH=520,SCL=0.78;
-  // The server's CONCENTRIC layout arrives as each node's sx0/sy0, so the same transform
-  // that seeds a node also gives its layout SLOT. Stamped once, here. A pinned node is
-  // held exactly at its slot (see rebuildSim); a node that simulates — a focused frame's
-  // members — is sprung toward it instead.
-  function seedXY(){var rnd=mulberry32(20260715);nodes.forEach(function(n){n.x=(n.sx0-SW/2)*SCL;n.y=(n.sy0-SH/2)*SCL;n.vx=0;n.vy=0;n.vz=0;
-    if(!n.solo)n._lt={x:n.x,y:n.y};});}
-  // B7: a deterministic z spread — 3D ONLY. Switching to 3D / Reset-in-3D re-seeds z + reheats
-  // so the forces pull nodes into volume. G1: in 2D z must stay 0 (a leftover z spread made
-  // the 2D Reset settle messily with overlaps), so 2D uses flattenZ instead.
-  function seedZ(){var rz=mulberry32(990911);nodes.forEach(function(n){n.z=n.solo?0:(rz()-0.5)*240;n.vz=0;});}
+  // The server sends TWO slots per node: the planar one as sx0/sy0, and the SHELL one as
+  // lt3 — same entity, one placement per view. 3D takes the shell, where latitude carries
+  // the within-category spread and radius therefore carries entanglement alone; 2D takes
+  // the planar map, whose row seating is what separates a crowded category on a flat
+  // surface. The mode switch re-seeds, so each view gets the placement built for it.
+  function slotFor(n){
+    if(mode==="3d"&&n.lt3)return {x:(n.lt3[0]-SW/2)*SCL,y:(n.lt3[1]-SH/2)*SCL,z:n.lt3[2]*SCL};
+    return {x:(n.sx0-SW/2)*SCL,y:(n.sy0-SH/2)*SCL,z:0};
+  }
+  // A pinned node is held exactly at its slot (see rebuildSim); a node that simulates —
+  // a focused frame's members — is sprung toward it instead.
+  function seedXY(){nodes.forEach(function(n){
+    if(n.solo){n.x=(n.sx0-SW/2)*SCL;n.y=(n.sy0-SH/2)*SCL;n.vx=0;n.vy=0;n.vz=0;return;}
+    var s=slotFor(n);n._lt=s;n.x=s.x;n.y=s.y;n.z=s.z;n.vx=0;n.vy=0;n.vz=0;});}
+  // A deterministic z spread for a node with NO slot of its own — the only way such a
+  // node gets any depth in 3D. A node carrying a slot takes its z from that slot, so it
+  // is skipped here: the shell placement is the depth, and a random spread would undo it.
+  // G1: in 2D z stays 0, which is what flattenZ enforces.
+  function seedZ(){var rz=mulberry32(990911);nodes.forEach(function(n){if(n._lt)return;n.z=n.solo?0:(rz()-0.5)*240;n.vz=0;});}
   function flattenZ(){nodes.forEach(function(n){n.z=0;n.vz=0;});}
   seedXY();seedZ();
   // SPREAD scales the whole layout with node count/complexity so a dense graph breathes
@@ -4365,11 +4495,10 @@ _MG_ENHANCE_JS = """try{(function(){
                          (p.length>0&&n.type==="task"&&isDescendant(n,p)));
       n.pinned=!live;                                // a solo node can never be live
       if(live){simList.push(n);return;}
-      // THE PIN, and it is exact: snap to the computed slot and kill the velocity. z goes
-      // to 0 because the concentric layout is a 2D design and a pinned node has no physics
-      // left to flatten seedZ's 3D spread — so the pin does it, keeping the rings coplanar
-      // instead of smeared into a ball.
-      if(!n.solo&&n._lt){n.x=n._lt.x;n.y=n._lt.y;n.z=0;n.vx=0;n.vy=0;n.vz=0;}
+      // THE PIN, and it is exact: snap to the computed slot in all three axes and kill the
+      // velocity. The slot DEFINES z — flat in 2D, on the shell in 3D — so nothing else
+      // needs to move a pinned node toward or away from a plane.
+      if(!n.solo&&n._lt){n.x=n._lt.x;n.y=n._lt.y;n.z=n._lt.z||0;n.vx=0;n.vy=0;n.vz=0;}
     });
   }
   function tick(alpha){
@@ -4408,7 +4537,7 @@ _MG_ENHANCE_JS = """try{(function(){
       // weakly-connected nodes from drifting out and stretching the fit.
       if(n._well){var wx=(mode==="2d")?n._well.bx:n._well.ax,wy=(mode==="2d")?n._well.by:0,wz=(mode==="2d")?0:n._well.az;
         n.vx+=(wx-n.x)*WELLK;n.vy+=(wy-n.y)*WELLK;n.vz+=(wz-n.z)*WELLK;}
-      else if(n._lt){n.vx+=(n._lt.x-n.x)*LAYK;n.vy+=(n._lt.y-n.y)*LAYK;n.vz+=(-n.z)*LAYK;}
+      else if(n._lt){n.vx+=(n._lt.x-n.x)*LAYK;n.vy+=(n._lt.y-n.y)*LAYK;n.vz+=((n._lt.z||0)-n.z)*LAYK;}
       else{var grav=0.009/SPREAD;n.vx+=(-n.x)*grav;n.vy+=(-n.y)*grav;n.vz+=(-n.z)*grav;}
       if(mode==="2d")n.vz+=(-n.z)*0.22;               // G1: strong flatten keeps 2D planar
       if(!n.fixed){n.x+=n.vx*0.5*alpha;n.y+=n.vy*0.5*alpha;n.z+=n.vz*0.5*alpha;}
@@ -5029,7 +5158,10 @@ _MG_ENHANCE_JS = """try{(function(){
     if(q2d)q2d.setAttribute("aria-pressed",m==="2d");if(q3d)q3d.setAttribute("aria-pressed",m==="3d");
     if(rotBtn)rotBtn.style.display=(m==="3d")?"":"none";
     selected=null;renderInfo(null);yawVel=0;pitchVel=0;pivot.x=0;pivot.y=0;pivot.z=0;
-    if(m==="3d"){yaw=0.5;pitch=-0.35;seedZ();}else{flattenZ();}
+    if(m==="3d"){yaw=0.5;pitch=-0.35;}
+    // Re-seed from the slot this mode uses — the shell in 3D, the planar map in 2D.
+    seedXY();
+    if(m==="3d")seedZ();else flattenZ();
     assignWells();settle(200);fitView();updateHint();drawCrumb();draw();kick();
   }
   if(q2d)q2d.addEventListener("click",function(){setMode("2d");});
