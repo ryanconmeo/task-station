@@ -463,7 +463,7 @@ class BoardEnhancementTest(_Base):
             self.assertIn('"seq":%d' % seq, blob, "task #%s must be drawn" % seq)
         self.assertIn('mkGroup("Tasks · status")', html)        # lifecycle status group
         self.assertIn("filt.status[n.status]===false", html)    # status drives visibility
-        self.assertIn("if(B===A||B.solo)continue", html)        # solo still takes no forces
+        self.assertIn("if(B===A||B.solo", html)                 # solo still takes no forces
 
     def test_hover_info_panel_never_reflows_the_canvas(self):
         # the node-details panel is FIXED-height + scrolls internally, and the canvas

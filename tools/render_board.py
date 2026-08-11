@@ -885,6 +885,12 @@ def _css(default_variant, category_css):
     overflow:hidden;background:var(--panel);min-height:520px}
   /* fill the (stretched) wrap so the canvas matches the filter rail's height; the min
      keeps a usable size when the rail is short. resize() reads the rendered height. */
+  /* The wrap becomes FOCUSABLE only on a board that carries a knowledge plane — the
+     enhancement adds the tabindex, so this rule is inert everywhere else. The canvas
+     itself is aria-hidden (the static SVG is the accessible view), and making an
+     aria-hidden element keyboard-reachable is exactly the trap to avoid, so the focus
+     ring that tells you ↑/↓ will now move the camera belongs on the wrapper. */
+  .mgcanvaswrap:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
   .mgcanvas{display:block;width:100%;height:100%;min-height:520px;cursor:grab;touch-action:none}
   .mgcanvas.grabbing{cursor:grabbing}
   .mghint{position:absolute;left:10px;top:9px;font:500 11px var(--mono);color:var(--dim);
@@ -4202,6 +4208,56 @@ def _knowledge_layout(notes, degree=None, cx=0.0, cy=0.0):
             "span": span}
 
 
+# ---------------------------------------------------------------------------
+# THE TWO PLANES IN WORLD SPACE. `project()` treats y as the screen-vertical axis
+# and canvas y grows downward, so UP IS NEGATIVE y: the knowledge plane sits at a
+# constant NEGATIVE y offset over the task sphere, sharing its (x, z) extent. The
+# separation is measured off the task layout's own extent rather than fixed, so a
+# three-task board and a four-hundred-task board both read as two planes with a
+# gap between them rather than as one cloud or as two specks.
+# ---------------------------------------------------------------------------
+KNOWLEDGE_PLANE_GAP = 1.75          # multiples of the task layout's half-height
+
+
+def _plane_offset(sphere, cy=0.0):
+    """How far ABOVE the task layout the knowledge plane sits, in layout units.
+
+    `sphere` is `_concentric_layout`'s 3-space map, so the measurement is of what the
+    board actually drew. The floor is `R_TASK_MIN` — the innermost shell — so a board
+    whose few tasks happen to sit near the equator still gets a gap wider than the
+    sphere's core instead of the two planes nearly touching."""
+    ys = [abs(p[1] - cy) for p in (sphere or {}).values() if p]
+    half = max(ys) if ys else R_RIM
+    return KNOWLEDGE_PLANE_GAP * max(half, R_TASK_MIN)
+
+
+def _knowledge_vocab():
+    """The knowledge plane's edge-kind vocabulary, OWNED by `lib/knowledge.py` and never
+    respelled here: `(the note-link kind, the kinds allowed to cross the gap)`.
+
+    With that module unavailable the renderer fails CLOSED — an empty crossing set means
+    no line may join the planes — because a gap rule that degrades to "allow everything"
+    is worse than one that degrades to "draw nothing"."""
+    try:
+        import knowledge
+        return knowledge.NOTE_EDGE_KIND, tuple(knowledge.CROSS_PLANE_KINDS)
+    except Exception:
+        return "", ()
+
+
+def _node_plane(node):
+    """Which plane a node is drawn on, derived from its structural TYPE rather than read
+    off the graph's `plane` stamp. A foreign task node minted after that stamp (the
+    Interbrain augmentation runs later) still answers correctly, and a hand-built graph
+    needs no stamp at all."""
+    return "knowledge" if (node or {}).get("type") == "note" else "task"
+
+
+def _crosses_gap(a, b):
+    """True when an edge's two endpoints sit on different planes."""
+    return _node_plane(a) != _node_plane(b)
+
+
 def _minigraph(graph, theme=None, variant=None, solo_pool=None):
     """Step 1: a small, collapsible, clustered 2D SVG of the task-relation graph. The
     graph (from `build_render_graph`) carries typed STRING ids: task nodes (`t:<seq>`),
@@ -4219,6 +4275,9 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
     Returns [] when the graph has no edges/nodes, so a relation-free board renders exactly
     as before — the panel simply isn't emitted. The single-positional / empty / None call
     (`_minigraph(None)` / `_minigraph({"nodes":[],"edges":[]})`) still yields [].
+    A graph carrying NOTES is the one exception: a corpus is a plane in its own right, so
+    a vault user whose task store has no relation at all still gets their knowledge plane
+    drawn rather than an absent panel.
 
     **EVERY task is drawn.** There is no draw cap and no "must have an edge"
     entitlement — every task has exactly one category, and category membership is what
@@ -4226,15 +4285,25 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
     rim, tasks and parent bubbles in the middle, story magnets on their own band, repo
     bubbles holding their PRs in the core.
 
+    **A CORPUS ADDS A SECOND PLANE.** Note nodes are placed by `_knowledge_layout` and
+    lifted to a constant NEGATIVE y — up — over the task sphere, sharing its x/z extent:
+    two literal stacked planes the camera PANS between (see `_MG_ENHANCE_JS`). They reach
+    the canvas only. The static SVG stays flat and task-only, because two stacked planes
+    seen from directly above are one plane and there is no honest flat reading of the pair.
+
     `solo_pool` (optional): every board task as {seq,title,color,status}. Any of them the
     render graph built no node for is PROMOTED to a real node here and placed on the rim.
     The `"solo"` mg-data key is therefore empty in practice — the pool is defined as the
     board tasks this renderer does NOT draw, and it draws all of them — but the key is
     still computed and emitted so anything reading it keeps a valid shape. Panel emission
-    still requires ≥1 edge."""
+    requires ≥1 edge, or a corpus."""
     nodes = list((graph or {}).get("nodes") or [])
     edges = list((graph or {}).get("edges") or [])
-    if not edges or not nodes:
+    # A corpus entitles the panel on its own: with a vault configured and a task store
+    # that carries no relation yet, the ONLY thing to draw is the knowledge plane, and
+    # drawing it is the whole point of it being a plane rather than a per-task tree.
+    has_notes = any(n.get("type") == "note" for n in nodes)
+    if (not edges and not has_notes) or not nodes:
         return []
     by_id = {n["id"]: n for n in nodes}
 
@@ -4258,10 +4327,18 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
              "status": p.get("status"), "deg": 0}
         nodes.append(n)
         by_id[n["id"]] = n
-    # The panel gate is unchanged: a store with no relation at all still renders no
-    # graph, so a relation-free board looks exactly as it does today.
-    draw_edges = list(edges)
-    if not draw_edges:
+    # THE GAP, enforced where the lines are MADE rather than by convention: exactly three
+    # kinds may join a task-plane node to a knowledge-plane one. Anything else between the
+    # planes is dropped here, so it reaches neither the static SVG nor mg-data, and the
+    # canvas twin (`XPLANE` in _MG_ENHANCE_JS) refuses the same edge again client-side.
+    # With no notes every node is on the task plane, so nothing is ever dropped.
+    note_kind, cross_kinds = _knowledge_vocab()
+    draw_edges = [e for e in edges
+                  if e["kind"] in cross_kinds
+                  or not _crosses_gap(by_id.get(e["a"]), by_id.get(e["b"]))]
+    # The panel gate for a task-only board is unchanged: a store with no relation at all
+    # still renders no graph, so a relation-free board looks exactly as it does today.
+    if not draw_edges and not has_notes:
         return []
     draw_nodes = list(nodes)
     task_nodes = [n for n in draw_nodes if n.get("type") == "task"]
@@ -4306,6 +4383,25 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
             repos[cand[0]].append(p)
     lay = _concentric_layout(lay_tasks, stories=story_keys, repos=repos,
                              cx=CX, cy=CY)
+
+    # ---- the KNOWLEDGE PLANE's own layout --------------------------------------
+    # `_knowledge_layout` takes vault RECORDS, not graph nodes — the same contract
+    # `_concentric_layout` has with `lay_tasks` — so the records are rebuilt from the
+    # note nodes here. The conversion is not cosmetic: a note node spells the
+    # frontmatter type as `kind` (because `type` already means the structural class),
+    # and handing the nodes over unconverted would file every note under one wedge.
+    note_nodes = [n for n in draw_nodes if n.get("type") == "note"]
+    knote, plane_y = {}, 0.0
+    if note_nodes:
+        note_recs = [{"slug": n.get("slug"), "type": n.get("kind", ""),
+                      "area": n.get("area", "")} for n in note_nodes]
+        ndeg = {}                        # from the graph's OWN note-link edges
+        for e in draw_edges:
+            if note_kind and e["kind"] == note_kind:
+                for k in (e["a"], e["b"]):
+                    ndeg[k[2:]] = ndeg.get(k[2:], 0) + 1
+        knote = _knowledge_layout(note_recs, ndeg, cx=CX, cy=CY)["note"]
+        plane_y = CY - _plane_offset(lay.get("sphere"), cy=CY)   # UP IS NEGATIVE y
 
     # ---- the category RIM: one magnet per category in use ----------------------
     # build_render_graph only mints a `cat:` hub for a category with an edge-connected
@@ -4503,6 +4599,38 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
         if p:
             d["lt3"] = [round(p[0], 1), round(p[1], 1), round(p[2], 1)]
 
+    # ---- the knowledge plane's nodes: canvas only, never the static SVG --------
+    # The static SVG stays flat and task-only (two stacked planes seen head-on are one
+    # plane), so a note gets no shape, no <line> and no entry in `pos` — which is also
+    # why no cross-plane edge can reach the SVG's edge loop.
+    #
+    # FLAT WITHIN THE PLANE: every note shares one constant y and spreads over x and z,
+    # so the layout's 2D slot maps (x, y) → (x, plane_y, y - CY). That flatness is what
+    # makes it read as a plane rather than as a second cloud.
+    #
+    # `path` is deliberately NOT carried into the blob. The record has an absolute file
+    # path so an open action COULD be offered, but embedding one in a generated page
+    # writes a home-directory fingerprint into an artifact this board is being taught to
+    # sync to peers. A vault-RELATIVE path resolved client-side is the shape to use if
+    # that action is ever wanted.
+    for n in note_nodes:
+        x, y = knote.get(n.get("slug")) or (CX, CY)
+        d = {"id": n["id"], "type": "note", "slug": n.get("slug"),
+             "title": n.get("title", ""), "kind": n.get("kind", ""),
+             "area": n.get("area", ""), "deg": n.get("deg", 0),
+             "x": round(x, 1), "y": round(y, 1),
+             "lt3": [round(x, 1), round(plane_y, 1), round(y - CY, 1)]}
+        if n.get("description"):
+            d["description"] = n["description"]
+        data_nodes.append(d)
+    # Which plane each drawn entity is on, stamped only when a corpus is present — with
+    # no notes the blob is byte-identical to the one emitted before the plane existed.
+    # Derived from the node's own type, so a foreign task node folded in later is right
+    # without anything having had to remember to stamp it.
+    if note_nodes:
+        for d in data_nodes:
+            d["plane"] = _node_plane(d)
+
     # ---- the mg-data `solo` pool: board tasks this renderer did not draw -------
     # Empty in practice, since the promotion above draws every one of them; kept so the
     # key holds its shape for any reader. An entry would be seeded on rings outside the
@@ -4558,6 +4686,14 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
                      for n in draw_nodes if n.get("type") == "task")
     blob_btn = ('<button type="button" class="mgbtn mgblob" aria-pressed="true">'
                 '◍ Blobs</button>') if has_galaxy else ""
+    # The plane control, emitted ONLY when there is a second plane to move to — so a board
+    # with no corpus ships the identical controls markup it shipped before. It starts on
+    # the task layer, and its face names WHERE IT GOES (the client flips it on each pan,
+    # the way the auto-rotate button flips). 3D-only: the enhancement hides it in 2D,
+    # exactly as it hides auto-rotate, because two stacked planes seen from directly above
+    # are one plane and there is no honest 2D reading of the pan.
+    plane_btn = ('<button type="button" class="mgbtn mgplane" aria-pressed="false">'
+                 '↑ Notes layer</button>') if note_nodes else ""
     controls = (
         '<div class="mgcontrols">'
         '<span class="mgseg" role="group" aria-label="graph view mode">'
@@ -4569,9 +4705,9 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
         '<span class="mgn" aria-live="polite"></span></label>'
         '<button type="button" class="mgbtn mgrotate" aria-pressed="true">'
         '⟳ Auto-rotate</button>'
-        '%s'
+        '%s%s'
         '<button type="button" class="mgbtn mgreset">↻ Reset</button>'
-        '</div>') % blob_btn
+        '</div>') % (plane_btn, blob_btn)
     stage = (
         '<div class="mgstage">'
         '<div class="mgcanvaswrap">'
@@ -4585,10 +4721,13 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
     if n_tasks < total_tasks:
         shown = (' <span class="mgcount">· showing %d of %d</span>'
                  % (n_tasks, total_tasks))
+    # The corpus is counted in the summary only when there is one, so the no-vault
+    # summary line keeps the exact bytes it has today.
+    notes_txt = (" · %d note(s)" % len(note_nodes)) if note_nodes else ""
     return ['<details class="minigraph" data-key="minigraph" open><summary>Task Graph'
-            '<span class="mgcount">%d task(s) · %d edge(s)%s</span></summary>'
+            '<span class="mgcount">%d task(s) · %d edge(s)%s%s</span></summary>'
             '<div class="mgwrap">%s%s%s%s%s</div></details>'
-            % (n_tasks, len(draw_edges), shown, "".join(svg), mgdata,
+            % (n_tasks, len(draw_edges), notes_txt, shown, "".join(svg), mgdata,
                controls, stage, "".join(legend))]
 
 
@@ -4607,7 +4746,10 @@ _MG_ENHANCE_JS = """try{(function(){
   if(!dataEl||!canvas)return;
   var G;try{G=JSON.parse(dataEl.textContent||"{}");}catch(e){return;}
   var rawNodes=(G&&G.nodes)||[],rawEdges=(G&&G.edges)||[],rawSolo=(G&&G.solo)||[];
-  if(!rawNodes.length||!rawEdges.length)return;
+  // A CORPUS is enough on its own: a vault whose notes happen to link to nothing yet is
+  // still a plane worth drawing, so the enhancement no longer requires an edge to run.
+  var hasPlanes=rawNodes.some(function(n){return n&&n.type==="note";});
+  if(!rawNodes.length||(!rawEdges.length&&!hasPlanes))return;
   var ctx=canvas.getContext&&canvas.getContext("2d");if(!ctx)return;
   var root=document.documentElement;
   // performance mode: 'low' disables continuous animation (physics/auto-rotate/momentum)
@@ -4619,12 +4761,16 @@ _MG_ENHANCE_JS = """try{(function(){
   function catClass(k){return "cat-"+String(k||"").replace(/[^A-Za-z0-9-]+/g,"-");}
   function rootVar(name){if(name in varCache)return varCache[name];var v=getComputedStyle(root).getPropertyValue(name).trim();varCache[name]=v;return v;}
   function catColor(k){if(k in catCache)return catCache[k];var el=document.createElement("span");el.className=catClass(k);probeBox.appendChild(el);var cs=getComputedStyle(el);var c=(cs.getPropertyValue("--cat-stripe")||"").trim()||(cs.getPropertyValue("--cat-accent")||"").trim()||rootVar("--accent")||"#8a7fb0";catCache[k]=c;return c;}
-  var EDGEVAR={membership:"--dim",lineage:"--accent",touch:"--accent",knowledge:"--so",pr:"--mg-pr",repo:"--mg-repo",story:"--mg-story",xbrain:"--dim"};
+  var EDGEVAR={membership:"--dim",lineage:"--accent",touch:"--accent",knowledge:"--so",pr:"--mg-pr",repo:"--mg-repo",story:"--mg-story",xbrain:"--dim",note:"--so",cross:"--dim"};
   var SIGVAR={pr:"--mg-pr",repo:"--mg-repo",story:"--mg-story"};
   function edgeColor(cls){return rootVar(EDGEVAR[cls]||"--dim")||"#888";}
   function sigColor(kind){return rootVar(SIGVAR[kind]||"--accent")||"#888";}
+  // ONE quiet hue for the whole corpus. A note has no category, and the two planes must
+  // not read as one palette, so nothing here reaches for a category accent — the note's
+  // `kind` varies only in its tooltip and the info panel.
+  function noteColor(){return rootVar("--so")||"#6aa";}
 
-  var CLS={"spawned-from":"lineage","related":"lineage","related-knowledge":"knowledge","membership":"membership","pr":"pr","repo":"repo","story":"story","xbrain":"xbrain"};
+  var CLS={"spawned-from":"lineage","related":"lineage","related-knowledge":"knowledge","membership":"membership","pr":"pr","repo":"repo","story":"story","xbrain":"xbrain","links-to":"note","cites":"cross","distilled-from":"cross","references":"cross"};
   function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
   function lbl(n){return n.type!=="task"?(n.label||n.id):(n.foreign?(n.handle||n.owner||n.id):("#"+n.seq));}
   var nodes=[],byId={},catLabels={};
@@ -4635,10 +4781,19 @@ _MG_ENHANCE_JS = """try{(function(){
       if(n.owner)o.owner=n.owner;if(n.brain)o.brain=n.brain;
       if(n.foreign){o.foreign=true;o.owner_color=n.owner_color||"";o.handle=n.handle||"";}}
     else if(n.type==="hub"){o.key=n.key;catLabels[n.key]=n.label||n.key;}
+    // A NOTE on the knowledge plane. `kind` is its frontmatter type, not a signal kind;
+    // `label` carries the title so the shared tooltip/search paths need no note branch.
+    else if(n.type==="note"){o.slug=n.slug||"";o.kind=n.kind||"";o.area=n.area||"";
+      o.title=n.title||n.slug||"";o.desc=n.description||"";o.label=o.title;}
     else{o.kind=n.kind;}
-    o.r=(n.type==="task")?(6+Math.min(o.deg,6)*1.7):(n.type==="hub")?12:6;
+    o.r=(n.type==="task")?(6+Math.min(o.deg,6)*1.7):(n.type==="hub")?12:(n.type==="note")?(4.5+Math.min(o.deg,6)*0.8):6;
     nodes.push(o);byId[o.id]=o;
   });
+  // WHICH PLANE a node is drawn on, derived from its TYPE rather than trusted from the
+  // blob: a foreign task node folded in by the Interbrain augmentation carries no stamp,
+  // and with no corpus at all every node answers "task", which is what makes every plane
+  // path below inert on a board that has no second plane.
+  function nodePlane(n){return (n&&n.type==="note")?"knowledge":"task";}
   // The `solo` pool from mg-data. Every board task now arrives as a real placed node
   // above, so this normally adds nothing; it stays as a guard for any entry the server
   // still pools. Such a node is STATIC — pre-seeded, fixed, and excluded from the
@@ -4650,6 +4805,14 @@ _MG_ENHANCE_JS = """try{(function(){
     nodes.push(o);byId[o.id]=o;
   });
   var edges=[];
+  // THE GAP. Exactly three kinds may join a node on one plane to a node on the other;
+  // every other relation — lineage, membership, hubs, signal spokes, cross-brain — stays
+  // inside its own plane. Enforced HERE, where the drawable edge list is built, so an
+  // illegal crossing can never be drawn whatever the data says. The server refuses the
+  // same edge again (`_crosses_gap` in _minigraph): two independent gates, because this
+  // is a named requirement of the two-plane view rather than a styling preference.
+  var XPLANE={"cites":1,"distilled-from":1,"references":1};
+  function crossesGap(A,B){return nodePlane(A)!==nodePlane(B);}
   // The fallback class for an unrecognised kind MUST be one that EK still lists, or that
   // edge draws with no filter row and can never be turned off. "lineage" is the generic
   // task<->task class and always has a row; it is also where the coming typed kinds
@@ -4657,8 +4820,10 @@ _MG_ENHANCE_JS = """try{(function(){
   rawEdges.forEach(function(e){
     if(!byId[e.a]||!byId[e.b])return;
     var cls=CLS[e.kind]||"lineage",A=byId[e.a],B=byId[e.b],tip;
+    if(crossesGap(A,B)&&!XPLANE[e.kind])return;
     if(cls==="membership")tip=lbl(A)+" — in "+B.label;
     else if(cls==="pr"||cls==="repo"||cls==="story")tip=lbl(A)+" — shares "+B.label;
+    else if(cls==="cross"||cls==="note")tip=lbl(A)+" — "+relword(e.kind)+" "+lbl(B);
     else tip=lbl(A)+" — "+lbl(B);
     edges.push({a:e.a,b:e.b,cls:cls,kind:e.kind,tip:tip});
   });
@@ -4742,7 +4907,10 @@ _MG_ENHANCE_JS = """try{(function(){
       var A=simList[i];
       for(var j=0;j<nodes.length;j++){
         var B=nodes[j];
-        if(B===A||B.solo)continue;
+        // A node on the OTHER plane exerts no force: the planes are separated in world
+        // space, so a cross-plane push is both physically meaningless and pure cost.
+        // With no corpus every node is on the task plane and this never skips anything.
+        if(B===A||B.solo||nodePlane(B)!==nodePlane(A))continue;
         // Only A takes the force. B is either pinned (it must not move) or is itself in
         // simList and gets its own turn as A, so the pair is still symmetric.
         var dx=A.x-B.x,dy=A.y-B.y,dz=A.z-B.z,d2=dx*dx+dy*dy+dz*dz+0.1,d=Math.sqrt(d2);
@@ -4786,6 +4954,10 @@ _MG_ENHANCE_JS = """try{(function(){
   var yaw=0.5,pitch=-0.35,focal=560,zoom=1,zoomTarget=1,yawVel=0,pitchVel=0,panX=0,panY=0;
   var ZMIN=0.08,ZMAX=3;
   var pivot={x:0,y:0,z:0},pivotTarget={x:0,y:0,z:0};
+  // WHICH PLANE THE CAMERA IS LOOKING AT, and where that plane sits in world space. This
+  // is the whole of the two-plane state: moving between the planes changes the LOOK-AT
+  // POINT and nothing else — same yaw, same pitch, same zoom, same scope.
+  var planeFocus="task",planeY=0;
   function project(n,cx,cy){
     var px=n.x-pivot.x,py=n.y-pivot.y,pzc=n.z-pivot.z;
     if(mode==="2d")return {sx:cx+px*zoom+panX,sy:cy+py*zoom+panY,scale:zoom,depth:0};
@@ -4810,7 +4982,7 @@ _MG_ENHANCE_JS = """try{(function(){
     // (their outer ring would force a huge zoom-out while invisible).
     // F3: with galaxies active, frame the VISIBLE (focus-filtered) population so each nav
     // level starts framed on its own cluster; OFF keeps the original all-non-solo frame.
-    var fitN=nodes.filter(function(n){return hasGalaxy?nodeVisible(n):(!n.solo||filt.solo);});
+    var fitN=nodes.filter(function(n){return hasGalaxy?nodeVisible(n):(planeDrawn(n)&&(!n.solo||filt.solo));});
     var N=fitN.length;if(!N)return;
     var mx=0,my=0,mz=0,i;
     for(i=0;i<N;i++){mx+=fitN[i].x;my+=fitN[i].y;mz+=fitN[i].z;}
@@ -4826,7 +4998,16 @@ _MG_ENHANCE_JS = """try{(function(){
     var base=Math.min((Wc||600)/spanX,(Hc||520)/spanY);   // fit BOTH axes → all nodes in view
     ZMIN=Math.max(0.05,base*0.5);ZMAX=Math.max(2.6,base*6);   // zoom-out cap tightened (was 0.04/0.35)
     zoom=Math.max(ZMIN,Math.min(ZMAX,base));zoomTarget=zoom;panX=0;panY=0;
+    measurePlanes();          // the shift above moved the plane; re-read where it landed
   }
+  // The knowledge plane's world y, MEASURED from the nodes rather than kept as a constant.
+  // fitView recentres the whole layout by shifting EVERY node, so the plane's offset lives
+  // in the node coordinates and a remembered constant would go stale the moment the view
+  // is fitted — which is also why returning to the task plane moves the PIVOT and never
+  // re-shifts nodes.
+  function measurePlanes(){var s=0,c=0;
+    nodes.forEach(function(n){if(n.solo||nodePlane(n)!=="knowledge")return;s+=n.y;c++;});
+    planeY=c?s/c:0;}
 
   var DPR=Math.max(1,window.devicePixelRatio||1),Wc=0,Hc=0;
   function resize(){var r=canvas.getBoundingClientRect();Wc=r.width||600;Hc=r.height||520;canvas.width=Math.max(1,Math.round(Wc*DPR));canvas.height=Math.max(1,Math.round(Hc*DPR));ctx.setTransform(DPR,0,0,DPR,0,0);}
@@ -4848,7 +5029,7 @@ _MG_ENHANCE_JS = """try{(function(){
     ctx.restore();
   }
 
-  var EDGEW={membership:1,lineage:2.1,pr:2.4,repo:1.6,story:1.8,touch:1.6,knowledge:1.8};
+  var EDGEW={membership:1,lineage:2.1,pr:2.4,repo:1.6,story:1.8,touch:1.6,knowledge:1.8,note:1.2,cross:0.9};
   // ---- filter state (C2): every filter is all-on by default; status is the task
   // LIFECYCLE (open/active/closed). ----
   // `solo` is all-on like the rest and has no row of its own: the concentric layout
@@ -4856,7 +5037,7 @@ _MG_ENHANCE_JS = """try{(function(){
   // undrawn population for a toggle to reveal. The flag is kept because mg-data can
   // still carry a `solo` pool, and default-true is what makes such a node visible
   // rather than stranded behind a control nothing renders.
-  var filt={cat:{},sig:{},edge:{},status:{},solo:true};
+  var filt={cat:{},sig:{},edge:{},status:{},solo:true,note:true};
   var hover=null,selected=null,screenPos={},query="",terms=[];
   // F2: the shared focus (one brain / person / org, or none) drives BOTH the table and
   // the graph. Read from the same localStorage key the focus strip writes; a focused
@@ -4874,6 +5055,10 @@ _MG_ENHANCE_JS = """try{(function(){
     // visible when navDescend focuses into it with brain:"main".
     return isDescendant(n,galaxyPath());
   }
+  // THE TWO-PLANE VIEW IS 3D-ONLY. Two stacked planes seen from directly above are one
+  // plane, so in 2D the knowledge plane is not drawn at all — the same call the
+  // auto-rotate button makes when it hides itself. Always true when there is no corpus.
+  function planeDrawn(n){return !(mode!=="3d"&&nodePlane(n)==="knowledge");}
   function nodeVisible(n){
     if(n.type==="task"){
       if(n.solo&&!filt.solo)return false;
@@ -4881,6 +5066,9 @@ _MG_ENHANCE_JS = """try{(function(){
       if(filt.status[n.status]===false)return false;
       return filt.cat[n.cat]!==false;
     }
+    // The corpus is GLOBAL and stays fully drawn: nothing about a selection, a focus or a
+    // search ever removes a note. Only the plane's own switch and the 2D rule can.
+    if(n.type==="note")return planeDrawn(n)&&filt.note!==false;
     // a category hub is a RENDERING of its category, not a separate thing to switch:
     // hiding the category hides its hub. filt.cat only carries categories present among
     // the drawn tasks, so a hub whose category has no visible task reads `undefined`,
@@ -4895,6 +5083,9 @@ _MG_ENHANCE_JS = """try{(function(){
     if(!terms.length)return true;
     var hay;
     if(n.type==="task")hay=("#"+n.seq+" "+n.seq+" "+(n.title||"")+" "+(catLabels[n.cat]||n.cat||"")+" "+(n.status||"")).toLowerCase();
+    // a note matches on its title, its slug, its frontmatter type and its area — search
+    // DIMS what does not match, it never removes it, so the corpus stays whole.
+    else if(n.type==="note")hay=((n.title||"")+" "+(n.slug||"")+" "+(n.kind||"")+" "+(n.area||"")+" note").toLowerCase();
     else hay=((n.label||"")+" "+(n.kind||"")+" "+(n.type||"")).toLowerCase();
     for(var i=0;i<terms.length;i++){if(hay.indexOf(terms[i])<0)return false;}
     return true;
@@ -5113,9 +5304,11 @@ _MG_ENHANCE_JS = """try{(function(){
       else if(query)on=(matches(byId[e.a])&&matches(byId[e.b]));
       else on=true;
       var fog=Math.max(.12,Math.min(1,(A.scale+B.scale)/2));
-      ctx.globalAlpha=(on?0.82:0.05)*fog;
+      // A cross-plane line is PROVENANCE, not dependency — the quietest thing on the
+      // canvas, so it never competes with the structure of either plane for attention.
+      ctx.globalAlpha=(on?0.82:0.05)*fog*((e.cls==="cross")?0.6:1);
       ctx.strokeStyle=edgeColor(e.cls);ctx.lineWidth=(EDGEW[e.cls]||1.4)*((A.scale+B.scale)/2);
-      ctx.setLineDash(e.cls==="repo"?[5,4]:e.cls==="story"?[2,4]:e.cls==="knowledge"?[1,4]:e.cls==="xbrain"?[6,4]:[]);
+      ctx.setLineDash(e.cls==="repo"?[5,4]:e.cls==="story"?[2,4]:e.cls==="knowledge"?[1,4]:e.cls==="xbrain"?[6,4]:e.cls==="cross"?[1,5]:[]);
       ctx.beginPath();ctx.moveTo(A.sx,A.sy);
       if(crossGalaxy(byId[e.a],byId[e.b])){var mx=(A.sx+B.sx)/2,my=(A.sy+B.sy)/2,dx=B.sx-A.sx,dy=B.sy-A.sy,L=Math.hypot(dx,dy)||1,bow=Math.min(60,L*0.22);
         ctx.quadraticCurveTo(mx-dy/L*bow,my+dx/L*bow,B.sx,B.sy);}
@@ -5123,16 +5316,28 @@ _MG_ENHANCE_JS = """try{(function(){
       ctx.stroke();
     });
     ctx.setLineDash([]);
+    // LOW-POLY FOR THE PLANE THE CAMERA IS NOT ON. Static dots and shapes, no labels and
+    // — the part that actually costs — no per-node text measurement. One mechanism gives
+    // both the flat frame cost and the fix for a distant plane reading as noise. Null
+    // whenever there is only one plane, so a board with no corpus draws exactly as before.
+    var lowPlane=(hasPlanes&&mode==="3d")?((planeFocus==="knowledge")?"task":"knowledge"):null;
     var nord=nodes.slice().sort(function(a,b){return b._p.depth-a._p.depth;});
     nord.forEach(function(n){
       if(!nodeVisible(n))return;                                   // C2: filtered out → hidden
       var p=n._p,on=nodeOn(n,foc,kp),fog=Math.max(.16,Math.min(1,p.scale)),r=n.r*p.scale;
-      ctx.globalAlpha=(on?1:0.1)*(n.closed?0.55:1);
-      if(n.type==="task"){
+      var low=(lowPlane!==null&&nodePlane(n)===lowPlane);
+      ctx.globalAlpha=(on?1:0.1)*(n.closed?0.55:1)*(low?0.55:1);
+      if(n.type==="note"){
+        // A note is an unlabelled dot in ONE quiet hue at every fidelity: 100+ multi-word
+        // titles drawn at once are unreadable, and the info panel already carries the
+        // title, the type and what cites it.
+        ctx.fillStyle=noteColor();ctx.beginPath();ctx.arc(p.sx,p.sy,r,0,7);ctx.fill();
+        if(!low){ctx.strokeStyle=rootVar("--page")||"#111";ctx.lineWidth=1.2*p.scale;ctx.stroke();}
+      }else if(n.type==="task"){
         var fill=(n.foreign&&n.owner_color)?n.owner_color:catColor(n.cat);
         ctx.fillStyle=fill;ctx.beginPath();ctx.arc(p.sx,p.sy,r,0,7);ctx.fill();
         ctx.strokeStyle=rootVar("--page")||"#111";ctx.lineWidth=1.5*p.scale;ctx.stroke();
-        if(r>=6.5){                                                // B9: fit the label to the ball
+        if(r>=6.5&&!low){                                          // B9: fit the label to the ball
           var t=n.foreign?((n.owner||"").slice(0,3).toUpperCase()||"◇"):("#"+n.seq),fs=Math.min(r*1.15,13);
           ctx.font="600 "+fs.toFixed(1)+"px "+mono;
           var tw=ctx.measureText(t).width,maxw=r*1.72;
@@ -5144,19 +5349,60 @@ _MG_ENHANCE_JS = """try{(function(){
           }
         }
       }else if(n.type==="hub"){
+        // Low-poly: a fixed-size plate, because sizing the plate to its label is the
+        // measureText call — the one per-node cost the far plane must not pay.
+        if(low){ctx.fillStyle=rootVar("--panel")||"#222";ctx.strokeStyle=catColor(n.key);ctx.lineWidth=1.6*p.scale;
+          rr(p.sx-16*p.scale,p.sy-7*p.scale,32*p.scale,14*p.scale,4*p.scale);ctx.fill();ctx.stroke();}
+        else{
         var fs2=Math.max(9,10.5*p.scale);ctx.font="700 "+fs2.toFixed(0)+"px "+mono;
         var lw=ctx.measureText(n.label).width,padx=11*p.scale,w=lw+padx*2,h=fs2+11*p.scale;
         ctx.fillStyle=rootVar("--panel")||"#222";ctx.strokeStyle=catColor(n.key);ctx.lineWidth=2.2*p.scale;
         rr(p.sx-w/2,p.sy-h/2,w,h,6*p.scale);ctx.fill();ctx.stroke();
         ctx.globalAlpha=Math.min(1,fog+0.25)*(on?1:0.35);ctx.textAlign="center";ctx.textBaseline="middle";
-        ctx.fillStyle=rootVar("--ink")||"#eee";ctx.fillText(n.label,p.sx,p.sy);
+        ctx.fillStyle=rootVar("--ink")||"#eee";ctx.fillText(n.label,p.sx,p.sy);}
       }else{
         drawSignal(p,n.kind,r,sigColor(n.kind));
-        if(on){ctx.globalAlpha=Math.min(1,fog+0.25);ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillStyle=sigColor(n.kind);ctx.font="600 "+Math.max(8,9.5*p.scale).toFixed(0)+"px "+mono;ctx.fillText(n.label,p.sx,p.sy+r+10*p.scale);}
+        if(on&&!low){ctx.globalAlpha=Math.min(1,fog+0.25);ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillStyle=sigColor(n.kind);ctx.font="600 "+Math.max(8,9.5*p.scale).toFixed(0)+"px "+mono;ctx.fillText(n.label,p.sx,p.sy+r+10*p.scale);}
       }
     });
     drawHoverOutline();                                        // F3: hover affordance ON TOP
     ctx.globalAlpha=1;
+  }
+
+  // ---- THE PAN between the two planes ---------------------------------------------
+  // `project()` subtracts `pivot` before rotating, so pivot IS the look-at point and
+  // easing its y from one plane to the other is the entire movement. yaw, pitch and zoom
+  // are deliberately untouched by everything below: a pan that also zoomed would read as
+  // a drill-down, which is precisely what this view is not.
+  function pivotAim(){
+    var x=selected?selected.x:0,z=selected?selected.z:0;
+    var y=(planeFocus==="knowledge")?planeY:(selected?selected.y:0);
+    return {x:x,y:y,z:z};
+  }
+  function syncPlaneBtn(){if(!planeBtn)return;
+    var up=(planeFocus!=="knowledge");
+    planeBtn.setAttribute("aria-pressed",!up);
+    planeBtn.textContent=up?"↑ Notes layer":"↓ Task layer";}
+  // Move the camera to a plane. The only state it writes is which plane is being looked
+  // at; `step()` does the easing, and `moving()` already keeps the loop alive while the
+  // pivot is short of its target, so no second animation style is introduced here.
+  function setPlane(p){
+    if(!hasPlanes||mode!=="3d")p="task";
+    planeFocus=p;syncPlaneBtn();updateHint();kick();
+  }
+  // Selecting a task RISES to the knowledge plane when that task cites anything, so the
+  // notes behind it come into view. It never FILTERS: the corpus stays fully drawn and
+  // the citation targets are simply what stays bright (keepSet already spans the
+  // cross-plane edges), everything else dimming. A task that cites nothing does not move
+  // the camera — there would be nothing up there to look at. Panning back down is the
+  // control, the ↓ key or Reset, never an automatic move that would fight a camera the
+  // user parked on the corpus deliberately.
+  function planeOnSelect(n){
+    if(!hasPlanes||mode!=="3d"||!n)return;
+    if(n.type==="note"){setPlane("knowledge");return;}
+    if(n.type!=="task")return;
+    var cites=(adj[n.id]||[]).some(function(id){return byId[id]&&byId[id].type==="note";});
+    if(cites)setPlane("knowledge");
   }
 
   var alpha=0,running=false;
@@ -5172,8 +5418,11 @@ _MG_ENHANCE_JS = """try{(function(){
   }
   function step(){
     if(alpha>0.004&&!perfLow){tick(alpha);alpha*=0.992;}
-    pivotTarget.x=selected?selected.x:0;pivotTarget.y=selected?selected.y:0;pivotTarget.z=selected?selected.z:0;
-    var e=perfLow?1:0.12;
+    var aim=pivotAim();
+    pivotTarget.x=aim.x;pivotTarget.y=aim.y;pivotTarget.z=aim.z;
+    // Reduced motion and low-performance mode both SNAP to the destination rather than
+    // easing to it — including the pan between planes, which rides this same tween.
+    var e=(perfLow||reduce)?1:0.12;
     pivot.x+=(pivotTarget.x-pivot.x)*e;pivot.y+=(pivotTarget.y-pivot.y)*e;pivot.z+=(pivotTarget.z-pivot.z)*e;
     if(mode==="3d"&&!dragging&&!perfLow){
       // momentum spin: after a fling the last drag velocity carries + decays; once it dies
@@ -5235,7 +5484,7 @@ _MG_ENHANCE_JS = """try{(function(){
         // F3: clicking an entity DESCENDS a level (interbrain→person→brain); at brain/node
         // level (or Interbrain OFF) it falls through to the classic select/recenter toggle.
         if(hasGalaxy&&navDescend(n)){}
-        else if(selected!==n){selected=n;renderInfo(n);}else{selected=null;renderInfo(null);}
+        else if(selected!==n){selected=n;renderInfo(n);planeOnSelect(n);}else{selected=null;renderInfo(null);}
       }else if(hasGalaxy){navAscend();}         // F3: empty-canvas click ASCENDS a level
       else if(selected){selected=null;renderInfo(null);}
       else{setAutoRotate(!autoRotate);}         // empty-canvas click toggles auto-rotate
@@ -5246,12 +5495,28 @@ _MG_ENHANCE_JS = """try{(function(){
 
   var infoEl=panel.querySelector(".mginfo"),filtersEl=panel.querySelector(".mgfilters");
   function taskA(t){return t&&t.type==="task"?('<a href="#task-'+t.seq+'">#'+t.seq+"</a>"):(t?esc(t.label):"");}
-  function relword(k){return ({"spawned-from":"spawned from","related":"related","related-knowledge":"co-cited note","touches-same":"touches same"})[k]||k;}
+  function relword(k){return ({"spawned-from":"spawned from","related":"related","related-knowledge":"co-cited note","touches-same":"touches same","links-to":"links to","cites":"cites","distilled-from":"distilled from","references":"references"})[k]||k;}
   function renderInfo(n){
     if(!infoEl)return;
     if(!n){infoEl.innerHTML='<div class="empty">Hover or tap a node to see its relations.</div>';return;}
     var h="";
-    if(n.type==="hub"){
+    if(n.type==="note"){
+      // What a note IS, then what it is tied to on each plane: its own links first, then
+      // the tasks across the gap. No file path is offered — none is carried into the page.
+      h='<div class="title">'+esc(n.title||n.slug)+'</div><div class="cat">note'
+        +(n.kind?(" · "+esc(n.kind)):"")+(n.area?(" · "+esc(n.area)):"")+"</div>";
+      if(n.desc)h+='<div style="font-size:13px;margin-bottom:6px">'+esc(n.desc)+"</div>";
+      var lk=edges.filter(function(e){return e.cls==="note"&&(e.a===n.id||e.b===n.id);})
+                  .map(function(e){return byId[e.a===n.id?e.b:e.a];});
+      if(lk.length)h+='<div class="rel"><span class="k">links</span>'
+        +lk.map(function(m){return esc(m.title||m.label||m.id);}).join(" · ")+"</div>";
+      edges.forEach(function(e){
+        if(e.cls!=="cross")return;
+        var other=(e.a===n.id)?byId[e.b]:(e.b===n.id?byId[e.a]:null);
+        if(!other||other.type!=="task")return;
+        h+='<div class="rel"><span class="k">'+esc(relword(e.kind))+'</span>'+taskA(other)+"</div>";
+      });
+    }else if(n.type==="hub"){
       var mem=edges.filter(function(e){return e.cls==="membership"&&e.b===n.id;}).map(function(e){return byId[e.a];});
       h='<div class="title">'+esc(n.label)+'</div><div class="cat">category hub · '+mem.length+' tasks</div><div class="rel"><span class="k">members</span>'+mem.map(taskA).join(" ")+"</div>";
     }else if(n.type==="signal"){
@@ -5272,6 +5537,15 @@ _MG_ENHANCE_JS = """try{(function(){
         if(!edges.some(function(e){return e.a===n.id&&e.b===s.id;}))return;
         var others=edges.filter(function(e){return e.b===s.id&&e.a!==n.id&&byId[e.a].type==="task";}).map(function(e){return byId[e.a];});
         h+='<div class="rel"><span class="k">shares '+esc(s.label)+'</span>'+others.map(taskA).join(" ")+"</div>";
+      });
+      // …and what it read across the gap. Named by kind, because a task CITING a note and
+      // a note DISTILLED FROM that task are different facts, not two views of one.
+      edges.forEach(function(e){
+        if(e.cls!=="cross")return;
+        var other=(e.a===n.id)?byId[e.b]:(e.b===n.id?byId[e.a]:null);
+        if(!other||other.type!=="note")return;
+        h+='<div class="rel"><span class="k">'+esc(relword(e.kind))+'</span>'
+          +esc(other.title||other.label||other.id)+"</div>";
       });
     }
     infoEl.innerHTML=h;
@@ -5332,7 +5606,8 @@ _MG_ENHANCE_JS = """try{(function(){
   nodes.forEach(function(n){if(n.type==="task")statusPresent[n.status]=(statusPresent[n.status]||0)+1;});
   edges.forEach(function(e){edgeKinds[e.cls]=(edgeKinds[e.cls]||0)+1;});
   var sigKinds={};sigNodes.forEach(function(s){sigKinds[s.kind]=(sigKinds[s.kind]||0)+1;});
-  var SIGGLY={pr:"diamond",repo:"hexagon",story:"rounded"},EDGEDASH={repo:"5,4",story:"2,4",knowledge:"1,4"};
+  var noteN=nodes.filter(function(n){return n.type==="note";}).length;
+  var SIGGLY={pr:"diamond",repo:"hexagon",story:"rounded"},EDGEDASH={repo:"5,4",story:"2,4",knowledge:"1,4",cross:"1,5"};
   if(filtersEl){
     var ckeys=Object.keys(catsPresent).sort();
     if(ckeys.length){var g1=mkGroup("Tasks · category");ckeys.forEach(function(k){filt.cat[k]=true;pushRow(g1,mkRow(catLabels[k]||k,catsPresent[k],"circle",function(){return catColor(k);},function(v){filt.cat[k]=v;}));});filtersEl.appendChild(g1.group);}
@@ -5356,12 +5631,19 @@ _MG_ENHANCE_JS = """try{(function(){
     Object.keys(sigKinds).forEach(function(k){if(kkeys.indexOf(k)<0)kkeys.push(k);});
     if(kkeys.length){var g2=mkGroup("Signal hubs");kkeys.forEach(function(k){filt.sig[k]=true;
       pushRow(g2,mkRow(k,sigKinds[k],SIGGLY[k]||"diamond",function(){return sigColor(k);},function(v){filt.sig[k]=v;}));});filtersEl.appendChild(g2.group);}
+    // The knowledge plane gets ONE row, not one per note `kind`. A vault's type vocabulary
+    // is open-ended, and per-value rows that grow without bound are the landmine the
+    // per-hub signal rows already hit — a rail longer than the graph it filters. The plane
+    // is a plane; its switch is a switch.
+    if(noteN){var g3=mkGroup("Knowledge plane");filt.note=true;
+      pushRow(g3,mkRow("Notes",noteN,"circle",function(){return noteColor();},function(v){filt.note=v;}));
+      filtersEl.appendChild(g3.group);}
     // No "Category hubs" row: a hub follows its category (see nodeVisible) — toggling a
     // category off obviously hides the hub that renders it.
     // Every class CLS can produce needs a row, or that edge draws with no way to turn it
     // off. `xbrain` (the dashed cross-brain edge) had no row and so was unfilterable
     // whenever Interbrain was on; it has one now, and there is no exception left.
-    var EK=[["lineage","Lineage"],["membership","Membership"],["pr","Shares PR"],["repo","Shares repo"],["story","Shares story"],["knowledge","Co-cited note"],["xbrain","Cross-brain"]],g4=null;
+    var EK=[["lineage","Lineage"],["membership","Membership"],["pr","Shares PR"],["repo","Shares repo"],["story","Shares story"],["knowledge","Co-cited note"],["xbrain","Cross-brain"],["note","Note links"],["cross","Between the planes"]],g4=null;
     EK.forEach(function(it){var c=it[0];if(!edgeKinds[c])return;if(!g4)g4=mkGroup("Edges");filt.edge[c]=true;pushRow(g4,mkRow(it[1],edgeKinds[c],"line",function(){return edgeColor(c);},function(v){filt.edge[c]=v;},EDGEDASH[c]||""));});
     if(g4)filtersEl.appendChild(g4.group);
   }
@@ -5374,17 +5656,38 @@ _MG_ENHANCE_JS = """try{(function(){
     Object.keys(filt.sig).forEach(function(k){filt.sig[k]=true;});
     Object.keys(filt.edge).forEach(function(k){filt.edge[k]=true;});
     Object.keys(filt.status).forEach(function(k){filt.status[k]=true;});
+    filt.note=true;
     if(filtersEl){var offs=filtersEl.querySelectorAll(".mgf.off");
       Array.prototype.forEach.call(offs,function(b){b.classList.remove("off");});}
     groups.forEach(function(g){g.refresh();});
   }
 
   var q2d=panel.querySelector(".mg2d"),q3d=panel.querySelector(".mg3d"),rotBtn=panel.querySelector(".mgrotate"),hintEl=panel.querySelector(".mghint");
+  // The plane control — present only when there IS a second plane, hidden in 2D like
+  // auto-rotate, and wired to the same setPlane the arrow keys use.
+  var planeBtn=panel.querySelector(".mgplane");
+  if(planeBtn)planeBtn.addEventListener("click",function(){
+    setPlane(planeFocus==="knowledge"?"task":"knowledge");});
+  // ↑/↓ move between the planes when the canvas has focus. The FOCUSABLE element is the
+  // wrapper, not the canvas: the canvas is aria-hidden (the static SVG is the accessible
+  // view) and making an aria-hidden element keyboard-reachable hides a focus stop from
+  // assistive tech. The tabindex is added here rather than in the markup so a board with
+  // no corpus grows no focus stop at all. Named `kwrap`, not `cwrap`: the breadcrumb block
+  // above already binds `cwrap` to this same element in this same scope, and one `var` per
+  // name per scope is the difference between two independent blocks and a shared surprise.
+  if(hasPlanes){try{var kwrap=panel.querySelector(".mgcanvaswrap");
+    if(kwrap){kwrap.setAttribute("tabindex","0");
+      kwrap.setAttribute("aria-label","Task graph camera: up and down arrows move between the task layer and the note layer");
+      kwrap.addEventListener("keydown",function(ev){
+        if(mode!=="3d")return;
+        if(ev.key==="ArrowUp"){setPlane("knowledge");ev.preventDefault();}
+        else if(ev.key==="ArrowDown"){setPlane("task");ev.preventDefault();}});}}catch(e){}}
   // B5: the on-canvas indicator reflects the auto-rotate STATE.
   function updateHint(){if(!hintEl)return;var t;
     if(mode==="2d")t="2D · drag to pan · drag a node to move · scroll to zoom · click a node to focus";
     else t="3D · drag to orbit · scroll to zoom · click empty space to toggle rotate · rotate: "+(autoRotate?"on":"off");
     if(hasGalaxy)t+=" · click to zoom in · empty to go up ("+galaxyLevel()+")";
+    if(hasPlanes&&mode==="3d")t+=" · ↑/↓ between layers ("+(planeFocus==="knowledge"?"notes":"tasks")+")";
     hintEl.textContent=t;}
   function setAutoRotate(v){if(perfLow)v=false;autoRotate=v;pref.autoRotate=v;savePref();if(rotBtn){rotBtn.setAttribute("aria-pressed",v);rotBtn.textContent=v?"⟳ Auto-rotate":"⦻ Rotate off";}updateHint();kick();}
   // switching mode keeps the x/y layout, re-seeds z (3D) or flattens it (2D), then settles
@@ -5392,6 +5695,11 @@ _MG_ENHANCE_JS = """try{(function(){
   function setMode(m){mode=m;pref.mode=m;savePref();
     if(q2d)q2d.setAttribute("aria-pressed",m==="2d");if(q3d)q3d.setAttribute("aria-pressed",m==="3d");
     if(rotBtn)rotBtn.style.display=(m==="3d")?"":"none";
+    // The two-plane view is 3D-only, so 2D hides the control AND parks the camera back on
+    // the task layer — leaving it aimed at a plane that is not drawn would look like a bug.
+    if(planeBtn)planeBtn.style.display=(m==="3d")?"":"none";
+    if(m!=="3d")planeFocus="task";
+    syncPlaneBtn();
     selected=null;renderInfo(null);yawVel=0;pitchVel=0;pivot.x=0;pivot.y=0;pivot.z=0;
     if(m==="3d"){yaw=0.5;pitch=-0.35;}
     // Re-seed from the slot this mode uses — the shell in 3D, the planar map in 2D.
@@ -5413,6 +5721,7 @@ _MG_ENHANCE_JS = """try{(function(){
   // tangled positions back.
   function hardReset(){selected=null;renderInfo(null);yawVel=0;pitchVel=0;panX=0;panY=0;
     pivot.x=0;pivot.y=0;pivot.z=0;pivotTarget.x=0;pivotTarget.y=0;pivotTarget.z=0;
+    planeFocus="task";syncPlaneBtn();          // Reset returns the camera to the task layer
     resetFilters();
     if(searchEl)searchEl.value="";query="";terms=[];if(searchN)searchN.textContent="";
     seedXY();if(mode==="3d"){yaw=0.5;pitch=-0.35;seedZ();}else{flattenZ();}
@@ -5622,9 +5931,12 @@ def render_html(tasks, *, theme=None, variant=None, variant_label=None, generate
     out.append(_behavior_script(autorefresh=board_autorefresh, rev=rev,
                                 interbrain=interbrain))
     # Step 2: the relations-graph client interaction layer — a SEPARATE, fully try-caught
-    # <script> appended LAST (never inside _behavior_script). Only when the graph has edges
-    # (so a relation-free board ships no inert enhancement JS).
-    if isinstance(graph, dict) and graph.get("edges"):
+    # <script> appended LAST (never inside _behavior_script). Only when there is a graph to
+    # drive: edges, or a corpus (the knowledge plane is drawn whether or not its notes link
+    # to each other). A relation-free board with no vault still ships no inert enhancement JS.
+    if isinstance(graph, dict) and (graph.get("edges") or
+                                    any(n.get("type") == "note"
+                                        for n in (graph.get("nodes") or []))):
         out.append(_graph_enhance_script())
     out.append("</div></body></html>")
     return "\n".join(out) + "\n"

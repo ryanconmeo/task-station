@@ -212,6 +212,41 @@ Run: `python3 -m pytest tests/test_board_behavior.py -q`.
   `test_off_with_feeds_equals_no_feeds` (unchanged) still pins B10 parity across both off
   renders.
 
+## Knowledge-plane behaviors (step 78)
+
+## B15 — Two stacked planes, moved between by a camera PAN (3D only)
+
+- **What:** With a vault configured and `--knowledge-plane` resolving on, the 3D graph
+  shows **two literal stacked planes**: the task sphere where it has always been, and the
+  knowledge corpus — the whole vault, every render — as a flat plane a clear gap ABOVE it.
+  An `↑ Notes layer` / `↓ Task layer` control sits beside 2D/3D and auto-rotate; clicking
+  it, or pressing ↑/↓ with the canvas focused, moves the CAMERA between them. Yaw, pitch,
+  zoom and the drawn population are all unchanged by that move — it is a pan, not a zoom,
+  a level change or a filter. Selecting a task that cites notes rises to the corpus and
+  highlights what it cited; nothing is ever hidden. The plane the camera is not on draws
+  low-poly (dots and plates, no labels). In **2D** the plane is not drawn and the control
+  is hidden, exactly as auto-rotate hides itself: two stacked planes seen from directly
+  above are one plane.
+- **The gap:** exactly three edge kinds may join the planes — `cites`, `distilled-from`,
+  `references`. Everything else (lineage, membership, hubs, signal spokes, cross-brain)
+  stays inside its own plane. They are drawn as the quietest lines on the canvas, because
+  they are provenance rather than dependency.
+- **Off is unchanged:** with no vault (or `--knowledge-plane off`) the graph panel is
+  byte-identical to the board with the feature hard off — no control, no note node, no
+  `plane` key in `mg-data`. The corpus is never written to; this switch is read-only and
+  separate from `--knowledge-graph`.
+- **Verify:** `/todo config --obsidian-vault <path>` on a vault with notes, then render
+  the board. In 3D: the corpus sits above the sphere; press ↑ and the camera rises without
+  the sphere changing size; press ↓ and it returns. Switch to 2D: the control disappears
+  and only the task plane draws. Run `/todo config --knowledge-plane off` and re-render:
+  the graph is exactly the single-plane one.
+- **Assert:** ✅ `tests/test_two_plane_view.py` — placement (flat, above, gap sized off the
+  task layout), the gap rule (an illegal crossing is DROPPED by the renderer), the pan
+  (nothing in it writes yaw/pitch/zoom; reduced motion snaps), the global corpus (every
+  note drawn however few are cited), and parity (no-vault panel == hard-off panel, byte
+  for byte). The canvas interaction itself is the documented no-unit-test carve-out:
+  **the visual is manual only.**
+
 ---
 
 ## Change protocol

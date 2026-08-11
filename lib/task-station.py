@@ -12230,8 +12230,16 @@ def write_board(guard_downgrade=False):
     # augments build_board_graph (lineage, plus gated co-citation) with category +
     # signal HUB nodes and string ids for the clustered SVG. Empty
     # {nodes:[], edges:[]} on a relation-free store, so the renderer omits the panel.
+    # …and the KNOWLEDGE PLANE's corpus, resolved once per render. `board_notes` checks
+    # the (separate) knowledge-plane gate itself and returns [] when it is off, so this
+    # needs no second gate and a user with no vault gets the byte-identical graph they
+    # get today. It never raises: an unreadable or unmounted vault degrades to [].
     try:
-        graph = build_render_graph(raw, knowledge=knowledge_on)
+        notes = board_notes()
+    except Exception:
+        notes = []
+    try:
+        graph = build_render_graph(raw, knowledge=knowledge_on, notes=notes)
     except Exception:
         graph = {"nodes": [], "edges": []}
     # F1: fold foreign nodes + dashed cross-brain shared-signal edges into the graph, and
