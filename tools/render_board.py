@@ -4071,6 +4071,137 @@ def _concentric_layout(tasks, stories=(), repos=None, cx=0.0, cy=0.0):
             "cap_max": cap_max}
 
 
+# ---------------------------------------------------------------------------
+# THE KNOWLEDGE PLANE. The task plane is a sphere; this one is a literal FLAT
+# plane, in the same coordinate space, because the two-plane view stacks them and
+# pans a camera between them rather than zooming. So placement here is 2D — the
+# later stage lifts the whole plane into world space and draws it.
+#
+# The knowledge plane must NOT borrow the task plane's category rings. Task nodes
+# accumulate and are episodic; note nodes converge and are semantic, and they are
+# organised by what they are ABOUT rather than by what work touched them:
+#
+#   sector  — the note's `area` (`unfiled` when it declares none)
+#   wedge   — its `type`, so notes of one type sit together inside the sector
+#   radius  — its wikilink DEGREE: a hub note earns the middle, an orphan the rim
+#
+# Closed-form and deterministic, with no physics and no simulation: the board's
+# pin-by-default law is what keeps its frame cost flat, and a hundred more
+# simulated nodes would break it. Same corpus in ⇒ same bytes out.
+# ---------------------------------------------------------------------------
+R_NOTE_RIM = 206.0     # an ORPHAN note — tied to nothing else in the corpus
+R_NOTE_HUB = 96.0      # …and the best-connected one. Never 0: see _note_radius.
+# Degree at which centrality saturates, log-scaled then CLAMPED — the same shape
+# `_entangle_radius` uses on the task plane, so "further in means more connected"
+# reads the same way on both planes. A note linked from thirty others lands at
+# R_NOTE_HUB rather than collapsing into the middle.
+NOTE_DEGREE_FULL = 8
+# Fraction of its own angular share a sector actually fills. The remainder is the
+# gutter that makes a sector read as one region rather than as part of its
+# neighbour — the flat-plane counterpart of the sphere's cap clamp.
+NOTE_SECTOR_FILL = 0.74
+# Minimum arc between two notes seated at one radius, and the radial step a wedge
+# spills inward by when its arc is full. Both above the 6-unit crowding bar the
+# task plane measures against, and both strictly inward — never clamped to a
+# floor, since clamping would make two rows share a radius, which is the stacking
+# the seating exists to prevent.
+NOTE_SEAT_SEP = 7.5
+NOTE_ROW_PITCH = 7.5
+# The sector a note with no `area` belongs to. NOT an error case: on the measured
+# corpus 40 of 103 notes have no area at all, so this is a first-class sector that
+# happens to be the largest one. `knowledge.vault_notes` leaves `area` exactly as
+# the vault wrote it and the default is applied HERE, because which sector a note
+# sits in is a placement decision rather than a fact about the file.
+NOTE_UNFILED = "unfiled"
+
+
+def _note_radius(degree):
+    """Radius for a note from its wikilink degree: 0 sits on the rim, more pulls
+    inward, log-scaled and clamped at `R_NOTE_HUB` so the best-connected note in a
+    huge corpus never reaches the middle of the plane."""
+    n = max(0, int(degree or 0))
+    if n <= 0:
+        return R_NOTE_RIM
+    t = min(1.0, math.log1p(n) / math.log1p(NOTE_DEGREE_FULL))
+    return R_NOTE_RIM - t * (R_NOTE_RIM - R_NOTE_HUB)
+
+
+def _knowledge_layout(notes, degree=None, cx=0.0, cy=0.0):
+    """Place every note of the corpus on the flat knowledge plane.
+
+    `notes` — the records `knowledge.vault_notes` returns (`slug`, `type`, `area`, …),
+    NOT the graph's note nodes: this is a layout input built for the purpose, exactly as
+    `_concentric_layout` takes `lay_tasks` rather than task nodes.
+    `degree` — `{slug: wikilink degree}` from `knowledge.note_degree`. The corpus knows
+    what is tied to what and this function only decides where that puts a note; pass none
+    and every note is an orphan on the rim, which is honest rather than a fallback that
+    invents ties.
+
+    Returns `{"note", "sectors", "wedges", "degree", "span"}` — `note` maps SLUG →
+    `(x, y)` (the caller mints its own `n:<slug>` node ids), `sectors` maps a sector to
+    its base bearing, `wedges` maps `(sector, type)` to `(centre bearing, span)`, and
+    `degree` maps slug → the degree actually used, so a reader can see why a note sits
+    where it does.
+
+    Sector directions come from `_ring_angles` — the same even, sorted-key distribution
+    the task plane's rim uses, which is this file's existing 2D answer to the sphere's
+    `_fib_sphere`. A sector's angular share is split between its TYPES in proportion to
+    how many notes each holds, so seat density stays even instead of a 30-note type
+    getting the same arc as a 2-note one.
+
+    Within one wedge, notes are seated outermost-first by degree, carrying a cursor so a
+    crowded low-degree group can never spill onto the arc of a better-connected one —
+    that carry is what keeps "closer to the middle means better connected" true however
+    lopsided a corpus is. Pure: no I/O, no globals, no randomness."""
+    recs = [n for n in notes if n.get("slug")]
+    deg = {n["slug"]: max(0, int((degree or {}).get(n["slug"], 0))) for n in recs}
+
+    # sector → type → the notes in it, everything keyed on sorted values so the
+    # arrangement is identical across renders (the reason the plane never wobbles).
+    by_sector = {}
+    for n in sorted(recs, key=lambda n: n["slug"]):
+        sector = (n.get("area") or "").strip() or NOTE_UNFILED
+        by_sector.setdefault(sector, {}).setdefault((n.get("type") or "").strip(),
+                                                    []).append(n)
+    sectors = _ring_angles(list(by_sector))
+    span = (NOTE_SECTOR_FILL * 2 * math.pi / len(by_sector)) if by_sector else 0.0
+
+    pos, wedges = {}, {}
+    for sector, by_type in by_sector.items():
+        base = sectors[sector]
+        total = sum(len(v) for v in by_type.values()) or 1
+        cursor_frac = 0.0
+        for ntype in sorted(by_type):
+            members = by_type[ntype]
+            frac = len(members) / float(total)
+            sub = span * frac
+            centre = base - span / 2.0 + (cursor_frac + frac / 2.0) * span
+            cursor_frac += frac
+            wedges[(sector, ntype)] = (centre, sub)
+            # Group by RADIUS (so ties spread along the arc), outermost group first.
+            by_r = {}
+            for n in members:
+                by_r.setdefault(_note_radius(deg[n["slug"]]), []).append(n)
+            cursor_r = None
+            for r0 in sorted(by_r, reverse=True):
+                group = by_r[r0]
+                r = r0 if cursor_r is None else min(r0, cursor_r)
+                i = 0
+                while i < len(group):
+                    seats = max(1, int((r * sub) / NOTE_SEAT_SEP)) if sub > 0 else 1
+                    row = group[i:i + seats]
+                    k = len(row)
+                    for j, n in enumerate(row):
+                        off = 0.0 if k <= 1 else (j / float(k - 1) - 0.5) * sub
+                        a = centre + off
+                        pos[n["slug"]] = (cx + r * math.cos(a), cy + r * math.sin(a))
+                    i += seats
+                    r -= NOTE_ROW_PITCH             # strictly inward, never clamped
+                cursor_r = r - NOTE_ROW_PITCH
+    return {"note": pos, "sectors": sectors, "wedges": wedges, "degree": deg,
+            "span": span}
+
+
 def _minigraph(graph, theme=None, variant=None, solo_pool=None):
     """Step 1: a small, collapsible, clustered 2D SVG of the task-relation graph. The
     graph (from `build_render_graph`) carries typed STRING ids: task nodes (`t:<seq>`),

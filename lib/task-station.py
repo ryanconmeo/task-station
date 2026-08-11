@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 import decisions as _dec
 import heal as _heal
 import hook_health
+import knowledge as _knowledge
 import paths
 import save as _save
 import steps as _steps
@@ -3918,10 +3919,6 @@ def canonical_relations(task, tasks=None, rev=None, edges=None):
 # two tasks share, so "same PR + same files" outranks "same repo".
 _SEMANTIC_WEIGHTS = {"pr": 3, "story": 2, "file": 2, "repo": 1}
 
-# A vault note citation inside a task's human text, e.g. `[[projectname-rbac-design]]` or
-# `[[slug|alias]]` / `[[slug#heading]]` — capture the slug (before any | or #).
-_WIKILINK_RE = re.compile(r"\[\[\s*([^\]|#]+)")
-
 
 def _task_signals(task):
     """The dedup set of `(kind, value)` signals used to derive `touches-same` edges:
@@ -3980,19 +3977,14 @@ def _task_cited_notes(task):
     (title / goal / state / summary / decisions / history). The co-citation signal
     for the second-brain-gated knowledge graph — two tasks citing the same note are
     working the same knowledge. Empty set on a task with no wikilinks (the common
-    case), so this never fabricates edges."""
-    texts = [task.get("title"), task.get("goal"), task.get("state"),
-             task.get("summary")]
-    texts += _dec.live_texts(task.get("decisions"))   # superseded → not a live citation
-    texts += [e.get("text", "") for e in (task.get("history") or [])
-              if isinstance(e, dict)]
-    notes = set()
-    for t in texts:
-        for m in _WIKILINK_RE.findall(t or ""):
-            s = m.strip()
-            if s:
-                notes.add(s)
-    return notes
+    case), so this never fabricates edges.
+
+    `knowledge.task_note_links` is the single implementation, shared with the two-plane
+    view's cross-plane `cites` edge. It also excludes a `[[task:502]]` target, which is a
+    reference to a TASK rather than to a note — so such a mention can no longer enter
+    this signal as a note that does not exist. The measured corpus has none of them, so
+    that exclusion changes no edge that exists today."""
+    return _knowledge.task_note_links(task)
 
 
 def build_board_graph(tasks, knowledge=False):
@@ -4193,13 +4185,14 @@ def shared_signal_groups(tasks):
     return groups, labels, singletons
 
 
-def build_render_graph(tasks, knowledge=False):
+def build_render_graph(tasks, knowledge=False, notes=None):
     """Render-layer augmentation of `build_board_graph`: adds category + signal HUB nodes
     and re-keys every node to a typed STRING id for the board mini-graph. Pure; does NOT
     mutate `build_board_graph`'s output or the export path (both contract-pinned).
 
-    Node ids are `"t:<seq>"` (task), `"cat:<key>"` (category hub), or `"sig:<kind>:<value>"`
-    (signal hub). Edges keep `kind,dir,weight,via` and re-map `a`/`b` to those string ids.
+    Node ids are `"t:<seq>"` (task), `"cat:<key>"` (category hub), `"sig:<kind>:<value>"`
+    (signal hub), or `"n:<slug>"` (a vault NOTE — the knowledge plane, see below). Edges
+    keep `kind,dir,weight,via` and re-map `a`/`b` to those string ids.
 
       * Category hub — one per category with >= 2 tasks present among the base graph's task
         nodes; each member task gets a `membership` spoke. The KEY only is carried (the
@@ -4209,20 +4202,35 @@ def build_render_graph(tasks, knowledge=False):
         PR / repo / story reaches the graph, since the base stopped emitting the direct
         `touches-same` edge that used to sit alongside it.
       * lineage + `related-knowledge` edges are re-mapped direct + untouched.
+      * Note node — one per note in `notes`, the KNOWLEDGE PLANE (see below).
 
-    A task is DRAWN when it carries a base edge (lineage / co-citation) OR belongs to a
-    >=2-member signal group — the second clause is what keeps the hub tier alive now that
-    the base no longer emits a `touches-same` edge for every shared signal (see the note
-    on `present` below).
+    A task is DRAWN when it carries a base edge (lineage / co-citation), belongs to a
+    >=2-member signal group, or sits on a cross-plane edge — the second clause is what
+    keeps the hub tier alive now that the base no longer emits a `touches-same` edge for
+    every shared signal (see the note on `present` below), and the third is what stops a
+    citation pointing at a task the graph never drew.
+
+    THE KNOWLEDGE PLANE (`notes`, from `board_notes` / `knowledge.vault_notes`). Passing
+    a corpus adds a SECOND plane to this one graph: a node per note, `links-to` edges
+    between notes, and the three cross-plane kinds (`cites`, `distilled-from`,
+    `references`) — and nothing else crosses the gap. Every node then carries `plane`
+    (`task` or `knowledge`); with no notes NO node carries it, so the default graph is
+    byte-identical to the one this function returned before the plane existed — the same
+    parity rule the Interbrain owner/brain stamping follows, for the same reason.
+
+    EVERY note is drawn, edge or no edge. The corpus is global and rendered whole, so an
+    orphan note is a real node that the layout seats out at the rim; that is a fact about
+    the vault, not an absence to hide.
 
     Every node carries `deg` (incident-edge count). Nodes are sorted by (type-rank,
-    seq/key/value) and edges by (kind, a, b) — type-homogeneous keys only, never mixing
-    int/str. Returns `{nodes, edges, singletons}` where `singletons` = `{seq: [labels]}`
-    for pr/story/repo signals with exactly one task (renderer reads only nodes/edges). A
-    relation-free / solo board (no base edges AND no shared signal) returns the base
-    unchanged so the panel stays absent."""
+    seq/key/value/slug) and edges by (kind, a, b) — type-homogeneous keys only, never
+    mixing int/str. Returns `{nodes, edges, singletons}` where `singletons` =
+    `{seq: [labels]}` for pr/story/repo signals with exactly one task (renderer reads
+    only nodes/edges). A relation-free / solo board with no notes (no base edges AND no
+    shared signal AND no corpus) returns the base unchanged so the panel stays absent."""
     base = build_board_graph(tasks, knowledge)
     tasks_by_seq = {t.get("seq"): t for t in tasks if t.get("seq") is not None}
+    notes = list(notes or [])
 
     # WHICH TASKS THE GRAPH DRAWS. Until the base stopped emitting `touches-same`,
     # every task sharing a PR/repo/story with another was ALREADY a base node — that
@@ -4239,14 +4247,22 @@ def build_render_graph(tasks, knowledge=False):
     for _gseqs in groups.values():
         if len(_gseqs) >= 2:
             grouped.update(_gseqs)
-    if not base["edges"] and not grouped:
+    # The cross-plane edges are resolved HERE because `present` needs them: a task whose
+    # only relation is a citation of a note has no base edge and no signal group, so
+    # without this clause the citation would point at a task node that was never built.
+    cross = _knowledge.cross_plane_edges(tasks, notes) if notes else []
+    linked = {e["seq"] for e in cross if e.get("seq") in tasks_by_seq}
+    if not base["edges"] and not grouped and not notes:
         return base                                 # relation-free / solo → no panel
 
     base_seqs = {n["seq"] for n in base["nodes"]}
-    present = base_seqs | grouped                   # drawn task seqs (int)
+    present = base_seqs | grouped | linked          # drawn task seqs (int)
 
     def tid(seq):
         return "t:%d" % seq
+
+    def nid(slug):
+        return "n:%s" % slug
 
     # ---- task nodes (fresh dicts — never mutate base) --------------------------
     nodes = []
@@ -4337,6 +4353,44 @@ def build_render_graph(tasks, knowledge=False):
                       "dir": e.get("dir", "none"), "weight": e.get("weight", 1),
                       "via": list(e.get("via") or [])})
 
+    # ---- the KNOWLEDGE PLANE: one node per note, then its own edges -------------
+    # A note node carries the frontmatter under `kind` (its `type`) and `area`, because
+    # `type` on a node already means the structural class (task / hub / signal / note)
+    # and one word cannot mean both. `area` is left exactly as the vault wrote it —
+    # empty when the note declares none — and the LAYOUT is what maps that to the
+    # `unfiled` sector, since which sector a note sits in is a placement decision.
+    note_slugs = set()
+    for n in notes:
+        slug = n.get("slug")
+        if not slug or slug in note_slugs:
+            continue
+        note_slugs.add(slug)
+        nodes.append({"id": nid(slug), "type": "note", "slug": slug,
+                      "title": n.get("title") or slug,
+                      "description": n.get("description", ""),
+                      "kind": n.get("type", ""), "area": n.get("area", ""),
+                      "path": n.get("path", "")})
+    for e in _knowledge.note_edges(notes):
+        edges.append({"a": nid(e["a"]), "b": nid(e["b"]), "kind": e["kind"],
+                      "dir": e.get("dir", "none"), "weight": e.get("weight", 1),
+                      "via": []})
+    # THE GAP. Exactly three kinds cross it, and the direction asymmetry is deliberate:
+    # `cites` is a task pointing UP at what it read, `distilled-from` a note pointing
+    # DOWN at what produced it. They are not inverses, so both are drawn when both hold.
+    # An endpoint that does not exist was already dropped by `cross_plane_edges`; the
+    # `present`/`note_slugs` checks here are the second half of the same rule, for a
+    # task the drawn set still excludes.
+    for e in cross:
+        seq, slug = e.get("seq"), e.get("slug")
+        if seq not in present or slug not in note_slugs:
+            continue
+        if e["dir"] == "task->note":
+            a, b = tid(seq), nid(slug)
+        else:
+            a, b = nid(slug), tid(seq)
+        edges.append({"a": a, "b": b, "kind": e["kind"], "dir": "a->b",
+                      "weight": 1, "via": []})
+
     # ---- node degree -----------------------------------------------------------
     deg = {}
     for e in edges:
@@ -4345,6 +4399,13 @@ def build_render_graph(tasks, knowledge=False):
     for n in nodes:
         n["deg"] = deg.get(n["id"], 0)
 
+    # WHICH PLANE EACH NODE IS ON — stamped only when a corpus was passed, so a board
+    # with no notes emits the identical node dicts it emitted before this plane existed.
+    # A category or signal hub is task-plane furniture, so it takes `task` too.
+    if notes:
+        for n in nodes:
+            n["plane"] = "knowledge" if n.get("type") == "note" else "task"
+
     # ---- deterministic order (type-homogeneous sort keys only) -----------------
     def _node_key(n):
         t = n.get("type")
@@ -4352,6 +4413,8 @@ def build_render_graph(tasks, knowledge=False):
             return (0, n.get("seq"))
         if t == "hub":
             return (1, n.get("key") or "")
+        if t == "note":
+            return (3, n.get("slug") or "")
         return (2, n.get("kind") or "", n.get("id") or "")
     nodes.sort(key=_node_key)
     edges.sort(key=lambda e: (e["kind"], e["a"], e["b"]))
@@ -11358,6 +11421,54 @@ def _interbrain_on(data_dir):
         return n_brains > 1
 
 
+def _knowledge_plane_on(vault=None):
+    """Resolve config.knowledge_plane_mode() for the board's two-plane graph: on/off
+    explicit; `auto` → on when a vault is configured AND it yields at least one parseable
+    note. Off (and any error) ⇒ False.
+
+    WHY AUTO IS SAFE AS A DEFAULT: a user with no vault resolves auto → off, and their
+    board is byte-identical to today's — there is no plane, no note node, no cross-plane
+    edge. That is the same parity law `_interbrain_on` obeys above, and it is the reason
+    this gate can default to `auto` rather than off. The gate is read-only: nothing on
+    this path writes into a vault (that is `config.knowledge_graph_enabled()`, a
+    different switch entirely).
+
+    An explicit `vault` argument wins over config, the way `obsidian_sync.resolve_vault`
+    lets a caller pass one directly."""
+    try:
+        import config as _cfg
+        mode = _cfg.knowledge_plane_mode()
+    except Exception:
+        return False
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    try:
+        v = vault or _cfg.obsidian_vault()
+        return bool(v) and bool(_knowledge.vault_notes(v))
+    except Exception:
+        return False
+
+
+def board_notes(vault=None):
+    """The knowledge plane's corpus for the board — [] unless the plane resolves ON.
+
+    ONE GLOBAL CORPUS of the whole vault, on every render: not a per-task tree and not a
+    filtered slice, because the knowledge layer is a plane in its own right rather than a
+    derived view of the task layer. Guarded end-to-end — an unreadable or absent vault
+    yields [], never an exception, so a vault on an unmounted drive degrades to today's
+    single-plane board. Mirrors `foreign_view_models`: the gate is checked HERE, so the
+    caller can hand the result straight to `build_render_graph`."""
+    try:
+        if not _knowledge_plane_on(vault):
+            return []
+        import config as _cfg
+        return _knowledge.vault_notes(vault or _cfg.obsidian_vault())
+    except Exception:
+        return []
+
+
 def _foreign_view_model(feed, ftask):
     """Map ONE foreign feed task → the board view-model dict, flagged `foreign=True` and
     read-only. Owner/handle/brain/colour come from the feed; the category/effort/status
@@ -14045,6 +14156,12 @@ def _add_config_args(sp):
                     const="on", default=None,
                     help="board Interbrain federation: on · off · auto (default auto → on when >1 brain/peers)")
     sp.add_argument("--interbrain-get", dest="interbrain_get", action="store_true")
+    sp.add_argument("--knowledge-plane", dest="knowledge_plane", nargs="?",
+                    choices=["on", "off", "auto"], const="on", default=None,
+                    help="board knowledge plane: on · off · auto — the vault's notes as a "
+                         "second plane above the task plane, read-only (default auto → on "
+                         "when a configured vault holds at least one note)")
+    sp.add_argument("--knowledge-plane-get", dest="knowledge_plane_get", action="store_true")
     sp.add_argument("--org-label", dest="org_label", nargs="?", const="", default=None,
                     help='display label for the org brain (default "Org brain"; e.g. "Company Brain"); no value clears it')
     sp.add_argument("--org-label-get", dest="org_label_get", action="store_true")
