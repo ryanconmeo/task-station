@@ -3,7 +3,7 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [2.25.0] — 2026-08-12
 
 ### Added
 - **The checker — two cheap SessionStart checks (`lib/checker.py`).** Every check in
