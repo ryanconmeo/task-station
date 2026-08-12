@@ -3,7 +3,7 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [2.27.0] — 2026-08-12
 
 The hook surface goes from **5 wired events to 8, plus one installable**. Every one of
 them answers a question the station could previously only guess at — what happened at the
