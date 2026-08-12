@@ -3,7 +3,7 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [2.26.0] — 2026-08-12
 
 Six changes to `heal`, all of them paid for by measurements on one real task: a scan
 standing at **17 findings** of which **8 were false positives of a single shape** and **9
