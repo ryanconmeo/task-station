@@ -58,6 +58,7 @@ import os
 import re
 
 import decisions as _dec
+from core.fsutil import atomic_write as _atomic_write  # moved to core.fsutil in 3.0.0 Phase 1
 
 # ---- identity / palette -----------------------------------------------------
 
@@ -385,13 +386,6 @@ def _feed_js(alias, feed):
     return ("window.__TSFEED_%s = %s;\n"
             "(window.__TSFEEDS = window.__TSFEEDS || []).push(window.__TSFEED_%s);\n"
             % (ident, payload, ident))
-
-
-def _atomic_write(path, text):
-    tmp = path + ".tmp." + str(os.getpid())
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(tmp, path)
 
 
 def _write_feed(fdir, filename, alias, feed):

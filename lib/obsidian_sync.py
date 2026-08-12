@@ -33,6 +33,7 @@ import sys
 from datetime import datetime
 
 import decisions as _dec
+from core.fsutil import atomic_write as _atomic_write  # moved to core.fsutil in 3.0.0 Phase 1
 
 # The exact, plugin-namespaced folder every managed file lives under: a single
 # top-level segment inside the vault (was `Claude/task-station` before 1.67).
@@ -530,16 +531,6 @@ def render_note(task, usage=None, prompts=None, include_usage=True,
 
 
 # ------------------------------------------------------------- atomic + index ---
-
-def _atomic_write(path, text):
-    """Write `text` to `path` atomically: temp file in the SAME dir + os.replace,
-    so a reader never sees a partial note. The pid-suffixed temp avoids collisions
-    between concurrent sessions."""
-    tmp = "%s.tmp.%d" % (path, os.getpid())
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(tmp, path)
-
 
 def _index_path(pdir):
     return os.path.join(pdir, _INDEX_NAME)

@@ -39,6 +39,8 @@ _LIB = os.path.dirname(os.path.abspath(__file__))
 if _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
+import core.jsonrpc as _jsonrpc
+
 # The engine module file is `task-station.py` — a hyphen, so not import-able by
 # name. Load it once via importlib and reuse its public primitives so the bridge
 # never forks store/render/lifecycle logic.
@@ -627,11 +629,11 @@ class _RpcError(Exception):
 
 
 def _result(mid, payload):
-    return {"jsonrpc": "2.0", "id": mid, "result": payload}
+    return _jsonrpc.result(mid, payload)
 
 
 def _error(mid, code, message):
-    return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
+    return _jsonrpc.error(mid, code, message)
 
 
 def _text_content(text):
@@ -755,31 +757,12 @@ def serve(stdin=None, stdout=None):
     """The stdio transport: read newline-delimited JSON-RPC from `stdin`, write
     one-object-per-line responses to `stdout`, flushing after each. A malformed
     line is answered with a parse error but never crashes the loop."""
-    stdin = stdin if stdin is not None else sys.stdin
-    stdout = stdout if stdout is not None else sys.stdout
-    for line in stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except Exception as e:
-            _write(stdout, _error(None, -32700, "Parse error: %s" % e))
-            continue
-        try:
-            resp = handle(msg)
-        except Exception as e:                   # belt-and-suspenders
-            sys.stderr.write("task-station MCP: unhandled: %s\n" % e)
-            resp = _error(msg.get("id") if isinstance(msg, dict) else None,
-                          -32603, "Internal error: %s" % e)
-        if resp is not None:
-            _write(stdout, resp)
+    return _jsonrpc.serve(handle, stdin, stdout)
 
 
 def _write(stdout, obj):
     """One JSON object per line, no embedded newlines, flushed immediately."""
-    stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    stdout.flush()
+    return _jsonrpc._write(stdout, obj)
 
 
 def main():
