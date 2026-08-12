@@ -5,7 +5,10 @@ Covers the shipping contract from the runbook's §6.6 universal-vs-gated table:
   UNIVERSAL (ships to everyone, no vault, default config):
     * `semantic_edges` — derived `touches-same` edges from a shared PR / story / file /
       repo, weighted (pr 3 > story/file 2 > repo 1), with `via` = the shared signals.
-    * `build_board_graph` — lineage + semantic edges; empty on a relation-free store.
+    * `build_board_graph` — STORED lineage only (the derived `touches-same` tier was
+      deliberately removed from the graph — see
+      test_lineage_universal_and_no_touches_same_edges — while `semantic_edges` itself
+      stays, for the export and the signal hubs); empty on a relation-free store.
     * the board mini-graph SVG panel — rendered when there are edges, omitted otherwise,
       and never referencing an external asset.
 
@@ -130,21 +133,32 @@ class BuildBoardGraphTest(_GraphBase):
         g = ts.build_board_graph(ts.all_tasks())
         self.assertEqual(g, {"nodes": [], "edges": []})
 
-    def test_lineage_and_semantic_universal(self):
+    def test_lineage_universal_and_no_touches_same_edges(self):
+        # The graph carries STORED lineage only. A shared PR/story/file/repo no longer
+        # draws a task<->task edge — two tasks touching one file is not a relationship
+        # worth drawing, and the kind was 97% of every edge in the real graph. Shared
+        # PRs/repos/stories still reach the RENDER graph as signal hubs, which is a
+        # different tier (see test_render_graph.py).
         parent = self._seed("Parent")
         child = self._seed("Child", prs=[{"url": "p9"}])
-        sibling = self._seed("Sibling", prs=[{"url": "p9"}])
+        self._seed("Sibling", prs=[{"url": "p9"}])
         child["related"] = [{"id": parent["id"], "seq": parent.get("seq"),
                              "kind": "spawned-from", "ts": ts._now()}]
         ts.save_task(child)
-        self._seqs()
+        seqs = self._seqs()                           # seqs are assigned HERE
         g = ts.build_board_graph(ts.all_tasks())      # knowledge default off
         kinds = sorted({e["kind"] for e in g["edges"]})
         self.assertIn("spawned-from", kinds)
-        self.assertIn("touches-same", kinds)
+        self.assertNotIn("touches-same", kinds)       # deleted from the graph by design
         self.assertNotIn("related-knowledge", kinds)  # gated off
-        # Only edge-touching nodes appear (parent/child/sibling all connected).
-        self.assertEqual(len(g["nodes"]), 3)
+        # …and the derivation itself still works — this is a GRAPH change, not a
+        # semantic_edges change (the export still consumes it).
+        self.assertEqual(len(ts.semantic_edges(ts.load_task(child["id"]),
+                                               ts.all_tasks())), 1)
+        # Only edge-touching nodes appear: the lineage pair. The sibling shared a PR
+        # with the child and nothing else, so it is no longer in the base graph.
+        self.assertEqual(len(g["nodes"]), 2)
+        self.assertNotIn(seqs["Sibling"], [n["seq"] for n in g["nodes"]])
         # A spawned-from edge is directed a->b.
         sp = [e for e in g["edges"] if e["kind"] == "spawned-from"][0]
         self.assertEqual(sp["dir"], "a->b")

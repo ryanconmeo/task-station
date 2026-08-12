@@ -802,6 +802,12 @@ def _css(default_variant, category_css):
   .minigraph .mgcount{color:var(--dim);font-weight:400;font-size:.85em}
   .mgwrap{padding:6px 14px 14px}
   .mgsvg{width:100%;height:auto;display:block;max-width:640px;margin:0 auto}
+  /* boundary BUBBLES — a parent's subtree, and a repo's own PRs. A bubble says
+     CONTAINS (a magnet only says SHARES AN ATTRIBUTE), so it is drawn as a filled
+     hull UNDER the edges and nodes, faint enough to read as ground rather than mark. */
+  .mg-bubble{fill:var(--accent);fill-opacity:.07;stroke:var(--accent);stroke-opacity:.42;
+    stroke-width:1.6;stroke-linejoin:round}
+  .mg-bubble-repo{fill:var(--mg-repo);stroke:var(--mg-repo);stroke-dasharray:5 4}
   .mg-edge{stroke:var(--dim);stroke-width:1.4;fill:none;opacity:.55}
   .mg-edge.k-related{stroke:var(--accent);opacity:.5}
   .mg-edge.k-touch{stroke:var(--accent);stroke-dasharray:4 3;opacity:.7}
@@ -879,10 +885,25 @@ def _css(default_variant, category_css):
     overflow:hidden;background:var(--panel);min-height:520px}
   /* fill the (stretched) wrap so the canvas matches the filter rail's height; the min
      keeps a usable size when the rail is short. resize() reads the rendered height. */
+  /* The wrap becomes FOCUSABLE only on a board that carries a knowledge plane — the
+     enhancement adds the tabindex, so this rule is inert everywhere else. The canvas
+     itself is aria-hidden (the static SVG is the accessible view), and making an
+     aria-hidden element keyboard-reachable is exactly the trap to avoid, so the focus
+     ring that tells you ↑/↓ will now move the camera belongs on the wrapper. */
+  .mgcanvaswrap:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
   .mgcanvas{display:block;width:100%;height:100%;min-height:520px;cursor:grab;touch-action:none}
   .mgcanvas.grabbing{cursor:grabbing}
   .mghint{position:absolute;left:10px;top:9px;font:500 11px var(--mono);color:var(--dim);
     background:var(--panel2);padding:3px 7px;border-radius:6px;pointer-events:none;opacity:.92}
+  /* the focus breadcrumb — the focused container path, each segment clickable to
+     focus that ancestor. Created by the enhancement JS only when the graph carries galaxy
+     grouping, so the Interbrain-off render never emits the element and these rules are
+     inert there. Unlike .mghint it must take pointer events: the segments are buttons. */
+  .mgcrumb{position:absolute;left:10px;bottom:9px;display:flex;align-items:center;gap:2px;
+    font:500 11px var(--mono);background:var(--panel2);padding:3px 7px;border-radius:6px;opacity:.92}
+  .mgcrumb .mgcrumbseg{border:0;background:none;padding:0 2px;font:inherit;color:var(--dim);cursor:pointer}
+  .mgcrumb .mgcrumbseg:hover{color:var(--ink);text-decoration:underline}
+  .mgcrumb .mgcrumbsep{color:var(--dim);opacity:.55}
   .mgrail{border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:12px}
   /* C2: grouped multi-select filter panel (replaces the flat legend). */
   .mgfilters{display:flex;flex-direction:column;gap:9px}
@@ -1506,31 +1527,73 @@ def _rel_link(seq):
     return '<a class="rellink" href="#task-%s">#%s</a>' % (_e(seq), _e(seq))
 
 
+# How each relation kind READS on the board card, as (stored-here, derived-here). This
+# MIRRORS `_REL_LINE_WORDS` in lib/task-station.py word for word: the terminal detail
+# line and the board must never disagree about what an edge IS. A kind absent from this
+# table falls back to `related`, which is what keeps a store written by a newer version
+# renderable rather than mislabelled or crashing.
+_REL_WORDS = {
+    "depends-on":   ("depends on", "blocks"),
+    "parent":       ("parent", "children"),
+    "duplicates":   ("duplicates", "duplicates"),   # symmetric — reads the same
+    "replaces":     ("replaces", "replaced by"),
+    "absorbed-by":  ("absorbed-by", "absorbed"),
+    "spawned-from": ("from", "spawned"),
+}
+_REL_WORDS_DEFAULT = ("related", "related")
+
+
+def _rel_label(kind, incoming):
+    """The word one relation kind reads as, in the direction it is being viewed from."""
+    return _REL_WORDS.get(kind, _REL_WORDS_DEFAULT)[1 if incoming else 0]
+
+
 def _rel_token(e, incoming):
-    """One relation edge rendered as HTML with a CLICKABLE `#N`. Outgoing (stored on
-    this task): spawned-from → `from #N`, else `related #N`. Incoming (derived — another
-    task points at this one): spawned-from → `spawned #N`, else `related #N`; a closed
-    counterpart gets a ` (closed)` suffix."""
+    """One relation edge rendered as HTML with a CLICKABLE `#N`. The label comes from
+    `_REL_WORDS`; an outgoing `spawned-from` keeps its ` (spawned-from)` qualifier and a
+    closed counterpart its ` (closed)` suffix."""
     link = _rel_link(e.get("seq"))
-    kind = e.get("kind")
-    if not incoming:
-        verb = "from" if kind == "spawned-from" else "related"
-        return "%s %s" % (verb, link)
-    closed = " (closed)" if e.get("status") == "closed" else ""
-    verb = "spawned" if kind == "spawned-from" else "related"
-    return "%s %s%s" % (verb, link, closed)
+    label = _rel_label(e.get("kind"), incoming)
+    qual = " (spawned-from)" if (not incoming and e.get("kind") == "spawned-from") else ""
+    closed = " (closed)" if (incoming and e.get("status") == "closed") else ""
+    return "%s %s%s%s" % (label, link, qual, closed)
+
+
+def _rel_group(entries, incoming):
+    """Relation entries as GROUPED tokens: consecutive entries sharing a label collapse
+    into one `children #Q, #R` run, so a parent with eight children reads the label once
+    rather than eight times.
+
+    The closed mark is PER TARGET, so it rides with its own `#N` and grouping never
+    loses it. A run of one renders through `_rel_token`, so there is a single definition
+    of the ungrouped form."""
+    runs = []
+    for e in entries:
+        if e.get("seq") is None:
+            continue
+        label = _rel_label(e.get("kind"), incoming)
+        ref = _rel_link(e.get("seq"))
+        if incoming and e.get("status") == "closed":
+            ref += " (closed)"
+        if runs and runs[-1][0] == label:
+            runs[-1][1].append(ref)
+        else:
+            # A run of one renders through `_rel_token`, so the single-entry form has
+            # exactly one definition and the two can never drift apart.
+            runs.append([label, [ref], _rel_token(e, incoming)])
+    return [run[2] if len(run[1]) == 1 else "%s %s" % (run[0], ", ".join(run[1]))
+            for run in runs]
 
 
 def _related_line(rel):
     """WS4: the combined relation line (HTML, clickable `#N`) for the brief detail, e.g.
-    `from #363 · spawned #365 (closed) · related #341`. '' when no edges."""
+    `from #363 (spawned-from) · children #365, #370 (closed) · related #341`. Repeated
+    same-kind entries are grouped under one label. '' when no edges."""
     frm = rel.get("from") or []
     inn = rel.get("in") or []
     if not frm and not inn:
         return ""
-    toks = [_rel_token(e, False) for e in frm if e.get("seq") is not None]
-    toks += [_rel_token(e, True) for e in inn if e.get("seq") is not None]
-    return " · ".join(toks)
+    return " · ".join(_rel_group(frm, False) + _rel_group(inn, True))
 
 
 def _row_related_chip(t):
@@ -3419,6 +3482,81 @@ def _galaxy_well_ring(keys, radius=1.0):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Containment paths — the PURE, TESTED reference twins of the canvas JS helpers
+# (`galaxyPath` / `nodePath` / `isDescendant` / `containerKeyAt`). Same carve-out
+# as the geometry twins above: the live versions run inside the canvas
+# enhancement, so the RULES are mirrored here to make them unit-testable. Keep
+# the two sides in lockstep — a change to one is a change to both.
+#
+# Zoom depth is VARIABLE, so a focus is a PATH and DEPTH IS ITS LENGTH: a person
+# is a path of one, a brain a path of two, and a nested container as deep as it
+# needs to be. Nothing here is bounded by a fixed set of levels.
+# ---------------------------------------------------------------------------
+
+# NUL — the one separator an owner alias or a brain name cannot itself contain,
+# which is why joining on a SPACE would be wrong: "a b"+"c" and "a"+"b c" would
+# collide. It is also the separator the well keys use, so a container key and a
+# well key are the same string.
+# Spelled chr(0) rather than an escape so this source file stays pure ASCII.
+PATH_SEP = chr(0)
+
+
+def _galaxy_path(focus):
+    """The FOCUSED container path — twin of the JS `galaxyPath`.
+
+    `[]` when nothing is focused, `[owner]` for a person, `[owner, brain]` for one
+    brain. A focus kind that is not a container (`org`) reads as the root. Depth is
+    simply `len(path)`, which is what makes depth 0 a real depth rather than a
+    falsy special case."""
+    f = focus or {}
+    kind = f.get("kind")
+    if kind == "owner":
+        return [f.get("owner") or ""]
+    if kind == "brain":
+        return [f.get("owner") or "", f.get("brain") or "main"]
+    return []
+
+
+def _node_path(node):
+    """A task's OWN containment path, outermost first — twin of the JS `nodePath`.
+
+    In this stage exactly `[owner, brain]`; a node carrying neither yields `[]`,
+    and every helper below tolerates that. Parent nesting appends here — one line,
+    mirrored on both sides."""
+    n = node or {}
+    if n.get("type") != "task":
+        return []
+    if n.get("owner") is None and n.get("brain") is None:
+        return []
+    return [n.get("owner") or "", n.get("brain") or "main"]
+
+
+def _is_descendant(node, path):
+    """Whether `node` sits inside `path` — twin of the JS `isDescendant`. An EMPTY
+    path matches EVERY node, which is exactly why the unfocused case needs no
+    special handling anywhere."""
+    if not path:
+        return True
+    np = _node_path(node)
+    if len(np) < len(path):
+        return False
+    return np[:len(path)] == list(path)
+
+
+def _container_key_at(node, depth):
+    """The key of the container `node` sits in one level below `depth` — twin of the
+    JS `containerKeyAt`, and the single thing that replaced every level-string
+    branch. `depth` 0 is the OUTERMOST container (today: the person), 1 the next in
+    (today: the brain). Slicing clamps on its own, so a depth past the node's own
+    deepest container keeps returning that container — the property `assignWells`
+    and `galaxyKey` rely on.
+
+    `depth` is positional with NO default on purpose: 0 is a real depth, and a
+    default would let a caller silently skip it and get a different level."""
+    return PATH_SEP.join(_node_path(node)[:depth + 1])
+
+
 def _convex_hull(pts):
     """Monotone-chain convex hull of (x, y) points, CCW. Collinear vertices are
     dropped (the `<= 0` cross test), so a set of collinear points collapses to its
@@ -3501,6 +3639,625 @@ def _blob_path(pts, pad=18.0):
     return {"kind": "hull", "d": _smooth_closed_path(exp)}
 
 
+# ---------------------------------------------------------------------------
+# The CONCENTRIC layout — four rings, outermost in, and two placement axes
+# with one job each. Pure and deterministic: same inputs → byte-identical output,
+# which is what lets the whole design be unit-tested without a browser.
+#
+#   rim    (R_RIM)    12 category MAGNETS      — attract, no boundary
+#   middle            task nodes + parent BUBBLES (boundaries)
+#   story  (R_STORY)  story MAGNETS
+#   core   (R_CORE)   repo BUBBLES, each holding its own PRs
+#
+# WHY repo is a boundary and story is a magnet, measured — do not invert it: 37 of
+# 70 stories span more than one repo (one spans five), while a PR always lives in
+# exactly ONE repo. So a PR nests in its repo truthfully, and a story that
+# contained PRs would have to cut through five repo boundaries.
+# A BUBBLE says CONTAINS; a MAGNET says SHARES AN ATTRIBUTE.
+#
+# THE RULE THAT KEEPS BUBBLES INTACT: a task inside a group is positioned by its
+# group ALONE — no category pull, no core pull. Not an optimisation: the live
+# programme has 8 children spanning 5 categories, so a category-driven angle would
+# tear that bubble across five sectors. Parents are unmagnetised for the same
+# reason. Only LOOSE tasks take angle from category and radius from entanglement.
+# ---------------------------------------------------------------------------
+R_RIM = 214.0          # category magnets
+R_TASK_MAX = 194.0     # a loose task with ZERO shared artifacts — "on the rim"
+R_TASK_MIN = 122.0     # …and the most entangled one. Never 0: see _entangle_radius.
+R_GROUP = 156.0        # group roots (a parent with no parent of its own)
+R_STORY = 88.0         # the story band
+R_CORE = 38.0          # repo bubble centres
+# Members of one category fan across this many radians. Kept well under the
+# 2π/12 ≈ 0.52 gap between magnets so a sector never bleeds into its neighbour —
+# which is what makes "two tasks of one category are near each other" true.
+# Widening this cannot fix a clumped category: the gap caps it at ~20% more, against
+# a category needing 10×. The RADIAL dimension does that instead — see the seating.
+CAT_SPAN = 0.40
+# Theatre seating inside a sector. SEAT_SEP is the minimum arc between neighbours in a
+# row and ROW_PITCH the radial gap between rows, both comfortably above the 6 units the
+# clump measurement uses. Rows step strictly inward and are never clamped to a floor:
+# clamping would make two rows share a radius, which is the stacking this seating exists
+# to prevent. The largest real category (103) bottoms out around r=96, still outside the
+# story band; a category several times that would seat rows across it, which is a legible
+# failure rather than an invisible one.
+SEAT_SEP = 7.5
+ROW_PITCH = 7.5
+# Children ring radius around their parent, and the shrink factor per nesting level
+# so an inner bubble fits inside its outer one.
+R_CHILD = 46.0
+CHILD_SHRINK = 0.52
+# Artifacts at which entanglement saturates. Log-scaled to here, then CLAMPED, so a
+# task with twelve PRs lands at R_TASK_MIN rather than collapsing into the centre.
+ENTANGLE_FULL = 6
+
+
+def _entangle_radius(artifacts):
+    """Radius for a LOOSE task from how entangled it is in shared work: the count of
+    distinct shared artifacts (PR / story / repo signals it participates in). Zero
+    sits on the rim; more pulls inward, log-scaled and clamped at `R_TASK_MIN` so
+    one task with a dozen PRs never reaches the core."""
+    n = max(0, int(artifacts or 0))
+    if n <= 0:
+        return R_TASK_MAX
+    t = min(1.0, math.log1p(n) / math.log1p(ENTANGLE_FULL))
+    return R_TASK_MAX - t * (R_TASK_MAX - R_TASK_MIN)
+
+
+def _ring_angles(keys, count=None):
+    """Evenly-spaced angles for `keys`, assigned over the SORTED keys so the
+    arrangement is identical across renders — the reason the rim never wobbles.
+    `count` overrides the divisor when slots should stay reserved."""
+    ks = sorted(keys)
+    n = count if count is not None else len(ks)
+    return {k: (-math.pi / 2 + (2 * math.pi * i / n if n else 0.0))
+            for i, k in enumerate(ks)}
+
+
+# The golden angle. Successive multiples of it never repeat a bearing, which is what
+# makes both the sphere distribution and the sunflower seating below fill evenly.
+GOLDEN_ANGLE = math.pi * (3.0 - math.sqrt(5.0))
+# A cap is sized to hold `n * SEAT_SEP^2 * CAP_FILL` of surface. The margin above 1.0 is
+# what puts the nearest-neighbour distance clear of the 6-unit crowding bar rather than
+# exactly on it.
+CAP_FILL = 1.25
+# Floor on a cap's angular radius, so a shell holding one or two tasks still has a real
+# patch — two nearly-touching shells rely on their seats being off-centre to separate.
+CAP_MIN = 0.06
+# Caps of angular radius a and b are disjoint iff a + b < their centre separation. Every
+# cap is clamped to this fraction of the MEASURED minimum separation, so the worst pair
+# sums to 0.96 of it and no two caps can ever touch.
+CAP_SAFETY = 0.48
+
+
+def _fib_sphere(keys):
+    """Near-uniform directions over the WHOLE sphere, one per key — the Fibonacci /
+    golden-angle construction, assigned over SORTED keys so the arrangement never
+    wobbles between renders. Returns `{key: (x, y, z)}` unit vectors.
+
+    Height is stepped uniformly, which makes the bands equal-area, and each successive
+    point is turned by the golden angle. That is what distributes categories over the
+    sphere instead of around one axis."""
+    ks = sorted(keys)
+    n = len(ks)
+    out = {}
+    for i, k in enumerate(ks):
+        y = 1.0 - 2.0 * (i + 0.5) / n if n else 0.0
+        rad = math.sqrt(max(0.0, 1.0 - y * y))
+        a = i * GOLDEN_ANGLE
+        out[k] = (rad * math.cos(a), y, rad * math.sin(a))
+    return out
+
+
+def _min_separation(dirs):
+    """The smallest angle between any two of `dirs` (unit vectors), in radians. π when
+    there are fewer than two — nothing can collide with itself. MEASURED rather than
+    assumed, because it is what every cap radius is clamped against."""
+    vs = list(dirs)
+    best = math.pi
+    for i in range(len(vs)):
+        for j in range(i + 1, len(vs)):
+            a, b = vs[i], vs[j]
+            d = max(-1.0, min(1.0, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))
+            best = min(best, math.acos(d))
+    return best
+
+
+def _cap_alpha(n, r, alpha_max):
+    """The angular radius of a spherical cap on a shell of radius `r` big enough to seat
+    `n` tasks at roughly `SEAT_SEP` apart, clamped into `[CAP_MIN, alpha_max]`.
+
+    A cap of angular radius α has area `2πr²(1 − cos α)`, so solving for the area `n`
+    tasks need inverts directly. When a category is too big for its clamp the cap stops
+    growing and the seats simply pack tighter — a cap that grew past the clamp would
+    overlap its neighbour, and two categories bleeding into each other is a worse
+    failure than one dense patch."""
+    if r <= 0:
+        return alpha_max
+    need = max(1, int(n)) * SEAT_SEP * SEAT_SEP * CAP_FILL
+    cosa = 1.0 - need / (2.0 * math.pi * r * r)
+    a = math.acos(max(-1.0, min(1.0, cosa)))
+    return max(CAP_MIN, min(alpha_max, a))
+
+
+def _cap_seat(centre, u, v, alpha, k, n, phase=0.0):
+    """Unit direction for seat `k` of `n` in a cap — a golden-angle SUNFLOWER laid out in
+    the cap's tangent plane and mapped onto the sphere along great circles.
+
+    `sqrt((k+0.5)/n)` spaces the rings by equal area, so the disc fills evenly instead of
+    banding, and that even fill is what makes a category read as a patch rather than
+    rows. `phase` turns the whole spiral, keeping two shells of one category from putting
+    their seats on the same bearing."""
+    rho = alpha * math.sqrt((k + 0.5) / float(max(1, n)))
+    psi = k * GOLDEN_ANGLE + phase
+    cr, sr = math.cos(rho), math.sin(rho)
+    cp, sp = math.cos(psi), math.sin(psi)
+    return (centre[0] * cr + (u[0] * cp + v[0] * sp) * sr,
+            centre[1] * cr + (u[1] * cp + v[1] * sp) * sr,
+            centre[2] * cr + (u[2] * cp + v[2] * sp) * sr)
+
+
+def _dir_basis(d):
+    """Two orthonormal vectors spanning the plane tangent to the unit sphere at `d`."""
+    ax, ay, az = (0.0, 1.0, 0.0) if abs(d[1]) < 0.9 else (1.0, 0.0, 0.0)
+    ux, uy, uz = d[1] * az - d[2] * ay, d[2] * ax - d[0] * az, d[0] * ay - d[1] * ax
+    L = math.hypot(math.hypot(ux, uy), uz) or 1.0
+    u = (ux / L, uy / L, uz / L)
+    v = (d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2],
+         d[0] * u[1] - d[1] * u[0])
+    return u, v
+
+
+def _tangent_basis(x, y, z, cx=0.0, cy=0.0):
+    """Two orthonormal vectors spanning the plane TANGENT to the shell at
+    `(x, y, z)`. A child cluster laid out on this plane hugs the shell instead of
+    cutting through it, and stays compact from any viewing angle — which is what
+    keeps a parent bubble's hull tight."""
+    rx, ry, rz = x - cx, y - cy, z
+    L = math.hypot(math.hypot(rx, ry), rz) or 1.0
+    rx, ry, rz = rx / L, ry / L, rz / L
+    # any vector not parallel to the radial one; swap the seed when it is
+    ax, ay, az = (0.0, 1.0, 0.0) if abs(ry) < 0.9 else (1.0, 0.0, 0.0)
+    ux, uy, uz = ry * az - rz * ay, rz * ax - rx * az, rx * ay - ry * ax
+    L = math.hypot(math.hypot(ux, uy), uz) or 1.0
+    ux, uy, uz = ux / L, uy / L, uz / L
+    vx, vy, vz = ry * uz - rz * uy, rz * ux - rx * uz, rx * uy - ry * ux
+    return (ux, uy, uz), (vx, vy, vz)
+
+
+def _concentric_layout(tasks, stories=(), repos=None, cx=0.0, cy=0.0):
+    """Place every task, category magnet, story magnet, repo bubble and PR.
+
+    `tasks` — one dict per task, `{"id", "seq", "cat", "parent", "artifacts"}`.
+    `parent` is another task's id or None; `artifacts` is the shared-artifact count
+    (ignored for a task that has a parent — a grouped task feels no core pull).
+    `stories` — story keys for the band. `repos` — `{repo key: [pr key, …]}`.
+
+    Returns `{"task", "cat", "story", "repo", "pr"}` position maps plus `"bubbles"`
+    — `[{"kind", "key", "members"}]`, one per parent (its subtree) and one per repo
+    (its PRs), for the caller to hull — and `"sphere"`, the SAME entities placed in
+    3-space. Pure: no I/O, no globals, no randomness.
+
+    TWO PLACEMENTS, one per view. The planar map seats a category in rows that spill
+    inward when a row fills, which separates a crowded category but costs radius its
+    meaning. A SHELL has AREA, so nothing needs to spill: a category is a spherical CAP
+    somewhere on that shell, and its tasks fill the cap. Radius is then a PURE function
+    of entanglement in 3-space — from any orbit angle, closer to the centre means more
+    entangled in shared work.
+
+      direction — which category CAP a task belongs to, and where in it
+      radius    — entanglement, and nothing else"""
+    by_id = {t["id"]: t for t in tasks}
+    kids = {}
+    for t in tasks:
+        p = t.get("parent")
+        if p and p in by_id and p != t["id"]:
+            kids.setdefault(p, []).append(t["id"])
+    for p in kids:
+        kids[p].sort(key=lambda i: (by_id[i].get("seq") is None,
+                                    by_id[i].get("seq"), i))
+
+    def _root(tid, seen=None):
+        """The outermost ancestor of `tid`. Cycle-safe by construction — a `parent`
+        cycle is legal in the store (Stage 3 warns but always stores), so a naive
+        walk here would not terminate."""
+        seen = seen or set()
+        cur = tid
+        while True:
+            if cur in seen:
+                return cur                      # a cycle: treat this node as a root
+            seen.add(cur)
+            p = (by_id.get(cur) or {}).get("parent")
+            if not p or p not in by_id or p == cur:
+                return cur
+            cur = p
+
+    grouped = {t["id"] for t in tasks if _root(t["id"]) != t["id"]}
+    roots = sorted((p for p in kids if p not in grouped),
+                   key=lambda i: (by_id[i].get("seq") is None, by_id[i].get("seq"), i))
+    loose = [t for t in tasks if t["id"] not in grouped and t["id"] not in kids]
+
+    pos = {}
+    # -- rim: one magnet per category actually in use, on sorted keys ------------
+    cat_keys = sorted({(t.get("cat") or "") for t in tasks})
+    cat_ang = _ring_angles(cat_keys)
+    cat_pos = {k: (cx + R_RIM * math.cos(a), cy + R_RIM * math.sin(a))
+               for k, a in cat_ang.items()}
+    # -- middle, loose tasks: ANGLE from category, RADIUS from entanglement ------
+    # THEATRE SEATING. Angle alone cannot separate a big category: the gap between
+    # magnets is only 2π/12 ≈ 0.52 rad, so even the widest sector gives 103 tasks
+    # 0.0039 rad each — they land on top of each other. The band is ~92 units deep and
+    # was entirely unused, because 297 of 379 tasks have zero shared artifacts and so
+    # share one radius. So a sector is seated in ROWS: entanglement still picks which
+    # row a task starts at (more entangled = further in, the axis is unchanged), and a
+    # row that fills spills onto the next one inward. Seats per row scale with the arc
+    # length at that radius, so spacing stays roughly constant however deep it goes.
+    per_cat = {}
+    for t in sorted(loose, key=lambda t: (t.get("seq") is None, t.get("seq"), t["id"])):
+        per_cat.setdefault(t.get("cat") or "", []).append(t)
+    for key, members in per_cat.items():
+        base = cat_ang.get(key, -math.pi / 2)
+        # Group by starting radius, then seat outermost group first, carrying a cursor
+        # so a spilling group can never land on the row of a MORE entangled one — which
+        # is what keeps "more entangled sits further in" true however big a group gets.
+        by_r = {}
+        for t in members:
+            by_r.setdefault(_entangle_radius(t.get("artifacts")), []).append(t)
+        cursor = None
+        for r0 in sorted(by_r, reverse=True):
+            group = by_r[r0]
+            r = r0 if cursor is None else min(r0, cursor)
+            i = 0
+            while i < len(group):
+                # seats the arc at THIS radius can hold at the minimum separation
+                seats = max(1, int((r * CAT_SPAN) / SEAT_SEP))
+                row = group[i:i + seats]
+                n = len(row)
+                for j, t in enumerate(row):
+                    off = 0.0 if n <= 1 else (j / float(n - 1) - 0.5) * CAT_SPAN
+                    a = base + off
+                    pos[t["id"]] = (cx + r * math.cos(a), cy + r * math.sin(a))
+                i += seats
+                r -= ROW_PITCH                  # strictly inward — never clamped
+            cursor = r - ROW_PITCH
+    # -- middle, groups: a root gets a reserved slot, its subtree clusters on it --
+    # The root is NOT magnetised and its children take angle from IT, which is the
+    # whole reason a bubble survives its members spanning five categories.
+    root_ang = _ring_angles(roots) if roots else {}
+
+    def _place_subtree(tid, x, y, radius, seen=None):
+        # `seen` is load-bearing, not an optimisation: Stage 3 warns on a parent cycle
+        # but ALWAYS stores it, so a naive descent here would not terminate.
+        seen = seen if seen is not None else set()
+        if tid in seen:
+            return
+        seen.add(tid)
+        pos[tid] = (x, y)
+        ch = [c for c in (kids.get(tid) or []) if c not in seen]
+        for j, c in enumerate(ch):
+            a = -math.pi / 2 + (2 * math.pi * j / len(ch) if ch else 0.0)
+            _place_subtree(c, x + radius * math.cos(a), y + radius * math.sin(a),
+                           radius * CHILD_SHRINK, seen)
+
+    for r_id in roots:
+        a = root_ang[r_id]
+        _place_subtree(r_id, cx + R_GROUP * math.cos(a), cy + R_GROUP * math.sin(a),
+                       R_CHILD)
+    # A grouped task whose root never got placed (a parent cycle) still needs a spot.
+    for t in tasks:
+        if t["id"] not in pos:
+            a = cat_ang.get(t.get("cat") or "", -math.pi / 2)
+            pos[t["id"]] = (cx + R_TASK_MAX * math.cos(a),
+                            cy + R_TASK_MAX * math.sin(a))
+    # -- story band: magnets only, never a boundary ------------------------------
+    st_ang = _ring_angles(list(stories))
+    story_pos = {k: (cx + R_STORY * math.cos(a), cy + R_STORY * math.sin(a))
+                 for k, a in st_ang.items()}
+    # -- core: one repo BUBBLE per repo, its own PRs inside it -------------------
+    repos = repos or {}
+    rp_ang = _ring_angles(list(repos))
+    repo_pos, pr_pos = {}, {}
+    for k, a in rp_ang.items():
+        rx, ry = cx + R_CORE * math.cos(a), cy + R_CORE * math.sin(a)
+        repo_pos[k] = (rx, ry)
+        prs = sorted(repos.get(k) or [])
+        for j, p in enumerate(prs):
+            pa = -math.pi / 2 + (2 * math.pi * j / len(prs) if prs else 0.0)
+            pr_pos[p] = (rx + 17.0 * math.cos(pa), ry + 17.0 * math.sin(pa))
+
+    def _subtree(tid):
+        out, stack, seen = [], [tid], set()
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue                        # cycle-safe, same reason as _root
+            seen.add(cur)
+            out.append(cur)
+            stack.extend(kids.get(cur) or [])
+        return out
+
+    # ---- the SHELL placement, for the 3D view ---------------------------------
+    sph = {}
+    # A category is a PATCH placed anywhere on the sphere: its centre is one of twelve
+    # golden-angle directions, and its tasks are seated in a spherical CAP around that
+    # centre. Distributing the centres over the whole sphere is what stops the layout
+    # being a barrel — a category is no longer a wedge of longitude, so nothing forces
+    # them all onto one band and the poles fill like everywhere else.
+    cat_dir = _fib_sphere(cat_keys)
+    # Every cap is clamped to a fraction of the MEASURED minimum separation between
+    # centres, so the widest possible pair still sums to less than the gap between them
+    # and two categories can never bleed into each other.
+    cap_max = CAP_SAFETY * _min_separation(cat_dir.values())
+    caps = {}
+    for key, members in per_cat.items():
+        centre = cat_dir.get(key) or (0.0, 1.0, 0.0)
+        u, v = _dir_basis(centre)
+        by_r = {}
+        for t in members:
+            by_r.setdefault(_entangle_radius(t.get("artifacts")), []).append(t)
+        alpha_seen = CAP_MIN
+        for shell, r in enumerate(sorted(by_r, reverse=True)):
+            group = by_r[r]
+            alpha = _cap_alpha(len(group), r, cap_max)
+            alpha_seen = max(alpha_seen, alpha)
+            # Turn each shell's spiral by the golden angle so two shells of one category
+            # never put a seat on the same bearing. The radial gap between neighbouring
+            # entanglement levels narrows as the log scale saturates, so that bearing
+            # offset is what keeps the closest pair clear.
+            phase = shell * GOLDEN_ANGLE
+            for k, t in enumerate(group):
+                d = _cap_seat(centre, u, v, alpha, k, len(group), phase)
+                sph[t["id"]] = (cx + r * d[0], cy + r * d[1], r * d[2])
+        caps[key] = {"dir": centre, "alpha": alpha_seen}
+    for key in cat_keys:
+        caps.setdefault(key, {"dir": cat_dir.get(key) or (0.0, 1.0, 0.0),
+                              "alpha": CAP_MIN})
+
+    def _place_subtree_3d(tid, x, y, z, radius, seen=None):
+        # Children ride a small disc TANGENT to the shell at their parent, so a whole
+        # subtree stays a compact 3D neighbourhood. The hull that draws its bubble is
+        # taken over projected positions, and a compact cluster projects compactly
+        # from every orbit angle. `seen` is load-bearing — a parent cycle is legal.
+        seen = seen if seen is not None else set()
+        if tid in seen:
+            return
+        seen.add(tid)
+        sph[tid] = (x, y, z)
+        ch = [c for c in (kids.get(tid) or []) if c not in seen]
+        if not ch:
+            return
+        (ux, uy, uz), (vx, vy, vz) = _tangent_basis(x, y, z, cx, cy)
+        for j, c in enumerate(ch):
+            a = -math.pi / 2 + 2 * math.pi * j / len(ch)
+            ca, sa = math.cos(a) * radius, math.sin(a) * radius
+            _place_subtree_3d(c, x + ux * ca + vx * sa, y + uy * ca + vy * sa,
+                              z + uz * ca + vz * sa, radius * CHILD_SHRINK, seen)
+
+    # A group root gets its own direction on the sphere, not a slot in its category's
+    # cap — a parent takes no category pull, so it is placed by the tree it heads. Its
+    # subtree then rides a tangent disc around it, which is what keeps a bubble's hull
+    # tight from every orbit angle.
+    root_dir = _fib_sphere(roots)
+    for r_id in roots:
+        d = root_dir[r_id]
+        _place_subtree_3d(r_id, cx + R_GROUP * d[0], cy + R_GROUP * d[1],
+                          R_GROUP * d[2], R_CHILD)
+    for t in tasks:
+        if t["id"] not in sph:
+            d = cat_dir.get(t.get("cat") or "") or (0.0, 1.0, 0.0)
+            sph[t["id"]] = (cx + R_TASK_MAX * d[0], cy + R_TASK_MAX * d[1],
+                            R_TASK_MAX * d[2])
+    # A category magnet sits at its own cap centre on the outer shell, so the labels
+    # distribute over the sphere with the patches they name.
+    for k, d in cat_dir.items():
+        sph["cat:%s" % k] = (cx + R_RIM * d[0], cy + R_RIM * d[1], R_RIM * d[2])
+    # Story magnets and repo cores take their own golden-angle directions on their own
+    # shells, for the same reason: a ring of them would put the sphere back on one axis.
+    for k, d in _fib_sphere(list(st_ang)).items():
+        sph[k] = (cx + R_STORY * d[0], cy + R_STORY * d[1], R_STORY * d[2])
+    for k, d in _fib_sphere(list(rp_ang)).items():
+        rx, ry, rz = cx + R_CORE * d[0], cy + R_CORE * d[1], R_CORE * d[2]
+        sph[k] = (rx, ry, rz)
+        prs = sorted(repos.get(k) or [])
+        if not prs:
+            continue
+        (ux, uy, uz), (vx, vy, vz) = _tangent_basis(rx, ry, rz, cx, cy)
+        for j, p in enumerate(prs):
+            pa = -math.pi / 2 + 2 * math.pi * j / len(prs)
+            ca, sa = math.cos(pa) * 17.0, math.sin(pa) * 17.0
+            sph[p] = (rx + ux * ca + vx * sa, ry + uy * ca + vy * sa,
+                      rz + uz * ca + vz * sa)
+
+    bubbles = [{"kind": "parent", "key": p, "members": sorted(_subtree(p))}
+               for p in sorted(kids)]
+    bubbles += [{"kind": "repo", "key": k,
+                 "members": sorted([k] + list(repos.get(k) or []))}
+                for k in sorted(repos)]
+    return {"task": pos, "cat": cat_pos, "story": story_pos, "repo": repo_pos,
+            "pr": pr_pos, "bubbles": bubbles, "sphere": sph, "caps": caps,
+            "cap_max": cap_max}
+
+
+# ---------------------------------------------------------------------------
+# THE KNOWLEDGE PLANE. The task plane is a sphere; this one is a literal FLAT
+# plane, in the same coordinate space, because the two-plane view stacks them and
+# pans a camera between them rather than zooming. So placement here is 2D — the
+# later stage lifts the whole plane into world space and draws it.
+#
+# The knowledge plane must NOT borrow the task plane's category rings. Task nodes
+# accumulate and are episodic; note nodes converge and are semantic, and they are
+# organised by what they are ABOUT rather than by what work touched them:
+#
+#   sector  — the note's `area` (`unfiled` when it declares none)
+#   wedge   — its `type`, so notes of one type sit together inside the sector
+#   radius  — its wikilink DEGREE: a hub note earns the middle, an orphan the rim
+#
+# Closed-form and deterministic, with no physics and no simulation: the board's
+# pin-by-default law is what keeps its frame cost flat, and a hundred more
+# simulated nodes would break it. Same corpus in ⇒ same bytes out.
+# ---------------------------------------------------------------------------
+R_NOTE_RIM = 206.0     # an ORPHAN note — tied to nothing else in the corpus
+R_NOTE_HUB = 96.0      # …and the best-connected one. Never 0: see _note_radius.
+# Degree at which centrality saturates, log-scaled then CLAMPED — the same shape
+# `_entangle_radius` uses on the task plane, so "further in means more connected"
+# reads the same way on both planes. A note linked from thirty others lands at
+# R_NOTE_HUB rather than collapsing into the middle.
+NOTE_DEGREE_FULL = 8
+# Fraction of its own angular share a sector actually fills. The remainder is the
+# gutter that makes a sector read as one region rather than as part of its
+# neighbour — the flat-plane counterpart of the sphere's cap clamp.
+NOTE_SECTOR_FILL = 0.74
+# Minimum arc between two notes seated at one radius, and the radial step a wedge
+# spills inward by when its arc is full. Both above the 6-unit crowding bar the
+# task plane measures against, and both strictly inward — never clamped to a
+# floor, since clamping would make two rows share a radius, which is the stacking
+# the seating exists to prevent.
+NOTE_SEAT_SEP = 7.5
+NOTE_ROW_PITCH = 7.5
+# The sector a note with no `area` belongs to. NOT an error case: on the measured
+# corpus 40 of 103 notes have no area at all, so this is a first-class sector that
+# happens to be the largest one. `knowledge.vault_notes` leaves `area` exactly as
+# the vault wrote it and the default is applied HERE, because which sector a note
+# sits in is a placement decision rather than a fact about the file.
+NOTE_UNFILED = "unfiled"
+
+
+def _note_radius(degree):
+    """Radius for a note from its wikilink degree: 0 sits on the rim, more pulls
+    inward, log-scaled and clamped at `R_NOTE_HUB` so the best-connected note in a
+    huge corpus never reaches the middle of the plane."""
+    n = max(0, int(degree or 0))
+    if n <= 0:
+        return R_NOTE_RIM
+    t = min(1.0, math.log1p(n) / math.log1p(NOTE_DEGREE_FULL))
+    return R_NOTE_RIM - t * (R_NOTE_RIM - R_NOTE_HUB)
+
+
+def _knowledge_layout(notes, degree=None, cx=0.0, cy=0.0):
+    """Place every note of the corpus on the flat knowledge plane.
+
+    `notes` — the records `knowledge.vault_notes` returns (`slug`, `type`, `area`, …),
+    NOT the graph's note nodes: this is a layout input built for the purpose, exactly as
+    `_concentric_layout` takes `lay_tasks` rather than task nodes.
+    `degree` — `{slug: wikilink degree}` from `knowledge.note_degree`. The corpus knows
+    what is tied to what and this function only decides where that puts a note; pass none
+    and every note is an orphan on the rim, which is honest rather than a fallback that
+    invents ties.
+
+    Returns `{"note", "sectors", "wedges", "degree", "span"}` — `note` maps SLUG →
+    `(x, y)` (the caller mints its own `n:<slug>` node ids), `sectors` maps a sector to
+    its base bearing, `wedges` maps `(sector, type)` to `(centre bearing, span)`, and
+    `degree` maps slug → the degree actually used, so a reader can see why a note sits
+    where it does.
+
+    Sector directions come from `_ring_angles` — the same even, sorted-key distribution
+    the task plane's rim uses, which is this file's existing 2D answer to the sphere's
+    `_fib_sphere`. A sector's angular share is split between its TYPES in proportion to
+    how many notes each holds, so seat density stays even instead of a 30-note type
+    getting the same arc as a 2-note one.
+
+    Within one wedge, notes are seated outermost-first by degree, carrying a cursor so a
+    crowded low-degree group can never spill onto the arc of a better-connected one —
+    that carry is what keeps "closer to the middle means better connected" true however
+    lopsided a corpus is. Pure: no I/O, no globals, no randomness."""
+    recs = [n for n in notes if n.get("slug")]
+    deg = {n["slug"]: max(0, int((degree or {}).get(n["slug"], 0))) for n in recs}
+
+    # sector → type → the notes in it, everything keyed on sorted values so the
+    # arrangement is identical across renders (the reason the plane never wobbles).
+    by_sector = {}
+    for n in sorted(recs, key=lambda n: n["slug"]):
+        sector = (n.get("area") or "").strip() or NOTE_UNFILED
+        by_sector.setdefault(sector, {}).setdefault((n.get("type") or "").strip(),
+                                                    []).append(n)
+    sectors = _ring_angles(list(by_sector))
+    span = (NOTE_SECTOR_FILL * 2 * math.pi / len(by_sector)) if by_sector else 0.0
+
+    pos, wedges = {}, {}
+    for sector, by_type in by_sector.items():
+        base = sectors[sector]
+        total = sum(len(v) for v in by_type.values()) or 1
+        cursor_frac = 0.0
+        for ntype in sorted(by_type):
+            members = by_type[ntype]
+            frac = len(members) / float(total)
+            sub = span * frac
+            centre = base - span / 2.0 + (cursor_frac + frac / 2.0) * span
+            cursor_frac += frac
+            wedges[(sector, ntype)] = (centre, sub)
+            # Group by RADIUS (so ties spread along the arc), outermost group first.
+            by_r = {}
+            for n in members:
+                by_r.setdefault(_note_radius(deg[n["slug"]]), []).append(n)
+            cursor_r = None
+            for r0 in sorted(by_r, reverse=True):
+                group = by_r[r0]
+                r = r0 if cursor_r is None else min(r0, cursor_r)
+                i = 0
+                while i < len(group):
+                    seats = max(1, int((r * sub) / NOTE_SEAT_SEP)) if sub > 0 else 1
+                    row = group[i:i + seats]
+                    k = len(row)
+                    for j, n in enumerate(row):
+                        off = 0.0 if k <= 1 else (j / float(k - 1) - 0.5) * sub
+                        a = centre + off
+                        pos[n["slug"]] = (cx + r * math.cos(a), cy + r * math.sin(a))
+                    i += seats
+                    r -= NOTE_ROW_PITCH             # strictly inward, never clamped
+                cursor_r = r - NOTE_ROW_PITCH
+    return {"note": pos, "sectors": sectors, "wedges": wedges, "degree": deg,
+            "span": span}
+
+
+# ---------------------------------------------------------------------------
+# THE TWO PLANES IN WORLD SPACE. `project()` treats y as the screen-vertical axis
+# and canvas y grows downward, so UP IS NEGATIVE y: the knowledge plane sits at a
+# constant NEGATIVE y offset over the task sphere, sharing its (x, z) extent. The
+# separation is measured off the task layout's own extent rather than fixed, so a
+# three-task board and a four-hundred-task board both read as two planes with a
+# gap between them rather than as one cloud or as two specks.
+# ---------------------------------------------------------------------------
+KNOWLEDGE_PLANE_GAP = 1.75          # multiples of the task layout's half-height
+
+
+def _plane_offset(sphere, cy=0.0):
+    """How far ABOVE the task layout the knowledge plane sits, in layout units.
+
+    `sphere` is `_concentric_layout`'s 3-space map, so the measurement is of what the
+    board actually drew. The floor is `R_TASK_MIN` — the innermost shell — so a board
+    whose few tasks happen to sit near the equator still gets a gap wider than the
+    sphere's core instead of the two planes nearly touching."""
+    ys = [abs(p[1] - cy) for p in (sphere or {}).values() if p]
+    half = max(ys) if ys else R_RIM
+    return KNOWLEDGE_PLANE_GAP * max(half, R_TASK_MIN)
+
+
+def _knowledge_vocab():
+    """The knowledge plane's edge-kind vocabulary, OWNED by `lib/knowledge.py` and never
+    respelled here: `(the note-link kind, the kinds allowed to cross the gap)`.
+
+    With that module unavailable the renderer fails CLOSED — an empty crossing set means
+    no line may join the planes — because a gap rule that degrades to "allow everything"
+    is worse than one that degrades to "draw nothing"."""
+    try:
+        import knowledge
+        return knowledge.NOTE_EDGE_KIND, tuple(knowledge.CROSS_PLANE_KINDS)
+    except Exception:
+        return "", ()
+
+
+def _node_plane(node):
+    """Which plane a node is drawn on, derived from its structural TYPE rather than read
+    off the graph's `plane` stamp. A foreign task node minted after that stamp (the
+    Interbrain augmentation runs later) still answers correctly, and a hand-built graph
+    needs no stamp at all."""
+    return "knowledge" if (node or {}).get("type") == "note" else "task"
+
+
+def _crosses_gap(a, b):
+    """True when an edge's two endpoints sit on different planes."""
+    return _node_plane(a) != _node_plane(b)
+
+
 def _minigraph(graph, theme=None, variant=None, solo_pool=None):
     """Step 1: a small, collapsible, clustered 2D SVG of the task-relation graph. The
     graph (from `build_render_graph`) carries typed STRING ids: task nodes (`t:<seq>`),
@@ -3508,7 +4265,7 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
     shared PR/repo/story). Layout is deterministic and closed-form (NO physics/JS):
     category hubs sit on a ring, each hub's member tasks pack on a short outward arc, and
     signal hubs sit at the centroid of their members. Edges are styled by kind (lineage,
-    membership, per-signal, touches-same, gated shared-knowledge). Task circles are filled
+    membership, per-signal, gated shared-knowledge). Task circles are filled
     with the category accent (resolved-variant hex); category hubs are rounded rects sized
     to their label; signal hubs are shaped by kind (pr=diamond, repo=hexagon, story=rect).
     Native SVG `<title>` names the REAL shared signal; the whole graph is also embedded as
@@ -3517,91 +4274,177 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
 
     Returns [] when the graph has no edges/nodes, so a relation-free board renders exactly
     as before — the panel simply isn't emitted. The single-positional / empty / None call
-    (`_minigraph(None)` / `_minigraph({"nodes":[],"edges":[]})`) still yields []. Caps the
-    drawn TASK nodes at 40 (highest-degree first, seq tie-break), then prunes signal hubs
-    with <2 surviving members and category hubs with <1.
+    (`_minigraph(None)` / `_minigraph({"nodes":[],"edges":[]})`) still yields [].
+    A graph carrying NOTES is the one exception: a corpus is a plane in its own right, so
+    a vault user whose task store has no relation at all still gets their knowledge plane
+    drawn rather than an absent panel.
 
-    `solo_pool` (optional): every board task as {seq,title,color,status} — the ones NOT
-    drawn above (relation-free, capped-out, or pruned) are embedded in mg-data under
-    `"solo"`, seeded on concentric rings OUTSIDE the layout, for the canvas's default-off
-    "unlinked tasks" filter. They never join the static SVG and never create a panel on
-    their own (panel emission still requires ≥1 edge)."""
+    **EVERY task is drawn.** There is no draw cap and no "must have an edge"
+    entitlement — every task has exactly one category, and category membership is what
+    entitles it to a position. Placement is `_concentric_layout`: category magnets on the
+    rim, tasks and parent bubbles in the middle, story magnets on their own band, repo
+    bubbles holding their PRs in the core.
+
+    **A CORPUS ADDS A SECOND PLANE.** Note nodes are placed by `_knowledge_layout` and
+    lifted to a constant NEGATIVE y — up — over the task sphere, sharing its x/z extent:
+    two literal stacked planes the camera PANS between (see `_MG_ENHANCE_JS`). They reach
+    the canvas only. The static SVG stays flat and task-only, because two stacked planes
+    seen from directly above are one plane and there is no honest flat reading of the pair.
+
+    `solo_pool` (optional): every board task as {seq,title,color,status}. Any of them the
+    render graph built no node for is PROMOTED to a real node here and placed on the rim.
+    The `"solo"` mg-data key is therefore empty in practice — the pool is defined as the
+    board tasks this renderer does NOT draw, and it draws all of them — but the key is
+    still computed and emitted so anything reading it keeps a valid shape. Panel emission
+    requires ≥1 edge, or a corpus."""
     nodes = list((graph or {}).get("nodes") or [])
     edges = list((graph or {}).get("edges") or [])
-    if not edges or not nodes:
+    # A corpus entitles the panel on its own: with a vault configured and a task store
+    # that carries no relation yet, the ONLY thing to draw is the knowledge plane, and
+    # drawing it is the whole point of it being a plane rather than a per-task tree.
+    has_notes = any(n.get("type") == "note" for n in nodes)
+    if (not edges and not has_notes) or not nodes:
         return []
     by_id = {n["id"]: n for n in nodes}
 
-    # ---- cap TASK nodes only; then prune hubs left short of members -----------
-    task_nodes = [n for n in nodes if n.get("type") == "task"]
-    total_tasks = len(task_nodes)
-    CAP = 40
-    if total_tasks > CAP:
-        task_nodes = sorted(
-            task_nodes,
-            key=lambda n: (-(n.get("deg") or 0),
-                           n.get("seq") if n.get("seq") is not None else 1 << 30))[:CAP]
-    kept_task_ids = {n["id"] for n in task_nodes}
-    hub_members = {}                                   # hub id -> set(kept task id)
-    for e in edges:
-        tgt = by_id.get(e["b"])
-        if e["a"] in kept_task_ids and tgt and tgt.get("type") in ("hub", "signal"):
-            hub_members.setdefault(e["b"], set()).add(e["a"])
-    kept_ids = set(kept_task_ids)
-    for n in nodes:
-        if n.get("type") == "hub" and len(hub_members.get(n["id"], ())) >= 1:
-            kept_ids.add(n["id"])
-        elif n.get("type") == "signal" and len(hub_members.get(n["id"], ())) >= 2:
-            kept_ids.add(n["id"])
-    draw_edges = [e for e in edges if e["a"] in kept_ids and e["b"] in kept_ids]
-    if not draw_edges:
-        return []
-    draw_nodes = [n for n in nodes if n["id"] in kept_ids]
-
-    # ---- deterministic closed-form layout -------------------------------------
     W, H = 720, 520
     CX, CY = W / 2.0, H / 2.0
+
+    # ---- EVERY task is drawn ---------------------------------------------------
+    # There is no draw cap and no "must have an edge" entitlement. Every task has
+    # exactly one CATEGORY, and category membership — not an edge — is what entitles a
+    # task to a position; the layout is deterministic, so size does not degrade it.
+    #
+    # Tasks the render graph built no node for (no lineage edge, no shared signal)
+    # arrive via `solo_pool` and are PROMOTED to real nodes here. They carry no
+    # parent and no shared artifact, so the layout puts them exactly where they
+    # belong: ON THE RIM, which is what having no relation looks like.
+    for p in (solo_pool or []):
+        if p.get("seq") is None or ("t:%s" % p["seq"]) in by_id:
+            continue
+        n = {"id": "t:%s" % p["seq"], "type": "task", "seq": p["seq"],
+             "title": p.get("title", ""), "color": p.get("color"),
+             "status": p.get("status"), "deg": 0}
+        nodes.append(n)
+        by_id[n["id"]] = n
+    # THE GAP, enforced where the lines are MADE rather than by convention: exactly three
+    # kinds may join a task-plane node to a knowledge-plane one. Anything else between the
+    # planes is dropped here, so it reaches neither the static SVG nor mg-data, and the
+    # canvas twin (`XPLANE` in _MG_ENHANCE_JS) refuses the same edge again client-side.
+    # With no notes every node is on the task plane, so nothing is ever dropped.
+    note_kind, cross_kinds = _knowledge_vocab()
+    draw_edges = [e for e in edges
+                  if e["kind"] in cross_kinds
+                  or not _crosses_gap(by_id.get(e["a"]), by_id.get(e["b"]))]
+    # The panel gate for a task-only board is unchanged: a store with no relation at all
+    # still renders no graph, so a relation-free board looks exactly as it does today.
+    if not draw_edges and not has_notes:
+        return []
+    draw_nodes = list(nodes)
+    task_nodes = [n for n in draw_nodes if n.get("type") == "task"]
+    total_tasks = len(task_nodes)
+
+    # ---- layout inputs, every one derived from the graph itself ----------------
+    hub_members = {}                       # hub/signal id -> {task id}
+    task_signals = {}                      # task id -> {signal id} = its artifacts
+    parent_of = {}                         # child id -> parent id
+    for e in draw_edges:
+        tgt = by_id.get(e["b"])
+        if tgt and tgt.get("type") in ("hub", "signal"):
+            hub_members.setdefault(e["b"], set()).add(e["a"])
+            if tgt.get("type") == "signal":
+                task_signals.setdefault(e["a"], set()).add(e["b"])
+        # Stage 3 stores a `parent` edge on the CHILD (the subordinate side stores
+        # the edge), so a → b reads child → parent.
+        if e.get("kind") == "parent" and e["a"] in by_id and e["b"] in by_id:
+            parent_of[e["a"]] = e["b"]
+    lay_tasks = [{"id": n["id"], "seq": n.get("seq"), "cat": n.get("color") or "",
+                  "parent": parent_of.get(n["id"]),
+                  "artifacts": len(task_signals.get(n["id"]) or ())}
+                 for n in task_nodes]
+
+    def _sig_of_kind(k):
+        return [s["id"] for s in draw_nodes
+                if s.get("type") == "signal" and s.get("kind") == k]
+
+    story_keys, repo_keys, pr_keys = (_sig_of_kind("story"), _sig_of_kind("repo"),
+                                      _sig_of_kind("pr"))
+    # A PR nests in a repo bubble only when the join is UNAMBIGUOUS: every task on
+    # the PR also sits on exactly one common repo. The store carries no PR→repo
+    # field at all — repo signals come from a task's `projects`, PR signals from a
+    # PR url, which are different namespaces with no key to join on — so this is
+    # derived from shared membership and deliberately REFUSES to guess: an ambiguous
+    # PR stays a free node in the core rather than being nested in the wrong repo.
+    repos = {k: [] for k in repo_keys}
+    for p in pr_keys:
+        tp = hub_members.get(p) or set()
+        cand = [r for r in repo_keys if tp and tp <= (hub_members.get(r) or set())]
+        if len(cand) == 1:
+            repos[cand[0]].append(p)
+    lay = _concentric_layout(lay_tasks, stories=story_keys, repos=repos,
+                             cx=CX, cy=CY)
+
+    # ---- the KNOWLEDGE PLANE's own layout --------------------------------------
+    # `_knowledge_layout` takes vault RECORDS, not graph nodes — the same contract
+    # `_concentric_layout` has with `lay_tasks` — so the records are rebuilt from the
+    # note nodes here. The conversion is not cosmetic: a note node spells the
+    # frontmatter type as `kind` (because `type` already means the structural class),
+    # and handing the nodes over unconverted would file every note under one wedge.
+    note_nodes = [n for n in draw_nodes if n.get("type") == "note"]
+    knote, plane_y = {}, 0.0
+    if note_nodes:
+        note_recs = [{"slug": n.get("slug"), "type": n.get("kind", ""),
+                      "area": n.get("area", "")} for n in note_nodes]
+        ndeg = {}                        # from the graph's OWN note-link edges
+        for e in draw_edges:
+            if note_kind and e["kind"] == note_kind:
+                for k in (e["a"], e["b"]):
+                    ndeg[k[2:]] = ndeg.get(k[2:], 0) + 1
+        knote = _knowledge_layout(note_recs, ndeg, cx=CX, cy=CY)["note"]
+        plane_y = CY - _plane_offset(lay.get("sphere"), cy=CY)   # UP IS NEGATIVE y
+
+    # ---- the category RIM: one magnet per category in use ----------------------
+    # build_render_graph only mints a `cat:` hub for a category with an edge-connected
+    # task, so the promoted tasks above would otherwise leave gaps in the rim. Any
+    # missing magnet is synthesised here — a node with no spokes, which is exactly
+    # what a magnet is (it attracts; it is not a boundary).
+    try:
+        import categories as _cats
+    except Exception:
+        _cats = None
+    have_cat = {n.get("key") for n in draw_nodes if n.get("type") == "hub"}
+    for key in sorted(lay["cat"]):
+        if key in have_cat or not key:
+            continue
+        label = key
+        if _cats is not None:
+            try:
+                meta = _cats.hub_meta(key)
+                label = "%s [%s] %s" % (meta["dot"], meta["tag"], meta["label"])
+            except Exception:
+                label = key
+        n = {"id": "cat:%s" % key, "type": "hub", "key": key, "label": label,
+             "status": "open", "deg": 0}
+        draw_nodes.append(n)
+        by_id[n["id"]] = n
     cat_hubs = sorted((n for n in draw_nodes if n.get("type") == "hub"),
                       key=lambda n: n["id"])
     sig_hubs = sorted((n for n in draw_nodes if n.get("type") == "signal"),
                       key=lambda n: n["id"])
-    hub_pos, hub_ang, task_pos = {}, {}, {}
-    C = len(cat_hubs)
-    Rc = 178.0
-    for i, h in enumerate(cat_hubs):
-        ang = -math.pi / 2 + (2 * math.pi * i / C if C else 0)
-        hub_ang[h["id"]] = ang
-        hub_pos[h["id"]] = (CX + Rc * math.cos(ang), CY + Rc * math.sin(ang))
-    r_task = 60.0
-    for h in cat_hubs:
-        members = sorted((t for t in hub_members.get(h["id"], ()) if t in kept_task_ids),
-                         key=lambda tid: by_id[tid].get("seq") or 0)
-        m = len(members)
-        base = hub_ang[h["id"]]
-        span = min(math.pi * 0.9, 0.42 * m)
-        hx, hy = hub_pos[h["id"]]
-        for j, tid_ in enumerate(members):
-            off = 0.0 if m <= 1 else (j / (m - 1) - 0.5) * span
-            a = base + off
-            task_pos[tid_] = (hx + r_task * math.cos(a), hy + r_task * math.sin(a))
-    free = sorted((n for n in draw_nodes
-                   if n.get("type") == "task" and n["id"] not in task_pos),
-                  key=lambda n: n.get("seq") or 0)
-    F = len(free)
-    Ri = 82.0
-    for k, n in enumerate(free):
-        a = -math.pi / 2 + (2 * math.pi * k / F if F else 0)
-        # a lone free task sits dead-centre; otherwise on a small inner ring
-        task_pos[n["id"]] = ((CX, CY) if F == 1 else
-                             (CX + Ri * math.cos(a), CY + Ri * math.sin(a)))
+    task_pos = dict(lay["task"])
+    hub_pos = {h["id"]: lay["cat"].get(h.get("key") or "", (CX, CY - R_RIM))
+               for h in cat_hubs}
     sig_pos = {}
     for s in sig_hubs:
-        pts = [task_pos[t] for t in hub_members.get(s["id"], ()) if t in task_pos]
-        if pts:
-            sig_pos[s["id"]] = (sum(p[0] for p in pts) / len(pts),
-                                sum(p[1] for p in pts) / len(pts))
+        sid, kind = s["id"], (s.get("kind") or "pr")
+        if kind == "story":
+            sig_pos[sid] = lay["story"].get(sid, (CX, CY))
+        elif kind == "repo":
+            sig_pos[sid] = lay["repo"].get(sid, (CX, CY))
         else:
-            sig_pos[s["id"]] = (CX, CY)
+            # A PR the join could not place sits on a small ring of its own so two
+            # unplaced PRs never stack on the exact same point.
+            sig_pos[sid] = lay["pr"].get(sid) or (CX, CY - R_CORE - 20.0)
     pos = {}
     pos.update(task_pos)
     pos.update(hub_pos)
@@ -3615,9 +4458,29 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
             return "#%s" % n.get("seq")
         return n.get("label") or nid
 
-    # ---- SVG: edges under nodes -----------------------------------------------
+    # ---- SVG: boundary BUBBLES, under everything -------------------------------
+    # A bubble says CONTAINS: a parent's subtree, and a repo's own PRs. Drawn with
+    # the same `_blob_path` the canvas twin uses, so a degenerate group (one member,
+    # or collinear ones) falls back to a circle and NEVER runs hull math — the 2.0.0
+    # crash class. Nesting is free: a child that is itself a parent gets its own
+    # inner bubble, because each bubble is hulled independently over its subtree.
     svg = ['<svg class="mgsvg" viewBox="0 0 %d %d" role="img" '
            'aria-label="Task Graph">' % (W, H)]
+    for b in lay["bubbles"]:
+        pts = [pos[m] for m in b["members"] if m in pos]
+        if not pts:
+            continue
+        blob = _blob_path(pts, pad=14.0 if b["kind"] == "repo" else 20.0)
+        if not blob["d"]:
+            continue
+        lbl = ("repo bubble: %s" % (by_id.get(b["key"], {}).get("label") or b["key"])
+               if b["kind"] == "repo" else
+               "children of %s" % _short_hub_label(
+                   "#%s" % (by_id.get(b["key"], {}).get("seq") or "?")))
+        svg.append('<path class="mg-bubble mg-bubble-%s" d="%s"><title>%s</title></path>'
+                   % (b["kind"], blob["d"], _e(lbl)))
+
+    # ---- SVG: edges under nodes -----------------------------------------------
     for e in draw_edges:
         if e["a"] not in pos or e["b"] not in pos:
             continue
@@ -3727,9 +4590,51 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
         data_nodes.append(d)
     svg.append('</svg>')
 
-    # ---- solo (undrawn) tasks for the canvas's default-off "unlinked" filter ----
-    # Concentric rings outside the layout (Rc=178 + task arc ≈ 240 max), deterministic
-    # order (seq asc). Ring capacity grows with circumference so dense stores stay tidy.
+    # The SHELL slot for every drawn entity, carried alongside the planar one. The static
+    # SVG is flat, so it uses only the planar map; the canvas picks per view mode. Rounded
+    # to keep mg-data compact and byte-stable across renders.
+    _sphere = lay.get("sphere") or {}
+    for d in data_nodes:
+        p = _sphere.get(d["id"])
+        if p:
+            d["lt3"] = [round(p[0], 1), round(p[1], 1), round(p[2], 1)]
+
+    # ---- the knowledge plane's nodes: canvas only, never the static SVG --------
+    # The static SVG stays flat and task-only (two stacked planes seen head-on are one
+    # plane), so a note gets no shape, no <line> and no entry in `pos` — which is also
+    # why no cross-plane edge can reach the SVG's edge loop.
+    #
+    # FLAT WITHIN THE PLANE: every note shares one constant y and spreads over x and z,
+    # so the layout's 2D slot maps (x, y) → (x, plane_y, y - CY). That flatness is what
+    # makes it read as a plane rather than as a second cloud.
+    #
+    # `path` is deliberately NOT carried into the blob. The record has an absolute file
+    # path so an open action COULD be offered, but embedding one in a generated page
+    # writes a home-directory fingerprint into an artifact this board is being taught to
+    # sync to peers. A vault-RELATIVE path resolved client-side is the shape to use if
+    # that action is ever wanted.
+    for n in note_nodes:
+        x, y = knote.get(n.get("slug")) or (CX, CY)
+        d = {"id": n["id"], "type": "note", "slug": n.get("slug"),
+             "title": n.get("title", ""), "kind": n.get("kind", ""),
+             "area": n.get("area", ""), "deg": n.get("deg", 0),
+             "x": round(x, 1), "y": round(y, 1),
+             "lt3": [round(x, 1), round(plane_y, 1), round(y - CY, 1)]}
+        if n.get("description"):
+            d["description"] = n["description"]
+        data_nodes.append(d)
+    # Which plane each drawn entity is on, stamped only when a corpus is present — with
+    # no notes the blob is byte-identical to the one emitted before the plane existed.
+    # Derived from the node's own type, so a foreign task node folded in later is right
+    # without anything having had to remember to stamp it.
+    if note_nodes:
+        for d in data_nodes:
+            d["plane"] = _node_plane(d)
+
+    # ---- the mg-data `solo` pool: board tasks this renderer did not draw -------
+    # Empty in practice, since the promotion above draws every one of them; kept so the
+    # key holds its shape for any reader. An entry would be seeded on rings outside the
+    # rim, in deterministic seq order, with ring capacity growing with circumference.
     solo_data = []
     drawn_seqs = {n.get("seq") for n in draw_nodes if n.get("type") == "task"}
     pool = [p for p in (solo_pool or [])
@@ -3781,6 +4686,14 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
                      for n in draw_nodes if n.get("type") == "task")
     blob_btn = ('<button type="button" class="mgbtn mgblob" aria-pressed="true">'
                 '◍ Blobs</button>') if has_galaxy else ""
+    # The plane control, emitted ONLY when there is a second plane to move to — so a board
+    # with no corpus ships the identical controls markup it shipped before. It starts on
+    # the task layer, and its face names WHERE IT GOES (the client flips it on each pan,
+    # the way the auto-rotate button flips). 3D-only: the enhancement hides it in 2D,
+    # exactly as it hides auto-rotate, because two stacked planes seen from directly above
+    # are one plane and there is no honest 2D reading of the pan.
+    plane_btn = ('<button type="button" class="mgbtn mgplane" aria-pressed="false">'
+                 '↑ Notes layer</button>') if note_nodes else ""
     controls = (
         '<div class="mgcontrols">'
         '<span class="mgseg" role="group" aria-label="graph view mode">'
@@ -3792,9 +4705,9 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
         '<span class="mgn" aria-live="polite"></span></label>'
         '<button type="button" class="mgbtn mgrotate" aria-pressed="true">'
         '⟳ Auto-rotate</button>'
-        '%s'
+        '%s%s'
         '<button type="button" class="mgbtn mgreset">↻ Reset</button>'
-        '</div>') % blob_btn
+        '</div>') % (plane_btn, blob_btn)
     stage = (
         '<div class="mgstage">'
         '<div class="mgcanvaswrap">'
@@ -3808,10 +4721,13 @@ def _minigraph(graph, theme=None, variant=None, solo_pool=None):
     if n_tasks < total_tasks:
         shown = (' <span class="mgcount">· showing %d of %d</span>'
                  % (n_tasks, total_tasks))
+    # The corpus is counted in the summary only when there is one, so the no-vault
+    # summary line keeps the exact bytes it has today.
+    notes_txt = (" · %d note(s)" % len(note_nodes)) if note_nodes else ""
     return ['<details class="minigraph" data-key="minigraph" open><summary>Task Graph'
-            '<span class="mgcount">%d task(s) · %d edge(s)%s</span></summary>'
+            '<span class="mgcount">%d task(s) · %d edge(s)%s%s</span></summary>'
             '<div class="mgwrap">%s%s%s%s%s</div></details>'
-            % (n_tasks, len(draw_edges), shown, "".join(svg), mgdata,
+            % (n_tasks, len(draw_edges), notes_txt, shown, "".join(svg), mgdata,
                controls, stage, "".join(legend))]
 
 
@@ -3830,7 +4746,10 @@ _MG_ENHANCE_JS = """try{(function(){
   if(!dataEl||!canvas)return;
   var G;try{G=JSON.parse(dataEl.textContent||"{}");}catch(e){return;}
   var rawNodes=(G&&G.nodes)||[],rawEdges=(G&&G.edges)||[],rawSolo=(G&&G.solo)||[];
-  if(!rawNodes.length||!rawEdges.length)return;
+  // A CORPUS is enough on its own: a vault whose notes happen to link to nothing yet is
+  // still a plane worth drawing, so the enhancement no longer requires an edge to run.
+  var hasPlanes=rawNodes.some(function(n){return n&&n.type==="note";});
+  if(!rawNodes.length||(!rawEdges.length&&!hasPlanes))return;
   var ctx=canvas.getContext&&canvas.getContext("2d");if(!ctx)return;
   var root=document.documentElement;
   // performance mode: 'low' disables continuous animation (physics/auto-rotate/momentum)
@@ -3842,28 +4761,43 @@ _MG_ENHANCE_JS = """try{(function(){
   function catClass(k){return "cat-"+String(k||"").replace(/[^A-Za-z0-9-]+/g,"-");}
   function rootVar(name){if(name in varCache)return varCache[name];var v=getComputedStyle(root).getPropertyValue(name).trim();varCache[name]=v;return v;}
   function catColor(k){if(k in catCache)return catCache[k];var el=document.createElement("span");el.className=catClass(k);probeBox.appendChild(el);var cs=getComputedStyle(el);var c=(cs.getPropertyValue("--cat-stripe")||"").trim()||(cs.getPropertyValue("--cat-accent")||"").trim()||rootVar("--accent")||"#8a7fb0";catCache[k]=c;return c;}
-  var EDGEVAR={membership:"--dim",lineage:"--accent",touch:"--accent",knowledge:"--so",pr:"--mg-pr",repo:"--mg-repo",story:"--mg-story",xbrain:"--dim"};
+  var EDGEVAR={membership:"--dim",lineage:"--accent",touch:"--accent",knowledge:"--so",pr:"--mg-pr",repo:"--mg-repo",story:"--mg-story",xbrain:"--dim",note:"--so",cross:"--dim"};
   var SIGVAR={pr:"--mg-pr",repo:"--mg-repo",story:"--mg-story"};
   function edgeColor(cls){return rootVar(EDGEVAR[cls]||"--dim")||"#888";}
   function sigColor(kind){return rootVar(SIGVAR[kind]||"--accent")||"#888";}
+  // ONE quiet hue for the whole corpus. A note has no category, and the two planes must
+  // not read as one palette, so nothing here reaches for a category accent — the note's
+  // `kind` varies only in its tooltip and the info panel.
+  function noteColor(){return rootVar("--so")||"#6aa";}
 
-  var CLS={"spawned-from":"lineage","related":"lineage","related-knowledge":"knowledge","touches-same":"touch","membership":"membership","pr":"pr","repo":"repo","story":"story","xbrain":"xbrain"};
+  var CLS={"spawned-from":"lineage","related":"lineage","related-knowledge":"knowledge","membership":"membership","pr":"pr","repo":"repo","story":"story","xbrain":"xbrain","links-to":"note","cites":"cross","distilled-from":"cross","references":"cross"};
   function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
   function lbl(n){return n.type!=="task"?(n.label||n.id):(n.foreign?(n.handle||n.owner||n.id):("#"+n.seq));}
   var nodes=[],byId={},catLabels={};
   rawNodes.forEach(function(n){
     var o={id:n.id,type:n.type,deg:n.deg||0,label:n.label||"",sx0:n.x||0,sy0:n.y||0};
+    if(n.lt3&&n.lt3.length===3)o.lt3=n.lt3;              // the shell slot, for 3D
     if(n.type==="task"){o.seq=n.seq;o.title=n.title||"";o.cat=n.color;o.status=n.status||"open";o.closed=(n.status==="closed");
       if(n.owner)o.owner=n.owner;if(n.brain)o.brain=n.brain;
       if(n.foreign){o.foreign=true;o.owner_color=n.owner_color||"";o.handle=n.handle||"";}}
     else if(n.type==="hub"){o.key=n.key;catLabels[n.key]=n.label||n.key;}
+    // A NOTE on the knowledge plane. `kind` is its frontmatter type, not a signal kind;
+    // `label` carries the title so the shared tooltip/search paths need no note branch.
+    else if(n.type==="note"){o.slug=n.slug||"";o.kind=n.kind||"";o.area=n.area||"";
+      o.title=n.title||n.slug||"";o.desc=n.description||"";o.label=o.title;}
     else{o.kind=n.kind;}
-    o.r=(n.type==="task")?(6+Math.min(o.deg,6)*1.7):(n.type==="hub")?12:6;
+    o.r=(n.type==="task")?(6+Math.min(o.deg,6)*1.7):(n.type==="hub")?12:(n.type==="note")?(4.5+Math.min(o.deg,6)*0.8):6;
     nodes.push(o);byId[o.id]=o;
   });
-  // UNDRAWN (unlinked/capped) tasks ride along as STATIC solo nodes: pre-seeded on
-  // outer rings, fixed, and excluded from the physics — zero sim cost. Hidden until
-  // the default-off "unlinked tasks" filter turns them on.
+  // WHICH PLANE a node is drawn on, derived from its TYPE rather than trusted from the
+  // blob: a foreign task node folded in by the Interbrain augmentation carries no stamp,
+  // and with no corpus at all every node answers "task", which is what makes every plane
+  // path below inert on a board that has no second plane.
+  function nodePlane(n){return (n&&n.type==="note")?"knowledge":"task";}
+  // The `solo` pool from mg-data. Every board task now arrives as a real placed node
+  // above, so this normally adds nothing; it stays as a guard for any entry the server
+  // still pools. Such a node is STATIC — pre-seeded, fixed, and excluded from the
+  // physics — so it costs the sim nothing.
   rawSolo.forEach(function(n){
     if(byId["t:"+n.seq])return;
     var o={id:"t:"+n.seq,type:"task",solo:true,fixed:true,deg:0,label:"",sx0:n.x||0,sy0:n.y||0,
@@ -3871,11 +4805,25 @@ _MG_ENHANCE_JS = """try{(function(){
     nodes.push(o);byId[o.id]=o;
   });
   var edges=[];
+  // THE GAP. Exactly three kinds may join a node on one plane to a node on the other;
+  // every other relation — lineage, membership, hubs, signal spokes, cross-brain — stays
+  // inside its own plane. Enforced HERE, where the drawable edge list is built, so an
+  // illegal crossing can never be drawn whatever the data says. The server refuses the
+  // same edge again (`_crosses_gap` in _minigraph): two independent gates, because this
+  // is a named requirement of the two-plane view rather than a styling preference.
+  var XPLANE={"cites":1,"distilled-from":1,"references":1};
+  function crossesGap(A,B){return nodePlane(A)!==nodePlane(B);}
+  // The fallback class for an unrecognised kind MUST be one that EK still lists, or that
+  // edge draws with no filter row and can never be turned off. "lineage" is the generic
+  // task<->task class and always has a row; it is also where the coming typed kinds
+  // (depends-on / parent / absorbed-by) land until they earn rows of their own.
   rawEdges.forEach(function(e){
     if(!byId[e.a]||!byId[e.b])return;
-    var cls=CLS[e.kind]||"touch",A=byId[e.a],B=byId[e.b],tip;
+    var cls=CLS[e.kind]||"lineage",A=byId[e.a],B=byId[e.b],tip;
+    if(crossesGap(A,B)&&!XPLANE[e.kind])return;
     if(cls==="membership")tip=lbl(A)+" — in "+B.label;
     else if(cls==="pr"||cls==="repo"||cls==="story")tip=lbl(A)+" — shares "+B.label;
+    else if(cls==="cross"||cls==="note")tip=lbl(A)+" — "+relword(e.kind)+" "+lbl(B);
     else tip=lbl(A)+" — "+lbl(B);
     edges.push({a:e.a,b:e.b,cls:cls,kind:e.kind,tip:tip});
   });
@@ -3884,11 +4832,25 @@ _MG_ENHANCE_JS = """try{(function(){
 
   function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
   var SW=720,SH=520,SCL=0.78;
-  function seedXY(){var rnd=mulberry32(20260715);nodes.forEach(function(n){n.x=(n.sx0-SW/2)*SCL;n.y=(n.sy0-SH/2)*SCL;n.vx=0;n.vy=0;n.vz=0;});}
-  // B7: a deterministic z spread — 3D ONLY. Switching to 3D / Reset-in-3D re-seeds z + reheats
-  // so the forces pull nodes into volume. G1: in 2D z must stay 0 (a leftover z spread made
-  // the 2D Reset settle messily with overlaps), so 2D uses flattenZ instead.
-  function seedZ(){var rz=mulberry32(990911);nodes.forEach(function(n){n.z=n.solo?0:(rz()-0.5)*240;n.vz=0;});}
+  // The server sends TWO slots per node: the planar one as sx0/sy0, and the SHELL one as
+  // lt3 — same entity, one placement per view. 3D takes the shell, where a category is a
+  // cap and radius therefore carries entanglement alone; 2D takes
+  // the planar map, whose row seating is what separates a crowded category on a flat
+  // surface. The mode switch re-seeds, so each view gets the placement built for it.
+  function slotFor(n){
+    if(mode==="3d"&&n.lt3)return {x:(n.lt3[0]-SW/2)*SCL,y:(n.lt3[1]-SH/2)*SCL,z:n.lt3[2]*SCL};
+    return {x:(n.sx0-SW/2)*SCL,y:(n.sy0-SH/2)*SCL,z:0};
+  }
+  // A pinned node is held exactly at its slot (see rebuildSim); a node that simulates —
+  // a focused frame's members — is sprung toward it instead.
+  function seedXY(){nodes.forEach(function(n){
+    if(n.solo){n.x=(n.sx0-SW/2)*SCL;n.y=(n.sy0-SH/2)*SCL;n.vx=0;n.vy=0;n.vz=0;return;}
+    var s=slotFor(n);n._lt=s;n.x=s.x;n.y=s.y;n.z=s.z;n.vx=0;n.vy=0;n.vz=0;});}
+  // A deterministic z spread for a node with NO slot of its own — the only way such a
+  // node gets any depth in 3D. A node carrying a slot takes its z from that slot, so it
+  // is skipped here: the shell placement is the depth, and a random spread would undo it.
+  // G1: in 2D z stays 0, which is what flattenZ enforces.
+  function seedZ(){var rz=mulberry32(990911);nodes.forEach(function(n){if(n._lt)return;n.z=n.solo?0:(rz()-0.5)*240;n.vz=0;});}
   function flattenZ(){nodes.forEach(function(n){n.z=0;n.vz=0;});}
   seedXY();seedZ();
   // SPREAD scales the whole layout with node count/complexity so a dense graph breathes
@@ -3897,6 +4859,9 @@ _MG_ENHANCE_JS = """try{(function(){
   var simN=0;nodes.forEach(function(n){if(!n.solo)simN++;});
   var SPREAD=Math.max(1,Math.sqrt(simN/10));
   var WELLK=0.032;                                 // F3: per-node galaxy-well attraction
+  // Spring constant back toward the layout slot, for the nodes that DO simulate: the
+  // members of a focused frame. Everything else is pinned to its slot outright.
+  var LAYK=0.05;
   var hubNodes=nodes.filter(function(n){return n.type==="hub";});
   hubNodes.forEach(function(h,i){var a=2*Math.PI*i/Math.max(1,hubNodes.length),tilt=(i%2?1:-1)*70*SPREAD;h.ax=Math.cos(a)*150*SPREAD;h.ay=tilt;h.az=Math.sin(a)*150*SPREAD;});
 
@@ -3910,29 +4875,72 @@ _MG_ENHANCE_JS = """try{(function(){
   var mode=pref.mode,autoRotate=reduce?false:pref.autoRotate;
   if(mode!=="3d")flattenZ();                                     // G1: start 2D strictly planar
 
+  // ---- PIN BY DEFAULT --------------------------------------------------------------
+  // The concentric layout COMPUTES every slot, so a node sitting at its slot has nothing
+  // to solve. It is pinned: out of the repulsion loop and out of the integration. Only
+  // `simList` moves — the members of a FOCUSED frame, plus whatever is being dragged —
+  // because only the focused frame needs live simulation.
+  //
+  // That makes the pair loop O(|sim| × n) rather than O(n²) over every node. With nothing
+  // focused |sim| is 0, so a 400-node graph does ZERO pair work per tick and settle() has
+  // nothing to iterate. Rotation is unaffected: it is a camera transform, not physics.
+  var simList=[];
+  function rebuildSim(){
+    var p=galaxyPath();
+    simList=[];
+    nodes.forEach(function(n){
+      // Nothing focused ⇒ nothing simulates. isDescendant matches everything on an EMPTY
+      // path, so the length check is what makes "unfocused" mean "all pinned".
+      var live=!n.solo&&(n===dragNode||
+                         (p.length>0&&n.type==="task"&&isDescendant(n,p)));
+      n.pinned=!live;                                // a solo node can never be live
+      if(live){simList.push(n);return;}
+      // THE PIN, and it is exact: snap to the computed slot in all three axes and kill the
+      // velocity. The slot DEFINES z — flat in 2D, on the shell in 3D — so nothing else
+      // needs to move a pinned node toward or away from a plane.
+      if(!n.solo&&n._lt){n.x=n._lt.x;n.y=n._lt.y;n.z=n._lt.z||0;n.vx=0;n.vy=0;n.vz=0;}
+    });
+  }
   function tick(alpha){
-    for(var i=0;i<nodes.length;i++)for(var j=i+1;j<nodes.length;j++){
-      if(nodes[i].solo||nodes[j].solo)continue;      // solo nodes are static décor — no forces
-      var A=nodes[i],B=nodes[j],dx=A.x-B.x,dy=A.y-B.y,dz=A.z-B.z,d2=dx*dx+dy*dy+dz*dz+0.1,d=Math.sqrt(d2);
-      var f=90000*SPREAD*SPREAD/d2/d,ux=dx/d,uy=dy/d,uz=dz/d;
-      A.vx+=ux*f;A.vy+=uy*f;A.vz+=uz*f;B.vx-=ux*f;B.vy-=uy*f;B.vz-=uz*f;
+    if(!simList.length)return;                       // the pinned case: nothing to solve
+    for(var i=0;i<simList.length;i++){
+      var A=simList[i];
+      for(var j=0;j<nodes.length;j++){
+        var B=nodes[j];
+        // A node on the OTHER plane exerts no force: the planes are separated in world
+        // space, so a cross-plane push is both physically meaningless and pure cost.
+        // With no corpus every node is on the task plane and this never skips anything.
+        if(B===A||B.solo||nodePlane(B)!==nodePlane(A))continue;
+        // Only A takes the force. B is either pinned (it must not move) or is itself in
+        // simList and gets its own turn as A, so the pair is still symmetric.
+        var dx=A.x-B.x,dy=A.y-B.y,dz=A.z-B.z,d2=dx*dx+dy*dy+dz*dz+0.1,d=Math.sqrt(d2);
+        var f=90000*SPREAD*SPREAD/d2/d;
+        A.vx+=dx/d*f;A.vy+=dy/d*f;A.vz+=dz/d*f;
+      }
     }
     edges.forEach(function(e){
-      var A=byId[e.a],B=byId[e.b],dx=B.x-A.x,dy=B.y-A.y,dz=B.z-A.z,d=Math.sqrt(dx*dx+dy*dy+dz*dz)+0.01;
+      var A=byId[e.a],B=byId[e.b];if(!A||!B)return;
+      if(A.pinned&&B.pinned)return;                  // a spring between two pinned ends is inert
+      var dx=B.x-A.x,dy=B.y-A.y,dz=B.z-A.z,d=Math.sqrt(dx*dx+dy*dy+dz*dz)+0.01;
       var rest=((e.cls==="membership")?58:(e.cls==="lineage")?86:78)*SPREAD,f=(d-rest)*0.04,ux=dx/d,uy=dy/d,uz=dz/d;
-      A.vx+=ux*f;A.vy+=uy*f;A.vz+=uz*f;B.vx-=ux*f;B.vy-=uy*f;B.vz-=uz*f;
+      if(!A.pinned){A.vx+=ux*f;A.vy+=uy*f;A.vz+=uz*f;}
+      if(!B.pinned){B.vx-=ux*f;B.vy-=uy*f;B.vz-=uz*f;}
     });
-    nodes.forEach(function(n){
+    simList.forEach(function(n){
       if(n.solo)return;                              // static — never simulated
-      if(n.type==="hub"){n.vx+=(n.ax-n.x)*0.02;n.vy+=(n.ay-n.y)*0.02;if(mode==="3d")n.vz+=(n.az-n.z)*0.02;}
+      // A hub without a layout slot falls back to its own ring; one WITH a slot belongs on
+      // the rim the tasks were placed against, so it takes that instead.
+      if(n.type==="hub"&&!n._lt){n.vx+=(n.ax-n.x)*0.02;n.vy+=(n.ay-n.y)*0.02;if(mode==="3d")n.vz+=(n.az-n.z)*0.02;}
       // stronger centering gravity keeps weakly-connected nodes from drifting far out
       // (which stretched the bbox + made the fit tiny/scattered) → a compact, balanced
       // equilibrium where every node sits reasonably close to the pack.
-      // F3: a task assigned to a galaxy well is pulled to it (per-focus-level gravity);
-      // everything else (hubs, and every node when Interbrain is OFF → no wells) keeps the
-      // original origin-centering, so the OFF layout is physics-identical — the parity law.
+      // Three gravities, in priority order. A galaxy well wins — that is the per-focus-level
+      // grouping Interbrain draws. Else the node's concentric layout slot, which is the
+      // default path. A node with neither falls back to plain origin-centering, which keeps
+      // weakly-connected nodes from drifting out and stretching the fit.
       if(n._well){var wx=(mode==="2d")?n._well.bx:n._well.ax,wy=(mode==="2d")?n._well.by:0,wz=(mode==="2d")?0:n._well.az;
         n.vx+=(wx-n.x)*WELLK;n.vy+=(wy-n.y)*WELLK;n.vz+=(wz-n.z)*WELLK;}
+      else if(n._lt){n.vx+=(n._lt.x-n.x)*LAYK;n.vy+=(n._lt.y-n.y)*LAYK;n.vz+=((n._lt.z||0)-n.z)*LAYK;}
       else{var grav=0.009/SPREAD;n.vx+=(-n.x)*grav;n.vy+=(-n.y)*grav;n.vz+=(-n.z)*grav;}
       if(mode==="2d")n.vz+=(-n.z)*0.22;               // G1: strong flatten keeps 2D planar
       if(!n.fixed){n.x+=n.vx*0.5*alpha;n.y+=n.vy*0.5*alpha;n.z+=n.vz*0.5*alpha;}
@@ -3946,6 +4954,10 @@ _MG_ENHANCE_JS = """try{(function(){
   var yaw=0.5,pitch=-0.35,focal=560,zoom=1,zoomTarget=1,yawVel=0,pitchVel=0,panX=0,panY=0;
   var ZMIN=0.08,ZMAX=3;
   var pivot={x:0,y:0,z:0},pivotTarget={x:0,y:0,z:0};
+  // WHICH PLANE THE CAMERA IS LOOKING AT, and where that plane sits in world space. This
+  // is the whole of the two-plane state: moving between the planes changes the LOOK-AT
+  // POINT and nothing else — same yaw, same pitch, same zoom, same scope.
+  var planeFocus="task",planeY=0;
   function project(n,cx,cy){
     var px=n.x-pivot.x,py=n.y-pivot.y,pzc=n.z-pivot.z;
     if(mode==="2d")return {sx:cx+px*zoom+panX,sy:cy+py*zoom+panY,scale:zoom,depth:0};
@@ -3956,7 +4968,9 @@ _MG_ENHANCE_JS = """try{(function(){
     return {sx:cx+x1*pz+panX,sy:cy+y2*pz+panY,scale:pz,depth:z2};
   }
   function unproject2d(mx,my,cx,cy){return {x:(mx-cx-panX)/zoom+pivot.x,y:(my-cy-panY)/zoom+pivot.y};}
-  function settle(iter){for(var i=0;i<(iter||220);i++)tick(1);alpha=0;}
+  // Re-derive who is live FIRST: with nothing focused simList is empty and the whole
+  // settle collapses to 220 no-op calls, which is the point of pinning.
+  function settle(iter){rebuildSim();for(var i=0;i<(iter||220);i++)tick(1);alpha=0;}
   // FIT the whole graph into view + scale the zoom caps to its size. First RECENTER the
   // layout's centroid to the origin — the settled layout drifts off-centre (often more
   // mass above centre in 3D), which otherwise clips nodes out of the initial fit. Then
@@ -3968,7 +4982,7 @@ _MG_ENHANCE_JS = """try{(function(){
     // (their outer ring would force a huge zoom-out while invisible).
     // F3: with galaxies active, frame the VISIBLE (focus-filtered) population so each nav
     // level starts framed on its own cluster; OFF keeps the original all-non-solo frame.
-    var fitN=nodes.filter(function(n){return hasGalaxy?nodeVisible(n):(!n.solo||filt.solo);});
+    var fitN=nodes.filter(function(n){return hasGalaxy?nodeVisible(n):(planeDrawn(n)&&(!n.solo||filt.solo));});
     var N=fitN.length;if(!N)return;
     var mx=0,my=0,mz=0,i;
     for(i=0;i<N;i++){mx+=fitN[i].x;my+=fitN[i].y;mz+=fitN[i].z;}
@@ -3984,7 +4998,16 @@ _MG_ENHANCE_JS = """try{(function(){
     var base=Math.min((Wc||600)/spanX,(Hc||520)/spanY);   // fit BOTH axes → all nodes in view
     ZMIN=Math.max(0.05,base*0.5);ZMAX=Math.max(2.6,base*6);   // zoom-out cap tightened (was 0.04/0.35)
     zoom=Math.max(ZMIN,Math.min(ZMAX,base));zoomTarget=zoom;panX=0;panY=0;
+    measurePlanes();          // the shift above moved the plane; re-read where it landed
   }
+  // The knowledge plane's world y, MEASURED from the nodes rather than kept as a constant.
+  // fitView recentres the whole layout by shifting EVERY node, so the plane's offset lives
+  // in the node coordinates and a remembered constant would go stale the moment the view
+  // is fitted — which is also why returning to the task plane moves the PIVOT and never
+  // re-shifts nodes.
+  function measurePlanes(){var s=0,c=0;
+    nodes.forEach(function(n){if(n.solo||nodePlane(n)!=="knowledge")return;s+=n.y;c++;});
+    planeY=c?s/c:0;}
 
   var DPR=Math.max(1,window.devicePixelRatio||1),Wc=0,Hc=0;
   function resize(){var r=canvas.getBoundingClientRect();Wc=r.width||600;Hc=r.height||520;canvas.width=Math.max(1,Math.round(Wc*DPR));canvas.height=Math.max(1,Math.round(Hc*DPR));ctx.setTransform(DPR,0,0,DPR,0,0);}
@@ -4006,10 +5029,15 @@ _MG_ENHANCE_JS = """try{(function(){
     ctx.restore();
   }
 
-  var EDGEW={membership:1,lineage:2.1,pr:2.4,repo:1.6,story:1.8,touch:1.6,knowledge:1.8};
-  // ---- filter state (C2): all-on by default, EXCEPT solo (unlinked tasks) which is
-  // default-OFF; status is the task LIFECYCLE (open/active/closed), all-on. ----
-  var filt={cat:{},sig:{},cathub:true,edge:{},status:{},solo:false};
+  var EDGEW={membership:1,lineage:2.1,pr:2.4,repo:1.6,story:1.8,touch:1.6,knowledge:1.8,note:1.2,cross:0.9};
+  // ---- filter state (C2): every filter is all-on by default; status is the task
+  // LIFECYCLE (open/active/closed). ----
+  // `solo` is all-on like the rest and has no row of its own: the concentric layout
+  // draws every task — one with no relation at all sits ON THE RIM — so there is no
+  // undrawn population for a toggle to reveal. The flag is kept because mg-data can
+  // still carry a `solo` pool, and default-true is what makes such a node visible
+  // rather than stranded behind a control nothing renders.
+  var filt={cat:{},sig:{},edge:{},status:{},solo:true,note:true};
   var hover=null,selected=null,screenPos={},query="",terms=[];
   // F2: the shared focus (one brain / person / org, or none) drives BOTH the table and
   // the graph. Read from the same localStorage key the focus strip writes; a focused
@@ -4020,12 +5048,17 @@ _MG_ENHANCE_JS = """try{(function(){
   function focusOkNode(n){
     if(!gfocus)return true;
     if(n.type!=="task")return true;              // hubs/signals stay; edges prune via endpoints
-    var o=n.owner||"",b=n.brain||"";
-    if(gfocus.kind==="owner")return o===gfocus.owner;
-    if(gfocus.kind==="brain")return o===gfocus.owner&&b===gfocus.brain;
     if(gfocus.kind==="org")return !!n.foreign;   // graph org bucket ≈ shared foreign nodes
-    return true;
+    // Containment, via isDescendant: a task is visible when its own path starts with the
+    // focused path. nodePath normalises a missing brain to "main", the same normalisation
+    // assignWells / galaxyKey / navDescend use — which is what keeps a brain-less node
+    // visible when navDescend focuses into it with brain:"main".
+    return isDescendant(n,galaxyPath());
   }
+  // THE TWO-PLANE VIEW IS 3D-ONLY. Two stacked planes seen from directly above are one
+  // plane, so in 2D the knowledge plane is not drawn at all — the same call the
+  // auto-rotate button makes when it hides itself. Always true when there is no corpus.
+  function planeDrawn(n){return !(mode!=="3d"&&nodePlane(n)==="knowledge");}
   function nodeVisible(n){
     if(n.type==="task"){
       if(n.solo&&!filt.solo)return false;
@@ -4033,8 +5066,15 @@ _MG_ENHANCE_JS = """try{(function(){
       if(filt.status[n.status]===false)return false;
       return filt.cat[n.cat]!==false;
     }
-    if(n.type==="hub")return filt.cathub!==false;
-    return filt.sig[n.id]!==false;               // per signal-NODE (each repo/PR/story its own filter)
+    // The corpus is GLOBAL and stays fully drawn: nothing about a selection, a focus or a
+    // search ever removes a note. Only the plane's own switch and the 2D rule can.
+    if(n.type==="note")return planeDrawn(n)&&filt.note!==false;
+    // a category hub is a RENDERING of its category, not a separate thing to switch:
+    // hiding the category hides its hub. filt.cat only carries categories present among
+    // the drawn tasks, so a hub whose category has no visible task reads `undefined`,
+    // and undefined!==false stays TRUE — fail-visible, deliberately, not fail-hidden.
+    if(n.type==="hub")return filt.cat[n.key]!==false;
+    return filt.sig[n.kind]!==false;             // per signal KIND (all pr / repo / story hubs together)
   }
   function edgeVisible(e){return filt.edge[e.cls]!==false&&nodeVisible(byId[e.a])&&nodeVisible(byId[e.b]);}
   // C1: robust multi-term (space AND) match across seq / title / category label /
@@ -4043,6 +5083,9 @@ _MG_ENHANCE_JS = """try{(function(){
     if(!terms.length)return true;
     var hay;
     if(n.type==="task")hay=("#"+n.seq+" "+n.seq+" "+(n.title||"")+" "+(catLabels[n.cat]||n.cat||"")+" "+(n.status||"")).toLowerCase();
+    // a note matches on its title, its slug, its frontmatter type and its area — search
+    // DIMS what does not match, it never removes it, so the corpus stays whole.
+    else if(n.type==="note")hay=((n.title||"")+" "+(n.slug||"")+" "+(n.kind||"")+" "+(n.area||"")+" note").toLowerCase();
     else hay=((n.label||"")+" "+(n.kind||"")+" "+(n.type||"")).toLowerCase();
     for(var i=0;i<terms.length;i++){if(hay.indexOf(terms[i])<0)return false;}
     return true;
@@ -4055,9 +5098,9 @@ _MG_ENHANCE_JS = """try{(function(){
   // AND the focus strip exists — so with Interbrain OFF hasGalaxy is false, no well is
   // assigned, no blob/outline is drawn, and the graph behaves EXACTLY as before (parity).
   var hasGalaxy=false;try{hasGalaxy=!!document.getElementById("focus-strip")&&nodes.some(function(n){return n.type==="task"&&(n.owner||n.brain);});}catch(e){}
-  var navApplying=false,blobPhase=0,blobsOn=(pref.blobs!==false),brainWells={},personWells={};
+  var navApplying=false,blobPhase=0,blobsOn=(pref.blobs!==false),brainWells={},personWells={},wellsByKey={};
   function buildWells(){
-    brainWells={};personWells={};if(!hasGalaxy)return;
+    brainWells={};personWells={};wellsByKey={};if(!hasGalaxy)return;
     var keys=[],seen={},pbrains={};
     nodes.forEach(function(n){if(n.type!=="task"||n.solo)return;var o=n.owner||"",b=n.brain||"main",k=o+"\\u0000"+b;
       if(!seen[k]){seen[k]=1;keys.push(k);}(pbrains[o]=pbrains[o]||{})[k]=1;});
@@ -4070,30 +5113,79 @@ _MG_ENHANCE_JS = """try{(function(){
     Object.keys(pbrains).forEach(function(o){var ks=Object.keys(pbrains[o]),sx=0,sz=0,bx=0,by=0;
       ks.forEach(function(k){var w=brainWells[k];sx+=w.ax;sz+=w.az;bx+=w.bx;by+=w.by;});
       var m=ks.length||1;personWells[o]={ax:sx/m,az:sz/m,bx:bx/m,by:by/m};});
+    // ONE lookup keyed by CONTAINER KEY, so assignWells needs no level branch. A depth-0
+    // key is a bare owner and a depth-1 key carries PSEP, so the two can never collide.
+    Object.keys(personWells).forEach(function(o){wellsByKey[o]=personWells[o];});
+    Object.keys(brainWells).forEach(function(k){wellsByKey[k]=brainWells[k];});
   }
-  function galaxyLevel(f){if(f===undefined)f=gfocus;if(!f)return "interbrain";
-    if(f.kind==="owner")return "person";if(f.kind==="brain")return "brain";return "interbrain";}
-  // assign each task its gravity well for the CURRENT level: interbrain → the PERSON well
-  // (a person's brains merge into one galaxy), person/brain → the BRAIN well (brains split
-  // into their own galaxies). Every galaxy stays parked at a stable ring slot regardless of
-  // level; only the camera, focus filter, and blobs change — hidden galaxies never pile up.
-  function assignWells(){buildWells();var lv=galaxyLevel();
+
+  // ---- containment PATHS ----------------------------------------------------------
+  // Zoom depth is VARIABLE, so a focus is a PATH and membership is "inside the focused
+  // container" rather than an equality test against a fixed level. Nothing below knows
+  // how long a path is, which is what lets bubbles nest arbitrarily deep.
+  //
+  // Segments join on PSEP, NOT a space: an owner alias or a brain name may contain a
+  // space (so "a b"+"c" and "a"+"b c" would collide), while a NUL can appear in neither.
+  // It is also the separator brainWells — and its Python twin _galaxy_well_ring — key on,
+  // so a container key and a well key are the same string.
+  var PSEP="\\u0000";
+  // The FOCUSED container path: [] = nothing focused, [owner] = a person, [owner,brain] =
+  // one brain. DEPTH IS SIMPLY THE LENGTH, so depth 0 is a real depth and must never be
+  // tested for truthiness — `if(!depth)` is a bug, not a shortcut.
+  function galaxyPath(f){if(f===undefined)f=gfocus;if(!f||!f.kind)return [];
+    if(f.kind==="owner")return [f.owner||""];
+    if(f.kind==="brain")return [f.owner||"",f.brain||"main"];
+    return [];}                       // org, or any focus kind that is not a container
+  // A task's OWN containment path, outermost first. In this stage it is exactly
+  // [owner, brain]; a node with neither yields [] and every helper below tolerates that.
+  // TO NEST PARENTS (Stage 4b) this is the ONE line to add, as the last statement before
+  // the return:  p.push.apply(p, n.ancestors||[]);
+  function nodePath(n){if(!n||n.type!=="task")return [];
+    var p=[];if(n.owner==null&&n.brain==null)return p;
+    p.push(n.owner||"");p.push(n.brain||"main");return p;}
+  // Is this node inside `path`? An EMPTY path matches everything, which is exactly why
+  // the unfocused case falls out instead of being special-cased anywhere.
+  function isDescendant(n,path){if(!path||!path.length)return true;
+    var np=nodePath(n);if(np.length<path.length)return false;
+    for(var i=0;i<path.length;i++){if(np[i]!==path[i])return false;}
+    return true;}
+  // The key of the container this node sits in one level below `depth` — the single thing
+  // that replaced every (lv==="…") branch. depth 0 → the outermost container (today: the
+  // person), depth 1 → the next one in (today: the brain). slice() clamps on its own, so a
+  // depth past a node's deepest container keeps returning that container. Explicit ==null,
+  // never !depth, because 0 is a real depth.
+  function containerKeyAt(n,depth){if(depth==null)depth=galaxyPath().length;
+    return nodePath(n).slice(0,depth+1).join(PSEP);}
+  // BACK-COMPAT, deliberately kept: the three level NAMES are still user-visible (the
+  // canvas hint reads "empty to go up (person)") and still name the focus KINDS that
+  // navDescend/navAscend mint. So galaxyLevel survives — derived FROM the path now,
+  // rather than being the mechanism everything branches on.
+  function galaxyLevel(f){var d=galaxyPath(f).length;
+    return d===0?"interbrain":(d===1?"person":"brain");}
+  // assign each task its gravity well for the CURRENT depth: depth 0 → the PERSON well (a
+  // person's brains merge into one galaxy), deeper → the BRAIN well (brains split into
+  // their own galaxies). Every galaxy stays parked at a stable ring slot regardless of
+  // depth; only the camera, focus filter, and blobs change — hidden galaxies never pile up.
+  function assignWells(){buildWells();var depth=galaxyPath().length;
     nodes.forEach(function(n){
       if(!hasGalaxy||n.type!=="task"||n.solo){n._well=null;return;}
-      var o=n.owner||"",b=n.brain||"main";
-      n._well=(lv==="interbrain")?(personWells[o]||null):(brainWells[o+"\\u0000"+b]||null);});}
-  function levelMembers(pv,lv){var pts=[];
-    nodes.forEach(function(n){if(n.type!=="task"||n.solo||!nodeVisible(n)||!n._p)return;var take;
-      if(lv==="interbrain")take=((n.owner||"")===(pv.owner||""));
-      else if(lv==="person")take=((n.owner||"")===(pv.owner||"")&&(n.brain||"main")===(pv.brain||"main"));
-      else take=(n===pv);
-      if(take)pts.push([n._p.sx,n._p.sy]);});return pts;}
+      // SINGULAR BY DESIGN: n._well means "my well at the CURRENT depth", recomputed per
+      // depth — never a list. That is what keeps the physics cost FLAT at any nesting
+      // depth, and why only the focused frame ever needs live simulation.
+      n._well=wellsByKey[containerKeyAt(n,depth)]||null;});}
+  // The hovered node's group at `depth`. Below the deepest container a node HAS, a node is
+  // its OWN group — you cannot group below the deepest container — so at the deepest level
+  // the hover outline hugs the one hovered task rather than its whole brain.
+  function levelMembers(pv,depth){if(depth==null)depth=galaxyPath().length;
+    var pts=[],own=(depth>=nodePath(pv).length),k=containerKeyAt(pv,depth);
+    nodes.forEach(function(n){if(n.type!=="task"||n.solo||!nodeVisible(n)||!n._p)return;
+      if(own?(n===pv):(containerKeyAt(n,depth)===k))pts.push([n._p.sx,n._p.sy]);});
+    return pts;}
   function galaxyColor(n){return (n.foreign&&n.owner_color)?n.owner_color:(rootVar("--accent")||"#c99b5a");}
   // F3.4: an edge whose endpoints live in DIFFERENT galaxies (at the current level) is
   // drawn curved (quadratic, bowed) so it visibly SPANS the gap; within-galaxy edges stay
   // straight. Inert when Interbrain is OFF (crossGalaxy → false → straight, as before).
-  function galaxyKey(n){if(!n||n.type!=="task")return null;
-    return (galaxyLevel()==="interbrain")?(n.owner||""):((n.owner||"")+"\\u0000"+(n.brain||"main"));}
+  function galaxyKey(n){if(!n||n.type!=="task")return null;return containerKeyAt(n,galaxyPath().length);}
   function crossGalaxy(a,b){if(!hasGalaxy)return false;var ka=galaxyKey(a),kb=galaxyKey(b);
     return ka!=null&&kb!=null&&ka!==kb;}
   // monotone-chain hull — twin of _convex_hull: collinear dropped via <=0, so a degenerate
@@ -4122,17 +5214,20 @@ _MG_ENHANCE_JS = """try{(function(){
     if(fillA){ctx.globalAlpha=fillA;ctx.fillStyle=color;ctx.fill();}
     if(strokeA){ctx.globalAlpha=strokeA;ctx.strokeStyle=color;ctx.lineWidth=lw||2;ctx.stroke();}
     ctx.restore();ctx.globalAlpha=1;}catch(e){try{ctx.restore();ctx.globalAlpha=1;}catch(e2){}}}
-  // persistent per-group boundary blobs at the current level (F3.3): one per person's
-  // system (interbrain) / one per brain (person). None at brain/node level.
-  function drawGalaxyBlobs(){if(!hasGalaxy||!blobsOn)return;var lv=galaxyLevel();if(lv!=="interbrain"&&lv!=="person")return;
+  // persistent per-group boundary blobs at the CURRENT DEPTH (F3.3): one per container the
+  // visible tasks sit in, whatever depth that is. THE LEVEL EARLY-RETURN IS GONE — it used
+  // to refuse to run past level two, which is exactly why bubbles could never nest. Now the
+  // grouping key is containerKeyAt, so depth is whatever is focused and nothing here has to
+  // learn about a new level.
+  function drawGalaxyBlobs(){if(!hasGalaxy||!blobsOn)return;var depth=galaxyPath().length;
     var g={};nodes.forEach(function(n){if(n.type!=="task"||n.solo||!nodeVisible(n)||!n._p)return;
-      var key=(lv==="interbrain")?(n.owner||""):((n.owner||"")+"\\u0000"+(n.brain||"main"));
+      var key=containerKeyAt(n,depth);
       if(!g[key])g[key]={pts:[],color:galaxyColor(n)};g[key].pts.push([n._p.sx,n._p.sy]);});
     Object.keys(g).sort().forEach(function(k){drawBlob(g[k].pts,g[k].color,0.09,0.5,2,20);});}
   // hover affordance: a soft rounded (spherical) outline around the hovered entity's
   // members; reduced-motion = static (no pulse). Drawn ON TOP so it reads as clickable.
   function drawHoverOutline(){if(!hasGalaxy||!hover||hover.type!=="task")return;
-    var lv=galaxyLevel(),pts=levelMembers(hover,lv);if(!pts.length)return;
+    var pts=levelMembers(hover,galaxyPath().length);if(!pts.length)return;
     var cx=0,cy=0,i;for(i=0;i<pts.length;i++){cx+=pts[i][0];cy+=pts[i][1];}cx/=pts.length;cy/=pts.length;
     var r=0;for(i=0;i<pts.length;i++){var d=Math.hypot(pts[i][0]-cx,pts[i][1]-cy);if(d>r)r=d;}
     var pr=(reduce||perfLow)?0:Math.sin(blobPhase*0.11)*3,color=galaxyColor(hover);
@@ -4149,7 +5244,7 @@ _MG_ENHANCE_JS = """try{(function(){
     if(!reduce&&!perfLow){
       if(dir==="down")zoom=Math.max(ZMIN,zoomTarget*0.62);
       else if(dir==="up")zoom=Math.min(ZMAX,zoomTarget*1.6);}
-    updateHint();draw();kick();}
+    updateHint();drawCrumb();draw();kick();}
   // set the shared focus FROM the graph → persist it + notify the strip (graph→strip sync).
   function graphSetFocus(f,dir){gfocus=(f&&f.kind)?f:null;
     try{if(gfocus)localStorage.setItem("ts-board-focus",JSON.stringify(gfocus));else localStorage.removeItem("ts-board-focus");}catch(e){}
@@ -4168,6 +5263,33 @@ _MG_ENHANCE_JS = """try{(function(){
     else if(lv==="person")graphSetFocus(null,"up");
     else if(gfocus&&gfocus.kind==="org")graphSetFocus(null,"up");
     else frameLevel("up");}
+  // ---- the focus breadcrumb -----------------------------------------------------
+  // Variable depth forces the one genuinely new piece of UI in this stage: once "up" can
+  // be more than two steps, blank-click-up has to say where up GOES. Built here in JS
+  // rather than in the server markup, and only when hasGalaxy — so the Interbrain-OFF
+  // render emits no breadcrumb element at all and stays byte-identical.
+  var crumbEl=null;
+  if(hasGalaxy){try{var cwrap=panel.querySelector(".mgcanvaswrap");
+    if(cwrap){crumbEl=document.createElement("div");crumbEl.className="mgcrumb";
+      crumbEl.setAttribute("aria-label","Focus path");cwrap.appendChild(crumbEl);}}catch(e){}}
+  // Focus the ancestor `d` segments deep — the inverse of galaxyPath, and the ONE place
+  // that knows how a path maps back onto the focus object the strip shares. d is a LENGTH,
+  // so 0 is the root and a real value, never "no depth".
+  function focusAtDepth(d){var p=galaxyPath();if(d==null||d>=p.length)return;
+    if(d<=0){graphSetFocus(null,"up");return;}
+    if(d===1){graphSetFocus({kind:"owner",owner:p[0]||"",brain:""},"up");return;}
+    graphSetFocus({kind:"brain",owner:p[0]||"",brain:p[1]||"main"},"up");}
+  // Render the focused path, outermost first, every segment a button that focuses that
+  // ancestor. The root segment always shows, so depth 0 renders a breadcrumb rather than
+  // nothing — the same "0 is a real depth" rule the rest of this file follows.
+  function drawCrumb(){if(!crumbEl)return;var p=galaxyPath(),i,
+    h='<button type="button" class="mgcrumbseg" data-crumb="0">all</button>';
+    for(i=0;i<p.length;i++){h+='<span class="mgcrumbsep" aria-hidden="true">\\u203a</span>'
+      +'<button type="button" class="mgcrumbseg" data-crumb="'+(i+1)+'">'+esc(p[i]||"main")+'</button>';}
+    crumbEl.innerHTML=h;}
+  if(crumbEl)crumbEl.addEventListener("click",function(ev){
+    var b=(ev.target&&ev.target.closest)?ev.target.closest("[data-crumb]"):null;if(!b)return;
+    var d=parseInt(b.getAttribute("data-crumb"),10);if(isNaN(d))return;focusAtDepth(d);});
 
   function render(){
     ctx.clearRect(0,0,Wc,Hc);
@@ -4182,9 +5304,11 @@ _MG_ENHANCE_JS = """try{(function(){
       else if(query)on=(matches(byId[e.a])&&matches(byId[e.b]));
       else on=true;
       var fog=Math.max(.12,Math.min(1,(A.scale+B.scale)/2));
-      ctx.globalAlpha=(on?0.82:0.05)*fog;
+      // A cross-plane line is PROVENANCE, not dependency — the quietest thing on the
+      // canvas, so it never competes with the structure of either plane for attention.
+      ctx.globalAlpha=(on?0.82:0.05)*fog*((e.cls==="cross")?0.6:1);
       ctx.strokeStyle=edgeColor(e.cls);ctx.lineWidth=(EDGEW[e.cls]||1.4)*((A.scale+B.scale)/2);
-      ctx.setLineDash(e.cls==="repo"?[5,4]:e.cls==="story"?[2,4]:e.cls==="knowledge"?[1,4]:e.cls==="xbrain"?[6,4]:[]);
+      ctx.setLineDash(e.cls==="repo"?[5,4]:e.cls==="story"?[2,4]:e.cls==="knowledge"?[1,4]:e.cls==="xbrain"?[6,4]:e.cls==="cross"?[1,5]:[]);
       ctx.beginPath();ctx.moveTo(A.sx,A.sy);
       if(crossGalaxy(byId[e.a],byId[e.b])){var mx=(A.sx+B.sx)/2,my=(A.sy+B.sy)/2,dx=B.sx-A.sx,dy=B.sy-A.sy,L=Math.hypot(dx,dy)||1,bow=Math.min(60,L*0.22);
         ctx.quadraticCurveTo(mx-dy/L*bow,my+dx/L*bow,B.sx,B.sy);}
@@ -4192,16 +5316,28 @@ _MG_ENHANCE_JS = """try{(function(){
       ctx.stroke();
     });
     ctx.setLineDash([]);
+    // LOW-POLY FOR THE PLANE THE CAMERA IS NOT ON. Static dots and shapes, no labels and
+    // — the part that actually costs — no per-node text measurement. One mechanism gives
+    // both the flat frame cost and the fix for a distant plane reading as noise. Null
+    // whenever there is only one plane, so a board with no corpus draws exactly as before.
+    var lowPlane=(hasPlanes&&mode==="3d")?((planeFocus==="knowledge")?"task":"knowledge"):null;
     var nord=nodes.slice().sort(function(a,b){return b._p.depth-a._p.depth;});
     nord.forEach(function(n){
       if(!nodeVisible(n))return;                                   // C2: filtered out → hidden
       var p=n._p,on=nodeOn(n,foc,kp),fog=Math.max(.16,Math.min(1,p.scale)),r=n.r*p.scale;
-      ctx.globalAlpha=(on?1:0.1)*(n.closed?0.55:1);
-      if(n.type==="task"){
+      var low=(lowPlane!==null&&nodePlane(n)===lowPlane);
+      ctx.globalAlpha=(on?1:0.1)*(n.closed?0.55:1)*(low?0.55:1);
+      if(n.type==="note"){
+        // A note is an unlabelled dot in ONE quiet hue at every fidelity: 100+ multi-word
+        // titles drawn at once are unreadable, and the info panel already carries the
+        // title, the type and what cites it.
+        ctx.fillStyle=noteColor();ctx.beginPath();ctx.arc(p.sx,p.sy,r,0,7);ctx.fill();
+        if(!low){ctx.strokeStyle=rootVar("--page")||"#111";ctx.lineWidth=1.2*p.scale;ctx.stroke();}
+      }else if(n.type==="task"){
         var fill=(n.foreign&&n.owner_color)?n.owner_color:catColor(n.cat);
         ctx.fillStyle=fill;ctx.beginPath();ctx.arc(p.sx,p.sy,r,0,7);ctx.fill();
         ctx.strokeStyle=rootVar("--page")||"#111";ctx.lineWidth=1.5*p.scale;ctx.stroke();
-        if(r>=6.5){                                                // B9: fit the label to the ball
+        if(r>=6.5&&!low){                                          // B9: fit the label to the ball
           var t=n.foreign?((n.owner||"").slice(0,3).toUpperCase()||"◇"):("#"+n.seq),fs=Math.min(r*1.15,13);
           ctx.font="600 "+fs.toFixed(1)+"px "+mono;
           var tw=ctx.measureText(t).width,maxw=r*1.72;
@@ -4213,19 +5349,60 @@ _MG_ENHANCE_JS = """try{(function(){
           }
         }
       }else if(n.type==="hub"){
+        // Low-poly: a fixed-size plate, because sizing the plate to its label is the
+        // measureText call — the one per-node cost the far plane must not pay.
+        if(low){ctx.fillStyle=rootVar("--panel")||"#222";ctx.strokeStyle=catColor(n.key);ctx.lineWidth=1.6*p.scale;
+          rr(p.sx-16*p.scale,p.sy-7*p.scale,32*p.scale,14*p.scale,4*p.scale);ctx.fill();ctx.stroke();}
+        else{
         var fs2=Math.max(9,10.5*p.scale);ctx.font="700 "+fs2.toFixed(0)+"px "+mono;
         var lw=ctx.measureText(n.label).width,padx=11*p.scale,w=lw+padx*2,h=fs2+11*p.scale;
         ctx.fillStyle=rootVar("--panel")||"#222";ctx.strokeStyle=catColor(n.key);ctx.lineWidth=2.2*p.scale;
         rr(p.sx-w/2,p.sy-h/2,w,h,6*p.scale);ctx.fill();ctx.stroke();
         ctx.globalAlpha=Math.min(1,fog+0.25)*(on?1:0.35);ctx.textAlign="center";ctx.textBaseline="middle";
-        ctx.fillStyle=rootVar("--ink")||"#eee";ctx.fillText(n.label,p.sx,p.sy);
+        ctx.fillStyle=rootVar("--ink")||"#eee";ctx.fillText(n.label,p.sx,p.sy);}
       }else{
         drawSignal(p,n.kind,r,sigColor(n.kind));
-        if(on){ctx.globalAlpha=Math.min(1,fog+0.25);ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillStyle=sigColor(n.kind);ctx.font="600 "+Math.max(8,9.5*p.scale).toFixed(0)+"px "+mono;ctx.fillText(n.label,p.sx,p.sy+r+10*p.scale);}
+        if(on&&!low){ctx.globalAlpha=Math.min(1,fog+0.25);ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillStyle=sigColor(n.kind);ctx.font="600 "+Math.max(8,9.5*p.scale).toFixed(0)+"px "+mono;ctx.fillText(n.label,p.sx,p.sy+r+10*p.scale);}
       }
     });
     drawHoverOutline();                                        // F3: hover affordance ON TOP
     ctx.globalAlpha=1;
+  }
+
+  // ---- THE PAN between the two planes ---------------------------------------------
+  // `project()` subtracts `pivot` before rotating, so pivot IS the look-at point and
+  // easing its y from one plane to the other is the entire movement. yaw, pitch and zoom
+  // are deliberately untouched by everything below: a pan that also zoomed would read as
+  // a drill-down, which is precisely what this view is not.
+  function pivotAim(){
+    var x=selected?selected.x:0,z=selected?selected.z:0;
+    var y=(planeFocus==="knowledge")?planeY:(selected?selected.y:0);
+    return {x:x,y:y,z:z};
+  }
+  function syncPlaneBtn(){if(!planeBtn)return;
+    var up=(planeFocus!=="knowledge");
+    planeBtn.setAttribute("aria-pressed",!up);
+    planeBtn.textContent=up?"↑ Notes layer":"↓ Task layer";}
+  // Move the camera to a plane. The only state it writes is which plane is being looked
+  // at; `step()` does the easing, and `moving()` already keeps the loop alive while the
+  // pivot is short of its target, so no second animation style is introduced here.
+  function setPlane(p){
+    if(!hasPlanes||mode!=="3d")p="task";
+    planeFocus=p;syncPlaneBtn();updateHint();kick();
+  }
+  // Selecting a task RISES to the knowledge plane when that task cites anything, so the
+  // notes behind it come into view. It never FILTERS: the corpus stays fully drawn and
+  // the citation targets are simply what stays bright (keepSet already spans the
+  // cross-plane edges), everything else dimming. A task that cites nothing does not move
+  // the camera — there would be nothing up there to look at. Panning back down is the
+  // control, the ↓ key or Reset, never an automatic move that would fight a camera the
+  // user parked on the corpus deliberately.
+  function planeOnSelect(n){
+    if(!hasPlanes||mode!=="3d"||!n)return;
+    if(n.type==="note"){setPlane("knowledge");return;}
+    if(n.type!=="task")return;
+    var cites=(adj[n.id]||[]).some(function(id){return byId[id]&&byId[id].type==="note";});
+    if(cites)setPlane("knowledge");
   }
 
   var alpha=0,running=false;
@@ -4241,8 +5418,11 @@ _MG_ENHANCE_JS = """try{(function(){
   }
   function step(){
     if(alpha>0.004&&!perfLow){tick(alpha);alpha*=0.992;}
-    pivotTarget.x=selected?selected.x:0;pivotTarget.y=selected?selected.y:0;pivotTarget.z=selected?selected.z:0;
-    var e=perfLow?1:0.12;
+    var aim=pivotAim();
+    pivotTarget.x=aim.x;pivotTarget.y=aim.y;pivotTarget.z=aim.z;
+    // Reduced motion and low-performance mode both SNAP to the destination rather than
+    // easing to it — including the pan between planes, which rides this same tween.
+    var e=(perfLow||reduce)?1:0.12;
     pivot.x+=(pivotTarget.x-pivot.x)*e;pivot.y+=(pivotTarget.y-pivot.y)*e;pivot.z+=(pivotTarget.z-pivot.z)*e;
     if(mode==="3d"&&!dragging&&!perfLow){
       // momentum spin: after a fling the last drag velocity carries + decays; once it dies
@@ -4270,7 +5450,10 @@ _MG_ENHANCE_JS = """try{(function(){
     dragging=true;moved=false;lx=ev.clientX;ly=ev.clientY;yawVel=0;pitchVel=0;try{canvas.setPointerCapture(ev.pointerId);}catch(e){}canvas.classList.add("grabbing");
     var l=localXY(ev),n=hitTest(l.mx,l.my);
     // 2D: drag a node to move it, OR drag empty space to PAN the view. 3D: orbit.
-    if(mode==="2d"&&n){dragMode="node";dragNode=n;n.fixed=true;}
+    // A dragged node leaves the pinned set for the duration of the drag, so it (and
+    // only it) simulates. `fixed` still holds it exactly under the cursor while pointermove
+    // writes its position directly.
+    if(mode==="2d"&&n){dragMode="node";dragNode=n;n.fixed=true;rebuildSim();}
     else if(mode==="2d"){dragMode="pan";dragNode=null;}
     else{dragMode="orbit";dragNode=null;}
     kick();
@@ -4288,7 +5471,12 @@ _MG_ENHANCE_JS = """try{(function(){
   });
   canvas.addEventListener("pointerup",function(ev){
     dragging=false;canvas.classList.remove("grabbing");
-    if(dragMode==="node"&&dragNode){dragNode.fixed=false;reheat(0.7);}
+    // RE-PIN on release: the drop point becomes that node's slot, so the move is what the
+    // user asked for and it stays put rather than drifting with nothing to settle it.
+    // Reset re-seeds `_lt` from the computed layout, which puts it back.
+    if(dragMode==="node"&&dragNode){
+      dragNode._lt={x:dragNode.x,y:dragNode.y};dragNode.fixed=false;
+      dragNode=null;rebuildSim();kick();}
     if(!moved){
       yawVel=0;pitchVel=0;                      // a click must not fling
       var l=localXY(ev),n=hitTest(l.mx,l.my);
@@ -4296,7 +5484,7 @@ _MG_ENHANCE_JS = """try{(function(){
         // F3: clicking an entity DESCENDS a level (interbrain→person→brain); at brain/node
         // level (or Interbrain OFF) it falls through to the classic select/recenter toggle.
         if(hasGalaxy&&navDescend(n)){}
-        else if(selected!==n){selected=n;renderInfo(n);}else{selected=null;renderInfo(null);}
+        else if(selected!==n){selected=n;renderInfo(n);planeOnSelect(n);}else{selected=null;renderInfo(null);}
       }else if(hasGalaxy){navAscend();}         // F3: empty-canvas click ASCENDS a level
       else if(selected){selected=null;renderInfo(null);}
       else{setAutoRotate(!autoRotate);}         // empty-canvas click toggles auto-rotate
@@ -4307,12 +5495,28 @@ _MG_ENHANCE_JS = """try{(function(){
 
   var infoEl=panel.querySelector(".mginfo"),filtersEl=panel.querySelector(".mgfilters");
   function taskA(t){return t&&t.type==="task"?('<a href="#task-'+t.seq+'">#'+t.seq+"</a>"):(t?esc(t.label):"");}
-  function relword(k){return ({"spawned-from":"spawned from","related":"related","related-knowledge":"co-cited note","touches-same":"touches same"})[k]||k;}
+  function relword(k){return ({"spawned-from":"spawned from","related":"related","related-knowledge":"co-cited note","touches-same":"touches same","links-to":"links to","cites":"cites","distilled-from":"distilled from","references":"references"})[k]||k;}
   function renderInfo(n){
     if(!infoEl)return;
     if(!n){infoEl.innerHTML='<div class="empty">Hover or tap a node to see its relations.</div>';return;}
     var h="";
-    if(n.type==="hub"){
+    if(n.type==="note"){
+      // What a note IS, then what it is tied to on each plane: its own links first, then
+      // the tasks across the gap. No file path is offered — none is carried into the page.
+      h='<div class="title">'+esc(n.title||n.slug)+'</div><div class="cat">note'
+        +(n.kind?(" · "+esc(n.kind)):"")+(n.area?(" · "+esc(n.area)):"")+"</div>";
+      if(n.desc)h+='<div style="font-size:13px;margin-bottom:6px">'+esc(n.desc)+"</div>";
+      var lk=edges.filter(function(e){return e.cls==="note"&&(e.a===n.id||e.b===n.id);})
+                  .map(function(e){return byId[e.a===n.id?e.b:e.a];});
+      if(lk.length)h+='<div class="rel"><span class="k">links</span>'
+        +lk.map(function(m){return esc(m.title||m.label||m.id);}).join(" · ")+"</div>";
+      edges.forEach(function(e){
+        if(e.cls!=="cross")return;
+        var other=(e.a===n.id)?byId[e.b]:(e.b===n.id?byId[e.a]:null);
+        if(!other||other.type!=="task")return;
+        h+='<div class="rel"><span class="k">'+esc(relword(e.kind))+'</span>'+taskA(other)+"</div>";
+      });
+    }else if(n.type==="hub"){
       var mem=edges.filter(function(e){return e.cls==="membership"&&e.b===n.id;}).map(function(e){return byId[e.a];});
       h='<div class="title">'+esc(n.label)+'</div><div class="cat">category hub · '+mem.length+' tasks</div><div class="rel"><span class="k">members</span>'+mem.map(taskA).join(" ")+"</div>";
     }else if(n.type==="signal"){
@@ -4334,6 +5538,15 @@ _MG_ENHANCE_JS = """try{(function(){
         var others=edges.filter(function(e){return e.b===s.id&&e.a!==n.id&&byId[e.a].type==="task";}).map(function(e){return byId[e.a];});
         h+='<div class="rel"><span class="k">shares '+esc(s.label)+'</span>'+others.map(taskA).join(" ")+"</div>";
       });
+      // …and what it read across the gap. Named by kind, because a task CITING a note and
+      // a note DISTILLED FROM that task are different facts, not two views of one.
+      edges.forEach(function(e){
+        if(e.cls!=="cross")return;
+        var other=(e.a===n.id)?byId[e.b]:(e.b===n.id?byId[e.a]:null);
+        if(!other||other.type!=="note")return;
+        h+='<div class="rel"><span class="k">'+esc(relword(e.kind))+'</span>'
+          +esc(other.title||other.label||other.id)+"</div>";
+      });
     }
     infoEl.innerHTML=h;
   }
@@ -4344,7 +5557,6 @@ _MG_ENHANCE_JS = """try{(function(){
   function glyphSVG(g,color,dash){
     var inner;
     if(g==="circle")inner='<circle cx="0" cy="0" r="5" fill="'+color+'"></circle>';
-    else if(g==="cathub")inner='<rect x="-7" y="-4.5" width="14" height="9" rx="2.5" fill="none" stroke="'+color+'" stroke-width="1.7"></rect>';
     else if(g==="diamond")inner='<rect x="-4.2" y="-4.2" width="8.4" height="8.4" transform="rotate(45)" fill="'+color+'"></rect>';
     else if(g==="hexagon"){var pts="";for(var i=0;i<6;i++){var a=Math.PI/6+i*Math.PI/3;pts+=(i?" ":"")+(Math.cos(a)*6).toFixed(1)+","+(Math.sin(a)*6).toFixed(1);}inner='<polygon points="'+pts+'" fill="'+color+'"></polygon>';}
     else if(g==="rounded")inner='<rect x="-6" y="-4.5" width="12" height="9" rx="3.5" fill="'+color+'"></rect>';
@@ -4387,16 +5599,15 @@ _MG_ENHANCE_JS = """try{(function(){
     row.btn.addEventListener("click",function(){row.set(!row.get());gobj.refresh();kick();});
     gobj.group.appendChild(row.btn);gobj.rows.push(row);
   }
-  var catsPresent={},edgeKinds={},statusPresent={},soloCount=0;
+  var catsPresent={},edgeKinds={},statusPresent={};
   var sigNodes=nodes.filter(function(n){return n.type==="signal";}).sort(function(a,b){
     return (a.kind+a.label).localeCompare(b.kind+b.label);});
   nodes.forEach(function(n){if(n.type==="task"&&!n.solo&&n.cat!=null)catsPresent[n.cat]=(catsPresent[n.cat]||0)+1;});
-  nodes.forEach(function(n){if(n.type==="task"){statusPresent[n.status]=(statusPresent[n.status]||0)+1;if(n.solo)soloCount++;}});
+  nodes.forEach(function(n){if(n.type==="task")statusPresent[n.status]=(statusPresent[n.status]||0)+1;});
   edges.forEach(function(e){edgeKinds[e.cls]=(edgeKinds[e.cls]||0)+1;});
-  function sigCount(id){var c=0;edges.forEach(function(e){if(e.b===id&&byId[e.a].type==="task")c++;});return c;}
-  var catHubN=nodes.filter(function(n){return n.type==="hub";}).length,hasCatHub=catHubN>0;
-  var SIGGLY={pr:"diamond",repo:"hexagon",story:"rounded"},EDGEDASH={repo:"5,4",story:"2,4",knowledge:"1,4"};
-  var soloRow=null,soloGroup=null;
+  var sigKinds={};sigNodes.forEach(function(s){sigKinds[s.kind]=(sigKinds[s.kind]||0)+1;});
+  var noteN=nodes.filter(function(n){return n.type==="note";}).length;
+  var SIGGLY={pr:"diamond",repo:"hexagon",story:"rounded"},EDGEDASH={repo:"5,4",story:"2,4",knowledge:"1,4",cross:"1,5"};
   if(filtersEl){
     var ckeys=Object.keys(catsPresent).sort();
     if(ckeys.length){var g1=mkGroup("Tasks · category");ckeys.forEach(function(k){filt.cat[k]=true;pushRow(g1,mkRow(catLabels[k]||k,catsPresent[k],"circle",function(){return catColor(k);},function(v){filt.cat[k]=v;}));});filtersEl.appendChild(g1.group);}
@@ -4406,41 +5617,77 @@ _MG_ENHANCE_JS = """try{(function(){
     Object.keys(statusPresent).forEach(function(k){if(skeys.indexOf(k)<0)skeys.push(k);});
     if(skeys.length){var g1s=mkGroup("Tasks · status");skeys.forEach(function(k){filt.status[k]=true;
       pushRow(g1s,mkRow((STATGLY[k]||"")+" "+k,statusPresent[k],"circle",function(){return rootVar(STATVAR[k]||"--dim")||"#888";},function(v){filt.status[k]=v;}));});filtersEl.appendChild(g1s.group);}
-    // unlinked (undrawn) tasks — default OFF; toggling refits the view around the
-    // shown population (the outer solo ring changes the frame).
-    if(soloCount){soloGroup=mkGroup("Unlinked");
-      soloRow=mkRow("unlinked tasks",soloCount,"circle",function(){return rootVar("--dim")||"#888";},function(v){filt.solo=v;fitView();});
-      pushRow(soloGroup,soloRow);soloRow.set(false);soloGroup.refresh();filtersEl.appendChild(soloGroup.group);}
-    // one filter row PER signal hub (each repo / PR / story individually), not one per kind.
-    if(sigNodes.length){var g2=mkGroup("Signal hubs");sigNodes.forEach(function(s){filt.sig[s.id]=true;
-      (function(sid,kind){pushRow(g2,mkRow(s.label||kind,sigCount(sid),SIGGLY[kind]||"diamond",function(){return sigColor(kind);},function(v){filt.sig[sid]=v;}));})(s.id,s.kind);});filtersEl.appendChild(g2.group);}
-    if(hasCatHub){var g3=mkGroup("Category hubs");pushRow(g3,mkRow("Category hubs",catHubN,"cathub",function(){return rootVar("--dim");},function(v){filt.cathub=v;}));filtersEl.appendChild(g3.group);}
-    var EK=[["lineage","Lineage"],["membership","Membership"],["pr","Shares PR"],["repo","Shares repo"],["story","Shares story"],["touch","Same file"],["knowledge","Co-cited note"]],g4=null;
+    // The rail carries no row for undrawn tasks: the concentric layout draws every
+    // one of them. See the `filt.solo` note above.
+    // one filter row per signal KIND (story / repo / pr), each showing+hiding ALL hubs of
+    // that kind — their spokes prune for free via edgeVisible's endpoint check. Per-hub
+    // rows grew without bound as repos and PRs accumulated, until the panel was longer
+    // than the graph it filtered. The count is how many HUBS the row collapses, not their
+    // summed membership: a kind row is about what it folds together.
+    // Ordered story→repo→pr, then any unforeseen kind appended (mirrors the status rows) —
+    // a signal kind with no row would be an unfilterable hub, the same landmine as an edge
+    // kind with no row.
+    var kkeys=["story","repo","pr"].filter(function(k){return sigKinds[k];});
+    Object.keys(sigKinds).forEach(function(k){if(kkeys.indexOf(k)<0)kkeys.push(k);});
+    if(kkeys.length){var g2=mkGroup("Signal hubs");kkeys.forEach(function(k){filt.sig[k]=true;
+      pushRow(g2,mkRow(k,sigKinds[k],SIGGLY[k]||"diamond",function(){return sigColor(k);},function(v){filt.sig[k]=v;}));});filtersEl.appendChild(g2.group);}
+    // The knowledge plane gets ONE row, not one per note `kind`. A vault's type vocabulary
+    // is open-ended, and per-value rows that grow without bound are the landmine the
+    // per-hub signal rows already hit — a rail longer than the graph it filters. The plane
+    // is a plane; its switch is a switch.
+    if(noteN){var g3=mkGroup("Knowledge plane");filt.note=true;
+      pushRow(g3,mkRow("Notes",noteN,"circle",function(){return noteColor();},function(v){filt.note=v;}));
+      filtersEl.appendChild(g3.group);}
+    // No "Category hubs" row: a hub follows its category (see nodeVisible) — toggling a
+    // category off obviously hides the hub that renders it.
+    // Every class CLS can produce needs a row, or that edge draws with no way to turn it
+    // off. `xbrain` (the dashed cross-brain edge) had no row and so was unfilterable
+    // whenever Interbrain was on; it has one now, and there is no exception left.
+    var EK=[["lineage","Lineage"],["membership","Membership"],["pr","Shares PR"],["repo","Shares repo"],["story","Shares story"],["knowledge","Co-cited note"],["xbrain","Cross-brain"],["note","Note links"],["cross","Between the planes"]],g4=null;
     EK.forEach(function(it){var c=it[0];if(!edgeKinds[c])return;if(!g4)g4=mkGroup("Edges");filt.edge[c]=true;pushRow(g4,mkRow(it[1],edgeKinds[c],"line",function(){return edgeColor(c);},function(v){filt.edge[c]=v;},EDGEDASH[c]||""));});
     if(g4)filtersEl.appendChild(g4.group);
   }
   // initialise each group's smart toggle-all label to the current (all-on) state.
   groups.forEach(function(g){g.refresh();});
-  // restore every filter to its DEFAULT (all-on; unlinked back OFF) + resync the
+  // restore every filter to its DEFAULT (all-on) + resync the
   // toggle-all labels + the swatch colours (used by Reset).
   function resetFilters(){
     Object.keys(filt.cat).forEach(function(k){filt.cat[k]=true;});
     Object.keys(filt.sig).forEach(function(k){filt.sig[k]=true;});
     Object.keys(filt.edge).forEach(function(k){filt.edge[k]=true;});
     Object.keys(filt.status).forEach(function(k){filt.status[k]=true;});
-    filt.cathub=true;
+    filt.note=true;
     if(filtersEl){var offs=filtersEl.querySelectorAll(".mgf.off");
       Array.prototype.forEach.call(offs,function(b){b.classList.remove("off");});}
-    if(soloRow)soloRow.set(false);                 // unlinked tasks default OFF
     groups.forEach(function(g){g.refresh();});
   }
 
   var q2d=panel.querySelector(".mg2d"),q3d=panel.querySelector(".mg3d"),rotBtn=panel.querySelector(".mgrotate"),hintEl=panel.querySelector(".mghint");
+  // The plane control — present only when there IS a second plane, hidden in 2D like
+  // auto-rotate, and wired to the same setPlane the arrow keys use.
+  var planeBtn=panel.querySelector(".mgplane");
+  if(planeBtn)planeBtn.addEventListener("click",function(){
+    setPlane(planeFocus==="knowledge"?"task":"knowledge");});
+  // ↑/↓ move between the planes when the canvas has focus. The FOCUSABLE element is the
+  // wrapper, not the canvas: the canvas is aria-hidden (the static SVG is the accessible
+  // view) and making an aria-hidden element keyboard-reachable hides a focus stop from
+  // assistive tech. The tabindex is added here rather than in the markup so a board with
+  // no corpus grows no focus stop at all. Named `kwrap`, not `cwrap`: the breadcrumb block
+  // above already binds `cwrap` to this same element in this same scope, and one `var` per
+  // name per scope is the difference between two independent blocks and a shared surprise.
+  if(hasPlanes){try{var kwrap=panel.querySelector(".mgcanvaswrap");
+    if(kwrap){kwrap.setAttribute("tabindex","0");
+      kwrap.setAttribute("aria-label","Task graph camera: up and down arrows move between the task layer and the note layer");
+      kwrap.addEventListener("keydown",function(ev){
+        if(mode!=="3d")return;
+        if(ev.key==="ArrowUp"){setPlane("knowledge");ev.preventDefault();}
+        else if(ev.key==="ArrowDown"){setPlane("task");ev.preventDefault();}});}}catch(e){}}
   // B5: the on-canvas indicator reflects the auto-rotate STATE.
   function updateHint(){if(!hintEl)return;var t;
     if(mode==="2d")t="2D · drag to pan · drag a node to move · scroll to zoom · click a node to focus";
     else t="3D · drag to orbit · scroll to zoom · click empty space to toggle rotate · rotate: "+(autoRotate?"on":"off");
     if(hasGalaxy)t+=" · click to zoom in · empty to go up ("+galaxyLevel()+")";
+    if(hasPlanes&&mode==="3d")t+=" · ↑/↓ between layers ("+(planeFocus==="knowledge"?"notes":"tasks")+")";
     hintEl.textContent=t;}
   function setAutoRotate(v){if(perfLow)v=false;autoRotate=v;pref.autoRotate=v;savePref();if(rotBtn){rotBtn.setAttribute("aria-pressed",v);rotBtn.textContent=v?"⟳ Auto-rotate":"⦻ Rotate off";}updateHint();kick();}
   // switching mode keeps the x/y layout, re-seeds z (3D) or flattens it (2D), then settles
@@ -4448,9 +5695,17 @@ _MG_ENHANCE_JS = """try{(function(){
   function setMode(m){mode=m;pref.mode=m;savePref();
     if(q2d)q2d.setAttribute("aria-pressed",m==="2d");if(q3d)q3d.setAttribute("aria-pressed",m==="3d");
     if(rotBtn)rotBtn.style.display=(m==="3d")?"":"none";
+    // The two-plane view is 3D-only, so 2D hides the control AND parks the camera back on
+    // the task layer — leaving it aimed at a plane that is not drawn would look like a bug.
+    if(planeBtn)planeBtn.style.display=(m==="3d")?"":"none";
+    if(m!=="3d")planeFocus="task";
+    syncPlaneBtn();
     selected=null;renderInfo(null);yawVel=0;pitchVel=0;pivot.x=0;pivot.y=0;pivot.z=0;
-    if(m==="3d"){yaw=0.5;pitch=-0.35;seedZ();}else{flattenZ();}
-    assignWells();settle(200);fitView();updateHint();draw();kick();
+    if(m==="3d"){yaw=0.5;pitch=-0.35;}
+    // Re-seed from the slot this mode uses — the shell in 3D, the planar map in 2D.
+    seedXY();
+    if(m==="3d")seedZ();else flattenZ();
+    assignWells();settle(200);fitView();updateHint();drawCrumb();draw();kick();
   }
   if(q2d)q2d.addEventListener("click",function(){setMode("2d");});
   if(q3d)q3d.addEventListener("click",function(){setMode("3d");});
@@ -4466,6 +5721,7 @@ _MG_ENHANCE_JS = """try{(function(){
   // tangled positions back.
   function hardReset(){selected=null;renderInfo(null);yawVel=0;pitchVel=0;panX=0;panY=0;
     pivot.x=0;pivot.y=0;pivot.z=0;pivotTarget.x=0;pivotTarget.y=0;pivotTarget.z=0;
+    planeFocus="task";syncPlaneBtn();          // Reset returns the camera to the task layer
     resetFilters();
     if(searchEl)searchEl.value="";query="";terms=[];if(searchN)searchN.textContent="";
     seedXY();if(mode==="3d"){yaw=0.5;pitch=-0.35;seedZ();}else{flattenZ();}
@@ -4482,15 +5738,16 @@ _MG_ENHANCE_JS = """try{(function(){
   // OWN dispatch (graph→strip, in graphSetFocus) from bouncing back. No-op with no strip.
   try{window.addEventListener("ts-focus-change",function(ev){
     if(navApplying)return;
-    var f=(ev&&ev.detail)||null,rank={interbrain:0,person:1,brain:2},old=rank[galaxyLevel()];
-    gfocus=(f&&f.kind)?f:null;var nw=rank[galaxyLevel()];
+    // Direction comes from the change in DEPTH, which is just the path length — so it
+    // stays correct at any nesting depth without a table of level names to look up.
+    var f=(ev&&ev.detail)||null,old=galaxyPath().length;
+    gfocus=(f&&f.kind)?f:null;var nw=galaxyPath().length;
     frameLevel(nw>old?"down":(nw<old?"up":null));});}catch(e){}
 
   // ---- D3: centerOnSeq exposed for the board's "View in graph" button ----
   function centerOnSeq(seq){var n=byId["t:"+seq];if(!n)return false;
-    // "View in graph" on an unlinked task auto-enables the solo filter so the
-    // target is actually visible.
-    if(n.solo&&!filt.solo&&soloRow){soloRow.set(true);if(soloGroup)soloGroup.refresh();}
+    // No solo-filter dance any more: every task is drawn, so "View in graph" always
+    // has a visible target.
     selected=n;renderInfo(n);if(perfLow){pivot.x=n.x;pivot.y=n.y;pivot.z=n.z;}kick();return true;}
   try{window.__mgCenterOnSeq=centerOnSeq;}catch(e){}
   if(document.querySelectorAll){var vbs=document.querySelectorAll(".mgviewbtn[data-graph-seq]");Array.prototype.forEach.call(vbs,function(b){if(byId["t:"+b.getAttribute("data-graph-seq")]){var w=b.closest?b.closest(".mgviewwrap"):null;if(w)w.hidden=false;else b.hidden=false;}});}
@@ -4630,8 +5887,9 @@ def render_html(tasks, *, theme=None, variant=None, variant_label=None, generate
         out.extend(_section("Closed", closed_tasks, theme, variant, see_more_after=5))
         # WS-D: the task-relations mini-graph. Emitted only when the graph has edges
         # (relation-free / bare stores show nothing — unchanged board). Every board
-        # task rides along as the solo pool so the canvas can offer the default-off
-        # "unlinked tasks" filter (tasks with no drawn relations).
+        # task rides along here so `_minigraph` can PROMOTE the ones the render graph
+        # built no node for into real, placed nodes — which is what "draw every task"
+        # means.
         solo_pool = [{"seq": t.get("seq"), "title": t.get("title", ""),
                       "color": t.get("color"), "status": t.get("status")}
                      for t in tasks if t.get("seq") is not None]
@@ -4673,9 +5931,12 @@ def render_html(tasks, *, theme=None, variant=None, variant_label=None, generate
     out.append(_behavior_script(autorefresh=board_autorefresh, rev=rev,
                                 interbrain=interbrain))
     # Step 2: the relations-graph client interaction layer — a SEPARATE, fully try-caught
-    # <script> appended LAST (never inside _behavior_script). Only when the graph has edges
-    # (so a relation-free board ships no inert enhancement JS).
-    if isinstance(graph, dict) and graph.get("edges"):
+    # <script> appended LAST (never inside _behavior_script). Only when there is a graph to
+    # drive: edges, or a corpus (the knowledge plane is drawn whether or not its notes link
+    # to each other). A relation-free board with no vault still ships no inert enhancement JS.
+    if isinstance(graph, dict) and (graph.get("edges") or
+                                    any(n.get("type") == "note"
+                                        for n in (graph.get("nodes") or []))):
         out.append(_graph_enhance_script())
     out.append("</div></body></html>")
     return "\n".join(out) + "\n"

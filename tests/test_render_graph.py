@@ -6,8 +6,9 @@ Covers the render-layer augmentation that sits ON TOP of the contract-pinned
   * `parse_pr_number`   — ADO/GitHub PR url → number (else trimmed url).
   * `shared_signal_groups` — group tasks by shared pr/story/repo VALUE, >=2 = a hub,
     exactly one = a singleton; stories keyed by story_ref id.
-  * `build_render_graph` — typed STRING ids, category + signal HUB nodes, redundant
-    touches-same collapse, degree, determinism, gated knowledge.
+  * `build_render_graph` — typed STRING ids, category + signal HUB nodes, degree,
+    determinism, gated knowledge. A task is drawn when it carries a base edge OR joins
+    a >=2-member signal group; a file-only share is neither, so it draws nothing.
   * `render_board._minigraph` — the clustered 2D SVG + embedded mg-data JSON block.
 
 Per-test temp-home isolation (the idiom shared with test_universal_graph.py); never
@@ -207,8 +208,12 @@ class BuildRenderGraphTest(_Base):
         self._seqs()
         self.assertEqual(self._graph(), self._graph())
 
-    def test_touches_same_collapsed_but_file_only_kept(self):
-        # A,B share a PR (→ hub, touches-same dropped). C,D share ONLY a file (kept).
+    def test_file_only_share_draws_nothing_but_a_shared_pr_still_hubs(self):
+        # The ruling: "no need to link tasks on shared files." A file share forms no
+        # signal hub (files are excluded from shared_signal_groups) and no longer has a
+        # direct touches-same edge to fall back on, so C and D drop out of the graph
+        # entirely. A shared PR is unaffected — it was always meant to read as ONE hub,
+        # and that is the tier that survives.
         self._seed("A", prs=[{"url": _PR}])
         self._seed("B", prs=[{"url": _PR}])
         self._seed("C", files=["/r/only.py"])
@@ -217,12 +222,16 @@ class BuildRenderGraphTest(_Base):
         g = self._graph()
         ta, tb = "t:%d" % seqs["A"], "t:%d" % seqs["B"]
         tc, td = "t:%d" % seqs["C"], "t:%d" % seqs["D"]
+        ids = {n["id"] for n in g["nodes"]}
 
-        def _ts_between(x, y):
-            return [e for e in g["edges"] if e["kind"] == "touches-same"
-                    and {e["a"], e["b"]} == {x, y}]
-        self.assertEqual(_ts_between(ta, tb), [])       # redundant w/ PR hub → dropped
-        self.assertEqual(len(_ts_between(tc, td)), 1)   # file-only share → direct edge
+        self.assertEqual([e for e in g["edges"] if e["kind"] == "touches-same"], [])
+        self.assertEqual([e for e in g["edges"] if {e["a"], e["b"]} == {tc, td}], [])
+        self.assertNotIn(tc, ids)                       # file-only sharers are not drawn
+        self.assertNotIn(td, ids)
+        # …while the PR pair still reaches the graph, via its hub.
+        self.assertIn("sig:pr:%s" % _PR, ids)
+        self.assertIn(ta, ids)
+        self.assertIn(tb, ids)
 
     def test_knowledge_edges_gated(self):
         self._seed("A", prs=[{"url": _PR}], decisions=["per [[shared]]"])
@@ -382,13 +391,16 @@ class BoardEnhancementTest(_Base):
 
     def test_step5_tally_removed_counts_in_filters(self):
         # §5: the separate Graph tally box is gone; every filter group/row shows a count
-        # (mkRow appends a class="ct" count; the Category-hubs row now carries catHubN).
+        # (mkRow appends a class="ct" count). The Category-hubs row that used to carry
+        # `catHubN` is itself gone — a hub now follows its category — so the count that
+        # replaced it is the signal-hub-per-KIND tally.
         self._seed_pr_pair()
         html = self._board_html()
         self.assertNotIn("Graph tally", html)                 # tally box removed
         self.assertNotIn('class="mgtally"', html)
         self.assertNotIn("updateTally", html)
-        self.assertIn("catHubN", html)                        # Category-hubs row count wired in
+        self.assertNotIn("catHubN", html)                     # no Category-hubs row at all
+        self.assertIn("mkRow(k,sigKinds[k]", html)            # signal rows count their hubs
         self.assertIn('ct.className="ct"', html)              # per-row count element (JS)
 
     def test_step4_view_in_graph_is_in_overview_not_sessions(self):
@@ -431,19 +443,27 @@ class BoardEnhancementTest(_Base):
         self.assertIn("ZMAX=Math.max(2.6,base*6)", html)
         self.assertIn("Math.max(ZMIN,Math.min(ZMAX,zoom*", html)  # wheel uses the dynamic caps
 
-    def test_solo_nodes_and_new_filter_groups(self):
-        # every board task NOT drawn in the graph rides along in mg-data as a static
-        # solo node (default-off "unlinked tasks" filter), and the rail gains a task
-        # lifecycle status group; solo nodes never join the physics.
+    def test_every_task_is_drawn_and_no_unlinked_group_remains(self):
+        # F4b RETIRED the "unlinked tasks" filter: under the concentric layout every
+        # task is drawn — a relation-free one is at most ON THE RIM — so a
+        # relation-free loner is now a real placed node instead of a static solo
+        # decoration behind a default-off row. The status group and the solo
+        # force-exclusion machinery (kept for one release) are unchanged.
         self._seed_pr_pair()
         self._seed("relation-free loner")                       # third task, no relations
         html = self._board_html()
-        self.assertIn('"solo":[', html)                         # solo pool embedded
-        self.assertIn("unlinked tasks", html)                   # the default-off filter row
-        self.assertIn("soloRow.set(false)", html)               # default OFF (and on Reset)
+        self.assertNotIn("unlinked tasks", html)                # the row is gone
+        self.assertNotIn('mkGroup("Unlinked")', html)
+        self.assertNotIn("soloRow", html)                       # …and its locals with it
+        self.assertNotIn('"solo":[', html)                      # nothing left to pool
+        # every task placed — including the loner, which has no edge at all
+        seqs = self._seqs()
+        blob = html.split('id="mg-data">', 1)[1].split("</script>", 1)[0]
+        for seq in seqs.values():
+            self.assertIn('"seq":%d' % seq, blob, "task #%s must be drawn" % seq)
         self.assertIn('mkGroup("Tasks · status")', html)        # lifecycle status group
         self.assertIn("filt.status[n.status]===false", html)    # status drives visibility
-        self.assertIn("if(nodes[i].solo||nodes[j].solo)continue", html)  # no forces on solo
+        self.assertIn("if(B===A||B.solo", html)                 # solo still takes no forces
 
     def test_hover_info_panel_never_reflows_the_canvas(self):
         # the node-details panel is FIXED-height + scrolls internally, and the canvas
@@ -455,12 +475,16 @@ class BoardEnhancementTest(_Base):
         self.assertIn("overflow-y:auto", html)
         self.assertIn("new ResizeObserver", html)               # buffer tracks layout resizes
 
-    def test_step6_per_signal_filters_and_toggle_all(self):
+    def test_step6_per_signal_kind_filters_and_toggle_all(self):
+        # INVERTED: one row per signal KIND (story/repo/pr), not one per hub — per-hub
+        # rows grew without bound as repos and PRs accumulated. Asserts the old control
+        # is GONE as well as the new expression being present.
         self._seed_pr_pair()
         html = self._board_html()
-        self.assertIn("filt.sig[s.id]=true", html)             # one filter per signal NODE
+        self.assertNotIn("filt.sig[s.id]=true", html)          # no row per signal NODE
+        self.assertNotIn("filt.sig[n.id]!==false", html)       # …nor visibility per node
+        self.assertIn("filt.sig[n.kind]!==false", html)        # visibility keyed per KIND
         self.assertIn('all.className="mgallbtn"', html)        # per-group show/hide-all toggle (JS)
-        self.assertIn("filt.sig[n.id]!==false", html)          # visibility keyed per node
 
     def test_step6_graph_defaults_reset_on_manual_load(self):
         self._seed_pr_pair()

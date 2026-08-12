@@ -730,6 +730,20 @@ the pre-federation board and the help panel carries one dim line saying federati
 and how to enable it. Brains & sharing live in the `brains.json` sidecar
 (`lib/brains.py`) — the store schema is never touched.
 
+**The knowledge plane is also IN the board**, gated by `config --knowledge-plane`
+(`on` · `off` · `auto`; auto → on when a vault is configured and it yields a note).
+`lib/knowledge.py` is the single owner of vault *reading* — the twin of `obsidian_sync.py`,
+which only ever writes — and hands the board ONE GLOBAL CORPUS of the whole vault on every
+render, never a per-task slice. `build_render_graph(…, notes=…)` folds that corpus into the
+same graph as a second set of nodes, and the 3D canvas draws it as a literal **second plane
+stacked above the task sphere**, with a camera pan between the two (`BOARD-BEHAVIOR.md`
+B15). Exactly three edge kinds may cross the gap — `cites`, `distilled-from`, `references` —
+and both the server (`_crosses_gap` in `render_board.py`) and the canvas (`XPLANE` in
+`_MG_ENHANCE_JS`) refuse any other. Placement is closed-form (`_knowledge_layout`), so the
+notes are pinned and the frame cost stays flat. With no vault the switch resolves off and
+the graph panel is byte-identical to the single-plane one; nothing on this path writes into
+a vault (that is `--knowledge-graph`, a different switch entirely).
+
 The board stamps `<meta name="ts-board-version">` and honors the refuse-downgrade guard
 (`_semver_gt` on the passive/Stop-hook path; an explicit write always writes; a refused
 write touches neither `board.html` nor the feeds).

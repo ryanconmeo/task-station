@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 import decisions as _dec
 import heal as _heal
 import hook_health
+import knowledge as _knowledge
 import paths
 import save as _save
 import steps as _steps
@@ -2794,6 +2795,32 @@ def set_status(task, status, note=None, session=None):
     return True
 
 
+def close_task_inplace(task, note=None, session=None):
+    """Close a task IN PLACE — the pure-dict half of the close path, safe to call
+    inside a `store.mutate` mutator (no I/O, no save). Sets the status, stamps the
+    real close moment, and logs + events the transition exactly as `/done` does.
+    Returns True only if it changed; closing an already-closed task is a no-op.
+
+    WHY THIS EXISTS rather than `set_status(task, STATUS_CLOSED)`: `set_status`
+    deliberately REFUSES `closed` — it guards the settable open⇄active pair so a typo
+    can never mislabel a task — and the two genuine close paths (`_close_one`,
+    `cmd_done`) each hand-roll these same four lines before doing their OWN session
+    and worker teardown. This is that shared core, named once.
+
+    Callers that close as a SIDE EFFECT of a structural write (`--absorbed-by`,
+    `--replaces`) use only this half and deliberately do NOT reap workers or detach
+    sessions: neither verb means "this session is finished", and a structural
+    declaration must not kill someone else's running worker."""
+    prev = task_status(task)
+    if prev == STATUS_CLOSED:
+        return False
+    task["status"] = STATUS_CLOSED
+    stamp_closed(task)                      # the real moment it entered closed
+    add_log(task, note or "closed", session=session)
+    add_event(task, "status", "%s → %s" % (prev, STATUS_CLOSED), session)
+    return True
+
+
 def promote_active(task, note=None, session=None):
     """Promote an OPEN task to active because work has started. Idempotent — a
     no-op (returns False) when the task is already active or closed (an edit never
@@ -3767,6 +3794,116 @@ def related_edges(task, tasks=None, semantic=False):
     return result
 
 
+# --- canonical relation resolution -------------------------------------------
+#
+# A task↔task relationship is ONE thing, but the store can record it up to three
+# times: this task's `related` list holds it, the OTHER task's list holds the mirror
+# (a reciprocal pair), and — because `append_related` dedups on id+KIND — the same
+# side may hold it twice under two different kinds. Every consumer that walked the
+# out edges and then the in edges therefore printed the same counterpart two or
+# three times. `canonical_relations` is the ONE resolver they all route through.
+#
+# The dedup key is THE OTHER TASK'S id alone, never (id, kind): keying on the kind
+# is exactly what leaves the mixed-label duplicate standing, since the two records
+# differ precisely in their kind.
+
+# Label precedence when one pair carries several kinds — LOWEST rank wins. A
+# specific claim outranks a vague one: `related` explicitly claims nothing, so it is
+# weakest. This is the LABEL axis and is deliberately NOT the graph's
+# visual-prominence axis (where spawned-from is the dimmest edge) — different
+# questions.
+#
+# The order, and why:
+#   depends-on   an execution-order claim — it gates when work can start, so it is
+#                the most consequential thing a pair can be.
+#   parent       structural containment; every roll-up is computed over it.
+#   absorbed-by  a lifecycle verdict that also TRANSFERS work: mine became theirs.
+#   replaces     the same terminal verdict without the transfer — their approach was
+#                dropped for mine. Ranks just under absorbed-by because it settles the
+#                pair just as firmly but carries nothing across.
+#   duplicates   names the collision without settling it: same work, no statement about
+#                which survives. Weaker than either verdict, far stronger than `related`.
+#   spawned-from a HISTORICAL fact about where a task came from, not what the pair is
+#                now — which is why both verdicts and even `duplicates` outrank it.
+#   related      claims nothing at all.
+_REL_KIND_RANK = {"depends-on": 0, "parent": 1, "absorbed-by": 2, "replaces": 3,
+                  "duplicates": 4, "spawned-from": 5, "related": 6}
+_REL_KIND_RANK_UNKNOWN = 99
+
+
+def _rel_kind_rank(kind):
+    """Precedence rank for a relation kind — lowest wins. An unknown/future kind
+    sorts last but never raises, so a store written by a newer version degrades to
+    "shown, ranked last" instead of breaking a render."""
+    return _REL_KIND_RANK.get(kind, _REL_KIND_RANK_UNKNOWN)
+
+
+def canonical_relations(task, tasks=None, rev=None, edges=None):
+    """ONE relationship per other task, deduped on the OTHER TASK's id.
+
+    Returns a list of `{"id", "seq", "kind", "dir", "status"}` where `dir` is
+    "out" (this task stored the edge) or "in" (derived from the other side). The
+    shared resolver behind the `Related:` detail line, the board card's relation
+    row and the graph's lineage precedence, so all three agree about what a pair IS.
+
+    The rules, in force order:
+
+      * dedup key = the other task's `id`; an entry carrying no id falls back to a
+        `("seq", n)` key so nothing is ever silently dropped;
+      * lowest `_REL_KIND_RANK` wins the label — a pair recorded as BOTH
+        `spawned-from` and `related` (legal: `append_related` dedups on id+kind)
+        resolves to `spawned-from`, once;
+      * on an equal kind, `dir="out"` beats `dir="in"` — the side that asserted it
+        wins;
+      * a self-edge is dropped, matching `_add_undirected`;
+      * order is kind rank, then the other task's seq — two runs over one store
+        produce identical output.
+
+    Where the raw edges come from, in precedence order: an already-built `edges`
+    (a `related_edges`-shaped `{"out": […], "in": […]}`); else `rev`, this task's
+    reverse-edge list out of the board's O(1) rev_map, with the out side read
+    straight off `task["related"]`; else a `related_edges(task, tasks)` scan. Pure
+    apart from that scan."""
+    if edges is None:
+        if rev is None:
+            edges = related_edges(task, tasks)
+        else:
+            edges = {"out": [{"seq": r.get("seq"), "id": r.get("id"),
+                              "kind": r.get("kind")}
+                             for r in (task.get("related") or [])],
+                     "in": list(rev)}
+
+    def _pick(e):
+        """Which recorded edge REPRESENTS the pair: kind first, then out beats in."""
+        return (_rel_kind_rank(e.get("kind")), 0 if e.get("dir") == "out" else 1)
+
+    def _order(e):
+        """Display order: kind rank, then the counterpart's seq (seq-less last),
+        then its id — a total order, so the output never wobbles between runs."""
+        seq = e.get("seq")
+        return (_rel_kind_rank(e.get("kind")),
+                seq if seq is not None else (1 << 30),
+                str(e.get("id") or ""))
+
+    tid, tseq = task.get("id"), task.get("seq")
+    best = {}
+    for direction in ("out", "in"):
+        for e in (edges.get(direction) or []):
+            oid, oseq = e.get("id"), e.get("seq")
+            if oid:
+                if oid == tid:
+                    continue                    # self-edge
+            elif oseq is not None and oseq == tseq:
+                continue                        # id-less entry pointing at itself
+            key = oid if oid else ("seq", oseq)
+            cand = {"id": oid, "seq": oseq, "kind": e.get("kind"),
+                    "dir": direction, "status": e.get("status")}
+            prev = best.get(key)
+            if prev is None or _pick(cand) < _pick(prev):
+                best[key] = cand
+    return sorted(best.values(), key=_order)
+
+
 # --- WS-D: universal semantic edges + (gated) knowledge co-citation ----------
 #
 # A UNIVERSAL improvement to the task graph — derived, never stored, and computed
@@ -3781,10 +3918,6 @@ def related_edges(task, tasks=None, semantic=False):
 # weakest (mere co-location). An edge's weight sums the weights of every signal the
 # two tasks share, so "same PR + same files" outranks "same repo".
 _SEMANTIC_WEIGHTS = {"pr": 3, "story": 2, "file": 2, "repo": 1}
-
-# A vault note citation inside a task's human text, e.g. `[[projectname-rbac-design]]` or
-# `[[slug|alias]]` / `[[slug#heading]]` — capture the slug (before any | or #).
-_WIKILINK_RE = re.compile(r"\[\[\s*([^\]|#]+)")
 
 
 def _task_signals(task):
@@ -3844,19 +3977,14 @@ def _task_cited_notes(task):
     (title / goal / state / summary / decisions / history). The co-citation signal
     for the second-brain-gated knowledge graph — two tasks citing the same note are
     working the same knowledge. Empty set on a task with no wikilinks (the common
-    case), so this never fabricates edges."""
-    texts = [task.get("title"), task.get("goal"), task.get("state"),
-             task.get("summary")]
-    texts += _dec.live_texts(task.get("decisions"))   # superseded → not a live citation
-    texts += [e.get("text", "") for e in (task.get("history") or [])
-              if isinstance(e, dict)]
-    notes = set()
-    for t in texts:
-        for m in _WIKILINK_RE.findall(t or ""):
-            s = m.strip()
-            if s:
-                notes.add(s)
-    return notes
+    case), so this never fabricates edges.
+
+    `knowledge.task_note_links` is the single implementation, shared with the two-plane
+    view's cross-plane `cites` edge. It also excludes a `[[task:502]]` target, which is a
+    reference to a TASK rather than to a note — so such a mention can no longer enter
+    this signal as a note that does not exist. The measured corpus has none of them, so
+    that exclusion changes no edge that exists today."""
+    return _knowledge.task_note_links(task)
 
 
 def build_board_graph(tasks, knowledge=False):
@@ -3864,16 +3992,21 @@ def build_board_graph(tasks, knowledge=False):
 
       * lineage — the stored `related` edges (`spawned-from` directed child→parent,
         `related` undirected); UNIVERSAL.
-      * `touches-same` — derived semantic edges (shared PR/story/file/repo), weighted;
-        UNIVERSAL.
       * `related-knowledge` — task↔task co-citation (both cite the same `[[note]]`),
         weighted by shared-note count; SECOND-BRAIN-GATED, only when `knowledge=True`.
 
+    Derived `touches-same` (shared PR/story/file/repo) edges are NOT emitted — see the
+    note at the loop below. `semantic_edges` itself is untouched and still serves the
+    export and the signal hubs.
+
     Only nodes that touch ≥1 edge are returned, so a bare / relation-free store yields
     `{"nodes": [], "edges": []}` and the renderer omits the panel entirely (a public
-    user with no relations sees exactly today's board). Undirected edges are deduped
-    by unordered seq-pair + kind; the strongest weight for a pair wins. Pure and
-    O(N + edges) — no I/O, no config read (the caller resolves `knowledge`)."""
+    user with no relations sees exactly today's board). Lineage collapses to ONE edge
+    per unordered pair, labelled by `_REL_KIND_RANK` — the same precedence
+    `canonical_relations` applies to the text and board surfaces — so a pair recorded
+    under two kinds draws once. The derived tiers stay deduped by unordered seq-pair
+    + kind, strongest weight winning. Pure and O(N + edges) — no I/O, no config read
+    (the caller resolves `knowledge`)."""
     nodes_by_seq = {}
     for t in tasks:
         seq = t.get("seq")
@@ -3887,7 +4020,7 @@ def build_board_graph(tasks, knowledge=False):
     by_id_seq = {t.get("id"): t.get("seq") for t in tasks}
 
     edges = []
-    seen_directed = set()          # (a, b, kind) for lineage (direction meaningful)
+    lineage = {}                   # frozenset({a,b}) → the ONE canonical lineage edge
     undirected = {}                # frozenset({a,b}) + kind → strongest edge dict
 
     def _add_undirected(a, b, kind, weight, via):
@@ -3899,36 +4032,51 @@ def build_board_graph(tasks, knowledge=False):
             undirected[key] = {"a": a, "b": b, "kind": kind, "dir": "none",
                                "weight": weight, "via": via}
 
-    # Lineage edges (directed) from every task's stored `related` list.
+    # Lineage edges from every task's stored `related` list — ONE per unordered pair.
+    # A pair can be recorded up to three times (each side stores the other, and
+    # `append_related` permits a second KIND for the same target), so it is collapsed
+    # here on `_REL_KIND_RANK`. The winning kind decides the arrow: `spawned-from`
+    # stays directed child→parent, anything else stays undirected.
     for t in tasks:
         a = t.get("seq")
         if a is None:
             continue
         for e in (t.get("related") or []):
-            b = e.get("seq")
-            if b is None:
-                b = by_id_seq.get(e.get("id"))
+            # Resolve the counterpart from its `id` — the only machine-portable
+            # handle a stored entry carries. A `seq` is local to one store, so a
+            # stored one is trusted ONLY for a legacy entry that has no id at all.
+            # Preparation, not repair: today every stored entry carries both and
+            # they agree, so this reorder changes nothing about the current graph.
+            eid = e.get("id")
+            b = by_id_seq.get(eid) if eid else e.get("seq")
             if b is None or b == a or b not in nodes_by_seq:
                 continue
             kind = e.get("kind") or "related"
-            if kind == "spawned-from":
-                dkey = (a, b, kind)
-                if dkey in seen_directed:
+            key = frozenset((a, b))
+            prev = lineage.get(key)
+            if prev is not None:
+                prev_rank, rank = _rel_kind_rank(prev["kind"]), _rel_kind_rank(kind)
+                # Equal rank keeps the lexicographically smaller (a, b) so the
+                # surviving orientation does not depend on the input's task order.
+                if prev_rank < rank or (prev_rank == rank
+                                        and (prev["a"], prev["b"]) <= (a, b)):
                     continue
-                seen_directed.add(dkey)
-                edges.append({"a": a, "b": b, "kind": "spawned-from",
-                              "dir": "a->b", "weight": 2, "via": ["lineage"]})
-            else:
-                _add_undirected(a, b, "related", 2, ["lineage"])
+            lineage[key] = {"a": a, "b": b, "kind": kind,
+                            "dir": "a->b" if kind == "spawned-from" else "none",
+                            "weight": 2, "via": ["lineage"]}
+    edges.extend(lineage.values())
 
-    # Semantic `touches-same` edges (undirected, weighted).
-    for t in tasks:
-        a = t.get("seq")
-        if a is None:
-            continue
-        for se in semantic_edges(t, tasks):
-            _add_undirected(a, se.get("seq"), "touches-same",
-                            se.get("weight", 1), se.get("via") or [])
+    # NO semantic `touches-same` edges. Two tasks touching one file is not a
+    # relationship worth drawing, and the kind was 97% of every edge in the graph —
+    # it buried the lineage it sat next to. Shared PRs / repos / stories are NOT lost:
+    # they still reach the graph as signal HUBS with spokes (`build_render_graph`),
+    # which say the same thing once per signal instead of once per pair. Only a
+    # file-only share now draws nothing at all.
+    #
+    # `semantic_edges` / `_task_signals` / `_SEMANTIC_WEIGHTS` deliberately stay —
+    # the vault/markdown export (`_related_pairs`) still emits its `touches same`
+    # pairs, and the signal hubs still read the same signals. This is the GRAPH
+    # dropping a consumer, not the signal being deleted.
 
     # Co-citation `related-knowledge` edges (undirected) — SECOND-BRAIN-GATED.
     if knowledge:
@@ -3991,8 +4139,9 @@ def shared_signal_groups(tasks):
     Stories are keyed by their `story_ref` id (NOT the raw url) so a hub value matches the
     emitted `stories/<id>` page and a bare-id + full-url reference to the same work item
     collapse together. `file` signals are intentionally excluded — a file-only share forms
-    no hub and stays a direct `touches-same` edge. Pure; deterministic output. Distinct
-    from `_compute_story_group_ids` (different threshold + key space)."""
+    no hub, and since the graph stopped emitting `touches-same` it now draws nothing at
+    all (deliberate: "no need to link tasks on shared files"). Pure; deterministic output.
+    Distinct from `_compute_story_group_ids` (different threshold + key space)."""
     try:
         import obsidian_sync
     except Exception:
@@ -4036,38 +4185,84 @@ def shared_signal_groups(tasks):
     return groups, labels, singletons
 
 
-def build_render_graph(tasks, knowledge=False):
+def build_render_graph(tasks, knowledge=False, notes=None):
     """Render-layer augmentation of `build_board_graph`: adds category + signal HUB nodes
     and re-keys every node to a typed STRING id for the board mini-graph. Pure; does NOT
     mutate `build_board_graph`'s output or the export path (both contract-pinned).
 
-    Node ids are `"t:<seq>"` (task), `"cat:<key>"` (category hub), or `"sig:<kind>:<value>"`
-    (signal hub). Edges keep `kind,dir,weight,via` and re-map `a`/`b` to those string ids.
+    Node ids are `"t:<seq>"` (task), `"cat:<key>"` (category hub), `"sig:<kind>:<value>"`
+    (signal hub), or `"n:<slug>"` (a vault NOTE — the knowledge plane, see below). Edges
+    keep `kind,dir,weight,via` and re-map `a`/`b` to those string ids.
 
       * Category hub — one per category with >= 2 tasks present among the base graph's task
         nodes; each member task gets a `membership` spoke. The KEY only is carried (the
         renderer resolves the hex via `_highlight_fb`).
       * Signal hub — one per shared pr/story/repo group (>= 2 members in the base graph),
-        each member task getting a kind-tagged spoke.
-      * `touches-same` — a base task<->task edge is DROPPED only when BOTH endpoints connect
-        to the SAME surviving signal hub (redundant). A file-only share (no hub) stays a
-        direct edge; lineage + `related-knowledge` edges stay direct + untouched.
+        each member task getting a kind-tagged spoke. This is now the ONLY way a shared
+        PR / repo / story reaches the graph, since the base stopped emitting the direct
+        `touches-same` edge that used to sit alongside it.
+      * lineage + `related-knowledge` edges are re-mapped direct + untouched.
+      * Note node — one per note in `notes`, the KNOWLEDGE PLANE (see below).
+
+    A task is DRAWN when it carries a base edge (lineage / co-citation), belongs to a
+    >=2-member signal group, or sits on a cross-plane edge — the second clause is what
+    keeps the hub tier alive now that the base no longer emits a `touches-same` edge for
+    every shared signal (see the note on `present` below), and the third is what stops a
+    citation pointing at a task the graph never drew.
+
+    THE KNOWLEDGE PLANE (`notes`, from `board_notes` / `knowledge.vault_notes`). Passing
+    a corpus adds a SECOND plane to this one graph: a node per note, `links-to` edges
+    between notes, and the three cross-plane kinds (`cites`, `distilled-from`,
+    `references`) — and nothing else crosses the gap. Every node then carries `plane`
+    (`task` or `knowledge`); with no notes NO node carries it, so the default graph is
+    byte-identical to the one this function returned before the plane existed — the same
+    parity rule the Interbrain owner/brain stamping follows, for the same reason.
+
+    EVERY note is drawn, edge or no edge. The corpus is global and rendered whole, so an
+    orphan note is a real node that the layout seats out at the rim; that is a fact about
+    the vault, not an absence to hide.
 
     Every node carries `deg` (incident-edge count). Nodes are sorted by (type-rank,
-    seq/key/value) and edges by (kind, a, b) — type-homogeneous keys only, never mixing
-    int/str. Returns `{nodes, edges, singletons}` where `singletons` = `{seq: [labels]}`
-    for pr/story/repo signals with exactly one task (renderer reads only nodes/edges). A
-    relation-free / solo board (base has no edges) returns the base unchanged so the panel
-    stays absent."""
+    seq/key/value/slug) and edges by (kind, a, b) — type-homogeneous keys only, never
+    mixing int/str. Returns `{nodes, edges, singletons}` where `singletons` =
+    `{seq: [labels]}` for pr/story/repo signals with exactly one task (renderer reads
+    only nodes/edges). A relation-free / solo board with no notes (no base edges AND no
+    shared signal AND no corpus) returns the base unchanged so the panel stays absent."""
     base = build_board_graph(tasks, knowledge)
-    if not base["edges"]:
-        return base
-
     tasks_by_seq = {t.get("seq"): t for t in tasks if t.get("seq") is not None}
-    present = {n["seq"] for n in base["nodes"]}      # base task-node seqs (int)
+    notes = list(notes or [])
+
+    # WHICH TASKS THE GRAPH DRAWS. Until the base stopped emitting `touches-same`,
+    # every task sharing a PR/repo/story with another was ALREADY a base node — that
+    # edge put it there — so "base nodes" and "base nodes + signal-group members" were
+    # the same set and this distinction never showed. They are not the same set now:
+    # sourcing `present` from base nodes alone would delete every signal HUB along with
+    # the direct edge, since a hub is only built from tasks already present. Unioning
+    # the >=2-member signal groups back in keeps the hub tier exactly as it renders
+    # today, so the ONLY thing the `touches-same` removal actually drops is a
+    # file-only share — which is precisely the ruling ("no need to link tasks on
+    # shared files"); a file signal forms no hub, so it now draws nothing at all.
+    groups, labels, singletons = shared_signal_groups(tasks)
+    grouped = set()
+    for _gseqs in groups.values():
+        if len(_gseqs) >= 2:
+            grouped.update(_gseqs)
+    # The cross-plane edges are resolved HERE because `present` needs them: a task whose
+    # only relation is a citation of a note has no base edge and no signal group, so
+    # without this clause the citation would point at a task node that was never built.
+    cross = _knowledge.cross_plane_edges(tasks, notes) if notes else []
+    linked = {e["seq"] for e in cross if e.get("seq") in tasks_by_seq}
+    if not base["edges"] and not grouped and not notes:
+        return base                                 # relation-free / solo → no panel
+
+    base_seqs = {n["seq"] for n in base["nodes"]}
+    present = base_seqs | grouped | linked          # drawn task seqs (int)
 
     def tid(seq):
         return "t:%d" % seq
+
+    def nid(slug):
+        return "n:%s" % slug
 
     # ---- task nodes (fresh dicts — never mutate base) --------------------------
     nodes = []
@@ -4075,12 +4270,27 @@ def build_render_graph(tasks, knowledge=False):
         nodes.append({"id": tid(n["seq"]), "type": "task", "seq": n["seq"],
                       "title": n.get("title", ""), "color": n.get("color"),
                       "status": n.get("status"), "glyph": n.get("glyph")})
+    # A task that reaches the graph ONLY through a signal hub has no base node, so its
+    # node dict is built here — same fields, same glyph rule as build_board_graph.
+    for seq in sorted(present - base_seqs):
+        t = tasks_by_seq.get(seq)
+        if t is None:
+            continue
+        cur = task_status(t)
+        nodes.append({"id": tid(seq), "type": "task", "seq": seq,
+                      "title": t.get("title", ""), "color": t.get("color"),
+                      "status": cur,
+                      "glyph": (STATUS_GLYPH_CLOSED if cur == STATUS_CLOSED
+                                else STATUS_GLYPH.get(cur, "○"))})
 
     edges = []
 
     # ---- category hubs: one per category with >= 1 present task ----------------
     # (Threshold is >=1 so every category present in the edge graph gets a hub; the
-    # relation-free/solo board is still gated out earlier by `if not base["edges"]`.)
+    # relation-free/solo board is still gated out by the early return above. The hub's
+    # `key` is the NORMALISED category, while a task node carries its stored `color`
+    # raw — the board's filter keys on the latter and looks hubs up by the former, so
+    # the two must stay the same string. They do: every write path normalises `color`.)
     try:
         import categories
     except Exception:
@@ -4113,7 +4323,7 @@ def build_render_graph(tasks, knowledge=False):
                               "via": []})
 
     # ---- signal hubs: shared pr/story/repo groups (>= 2 present members) -------
-    groups, labels, singletons = shared_signal_groups(tasks)
+    # `groups`/`labels`/`singletons` were resolved above, where `present` needed them.
     sig_by_seq = {}                                   # seq -> set(signal hub id)
     for key in sorted(groups):
         kind, value = key
@@ -4129,7 +4339,11 @@ def build_render_graph(tasks, knowledge=False):
                           "weight": w, "via": [labels[key]]})
             sig_by_seq.setdefault(seq, set()).add(sid)
 
-    # ---- re-map base edges; drop redundant touches-same ------------------------
+    # ---- re-map base edges -----------------------------------------------------
+    # The `touches-same` branch is now UNREACHABLE from build_board_graph, which no
+    # longer emits that kind. Kept as a guard so a hand-built or future base graph
+    # carrying one still can't draw an edge that duplicates a signal hub; delete it
+    # (and `sig_by_seq`) if the kind is ever removed from the codebase entirely.
     for e in base["edges"]:
         if e["kind"] == "touches-same":
             shared_hub = sig_by_seq.get(e["a"], set()) & sig_by_seq.get(e["b"], set())
@@ -4139,6 +4353,44 @@ def build_render_graph(tasks, knowledge=False):
                       "dir": e.get("dir", "none"), "weight": e.get("weight", 1),
                       "via": list(e.get("via") or [])})
 
+    # ---- the KNOWLEDGE PLANE: one node per note, then its own edges -------------
+    # A note node carries the frontmatter under `kind` (its `type`) and `area`, because
+    # `type` on a node already means the structural class (task / hub / signal / note)
+    # and one word cannot mean both. `area` is left exactly as the vault wrote it —
+    # empty when the note declares none — and the LAYOUT is what maps that to the
+    # `unfiled` sector, since which sector a note sits in is a placement decision.
+    note_slugs = set()
+    for n in notes:
+        slug = n.get("slug")
+        if not slug or slug in note_slugs:
+            continue
+        note_slugs.add(slug)
+        nodes.append({"id": nid(slug), "type": "note", "slug": slug,
+                      "title": n.get("title") or slug,
+                      "description": n.get("description", ""),
+                      "kind": n.get("type", ""), "area": n.get("area", ""),
+                      "path": n.get("path", "")})
+    for e in _knowledge.note_edges(notes):
+        edges.append({"a": nid(e["a"]), "b": nid(e["b"]), "kind": e["kind"],
+                      "dir": e.get("dir", "none"), "weight": e.get("weight", 1),
+                      "via": []})
+    # THE GAP. Exactly three kinds cross it, and the direction asymmetry is deliberate:
+    # `cites` is a task pointing UP at what it read, `distilled-from` a note pointing
+    # DOWN at what produced it. They are not inverses, so both are drawn when both hold.
+    # An endpoint that does not exist was already dropped by `cross_plane_edges`; the
+    # `present`/`note_slugs` checks here are the second half of the same rule, for a
+    # task the drawn set still excludes.
+    for e in cross:
+        seq, slug = e.get("seq"), e.get("slug")
+        if seq not in present or slug not in note_slugs:
+            continue
+        if e["dir"] == "task->note":
+            a, b = tid(seq), nid(slug)
+        else:
+            a, b = nid(slug), tid(seq)
+        edges.append({"a": a, "b": b, "kind": e["kind"], "dir": "a->b",
+                      "weight": 1, "via": []})
+
     # ---- node degree -----------------------------------------------------------
     deg = {}
     for e in edges:
@@ -4147,6 +4399,13 @@ def build_render_graph(tasks, knowledge=False):
     for n in nodes:
         n["deg"] = deg.get(n["id"], 0)
 
+    # WHICH PLANE EACH NODE IS ON — stamped only when a corpus was passed, so a board
+    # with no notes emits the identical node dicts it emitted before this plane existed.
+    # A category or signal hub is task-plane furniture, so it takes `task` too.
+    if notes:
+        for n in nodes:
+            n["plane"] = "knowledge" if n.get("type") == "note" else "task"
+
     # ---- deterministic order (type-homogeneous sort keys only) -----------------
     def _node_key(n):
         t = n.get("type")
@@ -4154,6 +4413,8 @@ def build_render_graph(tasks, knowledge=False):
             return (0, n.get("seq"))
         if t == "hub":
             return (1, n.get("key") or "")
+        if t == "note":
+            return (3, n.get("slug") or "")
         return (2, n.get("kind") or "", n.get("id") or "")
     nodes.sort(key=_node_key)
     edges.sort(key=lambda e: (e["kind"], e["a"], e["b"]))
@@ -4222,25 +4483,65 @@ def _session_block_lines(task):
     return out
 
 
+# How each relation kind READS on the `Related:` line, as (stored-here, derived-here).
+# The second word is the inverse a reader sees from the OTHER end: only the subordinate
+# side ever stores an edge, so every superior side is a derived reading. Kinds absent
+# from this table fall back to `related #N` both ways, which is what keeps a store
+# written by a newer version renderable.
+_REL_LINE_WORDS = {
+    "depends-on":   ("depends on #%s", "blocks #%s"),
+    "parent":       ("parent #%s",     "children #%s"),
+    "duplicates":   ("duplicates #%s", "duplicates #%s"),   # symmetric — reads the same
+    "replaces":     ("replaces #%s",   "replaced by #%s"),
+    "absorbed-by":  ("absorbed-by #%s", "absorbed #%s"),
+    "spawned-from": ("from #%s (spawned-from)", "spawned #%s"),
+}
+_REL_LINE_DEFAULT = ("related #%s", "related #%s")
+
+# The same words as bare LABELS, for the grouped form. A run of one still renders through
+# the format strings above, so a lone `spawned-from` keeps its ` (spawned-from)` qualifier
+# byte-for-byte; only a repeat collapses to `label #a, #b`.
+_REL_LINE_LABELS = {
+    "depends-on":   ("depends on", "blocks"),
+    "parent":       ("parent", "children"),
+    "duplicates":   ("duplicates", "duplicates"),
+    "replaces":     ("replaces", "replaced by"),
+    "absorbed-by":  ("absorbed-by", "absorbed"),
+    "spawned-from": ("from", "spawned"),
+}
+_REL_LINE_LABELS_DEFAULT = ("related", "related")
+
+
 def _related_line(task, edges=None):
     """The `Related:` artifacts line, or None when the task has no relation edges
-    (either direction). Out edges: `from #N (spawned-from)` / `related #N`; derived
-    reverse edges: `spawned #N` (a child) / `related #N`. A closed edge target gets
-    a trailing ` ✕`."""
-    e = edges if edges is not None else related_edges(task)
-    parts = []
-    for r in e.get("out") or []:
+    (either direction). ONE entry per counterpart — a reciprocal pair is a single
+    relationship, so it prints once, resolved through `canonical_relations`.
+
+    Each kind renders as its stored word or its derived inverse (`_REL_LINE_WORDS`):
+    `depends on #N` / `blocks #N` · `parent #P` / `children #Q` · `duplicates #N` ·
+    `replaces #N` / `replaced by #N` · `absorbed-by #N` / `absorbed #N` ·
+    `from #N (spawned-from)` / `spawned #N`, with anything else — including `related`
+    and any future kind — reading `related #N`. A closed edge target gets a trailing
+    ` ✕`.
+
+    CONSECUTIVE entries sharing a label are GROUPED under it — `children #Q, #R` — so a
+    parent with eight children reads the label once rather than eight times.
+    `canonical_relations` sorts by kind, so same-kind entries are already adjacent. The
+    closed mark is per TARGET, so it rides with its own `#N` and grouping never loses it;
+    a run of one renders through the format strings above, unchanged."""
+    runs = []
+    for r in canonical_relations(task, edges=edges):
         mark = " ✕" if r.get("status") == STATUS_CLOSED else ""
-        if r.get("kind") == "spawned-from":
-            parts.append("from #%s (spawned-from)%s" % (r.get("seq"), mark))
+        out = r.get("dir") == "out"
+        idx = 0 if out else 1
+        label = _REL_LINE_LABELS.get(r.get("kind"), _REL_LINE_LABELS_DEFAULT)[idx]
+        fmt = _REL_LINE_WORDS.get(r.get("kind"), _REL_LINE_DEFAULT)[idx]
+        if runs and runs[-1][0] == label:
+            runs[-1][1].append("#%s%s" % (r.get("seq"), mark))
         else:
-            parts.append("related #%s%s" % (r.get("seq"), mark))
-    for r in e.get("in") or []:
-        mark = " ✕" if r.get("status") == STATUS_CLOSED else ""
-        if r.get("kind") == "spawned-from":
-            parts.append("spawned #%s%s" % (r.get("seq"), mark))
-        else:
-            parts.append("related #%s%s" % (r.get("seq"), mark))
+            runs.append([label, ["#%s%s" % (r.get("seq"), mark)], (fmt % r.get("seq")) + mark])
+    parts = [run[2] if len(run[1]) == 1 else "%s %s" % (run[0], ", ".join(run[1]))
+             for run in runs]
     return ("Related: " + " · ".join(parts)) if parts else None
 
 
@@ -5764,6 +6065,131 @@ def append_related(task, other, kind):
         return False
     rel.append({"id": other.get("id"), "seq": other.get("seq"), "kind": kind, "ts": _now()})
     return True
+
+
+# --- the typed-edge write surface --------------------------------------------
+#
+# THE UNIFYING RULE, so there is one thing to remember rather than five: the
+# SUBORDINATE side stores the edge — the dependent, the child, the absorbed task.
+# That is already `spawned-from`'s child→origin convention, and it is what keeps
+# every one of these a single-task write with a derived reverse direction.
+#
+# `--relate` and the `related` kind are untouched: 23 live edges still need their
+# writer until a separate migration converts them.
+
+# OWNERSHIP RULE — decided, not an accident of there being nothing to check yet.
+# `related` (and the later `mentions`) may name a task in ANOTHER person's brain;
+# `depends-on` and `parent` may NOT, because both are COMPUTED OVER — roll-ups and
+# unblocked-work queries — and compute requires freshness. A stale foreign edge would
+# make those answers silently wrong rather than loudly unavailable. v1 has no
+# resolvable foreign handle at all (none can exist before sync lands), so today this
+# only sharpens the error message; it is written as the named rule because this is the
+# ONE place sync has to teach when foreign refs become real.
+_LOCAL_ONLY_KINDS = frozenset(("depends-on", "parent"))
+
+# An interbrain handle is `<owner>-<seq>` (see the board's handle chip). A local seq is
+# all-digits and a local `<seq>-<ordinal>` starts with a digit, so requiring a leading
+# LETTER separates the two grammars. Only consulted after local resolution has already
+# failed, so a false positive can never mis-resolve a real task — at worst it picks the
+# more specific of two "no such task" messages.
+_FOREIGN_HANDLE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.]*-\d+$")
+
+
+def _looks_foreign_ref(ref):
+    """Whether `ref` is shaped like another brain's task handle rather than a local
+    seq/id. See the ownership rule above — this is the hook sync extends."""
+    return bool(_FOREIGN_HANDLE_RE.match((ref or "").strip()))
+
+
+def _resolve_edge_ref(ref, self_id, flag, kind):
+    """Resolve one `<flag> <ref>` to a target task, or explain why not.
+
+    Returns `(task, None)` on success and `(None, reason)` otherwise. The three
+    refusals, all non-fatal so a batch keeps going: no such task; a SELF-edge (a task
+    depending on / parenting / duplicating itself is meaningless, not a judgement
+    call — `_add_undirected` already drops `a == b`); and a foreign ref for a
+    local-only kind."""
+    other = resolve_ref(ref) or load_task(ref)
+    if not other:
+        if kind in _LOCAL_ONLY_KINDS and _looks_foreign_ref(ref):
+            return None, ("ignoring %s %s — %s accepts LOCAL tasks only: it is computed "
+                          "over, and compute needs freshness no foreign edge can promise"
+                          % (flag, ref, flag))
+        return None, "ignoring %s %s (no such task)" % (flag, ref)
+    if other.get("id") == self_id:
+        return None, ("ignoring %s %s (a task can't point %s at itself)"
+                      % (flag, ref, flag))
+    return other, None
+
+
+def _relation_cycle_path(task, other, kind, tasks=None):
+    """The cycle that adding `task --kind--> other` would close, as a list of seqs
+    reading `[task, other, …, task]`, or None when it closes none.
+
+    Walks only STORED edges of the same `kind`, starting at `other` and looking for a
+    way back to `task`. Cheap by construction — the whole store holds a few dozen
+    relation entries — and it is why the write can warn without refusing.
+
+    STRUCTURALLY INCOMPLETE, deliberately: this sees only the edge being written now,
+    so a cycle closed by a later write on a DIFFERENT task goes unnoticed here. The
+    complete answer is a topological sort over the whole graph, which does not exist
+    yet; when it does, it — not this — becomes the authority.
+
+    CYCLE-SAFE BY CONSTRUCTION: the `seen` set is load-bearing, not an optimisation.
+    A `parent` cycle is allowed to exist in the store (the write always succeeds), so
+    naive recursion over a parent chain does not terminate. Every future walker of
+    these edges needs the same guard."""
+    scan = tasks if tasks is not None else all_tasks()
+    by_id = {t.get("id"): t for t in scan}
+    start, goal = other.get("id"), task.get("id")
+    if not start or not goal:
+        return None
+    stack, seen = [(start, [start])], set()
+    while stack:
+        cur, path = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        node = by_id.get(cur)
+        if node is None:
+            continue
+        for e in (node.get("related") or []):
+            if e.get("kind") != kind:
+                continue
+            nxt = e.get("id")
+            if not nxt:
+                continue
+            if nxt == goal:
+                seqs = [(by_id.get(i) or {}).get("seq") for i in path]
+                return [task.get("seq")] + seqs + [task.get("seq")]
+            stack.append((nxt, path + [nxt]))
+    return None
+
+
+def _parent_children(task, tasks=None):
+    """Tasks whose stored `parent` edge points at `task` — its children in the tree,
+    derived like every other reverse direction. Sorted by seq for a stable notice."""
+    tid = task.get("id")
+    kids = [t for t in (tasks if tasks is not None else all_tasks())
+            if t.get("id") != tid
+            and any(r.get("kind") == "parent" and r.get("id") == tid
+                    for r in (t.get("related") or []))]
+    return sorted(kids, key=lambda t: t.get("seq") if t.get("seq") is not None else 1 << 30)
+
+
+def remove_related(task, other_id):
+    """Drop EVERY stored edge from `task` to `other_id`, whatever its kind, and return
+    the sorted list of kinds removed ([] when there was none). The one removal verb:
+    an edge is a statement of PRESENT STRUCTURE, not a historical belief, so unlike a
+    decision it must be correctable rather than superseded.
+
+    Only ever touches this task's own list. It cannot reach the DERIVED reverse
+    direction and must not try — that edge is owned by the task that stored it."""
+    rel = task.get("related") or []
+    kinds = sorted({r.get("kind") or "related" for r in rel if r.get("id") == other_id})
+    if kinds:
+        task["related"] = [r for r in rel if r.get("id") != other_id]
+    return kinds
 
 
 # -- digest staleness: cheap dirty-tracking for opt-in auto-checkpointing ------
@@ -9146,6 +9572,59 @@ def _update_one(ref, a):
         else:
             relate_targets.append(other)
 
+    # The TYPED edges, resolved the same way and for the same reason: reads happen
+    # here, the writes land inside the optimistic-locked self-update below, and the
+    # ONE cross-task write (--replaces closing its target) is a deferred side effect.
+    # A single value arrives as a string, a repeatable one as a list — normalise both,
+    # and stringify: `resolve_ref` strips its argument, so a caller handing us a bare
+    # int seq (a test, a future non-argparse entry point) must not blow up.
+    def _reflist(v):
+        vals = [] if v is None else (list(v) if isinstance(v, list) else [v])
+        return [s for s in (str(x).strip() for x in vals if x is not None) if s]
+
+    edge_targets, unrelate_targets = {}, []
+    for flag, kind, vals in (
+            ("--depends-on", "depends-on", _reflist(getattr(a, "depends_on", None))),
+            ("--parent", "parent", _reflist(getattr(a, "parent", None))),
+            ("--absorbed-by", "absorbed-by", _reflist(getattr(a, "absorbed_by", None))),
+            ("--replaces", "replaces", _reflist(getattr(a, "replaces", None))),
+            ("--duplicates", "duplicates", _reflist(getattr(a, "duplicates", None)))):
+        for r2 in vals:
+            other, why = _resolve_edge_ref(r2, tid, flag, kind)
+            if other is None:
+                relate_warnings.append("update %s: %s" % (ref, why))
+            else:
+                edge_targets.setdefault(kind, []).append(other)
+    for r2 in _reflist(getattr(a, "unrelate", None)):
+        other = resolve_ref(r2) or load_task(r2)
+        if not other:
+            relate_warnings.append("update %s: ignoring --unrelate %s (no such task)" % (ref, r2))
+        else:
+            unrelate_targets.append(other)
+
+    # CYCLE CHECK — a WARNING, never a refusal. Direct precedent: the 600-char decision
+    # advisory always stores, because a refusal makes the author drop a fact or fake two
+    # entries out of one. The same holds here: refusing the write does not remove the
+    # dependency, it only stops it being written down. See `_relation_cycle_path` for why
+    # this is structurally incomplete and why every parent-chain walker must be cycle-safe.
+    # The scan is lazy, so a plain --title update still reads nothing extra.
+    cycle_warnings, _scan, absorb_children = [], None, set()
+    for kind in ("depends-on", "parent"):
+        for other in edge_targets.get(kind, []):
+            if _scan is None:
+                _scan = all_tasks()
+            chain = _relation_cycle_path(base, other, kind, _scan)
+            if chain:
+                cycle_warnings.append(
+                    "warning: this creates a %s cycle %s. Stored anyway."
+                    % (kind, " → ".join("#%s" % s for s in chain)))
+    # An absorbed task's children are NAMED in the handoff — never moved. Read before
+    # the write, since the reconcile has to know what is now orphaned.
+    if edge_targets.get("absorbed-by"):
+        if _scan is None:
+            _scan = all_tasks()
+        absorb_children = {c.get("seq") for c in _parent_children(base, _scan)}
+
     cap = {}
 
     def _apply(task):
@@ -9160,6 +9639,9 @@ def _update_one(ref, a):
         # names its own reversal already (`--summary` → `--restore-summary`) or is a
         # plain field write with nothing to reverse.
         undos = []
+        # Typed-edge targets that earned a post-save notice: a replaced parent, and an
+        # absorb (whose reconcile handoff is REQUIRED output, not decoration).
+        parent_notes, absorb_notes = [], []
         if a.title is not None:
             task["title"] = a.title.strip(); changed.append("title")
         # `--summary` REPLACES wholesale, and that replacement used to be the one
@@ -9388,6 +9870,57 @@ def _update_one(ref, a):
             if append_related(task, other, "related"):
                 changed.append("relate")
                 related_new.append(other)
+        # --- the typed edges ---------------------------------------------------
+        # Every one writes on THIS task (the subordinate side stores the edge), so the
+        # whole block stays inside the one optimistic-locked mutation. The result token
+        # each appends to `changed` IS the reported line — `parent #503 (REPLACED #499)`
+        # reads back verbatim through the "updated task N: …" join below.
+        for kind in ("depends-on", "duplicates", "replaces"):
+            for other in edge_targets.get(kind, []):
+                if append_related(task, other, kind):
+                    changed.append("%s #%s" % (kind, other.get("seq")))
+        # --parent: at most ONE. A second write REPLACES the first and NEVER silently
+        # swaps — a task under two parents double-counts in every roll-up, so this is a
+        # tree, not a DAG.
+        for other in edge_targets.get("parent", []):
+            replaced = [r.get("seq") for r in (task.get("related") or [])
+                        if r.get("kind") == "parent" and r.get("id") != other.get("id")]
+            if replaced:
+                task["related"] = [r for r in (task.get("related") or [])
+                                   if not (r.get("kind") == "parent"
+                                           and r.get("id") != other.get("id"))]
+            added = append_related(task, other, "parent")
+            if added or replaced:
+                changed.append("parent #%s%s"
+                               % (other.get("seq"),
+                                  (" (REPLACED %s)"
+                                   % ", ".join("#%s" % s for s in replaced))
+                                  if replaced else ""))
+                parent_notes.append(other)
+        # --absorbed-by: THIS task's work became part of the other one, so THIS task
+        # closes — which is what keeps it a single-task write, no cross-task write in
+        # either direction. Steps are NOT merged and children are NOT moved; the
+        # reconcile handoff printed below is the deliverable, not decoration.
+        for other in edge_targets.get("absorbed-by", []):
+            was = task_status(task)
+            added = append_related(task, other, "absorbed-by")
+            shut = close_task_inplace(
+                task, note="absorbed by #%s" % other.get("seq"), session=session)
+            if added or shut:
+                changed.append("absorbed-by #%s%s"
+                               % (other.get("seq"),
+                                  (" · task CLOSED (was %s)" % status_display(was))
+                                  if shut else " · task was already closed"))
+                absorb_notes.append((other, shut))
+        # --unrelate: the ONE removal verb. Reports what went; removing nothing is a
+        # plain report, not an error.
+        for other in unrelate_targets:
+            gone = remove_related(task, other.get("id"))
+            if gone:
+                changed.append("unrelated #%s (removed: %s)"
+                               % (other.get("seq"), ", ".join(gone)))
+            else:
+                msgs.append("update %s: no edge to #%s" % (ref, other.get("seq")))
         # --pr [--pr-desc]: the desc applies to the url(s) given in the SAME update;
         # a --pr-desc with NO --pr applies to the most-recent stored pr instead.
         pr_urls = getattr(a, "pr", None) or []
@@ -9450,6 +9983,7 @@ def _update_one(ref, a):
                   register=False)
         cap["changed"], cap["msgs"], cap["related_new"] = changed, msgs, related_new
         cap["undos"] = undos
+        cap["parent_notes"], cap["absorb_notes"] = parent_notes, absorb_notes
 
     updated = mutate(tid, _apply)
     if updated is None:
@@ -9457,18 +9991,50 @@ def _update_one(ref, a):
     changed, msgs, related_new = cap["changed"], cap["msgs"], cap["related_new"]
     undos = cap.get("undos") or []
     label = updated.get("seq", updated["id"][:8])
+    # Cycle warnings ride out even when nothing changed (a re-run of an already-stored
+    # edge still describes a cycle the reader should know about).
+    msgs.extend(cycle_warnings)
     if not changed:
         msgs.append("update %s: nothing to change (pass --title/--summary/--append-summary/"
                     "--restore-summary/--goal/--state/--step-add/--step-done/--step-undone/"
                     "--step-supersede/--step-restore/--decision/--supersedes/--pin/"
                     "--pin-decision/--unpin-decision/--restore-decision/--log/--relate/"
-                    "--pr/--pr-desc/--story/--story-desc/--color/--effort)" % label)
+                    "--depends-on/--parent/--absorbed-by/--replaces/--duplicates/"
+                    "--unrelate/--pr/--pr-desc/--story/--story-desc/--color/--effort)" % label)
         return "\n".join(msgs)
     # Reciprocal `child` post on each newly-related task — a side effect, so it runs
     # AFTER the self-update, each write itself optimistic-locked.
     for other in related_new:
         mutate(other["id"], lambda o, seq=updated.get("seq"), title=updated.get("title"):
                add_event(o, "child", "related ← #%s: %s" % (seq, title), session))
+    # --replaces closes the TARGET — the opposite direction from --absorbed-by, which
+    # closes the task being updated. That makes it the one typed edge with a cross-task
+    # write, so it runs HERE (after the atomic self-update) and is itself
+    # optimistic-locked, exactly like --relate's reciprocal posts above. Its notices are
+    # collected rather than appended, so they print under the result line, not above it.
+    replace_notes = []
+    for other in edge_targets.get("replaces", []):
+        was, shut = task_status(other), {"v": False}
+
+        def _shut(o, _seq=updated.get("seq"), _title=updated.get("title"), _f=shut):
+            _f["v"] = close_task_inplace(o, note="replaced by #%s" % _seq, session=session)
+            add_event(o, "child", "replaced by #%s: %s" % (_seq, _title), session)
+        target = mutate(other["id"], _shut)
+        if target is None:
+            continue
+        if shut["v"]:
+            # NO reconcile notice, and that is the point: replacing says the approach was
+            # dropped, so nothing was inherited and nothing needs recalculating. The
+            # asymmetry with --absorbed-by is the whole reason both verbs exist.
+            replace_notes.append("  ↳ #%s CLOSED (was %s) — its approach was replaced, so "
+                                 "no work carried over." % (other.get("seq"),
+                                                            status_display(was)))
+            _obsidian_event(target, "closed")
+            _stream_emit("task.status", target,
+                         {"status": target.get("status"),
+                          "closed_ts": target.get("closed_ts")}, session)
+        else:
+            replace_notes.append("  ↳ #%s was already closed." % other.get("seq"))
     # F6.2: a manually-added PR/story signal triggers the same cross-person auto-link as
     # capture — pair with any peer task carrying the same signal (idempotent). Only when
     # this update actually touched a signal, so a pure --title edit does no feed scan.
@@ -9500,6 +10066,37 @@ def _update_one(ref, a):
         msgs.extend("    • %s" % u for u in undos)
         msgs.append("    Nothing was deleted: the replacement stays on the record either "
                     "way, and a restore puts the original back BESIDE it.")
+    msgs.extend(replace_notes)
+    # --parent: warn when the NEW parent carries an authored `state`. A task with
+    # children has a COMPUTED state, which authors cannot write — so say now that the
+    # hand-written line is going to be replaced rather than folded in.
+    for other in (cap.get("parent_notes") or []):
+        if (other.get("state") or "").strip():
+            msgs.append("note: #%s now has children — its state becomes DERIVED when "
+                        "computed state ships;\n      the current hand-written state "
+                        "will be replaced, not merged." % other.get("seq"))
+    # --absorbed-by: the REQUIRED handoff. Absorbing is a reconcile, not a mechanical
+    # move: a survivor whose checklist is the blind union of two plans describes work
+    # nobody intends to do. So steps are never merged, children are never moved, and
+    # nothing is written on the survivor at all (absorb stays a single-task write) —
+    # this notice is the entire deliverable on that side.
+    for other, shut in (cap.get("absorb_notes") or []):
+        if not shut:
+            continue
+        osq = other.get("seq")
+        msgs.append("RECONCILE NEEDED on #%s: absorbing inherits work, so #%s's steps "
+                    "must be recalculated —\n  some of #%s's are already done there, "
+                    "some are now redundant, some conflict.\n"
+                    "  Run: task-station heal --task %s" % (osq, osq, label, osq))
+        kids = sorted(s for s in absorb_children if s is not None)
+        if kids:
+            msgs.append("  #%s's children were NOT moved and are now orphaned: %s — where "
+                        "each belongs is part of the reconcile, not a mechanical reparent."
+                        % (label, ", ".join("#%s" % s for s in kids)))
+        _obsidian_event(updated, "closed")
+        _stream_emit("task.status", updated,
+                     {"status": updated.get("status"),
+                      "closed_ts": updated.get("closed_ts")}, session)
     # THE COLD-READ CHECK, MECHANICAL. It used to be advice — "re-read the digest as if
     # you have no memory of this conversation" — which is unfalsifiable: no output ever
     # said whether it was done. Two of its conditions are decidable, so the machine
@@ -10517,21 +11114,26 @@ def _board_session_counts(task, live_sids=None):
 
 def _board_related(task, tasks=None, rev_map=None):
     """WS4: relation edges for the board card —
-        {"from": [{"seq","kind"}…],           # edges stored ON this task (outgoing)
-         "in":   [{"seq","kind","status"}…]}  # edges pointing AT this task (derived)
+        {"from": [{"seq","kind","id"}…],           # edges stored ON this task
+         "in":   [{"seq","kind","status","id"}…]}  # edges pointing AT this task
+
+    ONE entry per counterpart across BOTH lists: this is a second, independent
+    derivation of the same data the detail line shows, so it routes through
+    `canonical_relations` too — a reciprocal pair lands in whichever list wins the
+    precedence rather than appearing in both. The `id` is emitted on both sides so
+    a consumer can dedup on the task rather than on a machine-local seq; every
+    pre-existing key is retained (purely additive).
 
     `rev_map` (target task id → list of incoming edge dicts) is built ONCE by
     write_board so each card's reverse edges are an O(1) lookup and the board stays
     O(N) — never an N² per-task scan. When `rev_map` is absent (detail path / tests)
     the reverse edges are derived by scanning `tasks` (or `all_tasks()`). Empty lists
     when the task has no relations, so the renderer omits the row."""
-    out = [{"seq": r.get("seq"), "kind": r.get("kind")}
-           for r in (task.get("related") or [])]
     tid = task.get("id")
     if rev_map is not None:
-        inn = list(rev_map.get(tid) or [])
+        rev = list(rev_map.get(tid) or [])
     else:
-        inn = []
+        rev = []
         try:
             scan = tasks if tasks is not None else all_tasks()
         except Exception:
@@ -10541,8 +11143,15 @@ def _board_related(task, tasks=None, rev_map=None):
                 continue
             for r in (other.get("related") or []):
                 if r.get("id") == tid:
-                    inn.append({"seq": other.get("seq"), "kind": r.get("kind"),
-                                "status": task_status(other)})
+                    rev.append({"seq": other.get("seq"), "id": other.get("id"),
+                                "kind": r.get("kind"), "status": task_status(other)})
+    # rev is always a list (never None), so the resolver reuses the O(1) reverse
+    # index / the scan just done and never re-scans the store itself.
+    rels = canonical_relations(task, rev=rev)
+    out = [{"seq": r["seq"], "kind": r["kind"], "id": r["id"]}
+           for r in rels if r["dir"] == "out"]
+    inn = [{"seq": r["seq"], "kind": r["kind"], "status": r["status"], "id": r["id"]}
+           for r in rels if r["dir"] == "in"]
     return {"from": out, "in": inn}
 
 
@@ -10810,6 +11419,54 @@ def _interbrain_on(data_dir):
         return n_brains > 1 or bool(_feeds.peer_feed_files(data_dir))
     except Exception:
         return n_brains > 1
+
+
+def _knowledge_plane_on(vault=None):
+    """Resolve config.knowledge_plane_mode() for the board's two-plane graph: on/off
+    explicit; `auto` → on when a vault is configured AND it yields at least one parseable
+    note. Off (and any error) ⇒ False.
+
+    WHY AUTO IS SAFE AS A DEFAULT: a user with no vault resolves auto → off, and their
+    board is byte-identical to today's — there is no plane, no note node, no cross-plane
+    edge. That is the same parity law `_interbrain_on` obeys above, and it is the reason
+    this gate can default to `auto` rather than off. The gate is read-only: nothing on
+    this path writes into a vault (that is `config.knowledge_graph_enabled()`, a
+    different switch entirely).
+
+    An explicit `vault` argument wins over config, the way `obsidian_sync.resolve_vault`
+    lets a caller pass one directly."""
+    try:
+        import config as _cfg
+        mode = _cfg.knowledge_plane_mode()
+    except Exception:
+        return False
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    try:
+        v = vault or _cfg.obsidian_vault()
+        return bool(v) and bool(_knowledge.vault_notes(v))
+    except Exception:
+        return False
+
+
+def board_notes(vault=None):
+    """The knowledge plane's corpus for the board — [] unless the plane resolves ON.
+
+    ONE GLOBAL CORPUS of the whole vault, on every render: not a per-task tree and not a
+    filtered slice, because the knowledge layer is a plane in its own right rather than a
+    derived view of the task layer. Guarded end-to-end — an unreadable or absent vault
+    yields [], never an exception, so a vault on an unmounted drive degrades to today's
+    single-plane board. Mirrors `foreign_view_models`: the gate is checked HERE, so the
+    caller can hand the result straight to `build_render_graph`."""
+    try:
+        if not _knowledge_plane_on(vault):
+            return []
+        import config as _cfg
+        return _knowledge.vault_notes(vault or _cfg.obsidian_vault())
+    except Exception:
+        return []
 
 
 def _foreign_view_model(feed, ftask):
@@ -11483,8 +12140,10 @@ def write_board(guard_downgrade=False):
     raw = sorted_tasks()
     # WS4: build the reverse relation-edge index ONCE (O(total edges)) so each card's
     # incoming ("spawned #N" / "related ←") edges are an O(1) lookup rather than an
-    # N² per-task scan. Maps a target task id → [{seq, kind, status}] for every task
-    # whose `related` list points at it.
+    # N² per-task scan. Maps a target task id → [{seq, id, kind, status}] for every
+    # task whose `related` list points at it. The SOURCE task's `id` rides along so
+    # `canonical_relations` can dedup a reciprocal pair on the task itself rather
+    # than on its machine-local seq.
     rev_map = {}
     for t in raw:
         st = task_status(t)
@@ -11492,7 +12151,8 @@ def write_board(guard_downgrade=False):
             tgt = r.get("id")
             if tgt:
                 rev_map.setdefault(tgt, []).append(
-                    {"seq": t.get("seq"), "kind": r.get("kind"), "status": st})
+                    {"seq": t.get("seq"), "id": t.get("id"),
+                     "kind": r.get("kind"), "status": st})
     # WS-D: the knowledge (co-citation) tier is SECOND-BRAIN-GATED — active only when
     # the opt-in flag is on AND a consumer (an Obsidian vault) is configured. Off by
     # default, so the graph below carries only the UNIVERSAL edges (lineage + semantic).
@@ -11567,11 +12227,19 @@ def write_board(guard_downgrade=False):
             foreign_vms = []
     vms = vms + foreign_vms
     # WS-D: the board-level relation graph for the mini-graph panel. build_render_graph
-    # augments build_board_graph (lineage + semantic touches-same, plus gated co-citation)
-    # with category + signal HUB nodes and string ids for the clustered SVG. Empty
+    # augments build_board_graph (lineage, plus gated co-citation) with category +
+    # signal HUB nodes and string ids for the clustered SVG. Empty
     # {nodes:[], edges:[]} on a relation-free store, so the renderer omits the panel.
+    # …and the KNOWLEDGE PLANE's corpus, resolved once per render. `board_notes` checks
+    # the (separate) knowledge-plane gate itself and returns [] when it is off, so this
+    # needs no second gate and a user with no vault gets the byte-identical graph they
+    # get today. It never raises: an unreadable or unmounted vault degrades to [].
     try:
-        graph = build_render_graph(raw, knowledge=knowledge_on)
+        notes = board_notes()
+    except Exception:
+        notes = []
+    try:
+        graph = build_render_graph(raw, knowledge=knowledge_on, notes=notes)
     except Exception:
         graph = {"nodes": [], "edges": []}
     # F1: fold foreign nodes + dashed cross-brain shared-signal edges into the graph, and
@@ -13208,6 +13876,45 @@ def main(argv=None):
     sp.add_argument("--relate", action="append", default=None,
                     help="record a relation edge to another task by seq/id (repeatable, "
                          "idempotent). The related task's event feed hears about it too.")
+    # The TYPED edge flags. One rule covers all of them: the SUBORDINATE side stores
+    # the edge — the dependent, the child, the absorbed task — so every one of these
+    # writes on the task being updated, and the reverse direction is derived.
+    sp.add_argument("--depends-on", dest="depends_on", action="append", default=None,
+                    metavar="TASK",
+                    help="THIS task depends on TASK — TASK must land first (repeatable, "
+                         "idempotent). Stored on the dependent, which is this task. "
+                         "There is no --blocks: that is this edge read backwards, and "
+                         "reverse edges are always derived, never stored. Local tasks "
+                         "only. A cycle warns and still stores.")
+    sp.add_argument("--parent", default=None, metavar="TASK",
+                    help="TASK is THIS task's parent — at most ONE, because a task under "
+                         "two parents double-counts in every roll-up. Writing a second "
+                         "one REPLACES the first and says which it replaced. Stored on "
+                         "the child, which is this task. Local tasks only.")
+    sp.add_argument("--absorbed-by", dest="absorbed_by", default=None, metavar="TASK",
+                    help="THIS task's work became part of TASK, so THIS task CLOSES. "
+                         "Absorbing inherits work, so it prints a reconcile handoff for "
+                         "TASK — steps are never merged automatically, and children are "
+                         "never moved. (Compare --replaces, which closes the OTHER task.)")
+    sp.add_argument("--replaces", action="append", default=None, metavar="TASK",
+                    help="THIS task replaces TASK, so TASK CLOSES — its approach was "
+                         "dropped, not absorbed, so nothing is inherited and no reconcile "
+                         "is needed (repeatable). Note the direction: --replaces closes "
+                         "the OTHER task, --absorbed-by closes THIS one. Spelled "
+                         "`replaces`, not `supersedes`, because --supersedes already "
+                         "retires a DECISION and both are valid in one command.")
+    sp.add_argument("--duplicates", action="append", default=None, metavar="TASK",
+                    help="THIS task and TASK are the same work (repeatable). Symmetric — "
+                         "either side may declare it, it is stored once, and the reverse "
+                         "reads the same. Closes nothing and decides nothing: it makes "
+                         "duplication a warning instead of something someone must notice.")
+    sp.add_argument("--unrelate", action="append", default=None, metavar="TASK",
+                    help="remove EVERY edge this task stores to TASK, whatever the kind "
+                         "(repeatable). An edge states present structure, not a "
+                         "historical belief, so it is corrected rather than superseded. "
+                         "Removing nothing is reported, not an error. Only touches this "
+                         "task's own edges — a derived reverse edge belongs to the task "
+                         "that stored it.")
     sp.add_argument("--session", default=None,
                     help="session id to attribute --relate / --summary events to (optional)")
     sp.set_defaults(fn=cmd_update)
@@ -13457,6 +14164,12 @@ def _add_config_args(sp):
                     const="on", default=None,
                     help="board Interbrain federation: on · off · auto (default auto → on when >1 brain/peers)")
     sp.add_argument("--interbrain-get", dest="interbrain_get", action="store_true")
+    sp.add_argument("--knowledge-plane", dest="knowledge_plane", nargs="?",
+                    choices=["on", "off", "auto"], const="on", default=None,
+                    help="board knowledge plane: on · off · auto — the vault's notes as a "
+                         "second plane above the task plane, read-only (default auto → on "
+                         "when a configured vault holds at least one note)")
+    sp.add_argument("--knowledge-plane-get", dest="knowledge_plane_get", action="store_true")
     sp.add_argument("--org-label", dest="org_label", nargs="?", const="", default=None,
                     help='display label for the org brain (default "Org brain"; e.g. "Company Brain"); no value clears it')
     sp.add_argument("--org-label-get", dest="org_label_get", action="store_true")

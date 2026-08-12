@@ -270,6 +270,27 @@ def knowledge_graph_enabled():
     return bool(get("knowledge_graph", False))
 
 
+def knowledge_plane_mode():
+    """Knowledge-plane mode for the board's two-plane graph: 'on' | 'off' | 'auto'
+    (default 'auto'). The board resolves 'auto' → on when an Obsidian vault is configured
+    AND it yields at least one parseable note, else off. Env escape
+    TASK_STATION_KNOWLEDGE_PLANE wins over the persisted flag.
+
+    NOT `knowledge_graph_enabled()` above, and deliberately a separate switch. That one
+    gates a WRITE path — the `## Related` wikilink section emitted into the user's real
+    vault — as well as the task↔task co-citation edges, which is why it is opt-in and
+    stays off by default. This one is READ-ONLY and board-only: it decides whether the
+    board draws the vault as its own plane above the task plane, and it never writes a
+    byte into a vault. That is what lets it default to auto — a user with no vault
+    resolves auto → off and their board is unchanged. Mirrors interbrain_mode()."""
+    env = os.environ.get("TASK_STATION_KNOWLEDGE_PLANE")
+    if env is not None:
+        v = env.strip().lower()
+        return v if v in ("on", "off", "auto") else "auto"
+    v = str(get("knowledge_plane", "auto")).strip().lower()
+    return v if v in ("on", "off", "auto") else "auto"
+
+
 def auto_categories_enabled():
     """True unless explicitly disabled — default ON. Mirrors TASK_STATION_TITLE's
     env escape: `TASK_STATION_AUTO_CATEGORIES=off` (or `config --auto-categories off`)
@@ -912,6 +933,12 @@ def board_rows():
          "Interbrain federation: peer/org feeds render as read-only foreign rows + graph nodes in the board (owner chip, lock, memo-only). auto = on when >1 brain or peer feeds exist, else a single-brain board (default: auto)", None, None),
         ("--org-label", org_label(), None,
          'Display label for the org brain everywhere it appears (default: "Org brain"; e.g. "Company Brain")', None, None),
+        ("--knowledge-plane", knowledge_plane_mode(), "on · off · auto",
+         "Knowledge plane: your vault's notes render as a second plane above the task plane in the board graph, panned between rather than zoomed. auto = on when a vault is configured and holds at least one note, else off (default: auto)",
+         ["READ-ONLY and board-only — nothing is ever written into the vault.",
+          "Separate from --knowledge-graph, which gates the vault WRITE path.",
+          "With no vault the plane is absent and the board is unchanged."],
+         None),
         ("--done-closes-window", "on" if done_closes_window_enabled() else "off", "on · off",
          "Auto-close the terminal window ~1s after a no-arg /done closes this session's task (default: off — window stays open)",
          ["Opt-in because there is no reliable way to tell a human-typed /done from",
@@ -1491,7 +1518,7 @@ RESET_KEYS = [
     "obsidian_vault", "obsidian_daily_note", "obsidian_daily_heading",
     "obsidian_prompts", "obsidian_category_hubs", "obsidian_subgroups",
     "obsidian_story_groups",
-    "knowledge_graph", "owner",
+    "knowledge_graph", "knowledge_plane", "owner",
     "usage_tracking", "usage_prompts", "usage_billing_mode",
     "recap", "recap_curator_cmd",
     "editor_scheme",
@@ -1634,6 +1661,11 @@ def cmd_config(a):
         print("interbrain = %s" % interbrain_mode()); return
     if getattr(a, "interbrain_get", False):
         print(interbrain_mode()); return
+    if getattr(a, "knowledge_plane", None) is not None:
+        set("knowledge_plane", a.knowledge_plane)
+        print("knowledge_plane = %s" % knowledge_plane_mode()); return
+    if getattr(a, "knowledge_plane_get", False):
+        print(knowledge_plane_mode()); return
     if getattr(a, "org_label", None) is not None:
         set("org_label", a.org_label or None)     # empty clears → default "Org brain"
         print("org_label = %s" % org_label()); return
