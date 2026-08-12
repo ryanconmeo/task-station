@@ -1,6 +1,6 @@
 ---
 name: heal
-description: Reconcile a task's append-only decision log into current state — supersede what is now wrong, split what is compound, merge what is true but no longer load-bearing, retro-dispose stale acks, and refresh a drifted goal or state line. Use on `/heal`, `/todo heal`, "reconcile this task", or when the SessionStart nag says a task is under-reconciled. Runs as ONE uninterrupted pass — scan, judge, apply, verify — and reports the exact one-command undo for every write it made.
+description: Reconcile a task's append-only decision log into current state — supersede what is now wrong, split what is compound, merge what is true but no longer load-bearing, retro-dispose stale acks, adjudicate a false-positive finding away with a reason, and refresh or re-read a drifted goal. Use on `/heal`, `/todo heal`, "reconcile this task", or when the SessionStart nag says a task is under-reconciled. Runs as ONE uninterrupted pass — scan, judge, apply, verify — and reports the exact one-command undo for every write it made.
 ---
 
 # Heal — the reconcile pass
@@ -41,6 +41,8 @@ Then record the pass, in one command:
 heal --mark-healed --task <n> --note '<what you checked>'
 ```
 
+If re-reading the goal line was part of what you checked and it is still right, record that too — `heal --goal-reviewed --task <n>`, which may be given in the same call. The stamp deliberately does not imply it.
+
 Then report in **one line** and stop. **Do not read the dry run at all.** A clean task has nothing in that block you need, and the stamp is what stops the next session opening on a false "under-reconciled" alarm.
 
 ### 3. Findings? Read the dry run — **ONCE**
@@ -57,9 +59,11 @@ Work the block: which decisions are refuted, which are compound, which are true 
 
 **The goal and the checklist are printed in the dry run directly under the decision set**, and the question for each is the same: *does the newest evidence retire this?* They sit there because a cold session reads them **first** — the goal says what done looks like, the checklist says what to do, the decisions mostly say why. Rewrite a drifted goal with `update --task <n> --goal '<what done looks like now>'`; retire an overtaken step with `update --task <n> --step-add '<the corrected step>' --step-supersede <k>`.
 
+**Working the merge candidates?** Run `heal --candidates --task <n>` instead of re-reading the dry run — it prints the goal, the pins and each group's members in full and nothing else. **A finding you read and judged to be wrong** gets adjudicated rather than left to reappear: `heal --apply --task <n> --dismiss '<check>:<ref>' --why '<why it is not a defect>'`.
+
 Then **run the verbs** (below) — every one of them, in this same turn. Do not write the plan out and wait for a yes; the plan and its result are the same report now, and it is written in step 5 once the work is done.
 
-Then make sure the pass is **recorded**: `--apply` stamps when it performed at least one operation, so if every operation you ran was a judgement verb (`update --decision … --supersedes`, `update --step-supersede`), finish with `heal --mark-healed --note '<what you did>'`.
+Then make sure the pass is **recorded**: `--apply` stamps when it performed at least one operation, so if every operation you ran was a judgement verb (`update --decision … --supersedes`, `update --step-supersede`), finish with `heal --mark-healed --note '<what you did>'`. If you re-read the goal line and it is still right, add `heal --goal-reviewed` — nothing else records that, and without it the count keeps climbing towards a due heal for a line you have already checked.
 
 **What executing does NOT widen.** MERGE CANDIDATES stay proposals. Removing the confirmation removed a *question*, not a *guardrail*: a candidate is a group of decisions that merely open the same way, and merging one from its shape alone writes a false consolidation into the record, where it then reads as reconciled fact. Read each group, decide, and write the surviving summary yourself — exactly as before. The narrow clusters `--apply` already performs are unchanged.
 
@@ -75,7 +79,7 @@ The CLI generates those commands as it writes — `update --task <n> --restore-d
 
 Do not re-render the `/todo` list.
 
-### The user should never need to type `--apply`, `--merge`, `--split`, `--dispose-acks` or `--mark-healed`
+### The user should never need to type `--apply`, `--merge`, `--split`, `--dispose-acks`, `--mark-healed`, `--goal-reviewed`, `--candidates`, `--dismiss` or `--probe-links`
 
 **You choose them.** They exist so this skill can act precisely and so a script can too; they are not a menu for a person to pick from. A user who types `heal --apply` on a hunch gets the worst of both worlds — they pay for the dry run they never read, and before this release they also got a heal stamped for a pass that did nothing. If the user does name a flag, honour it; otherwise never make them learn one.
 
@@ -88,9 +92,11 @@ Do not re-render the `/todo` list.
 | Check | What it finds |
 |---|---|
 | Undispositioned acks | Acks with no disposition — every ack recorded before 2.9.0 reads this way. Retro-dispose them with `--dispose-acks` (below) |
+| Cited commits that resolve nowhere | **The first outward check.** A commit sha the record *declares* (`commit <sha>`, `merged <sha>`, `main @ <sha>`) that resolves in **none** of the task's repos — history was rewritten and the record now points at a commit nobody can read. Bare hex tokens are **never** matched: a task id, a memo id8 and a heal fingerprint are all hex too. UNKNOWN (no repo found, git error) is never reported, and with no prober wired nothing is probed at all — the SessionStart path spawns no subprocess |
+| Digest grew with candidates outstanding | The digest is **larger** than at the last heal **and** at least one merge candidate group is outstanding. Neither half is a defect alone: a working task records work, and a group nobody has ruled on is not wrong. Together they say the record is getting more expensive to brief in exactly the place a named verb was waiting. Needs a baseline, so a never-healed task is silent |
 | Corrections never applied | A memo declaring `--corrects` whose target was never updated |
-| Unlinked supersession language | A decision *saying* "decision 4 was wrong" but linked to nothing — prose pretending to be structure. Two conditions, both required: the language **and** a decision-shaped target (`decision N` / `entry N` / `#N`, naming an earlier decision that exists). Prose that merely *describes* supersession — a rule superseding a rule, a corrected memory note, a memo chain, the supersede feature itself — is **not** reported. It once fired 5 times on one task and 4 were false, and a check that is 80% wrong is one the reader learns to skip |
-| Oversized decisions | Past the char threshold: split candidates |
+| Unlinked supersession language | A decision *saying* "decision 4 was wrong" but linked to nothing — prose pretending to be structure. **Three** conditions, all required: the language, **and** a decision-shaped target (`decision N` / `entry N` / `#N`, naming an earlier decision that exists), **and** a sentence that *declares against* that decision rather than *reporting on* it. Prose that merely *describes* supersession — a rule superseding a rule, a corrected memory note, a memo chain, the supersede feature itself — is **not** reported, and neither is prose that attributes the action to the other decision: `corrected by decision 184`, `decision 173 investigated`, `why decision 150 is NOT superseded`. It fired 5 times on one task with 4 false, then 8 times on another with all 8 the reporting shape; a check that is 80% wrong is one the reader learns to skip |
+| Oversized decisions | Past **6×** the 600-char write advisory (3,600) — the length at which an entry can no longer be superseded a piece at a time, because every ruling inside it is welded to every other one. Between **2×** and 6× it is a **proposal**, not a finding: a real task's decisions *average* ~1,400 chars, so reporting that band as a defect would put `Heal due? YES` on every healthy record on the board. Both numbers derive from the one write advisory (`decisions.LONG_DECISION_CHARS`) rather than being picked separately |
 | Drift | Recorded paths and worktrees that no longer exist, plus branches named in the digest that resolve nowhere. A branch candidate must be **ref-shaped** (backticked, or carrying a `/`, `-`, `_` or digit, or a conventional name like `main`/`dev`) — otherwise the English word after "branch" gets reported. **Session scratchpads and system temp paths are excluded outright** — see below |
 | Link rot | Stored PR/story URLs that no longer resolve |
 | Health metric | Current decision count + total chars + how the last heal reads — the number that says a task is under-reconciled. Never healed says exactly that; it does **not** report the whole log as "new since the last heal" |
@@ -101,6 +107,8 @@ Do not re-render the `/todo` list.
 ### The rule behind four of those rows: **declare vs describe**
 
 Every keyword check here answers one question before it reports: **does this text DECLARE the condition, or merely DESCRIBE it?**
+
+**And a fifth vocabulary answers a second question the guard cannot: WHO does the sentence say did it?** Reading the word in *front* of a keyword tells you what noun it is about; it says nothing about the actor. So `corrected by decision 184` (the reference is the **agent**), `decision 173 investigated` (the reference is the **subject** of a reporting verb) and `why decision 150 is NOT superseded` (the sentence **denies** the condition) all satisfied the two older conditions perfectly, and on one real task **8 of 17 findings** were that one shape. `heal.reports_another_decision` reads all three, scoped to the clause. A form of *to be* after the reference is deliberately **not** a reporting verb: `decision 4 was wrong` is the finding worth having.
 
 That rule is written down because the same bug shipped **four separate times** — the drift check scraped branch names out of English prose, the unlinked-supersession check fired on decisions *explaining* supersession, the stale-step check fired on the step written to *fix* staleness, and the memo correction backstop fired on a release note mentioning "a superseded ancestor" and on a memo reporting that *someone else* had withdrawn a release. Each time the fix was the same: read the word standing **in front** of the keyword. There is now exactly one implementation of that (`heal.qualifier` → `heal.declaring_hits`), and **a new check brings a vocabulary to it, never a fifth heuristic.** The re-fragmentation row is the fifth vocabulary (`heal.CONSOLIDATION_QUALIFIERS`): `a consolidation of the release trail` and `a wrong merge writes a false consolidation into the record` both *describe* one, while `CONSOLIDATED — …`, `this decision consolidates 4, 9 and 17` and `one reconciled record of 5 decisions` each *declare* one. A false negative is the deliberate, cheaper failure every one of these chose: a missed finding costs one confused resume, a check that cries wolf costs every finding it would ever have made.
 
@@ -116,15 +124,39 @@ The fix is the `merge` verb again, with the consolidation folded in: write **one
 
 The drift check ignores anything under a **session scratchpad** or a **system temp root**, and counts them on one line as *expected-ephemeral* instead. On one real task all **seven** drift findings were worker briefs under `/private/tmp/…/<session-uuid>/scratchpad/` that task-station had auto-captured as artifacts. That directory is wiped when the session ends *by construction*, so "the digest points a resumed session at somewhere it cannot go" was true and useless — nobody resumes a task by opening a worker brief out of a deleted temp directory. Seven of them made a heal due on a task with nothing wrong with it. A vanished **repo** path is still reported, and that is the whole distinction: somewhere the system promised to keep, versus somewhere it promised to erase.
 
-### Four sections that are NOT findings
+### The sections that are NOT findings
 
-The scan also prints these, below the checks. None counts as an issue and none can make `Heal due?` true — a task can carry plenty of all four and be perfectly reconciled.
+The scan also prints these, below the checks. None counts as an issue — **one** of them (the goal review) can make `Heal due?` true, and it says so in its own row; the rest never can. A task can carry plenty of all of them and be perfectly reconciled.
 
-**MERGE CANDIDATES.** Current decisions grouped by their **leading shape** — a version-like prefix plus the word after it (`<version> shipped`), or the first three significant words (`my process error`) — reported when three or more share one. The judgment list used to say "MERGE what is TRUE BUT NO LONGER LOAD-BEARING" and leave you to go and find them; on one real 99-decision task a human found all sixteen mechanically, by matching exactly these prefixes. **They are proposals, and nothing merges them for you**: read each group, decide whether it really is true-but-not-load-bearing, and write the one surviving summary yourself. A wrong merge is worse than a missed one — it puts a false consolidation in the record, where it reads as reconciled fact.
+**SUBJECT CANDIDATES** — the stronger merge tier, rendered first. Current decisions grouped by what they are **about**: an overlapping **step** reference, a shared **release version** (`2.13.1`), a shared **PR/story number**. Grouping is transitive, so one subject is one group rather than three overlapping pairs. **Two** members are enough here where the shape tier needs three, because a shared subject is direct evidence and a shared opening phrase is not. A group tagged **COMPLETED-SUBJECT** has every step its members name already **done or superseded** — the closest the record ever comes to saying "true but no longer load-bearing" on its own, because the checklist says it rather than a reader inferring it. Step references are read only in explicit form (`step 29`, `steps 3-6`, `steps 3, 4 and 5`); a bare number is never one.
+
+**MERGE CANDIDATES** — the secondary tier. Current decisions grouped by their **leading shape** — a version-like prefix plus the word after it (`<version> shipped`), or the first three significant words (`my process error`) — reported when three or more share one. The judgment list used to say "MERGE what is TRUE BUT NO LONGER LOAD-BEARING" and leave you to go and find them; on one real 99-decision task a human found all sixteen mechanically, by matching exactly these prefixes. It stays because it catches the process-error and scrub-iteration families that name no step, release or work item at all. **They are proposals, and nothing merges them for you**: read each group, decide whether it really is true-but-not-load-bearing, and write the one surviving summary yourself. A wrong merge is worse than a missed one — it puts a false consolidation in the record, where it reads as reconciled fact.
+
+**Read the groups cheaply:**
+
+```
+heal --candidates --task <n>
+```
+
+prints the goal line, the pinned decisions, and **each candidate group's members in full — and nothing else**. The full dry run is ~47,000 chars on a real task and 94% of that is the decision corpus; if you have already decided to work the merges, this is the same reading with the corpus removed. Read-only, stamps nothing.
+
+**DIGEST SIZE** — `chars now · at last heal · delta`. Always printed, including when there is no baseline (which reads *no baseline recorded*, never a false zero). It is the **objective**: a reconcile is supposed to make this number go down, and until the stamp snapshotted it nobody could tell a digest 40k down from last week from one 40k up. Growth *with candidates outstanding* is the one finding this measurement can raise.
+
+**LONG DECISIONS** — the proposal tier of the size check: over 2× the write advisory, worst-first, capped at five with a `+N more`. Not defects — that band is the normal length of a working entry.
 
 **PINNED DECISIONS**, each with its age. A pin puts that entry at the head of **every** session's digest, so a line that has quietly gone stale in a pinned decision costs more than the same line anywhere else: on one real task a pinned decision still named two codenames a later decision had retired, and it had been briefing every session with them for days. No check would ever have caught that — none of them asks whether a decision is still *accurate*. So re-read each pin and confirm it still is. Being pinned is not a defect. An `age unknown` means the append predates the bounded event feed, not that the decision is new.
 
-**GOAL REVIEW** — the goal line, plus how many decisions have landed since it was last written. It exists because the goal is the one field that says what *done* looks like and **nothing on the task can contradict it**: there is no second field claiming the same thing, so no check will ever raise a goal that describes a mission already accomplished. On one real task that is exactly what happened, for days, while every check reported clean. The count comes from a baseline written when the goal is set; with no baseline it says **cannot be counted**, never a false zero, and every task that predates the measurement takes that path. A **proposal**: a goal is supposed to outlive the decisions that pursue it, so an untouched one is a reason to *look*, never proof of anything.
+**GOAL REVIEW** — the goal line, plus how many decisions have landed since it was last written **or re-read**. It exists because the goal is the one field that says what *done* looks like and **nothing on the task can contradict it**: there is no second field claiming the same thing, so no check will ever raise a goal that describes a mission already accomplished. On one real task that is exactly what happened, for days, while every check reported clean. The count comes from a baseline written when the goal is set; with no baseline it says **cannot be counted**, never a false zero, and every task that predates the measurement takes that path.
+
+**It is never an ISSUE, and past 25 decisions it IS a reason a heal is due.** Those are not in tension: an untouched goal is not a defect (a goal is *supposed* to outlive the decisions that pursue it), but a goal nobody has *read* across twenty-five decisions is a sentence the next cold session will take as the plan on evidence nobody has checked it against. The threshold is `heal_goal_review_due` in config, `TASK_STATION_HEAL_GOAL_REVIEW_DUE` in the environment, positive-only.
+
+**Re-reading is the service — so recording the re-read is a verb:**
+
+```
+heal --goal-reviewed --task <n>
+```
+
+That resets the count **without rewriting a sentence that is still true**, and it is the only thing that resets it. `--mark-healed` deliberately does **not**: a stamp saying somebody read the record is not a stamp saying they ruled on *this line*, and the difference is what keeps every other stamp readable. It may be combined with `--mark-healed` — that pair is the honest record of a judgement-only pass that included the goal. If the goal *has* drifted, this is the wrong verb: `update --task <n> --goal '<what done looks like now>'` re-baselines it by rewriting it.
 
 **ACCRUED SINCE LAST HEAL** — `+N decisions · +N log entries · +N PR/story links · +N steps`, measured by exact subtraction from the counters the stamp snapshotted. On a never-healed task it says so and gives the totals; on a stamp written before the baseline existed it says *no baseline was recorded* rather than printing four zeros, because zeros read as "nothing happened" when the truth is "nobody measured". It exists to be checked against the section below.
 
@@ -188,6 +220,34 @@ Exactly one disposition — the same three the live `memo ack` requires. **`all`
 
 **It does not forge history.** Every retro-fill is marked `retro` and records who filled it in, when, and why; the ledger renders it as `ab12cd34→noop (retro)`. The original ack's session id and timestamp are never rewritten, and a disposition the acking session actually chose is never overwritten. Naming a subset is surgical — the acks you did not name stay undispositioned, and the next scan still flags them.
 
+## A finding that is genuinely wrong: adjudicate it away
+
+```
+heal --apply --task <n> --dismiss '<check>:<ref>' --why '<why it is not a defect>'
+heal --apply --task <n> --undismiss '<check>:<ref>'
+heal --dismissals --task <n>
+```
+
+**Why this exists.** On one real task the scan stood at **17 findings and 9 were dead paths a human had already read and ruled on**. The scan had no way to know that, so it reported all nine again on the next pass, and the next. A report that repeats what its reader has already answered is one they stop opening — the same cost as crying wolf, reached by a different route.
+
+**A dismissal adjudicates ONE exact state, never a category.** The fingerprint covers the finding's *matched text* — the check, the ref, and the detail line the check generated (which is where each check records what it actually matched: the char count, the keywords, the overlap percentage, the paired index). So a ruling survives a re-scan and does **not** survive the matched text changing: edit the entry it names and the finding **re-reports**, because "this sentence is fine" was never a ruling about the next sentence.
+
+- **The `--why` is mandatory.** A dismissal with no reason is indistinguishable six months later from a finding somebody buried, so one without it is refused and nothing is written.
+- **A dismissed finding leaves the scan entirely** — the findings, the issue count and the due calculus. One informational `Dismissed N` line says how many are silenced, because a silenced finding must never become an invisible one.
+- **The ref matches exactly, or as an unambiguous substring of one current finding's ref.** Ambiguity is refused *with the list*, and so is dismissing something the scan is not currently reporting.
+- **Nothing is deleted.** `--undismiss` marks the entry retired and full reporting resumes; the ledger keeps it as the record that somebody once ruled that way and later changed their mind.
+- **It never stamps a heal.** Adjudicating a false positive is not reconciling a task, and it is its own invocation — it cannot ride along with a split, a merge or a retro-disposition.
+
+**Use it for a false positive you have READ.** It is not a way to quieten a report you have not.
+
+## The one opt-in network call
+
+```
+heal --scan --probe-links --task <n>
+```
+
+One unauthenticated HTTP HEAD per stored PR/story link. **Off by default** — a session start must cost no network, which is why every stored link has always read UNKNOWN. Only an explicit **404/410** counts as dead; a 401 from a private ADO PR, a 403, a 405, a 5xx, a DNS failure and any exception all stay UNKNOWN and are never reported. "Your PR link is dead" about a live PR is the most expensive false positive this module could print.
+
 ## Recording that the heal happened
 
 An `--apply` that performed **at least one operation** stamps the task. One that performed **none** is **refused** — it changes nothing and stamps nothing, and names the two honest moves instead. That refusal exists because the opposite shipped first: a bare `--apply` on an empty plan recorded `last heal <just now>` on a task nobody had reconciled, which is exactly what someone gets when they assume `--apply` *is* the heal. A stamp that is sometimes a lie makes every other stamp unreadable.
@@ -216,7 +276,9 @@ Without that, the record still reads `last heal never`. Measured on one real tas
 
 ## When it is due
 
-The SessionStart nag fires one self-capping line when the scan found anything, **or** there are ≥10 new decisions since the last heal (on a never-healed task: ≥10 decisions on the log, said in those words), **or** any undispositioned ack exists, **or** it has been >7 days on an active task.
+The SessionStart nag fires one self-capping line when the scan found anything, **or** there are ≥10 new decisions since the last heal (on a never-healed task: ≥10 decisions on the log, said in those words), **or** any undispositioned ack exists, **or** it has been >7 days on an active task, **or** ≥25 decisions have landed since the goal line was last written or re-read (`heal_goal_review_due`; silent when nothing recorded that baseline).
+
+Dismissed findings are **not** counted by any of those limbs — that is what a dismissal means.
 
 Two gates warn without ever blocking:
 

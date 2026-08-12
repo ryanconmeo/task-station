@@ -151,10 +151,14 @@ state — one for validity, one for reading order:
   refuse, and the reason is on the record: the old pin cap *did* refuse, and the refusal
   produced a workaround rather than a fix. A limit on a decision's length would push the
   author to drop a fact, or to fake two decisions out of one to get under the number.
-  Distinct from `heal.OVERSIZE_CHARS` (4000) by job, not by disagreement — 600 fires at
-  write time, when the author still has the context to split cheaply; 4000 is the
-  reconcile scan's threshold for an entry already in the log, so it can afford to be far
-  less sensitive.
+  **It is the ONE size number in the project**, and heal's two thresholds are multiples of
+  it (`heal.OVERSIZE_PROPOSAL_CHARS` = 2× = 1,200, a proposal; `heal.OVERSIZE_CHARS` = 6× =
+  3,600, a finding) rather than a separate opinion. They used to be one flat 4,000 —
+  2.4× this and referencing nothing — so the write path and the reconcile path disagreed
+  about what "too long" meant and neither could be retuned without the other silently
+  drifting. 600 fires at write time, when the author still has the context to split
+  cheaply; the multiples judge an entry already in the log, so they can afford to be far
+  less sensitive, and 6× is where an entry stops being supersedable a piece at a time.
 
 Pinning a **replaced** decision (superseded, split or merged) is an error; replacing a
 pinned one clears the pin. A bad or already-replaced index is a **loud error, never a
@@ -222,17 +226,43 @@ double-mark — which is what keeps the inverse unambiguous.
 **Two layers, split by cost.**
 
 - **Layer 1 — `heal.scan()`.** Deterministic, zero tokens, and it never mutates the task.
-  Ten checks — nine findings plus the health metric, which is a measurement rather than a
+  Eleven findings plus the health metric, which is a measurement rather than a
   finding: undispositioned acks · corrections whose target was never updated · unlinked
   supersession language (prose pretending to be structure) · oversized decisions · drift
   (recorded paths/worktrees/branches that vanished) · link rot · the health metric · stale
   steps (which now **name the verb** that retires them, `update --step-supersede <n>`) ·
-  **re-fragmented consolidations** · **steps restating a superseded decision**. Results
-  land in a per-task **gate file** under `<data_dir>/heal/`.
+  **re-fragmented consolidations** · **steps restating a superseded decision** · **cited
+  commits that resolve nowhere** · **the digest grew with merge candidates outstanding**.
+  Results land in a per-task **gate file** under `<data_dir>/heal/`.
   Modelled on `hook_health.py`: everything fails open, an unreadable gate means no nag.
-  Both network-ish probes default **off** — no git subprocess, no HTTP — so the path the
-  SessionStart nag runs is pure Python plus `stat`. Link rot degrades to **unknown** on
-  any failure and never reports a live link as dead.
+  All three outward probes default **off** — no git subprocess for branches OR cited
+  commits, no HTTP — so the path the SessionStart nag runs is pure Python plus `stat`. Link
+  rot degrades to **unknown** on any failure and never reports a live link as dead;
+  `heal --scan --probe-links` is the opt-in HTTP HEAD, where only an explicit 404/410
+  counts as dead.
+
+  **The cited-commit check is the first OUTWARD one** (`heal.commit_citations` →
+  `heal.commit_prober`), and it is the only check that asks a question of something the task
+  does not contain: `git cat-file -e <sha>^{commit}` in each repo the task recorded. It
+  exists because every other check has a structural ceiling — a rebase or force-push that
+  erased a cited commit leaves the record perfectly self-consistent. It matches **declared**
+  citations only (`commit <sha>`, `merged <sha>`, `sha <sha>`, `pushed <sha>`, `main @ <sha>`)
+  plus a digit gate, because 7-40 hex characters is also a task id, a memo id8, a heal
+  fingerprint and a tree hash — and `defaced` and `acceded` are hex-only English words. The
+  prober is injected exactly like `branch_prober`, and UNKNOWN is never a finding.
+
+  **The dismissal ledger** (`heal_dismissals`, additive) is how an adjudicated false positive
+  stops reappearing. On one real task 17 findings stood and **9 were dead paths a human had
+  already ruled on**, re-reported every pass — the cry-wolf failure arriving from a fifth
+  direction. `heal --apply --dismiss '<check>:<ref>' --why '…'` records the check, the ref, a
+  **mandatory** why, the moment and the session; `apply_dismissals` then drops the finding
+  from `findings` into `dismissed`, so the issue count, `due()` and `plan()` all stop seeing
+  it from ONE place. The fingerprint is sha1 over the finding's **matched text** (check + ref
+  + detail — the detail is where each check records what it matched), so a ruling survives a
+  re-scan and expires the moment that text changes: it adjudicates one state, never a
+  category. `--undismiss` marks the entry retired rather than removing it, and the listing
+  flags an active ruling whose text has since changed as **EXPIRED**. A dismissal is its own
+  invocation and never stamps a heal — adjudicating a false positive is not reconciling.
 
   The drift check's branch half has to **earn** a finding. It reads branch names out of
   narrative prose (`goal` / `state` / `summary` — there is no structured branch field), and
@@ -304,13 +334,29 @@ double-mark — which is what keeps the inverse unambiguous.
   and there is exactly **one** implementation of that question: `heal.qualifier` reads
   the word standing in front of the match and `heal.declaring_hits` drops every hit that
   is only qualifying some other noun. A new check brings a **vocabulary** to that helper,
-  never a fifth heuristic. Five vocabularies exist: `NON_DECISION_QUALIFIERS` (unlinked
+  never a fifth heuristic. Five vocabularies answer it in its front-word form:
+  `NON_DECISION_QUALIFIERS` (unlinked
   supersession), `DECLARING_QUALIFIERS` (stale steps), `SELF_DECLARING_QUALIFIERS` +
   `NOUN_DECLARING_QUALIFIERS` for the memo backstop — which needs two because its
   patterns are not all the same part of speech — and `CONSOLIDATION_QUALIFIERS`, below. In
   front of the participle *superseded*, the article in "a superseded ancestor" is exactly
   what makes it describe another noun; in front of the noun *correction*, the identical
   article in "a correction" still declares one.
+
+  **And a fifth time, because the front word cannot answer a second question: WHO does the
+  sentence say did it?** `corrected by decision 184`, `decision 173 investigated` and `why
+  decision 150 is NOT superseded` all satisfy the unlinked-supersession check's two older
+  conditions perfectly, and on one real task **8 of 17 findings** were that one shape — each
+  of them a decision *minuting* another decision's work rather than contradicting it.
+  `heal.reports_another_decision` reads three things about the reference's own clause, each a
+  vocabulary rather than a fourth heuristic: the word in **front** is `by`/`per`
+  (`REPORTING_QUALIFIERS` — the reference is the agent), the word **after** is a reporting
+  verb (`REPORTING_VERBS` — the reference is the subject), or a supersession keyword in the
+  clause is **negated** (`NEGATING_QUALIFIERS` — the sentence denies the condition). A form
+  of *to be* after the reference is deliberately not a reporting verb: `decision 4 was wrong`
+  is the finding worth having. Eight vocabularies now exist, and the discriminator's own
+  false negative — a number both declared against and reported on in one long entry — is the
+  cheaper failure this module always chooses.
 
   The **re-fragmented-consolidation** check (`heal.refragmented_consolidations`) is the one
   place in this module where a leading-shape match becomes a **finding** rather than a
@@ -355,11 +401,15 @@ double-mark — which is what keeps the inverse unambiguous.
   fits — any step carrying correction vocabulary at all is skipped, read with the
   over-eager `matched_language` on purpose, since here over-eagerness can only cost false
   negatives. Already-superseded steps are skipped exactly as in the stale-step check.
-- **Five report sections that are deliberately NOT checks.** `scan()` returns them
+- **The report sections that are deliberately NOT checks.** `scan()` returns them
   beside `findings`, and `due()` counts `findings` alone — folding any of them in would
   put `Heal due? YES` on a healthy task, which is the failure mode this module has
-  already had to fix four times. One is the **expected-ephemeral count**
-  (`heal.ephemeral`), described with the drift check above.
+  already had to fix four times. (The goal review is the single, deliberate exception, and
+  only for `due()`: it is still never an *issue*. See it below.) One is the
+  **expected-ephemeral count** (`heal.ephemeral`), described with the drift check above.
+  Another is the **long-decision proposal tier** — over 2× the write advisory, worst-first,
+  capped at five with a `+N more` — which is the normal length of a working entry and so must
+  never be an issue; only the 6× finding tier is ever planned as a `--split`.
 
   **Merge candidates** (`heal.merge_candidates`) group current decisions by a **leading
   shape** — a version-like prefix plus the word after it (`<version> shipped`), or the
@@ -383,16 +433,49 @@ double-mark — which is what keeps the inverse unambiguous.
   unknown**, never as new. Informational, exactly like the health metric: being pinned is
   not a defect.
 
+  **Subject candidates** (`heal.subject_candidates`) are the stronger merge tier and render
+  above the shape one. They group current decisions by what the entries are **about** —
+  overlapping **step** references (explicit `step N` / `steps N-M` shapes only; a bare number
+  is never one), a shared **release version**, a shared **PR/story number** — transitively, so
+  one subject is one group rather than three overlapping pairs. **Two** members are enough
+  here where the shape tier needs three, because a shared subject is direct evidence and a
+  shared opening phrase is not. A group is tagged `completed-subject` when every step its
+  members name is **done or superseded** (`heal.completed_subjects`): the checklist itself
+  reporting that the work those entries record is finished, which is the closest the record
+  ever comes to stating "true but no longer load-bearing" on its own. Still proposals —
+  nothing here is ever an op. `heal --candidates` (`heal.candidate_lines`) prints the goal, the
+  pins and every group's members **in full and nothing else**, because the full dry run is
+  ~94% corpus and a reader working the merges does not need it.
+
+  **The size objective** (`heal.size_objective`) reports `chars now / at last heal / delta`
+  against `chars_at_last_heal`, an additive snapshot `stamp_healed` takes AFTER the pass's
+  operations — so the baseline is the size the heal *left*. A char total with nothing to
+  compare it against cannot tell a digest 40k down from last week from one 40k up, and down is
+  the point of the pass. No baseline reads as *no baseline recorded*, never a zero delta. It is
+  informational **except** in one conjunction: a digest that **grew** while **≥1 merge
+  candidate group** was outstanding is a finding (`heal.grew_with_candidates`, one per task,
+  ref `digest`). Neither half is a defect alone — a working task records work, and a group
+  nobody has ruled on is not wrong — but together they say the record is getting more
+  expensive to brief in exactly the place a named verb was waiting.
+
   **The goal review** (`heal.goal_review`) names the goal line and counts the decisions
-  that have landed since it was last written. The goal is the one field that says what
-  **done** looks like, and nothing else on the task claims to say it — so there is no
-  second thing to cross-reference it against and no check can ever raise one that
+  that have landed since it was last written **or re-read**. The goal is the one field that
+  says what **done** looks like, and nothing else on the task claims to say it — so there is
+  no second thing to cross-reference it against and no check can ever raise one that
   describes a mission already accomplished. The baseline is a write-time snapshot,
   `goal_touched` (`{"ts", "decisions"}`), written by `update --goal` when the text
   actually moves and by `create --goal`; with no snapshot the section says **cannot be
   counted** rather than zero, for the same reason `accrual` does, and every task predating
-  the field takes that path. A **proposal**, never a finding: a goal is supposed to
-  outlive the decisions that pursue it.
+  the field takes that path. Never an **issue** — a goal is supposed to outlive the decisions
+  that pursue it — but it is the one non-check section that reaches `due()`: past
+  `config.heal_goal_review_due()` (25, positive-only, `TASK_STATION_HEAL_GOAL_REVIEW_DUE`)
+  decisions since the last write or re-read, "N decision(s) since the goal line was last
+  reviewed" is a due reason. **Re-reading is the service**, so `heal --goal-reviewed` records
+  it in a SECOND additive field (`goal_reviewed`, same shape) and resets the count without
+  rewriting a correct sentence; `goal_review` reads the LATER of the two baselines. It is kept
+  apart from `goal_touched` because that field is the age of the goal *itself* and
+  `checker.py` reads it as such — and because `--mark-healed` deliberately does **not** reset
+  the count: a stamp saying the record was read is not one saying this line was ruled on.
 
   **What has accrued, and the one gap this layer structurally cannot cover**
   (`heal.accrual`). On the same task as the re-fragmentation above, a **release had shipped
@@ -513,10 +596,10 @@ shape, because the nag, the gate file and `gate_line` all read it.
 split**, the scan still reported `last heal never` and `97 new decision(s) since the last
 heal` — so "heal due?" was permanently YES and the count was meaningless, which trains the
 reader to ignore the one signal built to be trusted. Additive keys on the task blob fix it
-(`last_heal_ts`, `decisions_at_last_heal`, `last_heal_kind`, `healed_counts`, plus an
-optional `last_heal_note`); a task written by an older version simply carries none of them
-and reads as never healed, with its accrual counts reported as unmeasurable rather than as
-zero.
+(`last_heal_ts`, `decisions_at_last_heal`, `last_heal_kind`, `healed_counts`,
+`chars_at_last_heal`, plus an optional `last_heal_note`); a task written by an older version
+simply carries none of them and reads as never healed, with its accrual counts and its size
+delta reported as unmeasurable rather than as zero.
 
 - An **`--apply` that performed at least one operation stamps.**
 - An **`--apply` that performed none is REFUSED** — it changes nothing, writes no backup

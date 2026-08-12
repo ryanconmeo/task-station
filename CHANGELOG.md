@@ -3,6 +3,87 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+Six changes to `heal`, all of them paid for by measurements on one real task: a scan
+standing at **17 findings** of which **8 were false positives of a single shape** and **9
+were dead paths a human had already ruled on**. A report that is half wrong and half
+already-answered is one nobody opens, which makes every finding in it worthless — the
+cry-wolf failure this subsystem has now fixed five times.
+
+### Added
+- **A dismissal ledger — `heal --dismiss` / `--undismiss` / `--dismissals`.** A finding you
+  have read and judged wrong can be adjudicated away instead of reappearing every pass. The
+  additive `heal_dismissals` field records the check, the ref, a **mandatory `--why`**, the
+  moment and the session. A dismissed finding leaves the findings, the issue count and the
+  due calculus entirely; one informational `Dismissed N` line says how many are silenced,
+  because a silenced finding must never become an invisible one. The fingerprint covers the
+  finding's **matched text**, so a ruling adjudicates one exact state and never a category:
+  edit the entry it names and the finding **re-reports**. Nothing is deleted —
+  `--undismiss` marks the entry retired and the listing flags a ruling whose text has since
+  changed as EXPIRED. A dismissal is its own invocation and **never stamps a heal**:
+  adjudicating a false positive is not reconciling a task.
+- **Merge at scale.** The shape tier knew neither whether the work was *finished* nor what
+  the entries were *about*. Four additions, all proposal-tier except the last:
+  - **A completion signal.** A decision whose subject **steps** are all ticked or superseded
+    is tagged `completed-subject` — the checklist itself saying the work it records is done.
+    Step references are read in explicit form only (`step 29`, `steps 3-6`, `steps 3, 4 and
+    5`); a bare number is never one, because a decision's prose is full of bare numbers.
+  - **Subject grouping**, ahead of the shape tier: overlapping step references, a shared
+    release version, a shared PR/story number. Transitive, so one subject is one group.
+    **Two** members are enough where the shape tier needs three — a shared subject is direct
+    evidence, a shared opening phrase is not. The shape tier stays as the secondary one; it
+    catches the process-error and scrub-iteration families that name no subject at all.
+  - **A size objective.** The heal stamp additionally snapshots the digest's decision-char
+    total (additive `chars_at_last_heal`), and the scan reports `chars now · at last heal ·
+    delta`. A char total with nothing to compare it against cannot tell a digest 40k down
+    from last week from one 40k up, and down is the whole point of the pass.
+  - **`heal --candidates`** — the cheap read: the goal line, the pinned decisions and each
+    candidate group's members **in full**, and nothing else. The full dry run is ~47,000
+    chars on a real task and 94% of it is the corpus.
+- **The first OUTWARD check — cited commits.** Every other check cross-references the record
+  with itself, so a rebase or force-push that erased a cited commit left nothing to find.
+  Commit shas the record **declares** (`commit <sha>`, `merged <sha>`, `main @ <sha>`) are
+  probed against the task's own repos with `git cat-file -e <sha>^{commit}`. **Bare hex is
+  never matched** — a task id, a memo id8 and a heal fingerprint are all hex — and a
+  seven-letter hex-only English word (`defaced`, `acceded`) is excluded by a digit gate.
+  The prober is **injected** exactly like `branch_prober`, so the SessionStart path still
+  spawns no subprocess, and UNKNOWN is never reported.
+- **`heal --scan --probe-links`** — the opt-in HTTP HEAD for stored PR/story links, wiring
+  the probe seam `link_states` has always accepted and never been given. Off by default; only
+  an explicit **404/410** counts as dead, so a private ADO PR answering 401 stays UNKNOWN.
+- **`heal --goal-reviewed`** and a fifth `due()` limb. Past `heal_goal_review_due` decisions
+  since the goal line was last written **or re-read**, a heal is due, worded as the count.
+  Re-reading is the service, so the new verb records the re-read and resets the count
+  **without rewriting a sentence that is still true** — and `--mark-healed` deliberately
+  does not reset it, because "I read the record" is not "I ruled on this line". The goal
+  review remains a **proposal**: never an issue, and its row now says exactly that instead
+  of the claim it can never make a heal due.
+- **One config threshold** — `heal_goal_review_due` (25), with a
+  `TASK_STATION_HEAL_GOAL_REVIEW_DUE` env escape. Positive-only, like the checker's three: a
+  zero would put every task carrying a goal permanently into the nag.
+
+### Changed
+- **The declare-vs-describe guard gained a third discriminator: REPORTS-ANOTHER-DECISION.**
+  The guard reads the word standing in *front* of a match, which cannot answer who the
+  sentence says *did* it — so `corrected by decision 184` (the reference is the agent),
+  `decision 173 investigated` (the subject of a reporting verb) and `why decision 150 is NOT
+  superseded` (an outright denial) all read as unlinked supersessions. Those were **8 of one
+  task's 17 findings**. Three readings, scoped to the clause, each a vocabulary brought to the
+  existing reader rather than a fourth heuristic. A form of *to be* after the reference is
+  deliberately not a reporting verb: `decision 4 was wrong` is the finding worth having.
+- **The oversized threshold now derives from the write advisory.** It was a flat 4,000 — 2.4×
+  an advisory it never referenced, on a task whose decisions *average* ~1,400 chars, so it
+  reported clean on almost everything. Both tiers now come from
+  `decisions.LONG_DECISION_CHARS` (600): **>2×** is a proposal, worst-first, capped at five
+  with a `+N more`, never an issue and never due-making; **>6×** is a finding, which is where
+  an entry stops being supersedable a piece at a time. Only the finding tier is ever planned
+  as a `--split`.
+- **`grew-with-candidates-outstanding` is a finding** — the digest is larger than at the last
+  heal *and* at least one merge candidate group is outstanding. Neither half is a defect
+  alone; together they say the record is getting more expensive to brief in exactly the place
+  a named verb was waiting. It needs a baseline, so a never-healed task is silent.
+
 ## [2.25.0] — 2026-08-12
 
 ### Added
