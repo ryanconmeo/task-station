@@ -732,6 +732,54 @@ def artifacts_root():
     return os.path.join(paths.data_dir(), "artifacts")
 
 
+# -- the checker's thresholds (lib/checker.py) ----------------------------------
+#
+# Three numbers, all POSITIVE-ONLY. A zero or negative override is not honoured, it is
+# REFUSED back to the default: zero report-days would put every DONE condition on every
+# active task into the drift nag the moment it was set, and a zero claim timeout would
+# fail every claim before its command produced a byte. A tunable whose extreme value
+# breaks the feature is a footgun, and the cheap fix is to not accept the value.
+
+def _positive_number(env_name, key, default):
+    """A positive number from the env escape, else config, else `default`. Anything
+    unparseable or <= 0 falls back — the same fail-open contract every checker entry
+    point keeps."""
+    raw = os.environ.get(env_name)
+    if raw is None or not str(raw).strip():
+        raw = get(key)
+    if raw is None:
+        return default
+    try:
+        n = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if n <= 0:
+        return default
+    return int(n) if n.is_integer() else n
+
+
+def checker_report_days():
+    """Days a countable DONE condition may sit with no completed step before the goal-
+    drift check reports it. Default 3; `TASK_STATION_CHECKER_REPORT_DAYS` overrides."""
+    return _positive_number("TASK_STATION_CHECKER_REPORT_DAYS", "checker_report_days", 3)
+
+
+def checker_escalate_days():
+    """Days after which a drifting condition escalates to stronger wording (and the nag
+    re-arms once, because the tier is part of its fingerprint). Default 7 — from the plan
+    that specified this check; `TASK_STATION_CHECKER_ESCALATE_DAYS` overrides."""
+    return _positive_number("TASK_STATION_CHECKER_ESCALATE_DAYS",
+                            "checker_escalate_days", 7)
+
+
+def checker_claim_timeout():
+    """Seconds one claim command may run during `claims verify`. Default 600 — generous,
+    because a claim legitimately runs a test suite; `TASK_STATION_CHECKER_CLAIM_TIMEOUT`
+    overrides. Never reached at session start: claims are never run there."""
+    return _positive_number("TASK_STATION_CHECKER_CLAIM_TIMEOUT",
+                            "checker_claim_timeout", 600)
+
+
 def enabled_categories():
     """The configured active-category key list, or None when unconfigured
     (categories.enabled_keys() then defaults to CORE — the lean default)."""
@@ -1525,6 +1573,11 @@ RESET_KEYS = [
     "workspace_dirs",
     "artifacts_root",
     "interbrain", "org_label",
+    # The checker's three thresholds. They have no board row (they are power-user
+    # tunables, edited in config.json or via the env), but a reset that left them behind
+    # would keep a hand-tuned drift window in force on a station the user just reset —
+    # so they are popped like everything else the config file holds.
+    "checker_report_days", "checker_escalate_days", "checker_claim_timeout",
 ]
 
 

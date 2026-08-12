@@ -3,6 +3,47 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+- **The checker — two cheap SessionStart checks (`lib/checker.py`).** Every check in
+  `heal` works by cross-referencing two things a task already holds, which leaves one
+  structural blind spot: a goal condition **nobody has worked on** contradicts nothing, so
+  there is no inconsistency to find. Measured on one real task, a release condition sat
+  with nothing completed against it for **fifteen days** while every surface reported the
+  task healthy. Two checks close that, both at session start, both silent when healthy:
+  - **Goal drift.** A goal line may carry numbered DONE conditions (`DONE = (1) …; (2) …`).
+    Completed checklist steps are attributed to those conditions by word overlap
+    (`heal.word_overlap`, the same tokenizer), and a condition nothing has completed
+    against for 3 days is reported, 7 days escalated. The `(n)` marker is a **hard
+    structure gate** — no marker means total silence, because a condition guessed out of
+    free prose would drift on a schedule of its own.
+  - **The local pointer check.** Every recorded path, symlink target, linked-worktree
+    `gitdir:`/`HEAD`/**checked-out branch**, and bound claims document still resolves.
+    Plain `stat` and file reads — **no git subprocess**, so `packed-refs` and `commondir`
+    are parsed by hand rather than asked about.
+
+  Both nags are **self-capping** (own gate dir, `<data_dir>/checker/`, fingerprinted like
+  `heal._signature`) and **fail open** at the check and again at the call site. The
+  unattached session-start listing runs goal drift across ACTIVE tasks and names the single
+  worst offender — the half that catches a plan nobody has opened.
+- **`claims` — a plan that can be checked instead of believed.** `task-station claims`
+  binds a document to a task and registers the shell commands that settle what it asserts
+  (`--register 'C1|<cmd>|<expected substring>…'`, upsert by id, `\|` for a literal pipe).
+  `claims verify` runs them, stores a bounded output tail, and **exits non-zero** when a
+  claim fails, so it can gate a step rather than only inform a reader. A registration with
+  no expected substring is refused — it would pass forever while proving nothing. Claims
+  are **never** run at session start; the pointer check only stats the bound document.
+- **Step completion stamps.** `steps.set_done` now stamps `done_ts` on a tick and drops it
+  on an untick (additive key; an unticked step is still stored byte-identically to before).
+  A ticked step *without* a stamp means "completed at an unknown time" and makes its
+  condition **UNCOUNTABLE, never zero** — `heal.goal_review`'s rule, and the reason no task
+  that predates this reads as twenty-thousand-day-old drift.
+- **Three config thresholds** — `checker_report_days` (3), `checker_escalate_days` (7),
+  `checker_claim_timeout` (600s), each with a `TASK_STATION_CHECKER_*` env escape.
+  Positive-only: a zero or negative override is refused back to the default rather than
+  putting the whole board into the nag at once.
+
 ## [2.24.0] — 2026-08-12
 
 `related` was doing two jobs and neither well. It was the only edge the CLI could write,

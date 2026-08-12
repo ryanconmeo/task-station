@@ -32,6 +32,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+import checker as _checker
 import decisions as _dec
 import heal as _heal
 import hook_health
@@ -13180,6 +13181,206 @@ def _heal_dispose(a, task, result):
                                  sid=getattr(a, "session", None), only=pairs), None
 
 
+# --------------------------------------------------------------- claims ------
+#
+# A plan document asserts things — the scrub landed, the release shipped, the suite is
+# green — and a reader has no way to tell an assertion that is STILL true from one that
+# was true when it was written. `claims` is that assertion plus the command that settles
+# it, stored on the task, so the document can be CHECKED rather than believed. The store
+# side and the verification live in lib/checker.py; this is the surface.
+#
+# `verify` is the only action that RUNS anything, and it is on demand only. Session start
+# never runs a claim (see the note in lib/checker.py): these are arbitrary user shell
+# commands, and putting an unbounded user-defined cost in front of every session — with
+# whatever side effects those commands have — is not a trade this tool gets to make on
+# the user's behalf.
+
+_CLAIMS_ACTIONS = ("show", "verify")
+
+
+def _claims_target(a):
+    """The ONE task a `claims` invocation acts on, as `(task, error_line)`. `--task <ref>`
+    by seq/id, else the attached task — the resolution every neighbouring command uses.
+
+    There is deliberately no `--all`: a claim is an assertion about ONE document, and a
+    board-wide sweep that ran every registered command on every task would be an
+    unbounded amount of shell nobody asked for in one keystroke."""
+    ref = getattr(a, "task", None)
+    if ref:
+        task = resolve_ref(ref) or load_task(ref)
+        if not task:
+            return None, "No task matching '%s'.\n\n%s" % (ref, _format_list())
+        return task, None
+    task = _session_task(getattr(a, "session", None))
+    if not task:
+        return None, ("No task attached — name one with `claims --task <n>`.")
+    return task, None
+
+
+def _claims_writes(a, task):
+    """Apply the mutating flags in a fixed order, as `(lines, changed)`.
+
+    ORDER IS BIND → UNBIND → REGISTER → REMOVE, and it is fixed so one invocation reads
+    the same way every time. Each flag reports its own outcome line, including its own
+    refusal: a mistyped `--register` must not silently take the rest of the invocation
+    down with it, and a `--remove` naming an id that is not there says so rather than
+    reporting "removed" and leaving the caller believing a claim is gone."""
+    lines, changed = [], False
+    if getattr(a, "bind", None):
+        ok, err = _checker.bind_doc(task, a.bind)
+        lines.append(err if err else "bound → %s" % _checker.claims_doc(task))
+        changed = changed or ok
+    if getattr(a, "unbind", False):
+        ok, err = _checker.unbind(task)
+        lines.append(err if err else "unbound (the registered claims were kept)")
+        changed = changed or ok
+    if getattr(a, "register", None):
+        added, updated, errors = _checker.register(
+            task, a.register, replace=getattr(a, "replace", False))
+        lines.extend(errors)
+        if added or updated:
+            lines.append("registered %d new claim(s), rewrote %d%s"
+                         % (added, updated,
+                            " (--replace: the previous list was dropped)"
+                            if getattr(a, "replace", False) else ""))
+            changed = True
+    if getattr(a, "remove", None):
+        removed, missing = _checker.remove(task, a.remove)
+        if removed:
+            lines.append("removed %s" % ", ".join(removed))
+            changed = True
+        if missing:
+            lines.append("no such claim: %s — nothing was removed for %s"
+                         % (", ".join(missing),
+                            "it" if len(missing) == 1 else "those"))
+    return lines, changed
+
+
+def _claims_show(task):
+    """The read-only view: the bound document, the registered claims, and how the last
+    verification went. Says out loud when a bound document is MISSING — the pointer check
+    reports it too, but somebody typing `claims` is asking about exactly this."""
+    out = []
+    doc = _checker.claims_doc(task)
+    if doc:
+        state = "" if os.path.exists(doc) else "   ← MISSING"
+        bound = _checker.claims(task).get("bound_ts")
+        out.append("  doc: %s (bound %s)%s"
+                   % (doc, rel_time(bound) if bound else "at an unknown time", state))
+    else:
+        out.append("  doc: none — `claims --task %s --bind <abs path>` binds one"
+                   % (task.get("seq") or task["id"][:8]))
+    items = _checker.claim_items(task)
+    last = {r.get("id"): r for r in (_checker.last_verify(task).get("results") or [])
+            if isinstance(r, dict)}
+    if not items:
+        out.append("  claims: none registered — "
+                   "`--register 'C1|<command>|<expected substring>'`")
+    else:
+        out.append("  %d claim(s):" % len(items))
+        for item in items:
+            prev = last.get(item["id"])
+            mark = "     " if prev is None else ("  ok " if prev.get("ok") else " FAIL")
+            out.append("   %s %-8s %s" % (mark, item["id"], item["cmd"]))
+            out.append("            expects: %s" % " · ".join(item["expect"]))
+    verified = _checker.last_verify(task)
+    if verified.get("ts"):
+        results = verified.get("results") or []
+        passed = len([r for r in results if isinstance(r, dict) and r.get("ok")])
+        out.append("  last verify: %s — %d/%d passed"
+                   % (rel_time(verified.get("ts")), passed, len(results)))
+    else:
+        out.append("  last verify: never — `claims verify --task %s`"
+                   % (task.get("seq") or task["id"][:8]))
+    return out
+
+
+def _claims_verify(a, task):
+    """Run the claims and report. Returns True when every claim that ran passed.
+
+    PERSISTS `last_verify` EVEN WHEN CLAIMS FAILED, which is the point: a stored red
+    result is what makes the failure visible to the next reader of the task, and
+    discarding it would leave the record saying only that a verification once passed.
+
+    The exit code is the caller's job (`cmd_claims`), so this can be reused by a surface
+    that wants the verdict without ending the process."""
+    only = getattr(a, "id", None)
+    results = _checker.verify(task, only=only,
+                             timeout=getattr(a, "timeout", None) or None)
+    if not results:
+        if only:
+            print("claims verify: task #%s has no claim %s registered."
+                  % (task.get("seq"), only))
+        else:
+            print("claims verify: task #%s has no claims registered — "
+                  "`claims --task %s --register 'C1|<command>|<expected>'`."
+                  % (task.get("seq"), task.get("seq")))
+        return True
+    task["updated_ts"] = _now()
+    save_task(task)
+    ok = [r for r in results if r["ok"]]
+    print("Claims — task #%s %s: %d/%d passed."
+          % (task.get("seq") or task["id"][:8], task.get("title"), len(ok), len(results)))
+    for r in results:
+        print("  %s %-8s %s" % ("ok  " if r["ok"] else "FAIL", r["id"], r["cmd"]))
+        if r["status"] == "timeout":
+            print("         timed out — nothing was proved either way, so this is NOT "
+                  "a refutation")
+        elif r["status"] == "error":
+            print("         could not be run: %s" % r["got"])
+        elif r["missing"]:
+            print("         missing from the output: %s" % " · ".join(r["missing"]))
+        if r["got"] and r["status"] == "ran" and not r["ok"]:
+            print("         got (tail): %s" % " ".join(r["got"].split())[-200:])
+    return not [r for r in results if not r["ok"]]
+
+
+def cmd_claims(a):
+    """`task-station claims [verify] [--task REF] [--bind …] [--register …] …`
+
+    THE PLAN CHECKS ITSELF FROM HERE ON. Bind a document to a task, register the shell
+    commands that settle what it asserts, and `verify` runs them. A failing verify exits
+    NON-ZERO, so it can gate a release step rather than only inform a reader.
+
+    Bare `claims` is a READ — the bound document, the registered claims, the last
+    verification — and reads nothing else and runs nothing. That default matters: `verify`
+    is the only action that executes a command, and it has to be typed."""
+    action = (getattr(a, "action", None) or "show").strip().lower()
+    if action not in _CLAIMS_ACTIONS:
+        print("claims: unknown action %r. Bare `claims` shows what is registered and "
+              "`claims verify` runs it; the task is named with `--task <n>`, not "
+              "positionally." % action)
+        return
+    task, err = _claims_target(a)
+    if err:
+        print(err)
+        return
+    mutating = [f for f in ("bind", "unbind", "register", "remove", "replace")
+                if getattr(a, f, None)]
+    if action == "verify" and mutating:
+        # Refuse rather than pick an order. Somebody typing both is asking "register this
+        # and tell me whether it passes", and answering half of that silently — with a
+        # verify that ran against the OLD list — is worse than saying run it twice.
+        print("claims verify runs what is already registered, so it cannot be combined "
+              "with %s. Register first, then verify."
+              % ", ".join("--" + f for f in mutating))
+        return
+    if getattr(a, "replace", False) and not getattr(a, "register", None):
+        print("claims --replace says what the new list IS, so it needs at least one "
+              "--register. To empty the list, `--remove <id>` each claim.")
+        return
+    if action == "verify":
+        if not _claims_verify(a, task):
+            sys.exit(1)      # a failing claim must be able to gate, not just inform
+        return
+    lines, changed = _claims_writes(a, task)
+    if changed:
+        task["updated_ts"] = _now()
+        save_task(task)
+    head = "Claims — task #%s %s" % (task.get("seq") or task["id"][:8], task.get("title"))
+    print("\n".join([head] + ["  " + ln for ln in lines] + _claims_show(task)))
+
+
 def cmd_heal(a):
     """`task-station heal [--task REF] [--scan] [--apply] [--all]` — the reconcile pass.
 
@@ -13427,6 +13628,38 @@ def cmd_session_start(a):
             heal_nag = None
         if heal_nag:
             msg.append(heal_nag)
+        # The CHECKER's two lines, in the same rail and self-capping the same way. Both
+        # answer a question no other check here can: `heal` cross-references things the
+        # task holds, and a goal condition nobody has worked on contradicts NOTHING —
+        # there is no inconsistency to find, only silence. See lib/checker.py.
+        #
+        # POINTERS FIRST, DRIFT SECOND, deliberately. A vanished worktree changes what
+        # you can do in this session; a drifting condition changes what you should be
+        # doing this week. The urgent, mechanical fact goes above the judgement call.
+        #
+        # Each wrapped separately so one failing check cannot silence the other, and both
+        # fail open — the same shape as the heal nag above, and for the same reason: a
+        # session start that crashed is strictly worse than an unreported drift.
+        #
+        # `config_paths` IS LEFT EMPTY, and that is a decision rather than a TODO. The
+        # seam exists so station-config-declared paths CAN be checked, but every candidate
+        # is station-scoped (one Obsidian vault, one repo index) while this nag is
+        # per-task and gated per-task — so a single broken station path would be reported
+        # once for every task you open, which is the spam the self-cap exists to prevent.
+        # A station-scoped surface is where that belongs; wiring it here would be worse
+        # than the silence.
+        try:
+            pointer_nag = _checker.pointer_nag(task, config_paths=None)
+        except Exception:
+            pointer_nag = None
+        if pointer_nag:
+            msg.append(pointer_nag)
+        try:
+            drift_nag = _checker.drift_nag(task)
+        except Exception:
+            drift_nag = None
+        if drift_nag:
+            msg.append(drift_nag)
         if hh_nag:
             msg.append(hh_nag)
         print("\n".join(msg))
@@ -13439,6 +13672,22 @@ def cmd_session_start(a):
                      "once the work is clear:" % len(opens))
         for t in opens[:8]:
             lines.append("  - #%s [%s] %s (%s)" % (t.get("seq") or "?", t["id"][:8], t["title"], rel_time(t.get("updated_ts"))))
+    # Goal drift on the UNATTACHED path, over the ACTIVE tasks already loaded above — no
+    # extra store query, and no `stat` at all (the pointer check is attached-only, since
+    # its findings are about the session's own working directory).
+    #
+    # THIS IS THE HALF THAT CATCHES A PLAN NOBODY OPENED. The attached nag can only reach
+    # someone who already opened the task; a task nobody attaches to never gets the
+    # message, which is exactly the shape of the fifteen-day case this check exists for.
+    # ONE line, naming the single worst offender — the rail above is already an inventory,
+    # and a second one under it reads as decoration.
+    try:
+        listing_nag = _checker.listing_nag([t for t in opens
+                                            if t.get("status") == STATUS_ACTIVE])
+    except Exception:
+        listing_nag = None
+    if listing_nag:
+        lines.append(listing_nag)
     if hh_nag:
         lines.append(hh_nag)
     if lines:
@@ -13539,6 +13788,50 @@ def main(argv=None):
     sp.add_argument("--clear", action="store_true",
                     help="empty the log and re-arm the SessionStart nag")
     sp.set_defaults(fn=cmd_hook_health)
+
+    # claims — bind a plan document to a task and register the commands that settle what
+    # it asserts, so the plan checks itself. See cmd_claims and lib/checker.py.
+    sp = sub.add_parser("claims",
+                        help="bind a document to a task and register/run the commands "
+                             "that verify what it claims")
+    # The action is a bare positional with no argparse `choices`, matching `brains`:
+    # cmd_claims validates it itself so an unknown word gets a sentence saying what the
+    # two actions are, rather than argparse's usage dump and exit code 2.
+    sp.add_argument("action", nargs="?", default="show",
+                    help="show (default: the bound doc, the claims, the last result — "
+                         "runs nothing) | verify (RUN the registered commands; exits "
+                         "non-zero if any claim fails, so it can gate a step)")
+    sp.add_argument("--task", default=None,
+                    help="task by seq/id (default: the attached task)")
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--bind", default=None, metavar="PATH",
+                    help="set/replace the document these claims are about. ABSOLUTE "
+                         "path — a relative one would name a different file from every "
+                         "directory. The pointer check stats it every session start; it "
+                         "never opens it.")
+    sp.add_argument("--unbind", action="store_true",
+                    help="forget the bound document, KEEPING the registered claims "
+                         "(a renamed or split plan is the common case)")
+    sp.add_argument("--register", action="append", default=None,
+                    metavar="'ID|CMD|EXPECTED[|EXPECTED…]'",
+                    help="register one claim: an id, the shell command that settles it, "
+                         "and every substring that must appear in its combined "
+                         "stdout+stderr. Repeatable, and UPSERTS by id — re-registering "
+                         "C1 rewrites C1 and leaves the rest alone. A literal pipe "
+                         "inside the command is written `\\|`. At least one expected "
+                         "substring is required: a claim asserting nothing would pass "
+                         "forever.")
+    sp.add_argument("--replace", action="store_true",
+                    help="with --register: this invocation's claims REPLACE the whole "
+                         "list, instead of upserting into it")
+    sp.add_argument("--remove", action="append", default=None, metavar="ID",
+                    help="drop a registered claim by id (repeatable)")
+    sp.add_argument("--id", default=None, metavar="ID",
+                    help="with verify: run just this one claim")
+    sp.add_argument("--timeout", type=int, default=None, metavar="SECONDS",
+                    help="per-claim timeout for this run (default: the configured "
+                         "checker_claim_timeout, 600s)")
+    sp.set_defaults(fn=cmd_claims)
 
     # heal — the RECONCILE pass: turn the append-only decision log into current state.
     # Per-task by default; a DRY RUN by default. See cmd_heal and lib/heal.py.
