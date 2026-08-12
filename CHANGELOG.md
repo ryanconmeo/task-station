@@ -3,6 +3,68 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [2.24.0] — 2026-08-12
+
+`related` was doing two jobs and neither well. It was the only edge the CLI could write,
+so every relationship — "this blocks that", "this is part of that", "these are the same
+thing" — arrived flattened into one undirected kind that computes nothing. The board could
+not answer *what do I do next*, because nothing in the store said what waited on what.
+
+This release replaces it with a typed vocabulary, and then uses it: the graph lays tasks
+out by what they belong to rather than by sequence number, and a second plane appears above
+the task plane holding the knowledge vault, reached by a camera pan.
+
+### Added
+- **Typed edges, with a write surface.** Six flags on `update`: `--depends-on`, `--parent`,
+  `--absorbed-by`, `--replaces`, `--duplicates`, and `--unrelate`. One rule governs all of
+  them — **the subordinate side stores the edge, and inverses are always derived**, so
+  there is exactly one place a relationship lives. `--parent` reports the parent it
+  replaces (a task has at most one). `--absorbed-by` writes the edge *and* closes the task
+  it is called on; `--replaces` closes the target instead. `--duplicates` is symmetric.
+  Cycles are stored and warned about, never refused.
+- **The knowledge plane.** `lib/knowledge.py` is new and is the single owner of vault
+  *reading*, the way `lib/feeds.py` owns the feed format (`lib/obsidian_sync.py` stays
+  write-only and untouched). Gated by `config.knowledge_plane_mode()` — `on`/`off`/`auto`,
+  default `auto`, env `TASK_STATION_KNOWLEDGE_PLANE`. This is **not**
+  `config.knowledge_graph_enabled()`, which still defaults off and gates a vault *write*
+  path; the two must not be conflated.
+- **The two-plane view.** Two literal stacked planes moved between by a camera pan, not a
+  zoom. Only three edge kinds may cross the gap — `cites`, `distilled-from`, `references` —
+  and that is enforced twice, independently: server-side before serialisation and
+  client-side while building the edge list, each deriving a node's plane from its
+  structural type so a foreign Interbrain node is still classified correctly. Measured on a
+  real board: 615 nodes (385 task, 178 note, 52 hub), 874 edges, 17 crossing, **zero**
+  illegal crossings.
+
+### Changed
+- **The graph is laid out by containment.** The zoom level is a *path*, not a three-value
+  enum, so drill-down nests to any depth instead of stopping at three. A grouped task is
+  positioned by its group alone; a repo is a boundary, a story is a magnet; in 3D a
+  category is a patch on the sphere and radius means entanglement alone. Layout is pinned
+  by default.
+- **Signal-hub filters are per KIND, not per hub.** Three toggles — story, repo, pr — each
+  hiding every hub of that kind along with its spokes. This **retires the one-row-per-hub
+  filter** added in 1.93.0, which grew without bound as repos and PRs accumulated until the
+  filter panel was longer than the graph it filtered.
+- **Category hubs follow their category.** The standalone `Category hubs` control is gone; a
+  hub's visibility derives from its category's own filter, so hiding a category hides its
+  hub with it.
+- **The shared-file edge is gone from the graph.** Two tasks editing one file is not a
+  relationship worth drawing, and it was the noisiest kind on the canvas.
+- `related` is no longer a writable kind. It was the container, never a linkage. `mentions`
+  replaces it, derived from an explicit `[[task:502]]` marker — a bare `#N` scan was
+  rejected on measurement (625 references, only 235 of which resolve).
+
+### Fixed
+- **A related task printed twice.** `related_edges` returned a reciprocal pair in *both* the
+  out- and in-lists and `_related_line` walked both without dedup. Measured against a real
+  store: 8 tasks, 7 reciprocal pairs, 14 duplicate rows. Fixed at the source in
+  `related_edges` — a reciprocal pair is one undirected relationship the out/in split
+  misrepresented as two — and the graph builder was repointed at the same canonical
+  resolution rather than keeping its own. Dedup keys on **the other task**, not on
+  `(other, kind)`, because the mixed-label case is live: a pair storing both `spawned-from`
+  and `related` would otherwise still print twice under two different labels.
+
 ## [2.23.0] — 2026-08-10
 
 One contended writer could kill the whole process. `_connect` opens SQLite with
