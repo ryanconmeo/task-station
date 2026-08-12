@@ -338,11 +338,28 @@ class TestStepSupersedeThroughUpdate(_Base):
         self.assertEqual([steps.text(s) for s in snap["steps"]], ["active one"])
 
     def test_a_task_with_no_superseded_step_is_stored_exactly_as_before(self):
+        # The frozen-format guarantee, and it moved by exactly one ADDITIVE key when the
+        # completion stamp shipped (`steps.DONE_TS_FIELD`, for lib/checker.py's goal-drift
+        # check — nothing else on a task could answer WHEN a step was ticked). So the
+        # assertion is now: an UNTICKED step is still byte-identical to what every older
+        # version wrote, and a TICKED one adds `done_ts` and nothing else. No reconcile
+        # key appears on either.
         t = self._task(step_texts=["a", "b"])
         self._update(t, step_done=[1])
         after = self._reload(t)
-        self.assertEqual(after["steps"], [{"text": "a", "done": True},
-                                          {"text": "b", "done": False}])
+        self.assertEqual(after["steps"][1], {"text": "b", "done": False})
+        self.assertEqual(sorted(after["steps"][0]), ["done", steps.DONE_TS_FIELD, "text"])
+        self.assertEqual(after["steps"][0]["text"], "a")
+        self.assertTrue(after["steps"][0]["done"])
+        self.assertGreater(after["steps"][0][steps.DONE_TS_FIELD], 0)
+
+    def test_unticking_a_step_returns_it_to_the_pre_stamp_shape(self):
+        # The stamp is symmetric: an unticked step carries no completion moment, because
+        # the record must not assert one for work that is no longer claimed as done.
+        t = self._task(step_texts=["a"])
+        self._update(t, step_done=[1])
+        self._update(t, step_undone=[1])
+        self.assertEqual(self._reload(t)["steps"], [{"text": "a", "done": False}])
 
     def test_there_is_no_step_edit_verb(self):
         # Superseding plus adding a corrected step is the honest path. An edit would

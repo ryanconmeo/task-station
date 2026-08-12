@@ -31,6 +31,7 @@ a step nobody did.
 ELEMENT SHAPE — dual, and permanently so. An element is EITHER:
 
     {"text": "write the tests", "done": false}                       (ordinary)
+    {"text": "…", "done": true, "done_ts": 1754956800.0}             (ticked)
     {"text": "…", "done": false, "superseded": true,
      "superseded_by": 5}                                             (reconciled)
 
@@ -38,21 +39,36 @@ ELEMENT SHAPE — dual, and permanently so. An element is EITHER:
 simply dropped it), which reads as `SUPERSEDED (nothing replaced it)`. A legacy bare
 STRING is also accepted on read — fork imports produced them — and is always current.
 
-BACK-COMPAT: both reconcile keys are strictly ADDITIVE, so an ordinary step is stored
-byte-identically to how every older version stored it and a task written by an older
-version reads unchanged. An older READER that meets a superseded step degrades to
-showing it in the checklist (the keys it doesn't know are ignored) rather than breaking.
+WHEN A TICK HAPPENED — `done_ts`, and it exists because nothing else on a task could
+answer that. `updated_ts` moves for every field, the event feed is bounded so on a busy
+task a tick ages out of it, and `done` is one boolean with no history. Without a
+completion moment nobody can ask the one question that matters about a plan: has anything
+actually been finished lately? `lib/checker.py` asks it (goal drift), and the rule it
+follows is that a done step WITHOUT a stamp means "completed at an unknown time" — never
+"completed long ago", which would report every step ticked before this shipped as
+twenty-thousand-day-old drift.
+
+BACK-COMPAT: all three extra keys are strictly ADDITIVE. An UNTICKED step is still stored
+byte-identically to how every older version stored it, an older READER ignores the keys it
+does not know, and a task written by an older version reads unchanged — its ticked steps
+simply carry no stamp, which is the "unknown time" case above and is the COMMON one.
 
 Indices are 1-BASED and are STABLE IDS, not positions: they are the numbers the
 checklist prints and the numbers `--step-done` / `--step-supersede` take. Because a
 superseded step keeps its slot, the ACTIVE checklist can show gaps (1, 3, 4) — that is
 correct, and renumbering would silently repoint every command a reader had in hand.
 
-Stdlib only, no imports — this module is a leaf, exactly like decisions.py.
+Stdlib only (`time`, for the completion stamp, and nothing else) — this module stays a
+leaf, exactly like decisions.py.
 """
+import time
 
 # The reconcile keys, in one place: what `restore` clears and what `compact` carries.
 SUPERSEDED_KEYS = ("superseded", "superseded_by")
+
+# The completion stamp's key, named once so the reader (`checker.done_ts`) and the writer
+# (`set_done`) can never disagree about it.
+DONE_TS_FIELD = "done_ts"
 
 
 # -- element accessors: the ONLY sanctioned way to read an element ---------------
@@ -129,9 +145,15 @@ def compact(step):
 
     Unlike a decision there is no string form to collapse back to — the frozen step
     shape has always been a dict — so the back-compat guarantee here is that an
-    ORDINARY step round-trips to exactly `{"text": …, "done": …}`, byte-identical to
-    what every older version wrote. Keys written by a NEWER version are preserved,
-    never dropped."""
+    ORDINARY (untouched, unticked) step round-trips to exactly `{"text": …, "done": …}`,
+    byte-identical to what every older version wrote. Every other key — the two reconcile
+    keys, `done_ts`, and anything a NEWER version adds — is carried through unchanged
+    rather than dropped, which is what makes the shape extensible without a migration.
+
+    Falsy values are dropped, so a `done_ts` of exactly 0.0 would not survive. That is
+    harmless and deliberate: epoch 0 is not a completion moment anybody recorded, and
+    `checker.done_ts` rejects it on the read side for the same reason, so the two ends
+    agree that a zero stamp means "no stamp"."""
     if not isinstance(step, dict):
         return {"text": text(step), "done": False}
     out = {"text": text(step), "done": bool(step.get("done"))}
@@ -246,12 +268,24 @@ def restore(steps, index1, flag="--step-restore"):
     return True, None
 
 
-def set_done(steps, index1, done, flag=None):
-    """Tick/untick step `index1`. Returns `(ok, error_message)`.
+def set_done(steps, index1, done, flag=None, now=None):
+    """Tick/untick step `index1`, stamping WHEN. Returns `(ok, error_message)`.
 
     REFUSES on a superseded step, and says so: it is off the active checklist, so
     ticking it would put a completion into the record for work that was retired rather
-    than done — the exact lie the supersede verb exists to avoid."""
+    than done — the exact lie the supersede verb exists to avoid.
+
+    THE STAMP IS SYMMETRIC. Ticking writes `done_ts`; UNTICKING DROPS IT. Leaving the
+    old stamp behind on an unticked step would leave the record asserting a completion
+    moment for work that is no longer claimed as done, and the next tick would then
+    either overwrite it (fine) or — if nobody ever re-ticked — brief a resumed session
+    with a date for something unfinished. Re-ticking always writes a FRESH stamp rather
+    than restoring the old one: the honest answer to "when was this finished" is the
+    last time somebody said it was.
+
+    `now` is injectable so a caller with an authoritative clock (and the tests) can
+    supply one; it defaults to the wall clock exactly as `heal.stamp_goal_touched`
+    does."""
     if flag is None:
         flag = "--step-done" if done else "--step-undone"
     i, err = _check_index(steps, index1, flag)
@@ -264,5 +298,9 @@ def set_done(steps, index1, done, flag=None):
                        "`--step-restore %d` puts it back first" % (flag, i, how, i))
     rich = as_rich(step)
     rich["done"] = bool(done)
+    if done:
+        rich[DONE_TS_FIELD] = time.time() if now is None else now
+    else:
+        rich.pop(DONE_TS_FIELD, None)
     steps[i - 1] = compact(rich)
     return True, None
