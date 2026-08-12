@@ -8140,6 +8140,18 @@ def _todo_heal(a, rest):
     parser.add_argument("--decision", nargs="?", const=True, default=None)
     parser.add_argument("--memory", default=None)
     parser.add_argument("--noop", default=None)
+    # The ledger, the cheap candidate view and the two opt-ins. Mirrored here rather than
+    # shared with the subparser because `/todo heal` parses a REST STRING and the top-level
+    # `heal` parses argv — but every flag must exist in both, or `/todo heal --candidates`
+    # dies on `unrecognized arguments` while `heal --candidates` works, which is the one
+    # class of divergence a user actually hits.
+    parser.add_argument("--dismiss", action="append", default=None)
+    parser.add_argument("--undismiss", action="append", default=None)
+    parser.add_argument("--why", default=None)
+    parser.add_argument("--dismissals", action="store_true")
+    parser.add_argument("--candidates", action="store_true")
+    parser.add_argument("--goal-reviewed", dest="goal_reviewed", action="store_true")
+    parser.add_argument("--probe-links", dest="probe_links", action="store_true")
     try:
         ns = parser.parse_args(shlex.split(rest or ""))
     except SystemExit:
@@ -10821,8 +10833,9 @@ def cmd_guidance(a):
         "reversible; nothing is ever deleted) · --log dated history "
         "(off the resume path; see /todo <n> history) · --pr stored PR url · "
         "--story stored story/work-item url)",
-        "  heal  [--task <ref>] [--scan] [--apply [--verbose]] [--all] [--mark-healed "
-        "[--note '…']] "
+        "  heal  [--task <ref>] [--scan [--probe-links]] [--apply [--verbose]] [--all] "
+        "[--mark-healed [--note '…']] [--goal-reviewed] [--candidates] [--dismissals] "
+        "[--apply --dismiss '<check>:<ref>' --why '…' | --undismiss '<check>:<ref>'] "
         "[--dispose-acks <id8,…|all> --decision '…'|--memory <slug>|--noop '<reason>']   — "
         "RECONCILE the append-only "
         "decision log into current state (the counterpart to `save`'s capture). PREFER the "
@@ -10838,7 +10851,16 @@ def cmd_guidance(a):
         "happened. --mark-healed records the judgement-only pass where nothing needed "
         "changing (--note says why). --dispose-acks retro-fills the dispositions of acks "
         "recorded before they were required — visibly retroactive, and it never overwrites "
-        "one the acking session chose. Three decision verbs: --supersedes for what is "
+        "one the acking session chose. --goal-reviewed records that the GOAL LINE was "
+        "re-read and is still true (the only thing that resets the goal-review count; "
+        "--mark-healed deliberately does not). --candidates is the CHEAP merge-only read: "
+        "the goal, the pins and each candidate group's members in full, and nothing else. "
+        "--dismiss adjudicates ONE false-positive finding away with a MANDATORY --why — it "
+        "leaves the findings, the count and the due calculus, it covers that finding's exact "
+        "text so an edit makes it re-report, --dismissals lists every ruling and --undismiss "
+        "retires one; nothing is ever deleted. --probe-links opts into one HTTP HEAD per "
+        "stored link (only a 404/410 is dead; everything else stays UNKNOWN). Three decision "
+        "verbs: --supersedes for what is "
         "WRONG, `heal --split N --into n1,n2` for what is COMPOUND, "
         "`heal --merge n1,n2 --into N` "
         "for what is TRUE BUT NO LONGER LOAD-BEARING; `update --step-supersede N` is the "
@@ -12663,9 +12685,19 @@ def _heal_targets(a):
 
 def _heal_scan_one(task, probe_branches=True, link_probe=None):
     """Run the layer-1 scan for one task and persist its gate file. Never mutates the
-    task. `probe_branches` wires the git prober (off for the cheap SessionStart path)."""
+    task.
+
+    `probe_branches` wires BOTH git probers — the branch one and the cited-commit one. They
+    are one switch because they are one cost: the same `git -C <repo> rev-parse` discovery
+    walk, and the same rule that the cheap SessionStart path must spawn no subprocess at all
+    (`_heal.nag` calls `scan` with no probers, and that is what keeps a session start
+    free).
+
+    `link_probe` stays separate and stays OFF unless `--probe-links` asks: git is local and
+    bounded, HTTP is neither."""
     bp = _heal.branch_prober(task) if probe_branches else None
-    result = _heal.scan(task, branch_probe=bp, link_probe=link_probe)
+    cp = _heal.commit_prober(task) if probe_branches else None
+    result = _heal.scan(task, branch_probe=bp, link_probe=link_probe, commit_probe=cp)
     _heal.write_gate(result)
     return result
 
@@ -12694,10 +12726,14 @@ def _heal_scan_report(task, result):
     out = ["[HEAL-SCAN] Task #%s [%s] — %s" % (seq, task["id"][:8], task["title"])]
     out.append("  %-28s %s" % ("Health", _heal.health_line(result.get("health") or {})))
     out.extend(_heal.scan_lines(result))
+    out.extend(_heal.dismissed_line(result))
     # Proposals, information and counts, BELOW the findings and never mixed into them:
     # none of these is a defect, and `Heal due?` below is computed from the findings
-    # alone.
+    # alone (plus the one goal-review limb, which says so in its own row).
+    out.extend(_heal.size_lines(result))
+    out.extend(_heal.subject_candidate_lines(result))
     out.extend(_heal.merge_candidate_lines(result))
+    out.extend(_heal.oversized_proposal_lines(result))
     out.extend(_heal.ephemeral_lines(result))
     out.extend(_heal.pinned_lines(result))
     out.extend(_heal.goal_review_lines(result))
@@ -12736,7 +12772,11 @@ def _heal_block(task, result, ops, applied=None, backup=None, before=None):
     out.append("")
     out.append("SCAN (layer 1 — deterministic, no judgment):")
     out.extend(_heal.scan_lines(result))
+    out.extend(_heal.dismissed_line(result))
+    out.extend(_heal.size_lines(result))
+    out.extend(_heal.subject_candidate_lines(result))
     out.extend(_heal.merge_candidate_lines(result))
+    out.extend(_heal.oversized_proposal_lines(result))
     out.extend(_heal.ephemeral_lines(result))
     out.extend(_heal.pinned_lines(result))
     out.extend(_heal.goal_review_lines(result))
@@ -12809,16 +12849,21 @@ def _heal_block(task, result, ops, applied=None, backup=None, before=None):
                "half. Add the atomic parts with `--decision` (one call each), note "
                "their numbers, then run `heal --split <n> --into <n1,n2,…> --task %s`." % seq)
     out.append("  3. MERGE what is TRUE BUT NO LONGER LOAD-BEARING — release records, "
-               "iteration steps, process-error corrections. Any MERGE CANDIDATES listed "
-               "in the scan above are the mechanical starting point: groups that open "
-               "with the same shape. They are proposals, not findings — read each group "
-               "and decide. Add the one summary decision, then `heal --merge <n1,n2,…> "
-               "--into <n> --task %s`. Do NOT supersede these: nothing refuted them, and "
+               "iteration steps, process-error corrections. Two tiers of candidate are "
+               "listed in the scan above and both are proposals, not findings: SUBJECT "
+               "candidates (they name the same step, release or PR/story — the stronger "
+               "evidence, and a group tagged COMPLETED-SUBJECT has every step it names "
+               "already done or superseded, so the work it records is finished) and MERGE "
+               "candidates (they merely open the same way). `heal --candidates --task %s` "
+               "prints every group's members IN FULL and nothing else, which is the cheap "
+               "way to read them without the whole corpus. Add the one summary decision, "
+               "then `heal --merge <n1,n2,…> --into <n> --task %s`. Do NOT supersede these: "
+               "nothing refuted them, and "
                "saying so would put a lie in the record. A RE-FRAGMENTED CONSOLIDATION "
                "(check 9, and a FINDING rather than a proposal) is the same verb with the "
                "consolidation itself folded in: an earlier pass already ruled that "
                "subject was one entry, so write ONE updated summary covering the strays "
-               "too and merge the old consolidation in with them." % seq)
+               "too and merge the old consolidation in with them." % (seq, seq))
     out.append("  4. RETRO-DISPOSE every undispositioned ack — `heal --apply --task %s "
                "--dispose-acks <id8,…|all> --noop '<why nothing was needed>'` (or "
                "--decision '<what it changed>' / --memory <slug>). `all` is legitimate "
@@ -12873,6 +12918,20 @@ def _heal_block(task, result, ops, applied=None, backup=None, before=None):
                "`--pr <url>` / `--log '<vX.Y.Z shipped: what>'`). A clean scan means the "
                "record does not contradict itself; it does NOT mean the record is "
                "complete." % seq)
+    out.append(" 11. RE-READ THE GOAL LINE EVEN WHEN IT IS RIGHT, and record that you did: "
+               "`heal --goal-reviewed --task %s`. That resets the goal-review count without "
+               "rewriting a sentence that is still true — and it is the ONLY thing that "
+               "does. A `--mark-healed --note` deliberately does not, because a stamp "
+               "saying somebody read the record is not a stamp saying they ruled on THIS "
+               "LINE, and the difference is what makes every other stamp readable." % seq)
+    out.append(" 12. A FINDING THAT IS GENUINELY WRONG can be ADJUDICATED AWAY rather than "
+               "left to reappear every pass: `heal --apply --task %s --dismiss "
+               "'<check>:<ref>' --why '<why it is not a defect>'`. The why is mandatory. It "
+               "silences ONE exact finding text — edit the entry it names and the finding "
+               "re-reports, because the ruling covered the sentence that was there, not the "
+               "category. `heal --dismissals --task %s` lists every ruling with its why, "
+               "and `--undismiss` retires one. Use it for a false positive you have READ, "
+               "never as a way to quieten a report you have not." % (seq, seq))
     out.append("")
     out.append("OUT OF SCOPE: do NOT touch the `--log` milestone trail or `history` — "
                "they are append-only and sacred. No verb rewrites a step or a decision "
@@ -13152,6 +13211,143 @@ def _heal_mark(a, tasks):
     return "\n\n".join(out)
 
 
+def _heal_dismissals_report(task):
+    """`heal --dismissals` — the read-only ledger view.
+
+    It runs a scan purely so it can say which rulings are still SILENCING something and which
+    have EXPIRED because the text they covered changed. That distinction is the whole reason
+    the list is worth printing.
+
+    THE GIT PROBERS ARE WIRED, and that is not incidental: a dismissal of a `drift:branch x`
+    or a `cited-commit` finding only matches when the check that produced it actually RAN, so
+    a cheap probe-less scan here would report those rulings as expired when nothing had
+    changed at all. It does NOT write the gate file — this is a read of the ledger, not the
+    scan of record."""
+    result = _heal.scan(task, branch_probe=_heal.branch_prober(task),
+                        commit_probe=_heal.commit_prober(task))
+    return "\n".join(_heal.dismissal_lines(task, result=result))
+
+
+def _heal_dismiss_writes(a, task):
+    """`--dismiss` / `--undismiss` for one task — the adjudication ledger's write path.
+
+    ITS OWN INVOCATION, NOT PART OF THE MECHANICAL PLAN, and that is deliberate. A dismissal
+    changes what the scan REPORTS; a split or a merge changes what the record SAYS. Folding
+    them into one run would produce a report telling two unrelated stories, and — worse — a
+    dismissal would then pass through the "performed at least one operation" test and STAMP a
+    heal. Adjudicating a false positive is not reconciling a task, and a stamp that claims
+    otherwise is the exact lie the zero-operation refusal exists to prevent. So this path
+    writes the ledger, stamps NOTHING, and says so.
+
+    The scan it matches against is the UNFILTERED one (`findings` + `dismissed`), so a
+    `--dismiss` naming something already dismissed gets told that rather than "no such
+    finding" — the two are different answers and only one of them is true."""
+    seq = task.get("seq", task["id"][:8])
+    dismiss = [s for s in (getattr(a, "dismiss", None) or []) if str(s).strip()]
+    undismiss = [s for s in (getattr(a, "undismiss", None) or []) if str(s).strip()]
+    why = getattr(a, "why", None)
+    sid = getattr(a, "session", None)
+    # The git probers are wired: a dismissal names a finding, and the two probed checks
+    # (branches, cited commits) produce findings too — matching against a scan that did not
+    # run them would refuse a legitimate `--dismiss drift:branch x` as "no such finding".
+    result = _heal_scan_one(task, probe_branches=True)
+    everything = (result.get("findings") or []) + (result.get("dismissed") or [])
+    lines, changed = [], False
+    for sel in undismiss:
+        entry, err = _heal.undismiss(task, sel, sid=sid)
+        if err:
+            lines.append(err)
+            continue
+        changed = True
+        lines.append("UNDISMISSED %s:%s — the ruling is marked retired (nothing was "
+                     "deleted; the ledger keeps it as the record that somebody once ruled "
+                     "this way) and that finding is reported in full again."
+                     % (entry.get("check"), entry.get("ref")))
+    for sel in dismiss:
+        entry, err = _heal.dismiss(task, everything, sel, why, sid=sid)
+        if err:
+            lines.append(err)
+            continue
+        changed = True
+        lines.append("DISMISSED %s:%s — out of the findings, the issue count and the due "
+                     "calculus. why: %s"
+                     % (entry.get("check"), entry.get("ref"), entry.get("why")))
+        lines.append("    It covers THIS EXACT TEXT (fingerprint %s…): edit the entry it "
+                     "names and the finding re-reports, because the ruling was about the "
+                     "sentence that was there. Undo: `heal --apply --task %s --undismiss "
+                     "'%s:%s'`"
+                     % (str(entry.get("fingerprint"))[:12], seq,
+                        entry.get("check"), entry.get("ref")))
+    if changed:
+        task["updated_ts"] = _now()
+        save_task(task)
+        # The reported state changed, so the nag must re-arm — the same reason `--apply`
+        # clears it. A dismissal that left a stale gate would keep nagging about a finding
+        # that is no longer counted.
+        _heal.clear_gate(task["id"])
+        fresh = _heal_scan_one(task, probe_branches=True)
+        is_due, reasons = _heal.due(task, result=fresh)
+        lines.append("")
+        lines.append("NO HEAL WAS STAMPED. Adjudicating a false positive is not reconciling "
+                     "the task, and a stamp that said otherwise would make every other "
+                     "stamp unreadable.")
+        lines.append("  %-28s %s" % ("Mechanical", _heal.mechanical_line(fresh)))
+        lines.append("  %-28s %s" % ("Heal due?",
+                                     ("YES — %s" % "; ".join(reasons)) if is_due else "no"))
+        lines.append("  %d dismissal(s) in force · `heal --dismissals --task %s` lists them "
+                     "with their whys." % (len(_heal.active_dismissals(task)), seq))
+    return "[HEAL] Task #%s [%s] — %s\n%s" % (seq, task["id"][:8], task["title"],
+                                              "\n".join("  " + ln if ln else ""
+                                                        for ln in lines))
+
+
+def _heal_goal_reviewed(a, tasks):
+    """`heal --goal-reviewed` — record that the GOAL LINE was re-read and is still true.
+
+    THE VERB EXISTS BECAUSE THE ALTERNATIVE WAS A GUESS. The goal-review count needed a way
+    to reset that did not require rewriting a correct sentence, and the tempting shortcut —
+    treat any `--mark-healed --note` as proof the goal was re-read — would have written a
+    claim nobody made. So re-reading gets its own verb and its own field, and it is the ONLY
+    thing that resets the count.
+
+    REFUSED on a task with no goal: there is nothing to have reviewed, and stamping one
+    would put a baseline on a field that does not exist."""
+    out = []
+    for task in tasks:
+        seq = task.get("seq", task["id"][:8])
+        if not str(task.get("goal") or "").strip():
+            out.append("[HEAL] Task #%s — REFUSED: this task has no goal line, so there is "
+                       "nothing to record a review of. Set one with `update --task %s "
+                       "--goal '<what done looks like>'`." % (seq, seq))
+            continue
+        before = _heal.goal_review(task)
+        _heal.stamp_goal_reviewed(task)
+        task["updated_ts"] = _now()
+        save_task(task)
+        _heal.clear_gate(task["id"])       # the due state changed; re-arm the nag
+        out.append("[HEAL] Task #%s — GOAL REVIEW RECORDED at %d decision(s). The count "
+                   "resets%s; the goal itself is untouched, which is the point: re-reading a "
+                   "goal that is still right IS the service, and rewriting it to prove you "
+                   "read it would put a false edit in the record.\n"
+                   "  the goal: %s\n"
+                   "  If it HAS drifted, this is the wrong verb — `update --task %s --goal "
+                   "'<what done looks like now>'` re-baselines it by rewriting it."
+                   % (seq, len(task.get("decisions") or []),
+                      (" from %d" % before.get("since_review"))
+                      if before.get("since_review") else "",
+                      str(task.get("goal") or "").strip(), seq))
+    return "\n\n".join(out)
+
+
+def _heal_candidates_report(task):
+    """`heal --candidates` — the cheap merge-only dry run (`heal.candidate_lines`).
+
+    Read-only, and it wires NO probers: the candidate view reads decisions against each
+    other, so a git or HTTP round trip would buy it nothing. It does not write the gate file
+    either — this is not a scan of record, it is a reading aid."""
+    return "\n".join(_heal.candidate_lines(task, result=_heal.scan(task)))
+
+
 def _heal_dispose(a, task, result):
     """The explicit `--dispose-acks <id8,…|all>` ops for one task, as `(ops, error)`.
 
@@ -13419,6 +13615,20 @@ def cmd_heal(a):
     `--mark-healed` is the judgement-only counterpart, and `--dispose-acks` retro-fills
     the dispositions of acks recorded before dispositions were required.
 
+    FOUR MORE MODES, each its own invocation and each refusing the combinations it cannot
+    honestly serve (`_others` builds every one of those refusals from one list, so a flag
+    added later cannot be silently swallowed by an older mode):
+
+      * `--dismissals` / `--candidates` — READS. The adjudication ledger, and the cheap
+        merge-only view. Neither writes, neither stamps, and neither combines with anything.
+      * `--apply --dismiss '<check>:<ref>' --why '…'` / `--undismiss` — the ledger's WRITE
+        path. It changes what the scan REPORTS rather than what the record SAYS, so it never
+        rides along with the mechanical plan and never stamps a heal.
+      * `--goal-reviewed` — records that the GOAL LINE was re-read and is still true. The
+        only thing that resets the goal-review count; combinable with `--mark-healed`,
+        which is the honest pair for a judgement-only pass that included the goal.
+      * `--probe-links` — the one opt-in network call, off by default.
+
     THE TASK MAY BE NAMED POSITIONALLY — `heal --scan 12` is `heal --scan --task 12`,
     because `/heal 12` passes that 12 straight through as a positional. The fold and its
     two refusals live in `_heal_positional_ref`, and they run FIRST: a refusal there must
@@ -13438,6 +13648,27 @@ def cmd_heal(a):
     apply_it = getattr(a, "apply", False)
     sweeping = getattr(a, "all", False)
     dispose = _split_str_list(getattr(a, "dispose_acks", None))
+    dismiss = [s for s in (getattr(a, "dismiss", None) or []) if str(s).strip()]
+    undismiss = [s for s in (getattr(a, "undismiss", None) or []) if str(s).strip()]
+    listing = getattr(a, "dismissals", False)
+    candidates = getattr(a, "candidates", False)
+    goal_reviewed = getattr(a, "goal_reviewed", False)
+    marking = getattr(a, "mark_healed", False)
+    verbs = (getattr(a, "split", None) is not None
+             or getattr(a, "merge", None) is not None)
+
+    def _others(*allowed):
+        """The mode flags present that this invocation is NOT one of. One reader, so every
+        refusal below names the same set and none of them can forget a flag that was added
+        later — the way a mode silently starts swallowing another one."""
+        modes = (("--scan", scan_only), ("--apply", apply_it),
+                 ("--mark-healed", marking), ("--goal-reviewed", goal_reviewed),
+                 ("--dismissals", listing), ("--candidates", candidates),
+                 ("--dismiss", bool(dismiss)), ("--undismiss", bool(undismiss)),
+                 ("--dispose-acks", bool(dispose)),
+                 ("--split/--merge", verbs))
+        return [name for name, on in modes if on and name not in allowed]
+
     if scan_only and apply_it:
         # `/heal` opens with `--scan` on the caller's behalf (the SKILL drives the rest),
         # so an `--apply` typed alongside it would be silently swallowed by the read-only
@@ -13447,7 +13678,72 @@ def cmd_heal(a):
               "that the `heal` SKILL drives that whole sequence, so you should not need "
               "to type either flag yourself.")
         return
-    if getattr(a, "mark_healed", False):
+    # THE TWO READ-ONLY VIEWS, first because they write nothing and can therefore refuse
+    # early and cheaply. Neither is combinable with anything else: somebody who typed a view
+    # AND a write is owed a refusal rather than half of each, and a view that quietly ran
+    # alongside an --apply would print a state the apply had already changed.
+    if listing or candidates:
+        if listing and candidates:
+            print("heal --dismissals lists the adjudication ledger and --candidates prints "
+                  "the merge groups — two different reads, so run them as two commands.")
+            return
+        flag = "--dismissals" if listing else "--candidates"
+        clash = _others(flag)
+        if clash:
+            print("heal %s is a READ: it changes nothing, performs nothing and stamps "
+                  "nothing, so it cannot be combined with %s. Run it on its own."
+                  % (flag, ", ".join(clash)))
+            return
+        view = _heal_dismissals_report if listing else _heal_candidates_report
+        print("\n\n".join(view(t) for t in tasks))
+        return
+    # THE ADJUDICATION LEDGER'S WRITE PATH. Its own invocation on purpose — see
+    # `_heal_dismiss_writes` for why it must not ride along with the mechanical plan.
+    if dismiss or undismiss:
+        if scan_only:
+            print("heal --scan is read-only, so it cannot dismiss anything. Use `heal "
+                  "--apply --dismiss '<check>:<ref>' --why '<reason>'` to record the "
+                  "adjudication, or `heal --dismissals` to read the ledger.")
+            return
+        clash = _others("--dismiss", "--undismiss", "--apply")
+        if clash:
+            print("heal --dismiss/--undismiss adjudicate what the scan REPORTS; %s "
+                  "change(s) what the record SAYS. One report cannot honestly tell both "
+                  "stories, and a dismissal must never stamp a heal — run them separately."
+                  % ", ".join(clash))
+            return
+        if sweeping:
+            print("heal --dismiss/--undismiss name a finding on ONE task — a ref means "
+                  "nothing board-wide, and one shared --why across unrelated work is not an "
+                  "adjudication. Target it with `--task <n>`.")
+            return
+        if not apply_it:
+            print("heal --dismiss/--undismiss WRITE the ledger, and a bare `heal` is a dry "
+                  "run that changes nothing — so this would have silently done nothing. "
+                  "Re-run it as `heal --apply --dismiss '<check>:<ref>' --why '<reason>' "
+                  "--task <n>`. Nothing was changed.")
+            return
+        print(_heal_dismiss_writes(a, tasks[0]))
+        maybe_refresh_board()
+        return
+    # RECORDING A GOAL RE-READ. Allowed alongside --mark-healed and nothing else: those two
+    # are the honest pair for "I read everything, including the goal, and it is all still
+    # true", and requiring two commands for one pass would be ceremony. Every other
+    # combination is refused, because this stamps a claim about one specific line.
+    if goal_reviewed:
+        clash = _others("--goal-reviewed", "--mark-healed")
+        if clash:
+            print("heal --goal-reviewed records that the GOAL LINE was re-read and is "
+                  "still true. It performs no operation, so it cannot be combined with %s. "
+                  "It may be combined with --mark-healed, which is the honest pair for a "
+                  "judgement-only pass that included the goal." % ", ".join(clash))
+            return
+        print(_heal_goal_reviewed(a, tasks))
+        if not marking:
+            maybe_refresh_board()
+            return
+        print("")            # …and the judgement-only stamp follows, explicitly asked for
+    if marking:
         # A stamp is not a scan and not a plan — refuse the combinations rather than
         # silently picking one, so nobody can think they applied a plan they didn't.
         if (scan_only or apply_it or dispose
@@ -13495,7 +13791,18 @@ def cmd_heal(a):
                  "Each will be BACKED UP and its mechanical plan APPLIED."
                  if apply_it else "Nothing will be changed (dry run)."))
         print("")
-    link_probe = None       # network stays opt-in; a link is never reported dead on a failed check
+    # NETWORK STAYS OPT-IN. `link_states` has always taken a probe and has never been given
+    # one, so every stored link has always read UNKNOWN — the right default for a check that
+    # can only ever confirm what is already there, at one HTTP round trip per link. With
+    # `--probe-links` the real prober is wired, and only an explicit 404/410 counts as dead:
+    # a private PR answering 401 is not evidence, and "your PR link is dead" about a live PR
+    # would send a reader hunting for work that is sitting exactly where it was.
+    link_probe = _heal.link_prober() if getattr(a, "probe_links", False) else None
+    if link_probe is not None:
+        print("[HEAL] --probe-links: making ONE unauthenticated HTTP HEAD request per stored "
+              "PR/story link. Only a 404/410 counts as dead; every other answer, including "
+              "any error, stays UNKNOWN and is never reported.")
+        print("")
     blocks = []
     for task in tasks:
         result = _heal_scan_one(task, probe_branches=True, link_probe=link_probe)
@@ -13906,6 +14213,39 @@ def main(argv=None):
     sp.add_argument("--into", default=None, metavar="N1,N2,…",
                     help="the decision(s) a --split became, or the ONE that a --merge "
                          "was absorbed into")
+    sp.add_argument("--dismiss", action="append", default=None, metavar="CHECK:REF",
+                    help="adjudicate ONE finding away (repeatable; needs --apply and "
+                         "--why). It leaves the findings, the issue count and the due "
+                         "calculus. The ruling covers that finding's EXACT text, so editing "
+                         "the entry it names makes the finding re-report — a dismissal "
+                         "adjudicates one state, never a category. Nothing is deleted.")
+    sp.add_argument("--undismiss", action="append", default=None, metavar="CHECK:REF",
+                    help="retire a dismissal and restore full reporting (repeatable; needs "
+                         "--apply). The ledger entry stays, marked retired.")
+    sp.add_argument("--why", default=None, metavar="REASON",
+                    help="with --dismiss: MANDATORY. Why that finding is not a defect. A "
+                         "dismissal with no reason is indistinguishable later from a "
+                         "finding somebody buried, so one without this is refused.")
+    sp.add_argument("--dismissals", action="store_true",
+                    help="list the adjudication ledger — every dismissal with its why, its "
+                         "date, and whether it is still silencing anything (an ACTIVE ruling "
+                         "whose text has since changed reads EXPIRED). Read-only.")
+    sp.add_argument("--candidates", action="store_true",
+                    help="the CHEAP merge-only dry run: the goal line, the pinned "
+                         "decisions, and each candidate group's members IN FULL — and "
+                         "nothing else. The full dry run is ~94%% decision corpus; this is "
+                         "the same reading with the corpus removed. Read-only.")
+    sp.add_argument("--goal-reviewed", dest="goal_reviewed", action="store_true",
+                    help="record that the GOAL LINE was re-read and is still true, resetting "
+                         "the goal-review count WITHOUT rewriting it. The only thing that "
+                         "resets it: --mark-healed deliberately does not, because a stamp "
+                         "saying the record was read is not one saying this line was ruled "
+                         "on. May be combined with --mark-healed.")
+    sp.add_argument("--probe-links", dest="probe_links", action="store_true",
+                    help="opt in to ONE unauthenticated HTTP HEAD per stored PR/story link. "
+                         "Off by default (a session start must cost no network). Only an "
+                         "explicit 404/410 counts as dead; every other answer, including any "
+                         "error, stays UNKNOWN and is never reported.")
     sp.set_defaults(fn=cmd_heal)
 
     sp = sub.add_parser("stop-gate"); sp.add_argument("--session", required=True)

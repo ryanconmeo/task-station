@@ -89,7 +89,13 @@ class _Args:
         defaults = dict(session=None, task=None, ref=None, scan=False, apply=False,
                         all=False, verbose=False,
                         split=None, merge=None, into=None, mark_healed=False, note=None,
-                        dispose_acks=None, decision=None, memory=None, noop=None)
+                        dispose_acks=None, decision=None, memory=None, noop=None,
+                        # 2.26.0: the adjudication ledger, the cheap candidate view, the
+                        # goal re-read stamp and the opt-in link probe. Defaulted here for
+                        # the same reason `ref` is — every existing caller names none of
+                        # them, and they must change nothing for those callers.
+                        dismiss=None, undismiss=None, why=None, dismissals=False,
+                        candidates=False, goal_reviewed=False, probe_links=False)
         defaults.update(kw)
         self.__dict__.update(defaults)
 
@@ -1369,9 +1375,14 @@ class TestAccrualAndTheGapNoScanCanCover(_Base):
         self.assertIsNone(a["steps"])
 
     def test_accrual_is_never_a_finding_and_never_makes_a_heal_due(self):
+        # The four appended decisions deliberately share NO opening shape and no
+        # subject signal: a same-shaped run would form a merge-candidate group and
+        # legitimately trip the grew-with-candidates finding (its own tests cover
+        # that), which would test the size objective here instead of accrual.
         t = self._stamped(decisions=["chose sqlite for the FTS index"])
-        for i in range(4):
-            ts.append_decision(t, "scrub iteration %d, recorded" % i)
+        for text in ("picked the FTS tokenizer", "renamed the export column",
+                     "wired the feed cache", "documented the retry rule"):
+            ts.append_decision(t, text)
         ts.save_task(t)
         result = heal.scan(self._reload(t))
         self.assertEqual(result["findings"], [])
@@ -3683,3 +3694,1013 @@ class TestBothSurfacesDroppedTheApprovalGate(_Base):
         text = self._read("skills", "heal", "SKILL.md")
         self.assertIn("--mark-healed --task <n> --note", text)
         self.assertIn("Do not read the dry run at all", text)
+
+
+# ---------------------------------------------------------------------------
+# THE THIRD DISCRIMINATOR — reports-another-decision.
+#
+# `qualifier` reads the word standing in FRONT of a match, which answers "what noun is this
+# keyword about". It cannot answer the second question the same sentence raises: WHO does the
+# sentence say did it? On one real task 8 of 17 findings were decisions MINUTING another
+# decision's work — "corrected by decision 184", "decision 173 investigated", "why decision
+# 150 is NOT superseded" — every one of which satisfies check 3's two older conditions
+# perfectly. Eight false findings beside nine real ones is how a reader learns to skip all
+# seventeen.
+#
+# The shapes below are the real ones, verbatim from the spec that ordered this fix.
+# ---------------------------------------------------------------------------
+
+class TestReportsAnotherDecision(_Base):
+    def _prose(self, text):
+        """A task whose SECOND decision carries `text` — so a reference to decision 1 is
+        backwards-looking and in range, which is what check 3 requires before it looks at
+        anything else."""
+        t = self._task(decisions=["go with flat files", text])
+        return self._reload(t)
+
+    def test_corrected_by_decision_N_is_reporting_not_declaring(self):
+        # `by` makes decision 1 the AGENT of the correction: this entry is the minute of a
+        # ruling already taken, not a claim that something is unlinked.
+        t = self._prose("the export path was corrected by decision 1, which is why the "
+                        "flat-file reader is gone")
+        self.assertEqual(heal.prose_supersession(t), [])
+
+    def test_decision_N_investigated_is_reporting_not_declaring(self):
+        # Carries the correction vocabulary AND names an earlier live decision, so both of
+        # check 3's older conditions hold — the reference is the SUBJECT of a reporting verb,
+        # and that is the only thing keeping this quiet.
+        t = self._prose("decision 1 investigated the store choice and corrected the numbers")
+        self.assertEqual(heal.prose_supersession(t), [])
+
+    def test_why_decision_N_is_NOT_superseded_is_reporting_not_declaring(self):
+        # The sentence DENIES the condition. Reading it as a claim of supersession is
+        # exactly backwards.
+        t = self._prose("why decision 1 is NOT superseded: the flat-file reader still ships "
+                        "and nothing has refuted it")
+        self.assertEqual(heal.prose_supersession(t), [])
+
+    def test_superseded_by_decision_N_is_reporting_not_declaring(self):
+        t = self._prose("the reader was superseded by decision 1 during the scrub")
+        self.assertEqual(heal.prose_supersession(t), [])
+
+    def test_the_true_positive_still_fires(self):
+        # The whole point of the discriminator is that it kills the eight and keeps the one.
+        hits = heal.prose_supersession(self._prose(
+            "decision 1 was wrong — sqlite instead, for the FTS index"))
+        self.assertEqual([h["ref"] for h in hits], ["decision 2"])
+
+    def test_a_form_of_to_be_after_the_reference_is_still_a_declaration(self):
+        # `was`/`is` are deliberately NOT reporting verbs: they are the predicate that makes
+        # the sentence a statement ABOUT the named decision, which is the finding worth
+        # having.
+        for body in ("decision 1 was wrong about the store",
+                     "decision 1 is no longer true — the FTS index needs sqlite"):
+            self.assertEqual([h["ref"] for h in heal.prose_supersession(self._prose(body))],
+                             ["decision 2"], body)
+
+    def test_a_relative_clause_still_reads_as_reporting(self):
+        # `decision 1, WHICH investigated …` says 1 did it just as plainly as `decision 1
+        # investigated …`. The reading looks one word further, and no further than that.
+        t = self._prose("decision 1, which investigated the store choice, corrected nothing "
+                        "— the flat-file reader still ships")
+        self.assertEqual(heal.prose_supersession(t), [])
+
+    def test_the_supersession_vocabulary_is_never_a_reporting_verb(self):
+        # `decision 4 superseded by this one` is the check's BEST true positive — prose
+        # claiming a supersession the structure does not record. One word cannot tell it from
+        # the active `decision 4 superseded the flat-file rule`, so those verbs stay out of
+        # the reporting set and the passive form is caught by the `by` in FRONT instead.
+        hits = heal.prose_supersession(self._prose(
+            "decision 1 superseded — this entry replaces it and nothing links them"))
+        self.assertEqual([h["ref"] for h in hits], ["decision 2"])
+
+    def test_reported_decision_refs_reads_each_shape(self):
+        for body in ("corrected by decision 184",
+                     "decision 173 investigated",
+                     "why decision 150 is NOT superseded",
+                     "the reader was superseded by decision 12"):
+            self.assertTrue(heal.reported_decision_refs(body), body)
+        for body in ("decision 4 was wrong",
+                     "decision 4 is superseded by this one",
+                     "entry 2 no longer holds"):
+            self.assertEqual(heal.reported_decision_refs(body), set(), body)
+
+    def test_the_discriminator_is_scoped_to_the_clause_not_the_whole_entry(self):
+        # A negated keyword five sentences away says nothing about this reference. The window
+        # is bounded so a page-long decision cannot silence itself by accident.
+        body = ("decision 1 was wrong — sqlite instead. Separately, the config file is not "
+                "superseded and stays exactly where it is. " + "filler. " * 30)
+        self.assertEqual([h["ref"] for h in heal.prose_supersession(self._prose(body))],
+                         ["decision 2"])
+
+
+# ---------------------------------------------------------------------------
+# THE OVERSIZED TIERS — one advisory, two multiples of it.
+#
+# The write path nudges at 600 chars (`decisions.LONG_DECISION_CHARS`) and this check used to
+# report clean up to 4,000 — 2.4× an advisory it never referenced — on a task whose decisions
+# AVERAGE ~1,400. So it was neither the advisory nor a measurement. Both thresholds now
+# derive from that one constant: >2× is worth READING (a proposal, capped, never an issue),
+# >6× is a FINDING, which is where an entry stops being supersedable a piece at a time.
+# ---------------------------------------------------------------------------
+
+class TestOversizedTiers(_Base):
+    def test_one_advisory_is_the_single_source_of_truth(self):
+        self.assertEqual(heal.WRITE_ADVISORY_CHARS, dec.LONG_DECISION_CHARS)
+        self.assertEqual(heal.OVERSIZE_PROPOSAL_CHARS, 2 * heal.WRITE_ADVISORY_CHARS)
+        self.assertEqual(heal.OVERSIZE_CHARS, 6 * heal.WRITE_ADVISORY_CHARS)
+
+    def test_over_twice_the_advisory_is_a_proposal_and_not_a_finding(self):
+        t = self._task(decisions=["p" * (heal.OVERSIZE_PROPOSAL_CHARS + 100)])
+        result = heal.scan(self._reload(t))
+        self.assertEqual(result["findings"], [])
+        self.assertEqual([r["index"] for r in result["oversized_proposals"]["shown"]], [1])
+        self.assertFalse(heal.due(self._reload(t), result=result)[0])
+
+    def test_at_the_proposal_threshold_exactly_nothing_is_said(self):
+        t = self._task(decisions=["p" * heal.OVERSIZE_PROPOSAL_CHARS])
+        result = heal.scan(self._reload(t))
+        self.assertEqual(result["oversized_proposals"]["shown"], [])
+        self.assertEqual(result["findings"], [])
+
+    def test_over_six_times_the_advisory_is_a_finding_naming_the_split_verb(self):
+        t = self._task(decisions=["f" * (heal.OVERSIZE_CHARS + 10)])
+        hits = heal.oversized(self._reload(t))
+        self.assertEqual([h["ref"] for h in hits], ["decision 1"])
+        self.assertIn("heal --split 1", hits[0]["detail"])
+        self.assertIn("600-char write advisory", hits[0]["detail"])
+
+    def test_a_finding_is_not_also_listed_as_a_proposal(self):
+        # The same entry in an issue list AND a proposal list reads as two problems, and a
+        # reader who fixes one is then told the other is outstanding.
+        t = self._task(decisions=["f" * (heal.OVERSIZE_CHARS + 10)])
+        result = heal.scan(self._reload(t))
+        self.assertEqual(len(result["findings"]), 1)
+        self.assertEqual(result["oversized_proposals"]["total"], 0)
+
+    def test_the_proposal_list_is_worst_first_and_says_how_many_it_dropped(self):
+        sizes = [heal.OVERSIZE_PROPOSAL_CHARS + n for n in (10, 20, 30, 40, 50, 60, 70)]
+        t = self._task(decisions=["x" * n for n in sizes])
+        p = heal.oversized_proposals(self._reload(t))
+        self.assertEqual([r["index"] for r in p["shown"]], [7, 6, 5, 4, 3])
+        self.assertEqual(p["more"], 2)
+        self.assertEqual(p["total"], 7)
+        line = "\n".join(heal.oversized_proposal_lines({"oversized_proposals": p}))
+        self.assertIn("PROPOSALS", line)
+        self.assertIn("+2 more", line)
+
+    def test_the_plan_splits_the_finding_tier_only(self):
+        # A proposal must never become an op: `--apply` splitting every 1,300-char decision
+        # on the board is the cry-wolf failure with a write attached.
+        body = "\n\n".join("para %d %s" % (i, "w" * 300)
+                           for i in range(4))          # ~1,240 chars: proposal tier
+        t = self._task(decisions=[body])
+        self.assertEqual([o["verb"] for o in heal.plan(self._reload(t))], [])
+
+
+# ---------------------------------------------------------------------------
+# THE FIRST OUTWARD CHECK — cited commits.
+#
+# Every other check cross-references the record with ITSELF, so a rebase or a force-push
+# that erased a cited commit leaves nothing to find. This one asks a git repo — and it only
+# ever asks about DECLARED citations, because a 7-40 char hex token is also a task id, a memo
+# id8, a heal fingerprint and a tree hash, and "your commit vanished" about a task id is a
+# finding nobody can act on.
+# ---------------------------------------------------------------------------
+
+class TestCitedCommits(_Base):
+    def _repo_task(self, decisions, **fields):
+        """A task recording a file whose DIRECTORY is the test's own temp dir — which really
+        exists, so `task_repos` finds one directory to probe. Whether it is a repo, and
+        whether the sha resolves, is decided by the injected `run`: never real git."""
+        return self._task(decisions=decisions,
+                          files=[os.path.join(self.tmp, "thing.py")], **fields)
+
+    def test_a_declared_citation_is_parsed_with_where_it_came_from(self):
+        t = self._task(decisions=["merged commit 4412760 into main after the scrub"])
+        self.assertEqual(heal.commit_citations(self._reload(t)),
+                         [("4412760", "decision 1")])
+
+    def test_the_at_form_is_parsed(self):
+        t = self._task(decisions=["the release line stands at main @ 022ace9f"])
+        self.assertEqual([s for s, _w in heal.commit_citations(self._reload(t))],
+                         ["022ace9f"])
+
+    def test_a_log_entry_is_read_too(self):
+        t = self._task(decisions=["a call"])
+        t = self._reload(t)
+        ts.append_history(t, "pushed 022ace9 to origin/main")
+        ts.save_task(t)
+        self.assertEqual(heal.commit_citations(self._reload(t)),
+                         [("022ace9", "log entry 1")])
+
+    def test_a_bare_hex_token_is_NEVER_a_citation(self):
+        # Task ids and fingerprints are hex too. A false "history was rewritten" sends
+        # somebody hunting through reflogs for a commit that is sitting right there.
+        t = self._task(decisions=["the task id 3140ac00 is hex and so is a fingerprint "
+                                  "ab12cd34ef56, and neither is a commit"])
+        self.assertEqual(heal.commit_citations(self._reload(t)), [])
+
+    def test_a_hex_looking_english_word_is_not_a_sha(self):
+        # `defaced`, `acceded` and `beefed` are spelled entirely in hex letters. The digit
+        # gate is what stops "the commit defaced the config" from being a citation.
+        t = self._task(decisions=["the commit defaced the config and acceded to the rename"])
+        self.assertEqual(heal.commit_citations(self._reload(t)), [])
+        self.assertFalse(heal._sha_shaped("defaced"))
+        self.assertTrue(heal._sha_shaped("4412760"))
+
+    def test_one_sha_cited_five_times_is_one_thing_to_check(self):
+        t = self._task(decisions=["commit 4412760 shipped it",
+                                  "sha 4412760 is the one to cherry-pick"])
+        self.assertEqual(len(heal.commit_citations(self._reload(t))), 1)
+
+    def test_no_prober_means_every_citation_is_UNKNOWN_and_nothing_is_reported(self):
+        t = self._task(decisions=["merged commit 4412760 into main"])
+        result = heal.scan(self._reload(t))
+        self.assertEqual([c["state"] for c in result["commits"]], [None])
+        self.assertEqual([f for f in result["findings"] if f["check"] == "cited-commit"], [])
+
+    def test_a_sha_that_resolves_nowhere_is_a_finding(self):
+        t = self._task(decisions=["merged commit 4412760 into main"])
+        hits = heal.commit_rot(self._reload(t), probe=lambda sha: False)
+        self.assertEqual(len(hits), 1)
+        self.assertIn("resolves in none of the task's repos", hits[0]["detail"])
+        self.assertIn("4412760", hits[0]["ref"])
+
+    def test_a_sha_that_resolves_is_silent_and_so_is_UNKNOWN(self):
+        t = self._task(decisions=["merged commit 4412760 into main"])
+        self.assertEqual(heal.commit_rot(self._reload(t), probe=lambda sha: True), [])
+        self.assertEqual(heal.commit_rot(self._reload(t), probe=lambda sha: None), [])
+
+    def test_a_prober_that_raises_reads_as_UNKNOWN_never_as_gone(self):
+        def boom(_sha):
+            raise RuntimeError("git exploded")
+        t = self._task(decisions=["merged commit 4412760 into main"])
+        self.assertEqual(heal.commit_rot(self._reload(t), probe=boom), [])
+
+    def test_the_prober_asks_git_cat_file_and_reads_its_answer(self):
+        asked = []
+
+        def run(args, timeout=None):
+            asked.append(args)
+            return ("cat-file" not in args), ""      # a repo, but no such commit
+
+        t = self._repo_task(["merged commit 4412760 into main"])
+        probe = heal.commit_prober(self._reload(t), run=run)
+        self.assertIs(probe("4412760"), False)
+        self.assertTrue(any("cat-file" in a for a in asked))
+        self.assertTrue(any("4412760^{commit}" in a for a in asked))
+
+    def test_no_usable_repo_is_UNKNOWN_rather_than_gone(self):
+        t = self._task(decisions=["merged commit 4412760 into main"])
+        probe = heal.commit_prober(self._reload(t), exists=lambda p: False)
+        self.assertIsNone(probe("4412760"))
+
+    def test_the_scan_wires_it_through_and_the_finding_counts(self):
+        t = self._task(decisions=["merged commit 4412760 into main"])
+        result = heal.scan(self._reload(t), commit_probe=lambda sha: False)
+        self.assertEqual([f["check"] for f in result["findings"]], ["cited-commit"])
+        self.assertTrue(heal.due(self._reload(t), result=result)[0])
+
+
+class TestTheOptInLinkProbe(_Base):
+    """`link_states` has always taken a probe and never been given one. `--probe-links` wires
+    a real HTTP HEAD — and ONLY an explicit 404/410 counts as dead, because a private ADO PR
+    answers 401 to an unauthenticated request and "your PR link is dead" about a live PR is
+    the most expensive false positive this module could print."""
+
+    def setUp(self):
+        super(TestTheOptInLinkProbe, self).setUp()
+        import urllib.request
+        self._real = urllib.request.urlopen
+
+    def tearDown(self):
+        import urllib.request
+        urllib.request.urlopen = self._real
+        super(TestTheOptInLinkProbe, self).tearDown()
+
+    def _patch(self, fn):
+        import urllib.request
+        urllib.request.urlopen = fn
+
+    def test_a_404_is_the_only_thing_that_counts_as_dead(self):
+        import urllib.error
+
+        def gone(req, timeout=None):
+            raise urllib.error.HTTPError(getattr(req, "full_url", "u"), 404, "gone",
+                                         None, None)
+        self._patch(gone)
+        self.assertIs(heal.link_prober()("https://example.invalid/pr/1"), False)
+
+    def test_a_401_or_403_is_UNKNOWN_not_dead(self):
+        import urllib.error
+        for code in (401, 403, 405, 500):
+            def refused(req, timeout=None, _c=code):
+                raise urllib.error.HTTPError(getattr(req, "full_url", "u"), _c, "no",
+                                             None, None)
+            self._patch(refused)
+            self.assertIsNone(heal.link_prober()("https://example.invalid/pr/1"), code)
+
+    def test_any_exception_is_UNKNOWN(self):
+        def boom(req, timeout=None):
+            raise OSError("dns is down")
+        self._patch(boom)
+        self.assertIsNone(heal.link_prober()("https://example.invalid/pr/1"))
+
+    def test_a_200_resolves(self):
+        class Fake(object):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        self._patch(lambda req, timeout=None: Fake())
+        self.assertIs(heal.link_prober()("https://example.invalid/pr/1"), True)
+
+    def test_a_non_http_url_is_UNKNOWN_without_asking_anything(self):
+        def never(req, timeout=None):
+            raise AssertionError("must not probe a non-http url")
+        self._patch(never)
+        self.assertIsNone(heal.link_prober()("ssh://git@host/repo.git"))
+
+    def test_off_by_default_the_scan_probes_nothing(self):
+        def never(req, timeout=None):
+            raise AssertionError("the default scan must make no network call")
+        self._patch(never)
+        t = self._task(decisions=["a call"],
+                       prs=[{"url": "https://example.invalid/pr/1", "desc": ""}])
+        result = heal.scan(self._reload(t))
+        self.assertEqual([l["state"] for l in result["links"]], [None])
+        self.assertEqual(result["findings"], [])
+
+
+# ---------------------------------------------------------------------------
+# THE DISMISSAL LEDGER — adjudicating ONE state, never a category.
+#
+# On one real task the scan stood at 17 findings and 9 were dead paths a human had already
+# read and ruled on. The scan had no way to know that, so it reported all 9 again next pass.
+# A report that repeats what its reader already answered is one they stop opening — the same
+# cost as crying wolf, arriving by a different route.
+#
+# The fingerprint covers the finding's MATCHED TEXT, so a ruling survives a re-scan and does
+# NOT survive the matched text changing. That is the design: "this sentence is fine" is not a
+# ruling about the next sentence.
+# ---------------------------------------------------------------------------
+
+class TestTheDismissalLedger(_Base):
+    SELECTOR = "prose-supersession:decision 2"
+
+    def _prose_task(self):
+        return self._reload(self._task(decisions=UNLINKED_PROSE))
+
+    def _dismiss(self, t, selector=None, why="adjudicated: the prose is a minute, not a "
+                                            "claim", **kw):
+        return self._heal(t, apply=True, dismiss=[selector or self.SELECTOR], why=why, **kw)
+
+    def test_a_dismissed_finding_leaves_the_findings_the_count_and_the_due_calculus(self):
+        t = self._prose_task()
+        self.assertTrue(heal.due(t)[0])
+        out = self._dismiss(t)
+        self.assertIn("DISMISSED prose-supersession:decision 2", out)
+        after = self._reload(t)
+        result = heal.scan(after)
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(len(result["dismissed"]), 1)
+        self.assertEqual(heal.mechanical_line(result), "clean")
+        self.assertFalse(heal.due(after, result=result)[0])
+
+    def test_a_dismissal_with_no_why_is_refused_and_changes_nothing(self):
+        t = self._prose_task()
+        out = self._heal(t, apply=True, dismiss=[self.SELECTOR])
+        self.assertIn("needs --why", out)
+        self.assertEqual(heal.dismissal_ledger(self._reload(t)), [])
+        self.assertTrue(heal.scan(self._reload(t))["findings"])
+
+    def test_the_scan_prints_one_informational_dismissed_line(self):
+        t = self._prose_task()
+        self._dismiss(t)
+        out = self._heal(self._reload(t), scan=True)
+        self.assertIn("Dismissed", out)
+        self.assertIn("heal --dismissals", out)
+        self.assertNotIn("YES", out.rsplit("Heal due?", 1)[-1])
+
+    def test_a_dismissal_survives_a_re_scan(self):
+        t = self._prose_task()
+        self._dismiss(t)
+        for _ in range(3):
+            self.assertEqual(heal.scan(self._reload(t))["findings"], [])
+
+    def test_changing_the_matched_text_makes_the_finding_RE_REPORT(self):
+        # The ruling covered the sentence that was there. Rewriting the entry — here, from
+        # "was wrong" to "no longer holds" — changes what the check matched, so nobody has
+        # ruled on the new one.
+        t = self._prose_task()
+        self._dismiss(t)
+        edited = self._reload(t)
+        edited["decisions"][1] = "decision 1 no longer holds — sqlite, for the FTS index"
+        ts.save_task(edited)
+        result = heal.scan(self._reload(t))
+        self.assertEqual([f["check"] for f in result["findings"]], ["prose-supersession"])
+        self.assertEqual(result["dismissed"], [])
+
+    def test_an_unambiguous_substring_of_a_ref_resolves(self):
+        t = self._prose_task()
+        out = self._dismiss(t, selector="prose-supersession:decision")
+        self.assertIn("DISMISSED prose-supersession:decision 2", out)
+
+    def test_an_ambiguous_ref_is_refused_with_the_list(self):
+        big = "b" * (heal.OVERSIZE_CHARS + 10)
+        t = self._reload(self._task(decisions=[big, big]))
+        out = self._dismiss(t, selector="oversized:decision")
+        self.assertIn("ambiguous", out)
+        self.assertIn("oversized:decision 1", out)
+        self.assertIn("oversized:decision 2", out)
+        self.assertEqual(heal.dismissal_ledger(self._reload(t)), [])
+
+    def test_dismissing_something_that_is_not_a_current_finding_is_refused(self):
+        t = self._prose_task()
+        out = self._dismiss(t, selector="oversized:decision 1")
+        self.assertIn("no finding for check", out)
+        self.assertIn("prose-supersession:decision 2", out)     # what WOULD work
+        self.assertEqual(heal.dismissal_ledger(self._reload(t)), [])
+
+    def test_a_selector_with_no_check_is_refused_rather_than_guessed(self):
+        t = self._prose_task()
+        out = self._dismiss(t, selector="decision 2")
+        self.assertIn("'<check>:<ref>'", out)
+        self.assertEqual(heal.dismissal_ledger(self._reload(t)), [])
+
+    def test_dismissing_the_same_finding_twice_says_so(self):
+        t = self._prose_task()
+        self._dismiss(t)
+        out = self._dismiss(self._reload(t))
+        self.assertIn("already dismissed", out)
+        self.assertEqual(len(heal.dismissal_ledger(self._reload(t))), 1)
+
+    def test_undismiss_restores_full_reporting_and_retires_rather_than_deletes(self):
+        t = self._prose_task()
+        self._dismiss(t)
+        out = self._heal(self._reload(t), apply=True, undismiss=[self.SELECTOR])
+        self.assertIn("UNDISMISSED", out)
+        after = self._reload(t)
+        self.assertEqual([f["check"] for f in heal.scan(after)["findings"]],
+                         ["prose-supersession"])
+        ledger = heal.dismissal_ledger(after)
+        self.assertEqual(len(ledger), 1)                 # nothing was deleted
+        self.assertTrue(ledger[0]["retired"])
+        self.assertEqual(heal.active_dismissals(after), [])
+
+    def test_re_dismissing_after_an_undismiss_appends_a_second_ruling(self):
+        # Two rulings made at two moments, possibly for two reasons. Reviving the first
+        # would put one session's why on another session's decision.
+        t = self._prose_task()
+        self._dismiss(t, why="first call")
+        self._heal(self._reload(t), apply=True, undismiss=[self.SELECTOR])
+        self._dismiss(self._reload(t), why="second call, after re-reading it")
+        ledger = heal.dismissal_ledger(self._reload(t))
+        self.assertEqual(len(ledger), 2)
+        self.assertEqual([e.get("why") for e in ledger],
+                         ["first call", "second call, after re-reading it"])
+
+    def test_the_listing_shows_the_why_the_date_and_whether_it_still_silences(self):
+        t = self._prose_task()
+        self._dismiss(t, why="the prose minutes decision 1, it does not contradict it")
+        out = self._heal(self._reload(t), dismissals=True)
+        self.assertIn("DISMISSALS", out)
+        self.assertIn("the prose minutes decision 1", out)
+        self.assertIn("in force", out)
+        self.assertIn(time.strftime("%Y"), out)
+
+    def test_the_listing_calls_an_expired_ruling_expired(self):
+        t = self._prose_task()
+        self._dismiss(t)
+        edited = self._reload(t)
+        edited["decisions"][1] = "decision 1 no longer holds — sqlite, for the FTS index"
+        ts.save_task(edited)
+        out = self._heal(self._reload(t), dismissals=True)
+        self.assertIn("EXPIRED", out)
+
+    def test_an_empty_ledger_says_so_plainly(self):
+        t = self._prose_task()
+        self.assertIn("none", self._heal(t, dismissals=True))
+
+    def test_a_dismiss_without_apply_is_refused_rather_than_silently_doing_nothing(self):
+        t = self._prose_task()
+        out = self._heal(t, dismiss=[self.SELECTOR], why="a reason")
+        self.assertIn("Nothing was changed", out)
+        self.assertEqual(heal.dismissal_ledger(self._reload(t)), [])
+
+    def test_a_dismiss_with_scan_is_refused(self):
+        t = self._prose_task()
+        out = self._heal(t, scan=True, dismiss=[self.SELECTOR], why="a reason")
+        self.assertIn("read-only", out)
+        self.assertEqual(heal.dismissal_ledger(self._reload(t)), [])
+
+    def test_a_dismiss_with_all_is_refused(self):
+        t = self._prose_task()
+        out = self._out(ts.cmd_heal, _Args(all=True, apply=True,
+                                           dismiss=[self.SELECTOR], why="a reason"))
+        self.assertIn("ONE task", out)
+        self.assertEqual(heal.dismissal_ledger(self._reload(t)), [])
+
+    def test_a_dismissal_NEVER_stamps_a_heal(self):
+        # Adjudicating a false positive is not reconciling a task. A stamp that said
+        # otherwise would make every other stamp unreadable.
+        t = self._prose_task()
+        out = self._dismiss(t)
+        self.assertIn("NO HEAL WAS STAMPED", out)
+        self.assertIsNone(self._reload(t).get("last_heal_ts"))
+
+    def test_the_dismissal_write_path_refuses_to_share_a_run_with_the_verbs(self):
+        t = self._reload(self._task(decisions=["a", "b", "the surviving summary"]))
+        out = self._heal(t, apply=True, dismiss=[self.SELECTOR], why="r",
+                         merge="1,2", into="3")
+        self.assertIn("run them separately", out)
+        self.assertEqual(len(dec.live(self._reload(t)["decisions"])), 3)
+
+    def test_the_listing_and_the_candidates_view_are_reads_and_refuse_to_write(self):
+        t = self._prose_task()
+        for kw in ({"dismissals": True}, {"candidates": True}):
+            kw2 = dict(kw)
+            kw2["apply"] = True
+            self.assertIn("is a READ", self._heal(t, **kw2))
+
+    def test_the_fingerprint_is_stable_across_processes(self):
+        # hashlib, not hash(): a per-process string seed would make every stored ruling
+        # silently expire on restart.
+        f = {"check": "oversized", "ref": "decision 1", "detail": "3610 chars"}
+        self.assertEqual(heal.finding_fingerprint(f), heal.finding_fingerprint(dict(f)))
+        self.assertEqual(len(heal.finding_fingerprint(f)), 40)
+        self.assertNotEqual(heal.finding_fingerprint(f),
+                            heal.finding_fingerprint(dict(f, detail="3611 chars")))
+
+
+# ---------------------------------------------------------------------------
+# MERGE AT SCALE — completion, subject, size, and the cheap view.
+#
+# The shape tier matches how an entry OPENS, so it knows neither whether the work is FINISHED
+# nor what the entry is ABOUT. Four additions: a completion signal from the checklist, subject
+# grouping, a size objective the stamp baselines, and a candidates-only view that leaves the
+# corpus behind.
+# ---------------------------------------------------------------------------
+
+class TestStepReferences(_Base):
+    def test_only_the_explicit_shapes_are_read(self):
+        self.assertEqual(heal.step_refs("step 29 is the rename", total=40), [29])
+        self.assertEqual(heal.step_refs("steps 3-6 are the scrub", total=40), [3, 4, 5, 6])
+        self.assertEqual(heal.step_refs("steps 3, 4 and 5 landed", total=40), [3, 4, 5])
+        self.assertEqual(heal.step_refs("steps 3 to 5 landed", total=40), [3, 4, 5])
+
+    def test_a_bare_number_is_never_a_step_reference(self):
+        # A decision's prose is full of bare numbers — char counts, versions, percentages.
+        # Reading one as "step 4" would make a merge proposal depend on a character count.
+        self.assertEqual(heal.step_refs("4 of them, at 1400 chars each", total=40), [])
+
+    def test_out_of_range_numbers_are_dropped(self):
+        self.assertEqual(heal.step_refs("step 99 is the rename", total=3), [])
+
+    def test_an_absurd_range_is_not_expanded(self):
+        refs = heal.step_refs("steps 1-9999 are the plan")
+        self.assertNotIn(500, refs)
+        self.assertEqual(refs, [1, 9999])
+
+
+class TestCompletedSubjects(_Base):
+    def _task_with_steps(self, decisions, steps):
+        return self._reload(self._task(decisions=decisions, steps=steps))
+
+    def test_a_decision_whose_steps_are_all_done_is_a_completed_subject(self):
+        t = self._task_with_steps(
+            ["hold the rename until steps 1 and 2 land"],
+            [{"text": "write the migration", "done": True},
+             {"text": "run it", "done": True}])
+        self.assertEqual(heal.completed_subjects(t), {1: [1, 2]})
+
+    def test_one_open_step_is_enough_to_keep_it_load_bearing(self):
+        t = self._task_with_steps(
+            ["hold the rename until steps 1 and 2 land"],
+            [{"text": "write the migration", "done": True},
+             {"text": "run it", "done": False}])
+        self.assertEqual(heal.completed_subjects(t), {})
+
+    def test_a_superseded_step_counts_as_finished(self):
+        # A retired step is work the checklist has withdrawn; the decision that planned it is
+        # no more load-bearing than if it had been ticked.
+        t = self._task_with_steps(
+            ["hold the rename until steps 1 and 2 land"],
+            [{"text": "write the migration", "done": True},
+             {"text": "run it", "done": False}])
+        ok, err = steps.mark_superseded(t["steps"], 2, None)
+        self.assertTrue(ok, err)
+        ts.save_task(t)
+        self.assertEqual(heal.completed_subjects(self._reload(t)), {1: [1, 2]})
+
+    def test_a_decision_naming_no_step_is_never_tagged(self):
+        t = self._task_with_steps(["chose sqlite over flat files"],
+                                  [{"text": "done thing", "done": True}])
+        self.assertEqual(heal.completed_subjects(t), {})
+
+
+class TestSubjectCandidates(_Base):
+    VERSIONED = ["2.13.1 shipped the memo backstop and the nag cap",
+                 "the release notes for 2.13.1 were rewritten after the scrub"]
+
+    def test_two_decisions_sharing_a_release_version_are_one_group(self):
+        t = self._reload(self._task(decisions=self.VERSIONED))
+        groups = heal.subject_candidates(t)
+        self.assertEqual([g["indices"] for g in groups], [[1, 2]])
+        self.assertIn("version 2.13.1", groups[0]["signals"])
+
+    def test_two_decisions_sharing_a_PR_number_are_one_group(self):
+        t = self._reload(self._task(decisions=["PR 1204 carries the store change",
+                                               "reviewed PR 1204 and asked for the rename"]))
+        self.assertEqual([g["indices"] for g in heal.subject_candidates(t)], [[1, 2]])
+
+    def test_two_decisions_naming_the_same_finished_step_are_tagged_completed(self):
+        t = self._reload(self._task(
+            decisions=["step 1 holds the rename until the export lands",
+                       "step 1 also blocks the schema change"],
+            steps=[{"text": "hold the rename", "done": True}]))
+        groups = heal.subject_candidates(t)
+        self.assertEqual([g["indices"] for g in groups], [[1, 2]])
+        self.assertIn("completed-subject", groups[0]["tags"])
+
+    def test_an_open_step_leaves_the_group_untagged(self):
+        t = self._reload(self._task(
+            decisions=["step 1 holds the rename until the export lands",
+                       "step 1 also blocks the schema change"],
+            steps=[{"text": "hold the rename", "done": False}]))
+        self.assertEqual(heal.subject_candidates(t)[0]["tags"], [])
+
+    def test_grouping_is_transitive_so_one_subject_is_one_group(self):
+        t = self._reload(self._task(
+            decisions=["2.13.1 shipped, and step 1 is done",
+                       "2.13.1 needed a follow-up note",
+                       "step 1 was the last blocker"],
+            steps=[{"text": "hold the rename", "done": True}]))
+        self.assertEqual([g["indices"] for g in heal.subject_candidates(t)], [[1, 2, 3]])
+
+    def test_two_is_enough_here_where_the_shape_tier_needs_three(self):
+        t = self._reload(self._task(decisions=self.VERSIONED))
+        self.assertEqual(heal.merge_candidates(t), [])          # shape tier: silent
+        self.assertEqual(len(heal.subject_candidates(t)), 1)    # subject tier: proposes
+
+    def test_unrelated_decisions_are_never_grouped(self):
+        t = self._reload(self._task(decisions=["chose sqlite over flat files",
+                                               "terminal tint uses the sands palette"]))
+        self.assertEqual(heal.subject_candidates(t), [])
+
+    def test_distinct_versions_do_not_share_a_subject(self):
+        t = self._reload(self._task(decisions=["2.9.0 SHIPPED: pins", "2.10.0 SHIPPED: the "
+                                               "board column"]))
+        self.assertEqual(heal.subject_candidates(t), [])
+
+    def test_a_merged_away_group_is_not_proposed_again(self):
+        t = self._task(decisions=self.VERSIONED + ["2.13.1, one reconciled record"])
+        for i in (1, 2):
+            dec.mark_merged(t["decisions"], i, 3)
+        ts.save_task(t)
+        self.assertEqual(heal.subject_candidates(self._reload(t)), [])
+
+    def test_they_are_proposals_and_never_findings(self):
+        t = self._reload(self._task(decisions=self.VERSIONED))
+        result = heal.scan(t)
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(len(result["subject_candidates"]), 1)
+        self.assertFalse(heal.due(t, result=result)[0])
+
+    def test_the_scan_renders_them_above_the_shape_tier_and_says_PROPOSALS(self):
+        t = self._reload(self._task(decisions=self.VERSIONED))
+        out = self._heal(t, scan=True)
+        self.assertIn("Subject candidates", out)
+        self.assertIn("PROPOSALS", out)
+        self.assertIn("decisions 1, 2", out)
+
+    def test_candidate_groups_puts_the_subject_tier_first(self):
+        t = self._reload(self._task(decisions=self.VERSIONED + [
+            "MY PROCESS ERROR: renamed without checking",
+            "MY PROCESS ERROR: shipped before the tests",
+            "MY PROCESS ERROR: forgot the stamp"]))
+        tiers = [g["tier"] for g in heal.candidate_groups(t)]
+        self.assertEqual(tiers[0], "subject")
+        self.assertIn("shape", tiers)
+
+
+class TestTheSizeObjective(_Base):
+    def _stamped(self, decisions):
+        t = self._task(decisions=decisions)
+        heal.stamp_healed(t)
+        ts.save_task(t)
+        return self._reload(t)
+
+    def test_the_stamp_snapshots_the_digest_chars(self):
+        t = self._stamped(["one call of some length"])
+        self.assertEqual(t[heal.CHARS_AT_LAST_HEAL], dec.total_chars(t["decisions"]))
+
+    def test_no_baseline_is_UNKNOWN_never_a_zero_delta(self):
+        t = self._reload(self._task(decisions=["one call"]))
+        size = heal.size_objective(t)
+        self.assertFalse(size["known"])
+        self.assertIsNone(size["delta"])
+        self.assertIn("no baseline", heal.size_line(size))
+
+    def test_the_delta_is_reported_against_the_baseline(self):
+        t = self._stamped(["one call"])
+        ts.append_decision(t, "a second call, longer than the first")
+        ts.save_task(t)
+        size = heal.size_objective(self._reload(t))
+        self.assertTrue(size["known"])
+        self.assertGreater(size["delta"], 0)
+        line = heal.size_line(size)
+        self.assertIn("at last heal", line)
+        self.assertIn("+%d" % size["delta"], line)
+
+    def test_a_merge_makes_the_number_go_DOWN(self):
+        # The objective, stated as a test: reconciling is supposed to shrink the digest. The
+        # originals are padded because a merge of three ONE-LINE records genuinely costs more
+        # than it saves — the summary carries its own explanation — and a test that hid that
+        # would be asserting the wrong thing.
+        t = self._task(decisions=[
+            "2.7.0 SHIPPED: the store moved to sqlite. " + "The reasoning ran on. " * 12,
+            "2.8.0 SHIPPED: the board story column. " + "With all its detail. " * 12,
+            "2.9.0 SHIPPED: supersession and pins. " + "And the dispositions. " * 12])
+        before = dec.total_chars(self._reload(t)["decisions"])
+        self._heal(t, apply=True)
+        self.assertLess(dec.total_chars(self._reload(t)["decisions"]), before)
+
+    def test_the_scan_always_prints_the_row_even_unbaselined(self):
+        t = self._reload(self._task(decisions=["one call"]))
+        out = self._heal(t, scan=True)
+        self.assertIn("Digest size", out)
+        self.assertIn("no baseline", out)
+
+
+class TestGrewWithCandidatesOutstanding(_Base):
+    """The ONE finding the merge work can make, and the only new way it can make a heal due.
+    Growth alone is not a defect (a working task records work) and candidates alone are not a
+    defect (nobody has ruled on them). The conjunction says the record is getting more
+    expensive to brief in exactly the place a named verb was waiting."""
+
+    SHARED = ["2.13.1 shipped the memo backstop",
+              "the 2.13.1 notes needed a follow-up"]
+
+    def _grown(self, decisions, extra="a new call that grows the digest a little"):
+        t = self._task(decisions=decisions)
+        heal.stamp_healed(t)
+        ts.save_task(t)
+        t = self._reload(t)
+        if extra:
+            ts.append_decision(t, extra)
+            ts.save_task(t)
+        return self._reload(t)
+
+    def test_growth_with_candidates_outstanding_is_a_finding_and_makes_a_heal_due(self):
+        t = self._grown(list(self.SHARED))
+        result = heal.scan(t)
+        self.assertEqual([f["check"] for f in result["findings"]], ["grew-with-candidates"])
+        self.assertIn("has GROWN", result["findings"][0]["detail"])
+        self.assertTrue(heal.due(t, result=result)[0])
+
+    def test_growth_with_nothing_to_merge_is_not_a_finding(self):
+        t = self._grown(["chose sqlite over flat files for the store"])
+        self.assertEqual(heal.scan(t)["findings"], [])
+
+    def test_candidates_with_no_growth_are_not_a_finding(self):
+        t = self._grown(list(self.SHARED), extra=None)
+        self.assertEqual(heal.scan(t)["findings"], [])
+
+    def test_no_baseline_is_never_a_finding(self):
+        t = self._reload(self._task(decisions=list(self.SHARED)))
+        self.assertEqual(heal.scan(t)["findings"], [])
+
+    def test_it_is_ONE_finding_about_the_record_not_one_per_group(self):
+        t = self._grown(self.SHARED + ["PR 1204 landed", "PR 1204 was reverted"])
+        hits = [f for f in heal.scan(t)["findings"] if f["check"] == "grew-with-candidates"]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["ref"], "digest")
+
+    def test_the_finding_names_the_candidates_view_and_refuses_to_merge_for_you(self):
+        detail = heal.scan(self._grown(list(self.SHARED)))["findings"][0]["detail"]
+        self.assertIn("heal --candidates", detail)
+        self.assertIn("not proposed for you", detail)
+
+
+class TestTheCandidatesView(_Base):
+    def _task_with_group(self):
+        return self._reload(self._task(
+            title="Candidates",
+            goal="the exporter runs nightly without a human",
+            decisions=["2.13.1 shipped the memo backstop",
+                       "the 2.13.1 notes needed a follow-up",
+                       "UNRELATED: terminal tint uses the sands palette"]))
+
+    def test_it_prints_the_goal_the_pins_and_the_group_members_in_full(self):
+        t = self._task_with_group()
+        out = self._heal(t, candidates=True)
+        self.assertIn("[HEAL-CANDIDATES]", out)
+        self.assertIn("THE GOAL LINE", out)
+        self.assertIn("exporter runs nightly", out)
+        self.assertIn("PINNED DECISIONS", out)
+        self.assertIn("2.13.1 shipped the memo backstop", out)
+        self.assertIn("the 2.13.1 notes needed a follow-up", out)
+        self.assertIn("heal --merge 1,2 --into", out)
+
+    def test_it_does_NOT_print_the_corpus(self):
+        # The whole point: the full dry run is ~94% decision list, and a reader working the
+        # merge candidates needs the groups, not the corpus.
+        out = self._heal(self._task_with_group(), candidates=True)
+        self.assertNotIn("terminal tint uses the sands palette", out)
+        self.assertNotIn("NOW DO THE JUDGMENT WORK", out)
+
+    def test_no_groups_says_so_and_calls_it_healthy(self):
+        t = self._reload(self._task(decisions=["chose sqlite over flat files"]))
+        out = self._heal(t, candidates=True)
+        self.assertIn("NO CANDIDATE GROUPS", out)
+        self.assertIn("healthy", out)
+
+    def test_it_is_read_only_and_stamps_nothing(self):
+        t = self._task_with_group()
+        self._heal(t, candidates=True)
+        after = self._reload(t)
+        self.assertIsNone(after.get("last_heal_ts"))
+        self.assertEqual(len(after["decisions"]), 3)
+
+
+# ---------------------------------------------------------------------------
+# THE GOAL-REVIEW DUE LIMB — the count finally does something.
+#
+# `goal_review` counted what had landed since the goal was written and could never act on it,
+# so a goal nobody had re-read across forty decisions printed the same row as one written this
+# morning. Past the threshold that count IS the due reason — while still never being an
+# ISSUE, because an untouched goal is not a defect. RE-READING is the service, so
+# `--goal-reviewed` resets it without rewriting a sentence that is still true, and
+# `--mark-healed` deliberately does not.
+# ---------------------------------------------------------------------------
+
+class TestTheGoalReviewDueLimb(_Base):
+    GOAL = "the exporter runs nightly without a human"
+
+    def _aged_goal(self, n):
+        """A task whose goal was written `n` decisions ago, through the real write path."""
+        t = self._task(decisions=["the first call"])
+        self._update(t, goal=self.GOAL)
+        t = self._reload(t)
+        for i in range(n):
+            ts.append_decision(t, "call number %d, recorded in full" % i)
+        ts.save_task(t)
+        return self._reload(t)
+
+    def test_the_threshold_defaults_to_25(self):
+        self.assertEqual(heal.GOAL_REVIEW_DUE, 25)
+        self.assertEqual(heal.goal_review_due(), 25)
+
+    def test_at_the_threshold_the_heal_is_due_and_the_reason_is_the_count(self):
+        t = self._aged_goal(heal.GOAL_REVIEW_DUE)
+        is_due, reasons = heal.due(t)
+        self.assertTrue(is_due)
+        self.assertTrue(any("since the goal line was last reviewed" in r for r in reasons))
+
+    def test_below_the_threshold_it_is_silent(self):
+        t = self._aged_goal(heal.GOAL_REVIEW_DUE - 1)
+        self.assertFalse(any("goal line was last reviewed" in r
+                             for r in heal.due(t)[1]))
+
+    def test_it_is_never_an_ISSUE_even_when_it_makes_a_heal_due(self):
+        t = self._aged_goal(heal.GOAL_REVIEW_DUE)
+        result = heal.scan(t)
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(heal.mechanical_line(result), "clean")
+
+    def test_no_baseline_means_the_limb_stays_silent(self):
+        # Every task written before the baseline existed takes this path, so it is the
+        # common case — and a permanently-due board would be the always-on alarm again.
+        t = self._task(decisions=["d%d" % i for i in range(40)], goal=self.GOAL)
+        self.assertFalse(any("goal line was last reviewed" in r
+                             for r in heal.due(self._reload(t))[1]))
+
+    def test_the_tunable_overrides_the_default(self):
+        os.environ["TASK_STATION_HEAL_GOAL_REVIEW_DUE"] = "3"
+        try:
+            self.assertEqual(heal.goal_review_due(), 3)
+            t = self._aged_goal(3)
+            self.assertTrue(any("since the goal line was last reviewed" in r
+                                for r in heal.due(t)[1]))
+        finally:
+            os.environ.pop("TASK_STATION_HEAL_GOAL_REVIEW_DUE", None)
+
+    def test_a_nonpositive_override_falls_back_rather_than_making_everything_due(self):
+        for bad in ("0", "-5", "nonsense"):
+            os.environ["TASK_STATION_HEAL_GOAL_REVIEW_DUE"] = bad
+            try:
+                self.assertEqual(heal.goal_review_due(), 25, bad)
+            finally:
+                os.environ.pop("TASK_STATION_HEAL_GOAL_REVIEW_DUE", None)
+
+    def test_goal_reviewed_resets_the_count_WITHOUT_rewriting_the_goal(self):
+        t = self._aged_goal(heal.GOAL_REVIEW_DUE)
+        out = self._heal(t, goal_reviewed=True)
+        self.assertIn("GOAL REVIEW RECORDED", out)
+        after = self._reload(t)
+        self.assertEqual(after["goal"], self.GOAL)              # untouched
+        g = heal.goal_review(after)
+        self.assertEqual(g["since_review"], 0)
+        self.assertEqual(g["since"], heal.GOAL_REVIEW_DUE)      # the WRITE baseline stands
+        self.assertTrue(g["reviewed_only"])
+        self.assertFalse(any("goal line was last reviewed" in r
+                             for r in heal.due(after)[1]))
+
+    def test_mark_healed_does_NOT_silently_reset_it(self):
+        t = self._aged_goal(heal.GOAL_REVIEW_DUE)
+        self._heal(t, mark_healed=True, note="read the whole log")
+        after = self._reload(t)
+        self.assertNotIn(heal.GOAL_REVIEWED_FIELD, after)
+        self.assertTrue(any("since the goal line was last reviewed" in r
+                            for r in heal.due(after)[1]))
+
+    def test_rewriting_the_goal_also_clears_the_limb(self):
+        t = self._aged_goal(heal.GOAL_REVIEW_DUE)
+        self._update(t, goal="the exporter is retired and the managed job owns it")
+        self.assertFalse(any("goal line was last reviewed" in r
+                             for r in heal.due(self._reload(t))[1]))
+
+    def test_goal_reviewed_on_a_task_with_no_goal_is_refused(self):
+        t = self._task(decisions=["one call"])
+        out = self._heal(t, goal_reviewed=True)
+        self.assertIn("REFUSED", out)
+        self.assertNotIn(heal.GOAL_REVIEWED_FIELD, self._reload(t))
+
+    def test_goal_reviewed_pairs_with_mark_healed_and_refuses_everything_else(self):
+        t = self._aged_goal(2)
+        out = self._heal(t, goal_reviewed=True, mark_healed=True, note="read it all")
+        self.assertIn("GOAL REVIEW RECORDED", out)
+        self.assertIn("MARKED HEALED", out)
+        after = self._reload(t)
+        self.assertIn(heal.GOAL_REVIEWED_FIELD, after)
+        self.assertIsNotNone(after.get("last_heal_ts"))
+        self.assertIn("cannot be combined",
+                      self._heal(self._reload(t), goal_reviewed=True, apply=True))
+
+    def test_the_rendered_row_no_longer_claims_it_can_never_make_a_heal_due(self):
+        # A heading that says one thing while the verdict says another is worse than either.
+        t = self._aged_goal(2)
+        rows = "\n".join(heal.goal_review_lines(heal.scan(t)))
+        self.assertIn("PROPOSAL", rows)
+        self.assertNotIn("never make a heal due", rows)
+        self.assertIn("25 decision(s)", rows)          # the count the verdict would use
+        self.assertIn("--goal-reviewed", rows)         # and the verb that answers it
+        self.assertIn("Goal review", self._heal(t, scan=True))
+
+    def test_a_recorded_re_read_is_rendered_as_one(self):
+        t = self._aged_goal(4)
+        self._heal(t, goal_reviewed=True)
+        rows = "\n".join(heal.goal_review_lines(heal.scan(self._reload(t))))
+        self.assertIn("re-read (not rewritten)", rows)
+
+
+class TestBothSurfacesTeachTheNewMoves(unittest.TestCase):
+    """A verb the skill does not teach is a verb that never gets used — the reason
+    `test_the_model_facing_guidance_documents_heal_and_restore` exists. These are the five
+    moves added in this pass, and each one has to be reachable from the prose a model reads."""
+
+    def _read(self, *parts):
+        with open(os.path.join(_REPO_ROOT, *parts), encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_skill_teaches_every_new_flag(self):
+        text = self._read("skills", "heal", "SKILL.md")
+        for flag in ("--dismiss", "--undismiss", "--dismissals", "--candidates",
+                     "--goal-reviewed", "--probe-links"):
+            self.assertIn(flag, text, flag)
+
+    def test_the_command_file_teaches_the_ones_a_pass_actually_runs(self):
+        text = self._read("commands", "heal.md")
+        for flag in ("--dismiss", "--candidates", "--goal-reviewed", "--probe-links"):
+            self.assertIn(flag, text, flag)
+
+    def test_both_surfaces_say_the_why_is_mandatory(self):
+        for text in (self._read("skills", "heal", "SKILL.md"),
+                     self._read("commands", "heal.md")):
+            self.assertIn("--why", text)
+            self.assertIn("mandatory", text.lower())
+
+    def test_the_skill_states_the_size_objective_and_both_size_tiers(self):
+        text = self._read("skills", "heal", "SKILL.md")
+        self.assertIn("at last heal", text)
+        self.assertIn("3,600", text)
+        self.assertIn("1,400", text)          # the measured average both tiers answer to
+
+    def test_the_skill_teaches_the_completed_subject_tag(self):
+        text = self._read("skills", "heal", "SKILL.md")
+        self.assertIn("COMPLETED-SUBJECT", text)
+        self.assertIn("SUBJECT CANDIDATES", text)
+
+    def test_the_cli_help_names_the_new_flags(self):
+        # The one-line command help is where somebody reading `task-station` finds them.
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ts.cmd_guidance(_Args())
+        out = buf.getvalue()
+        for flag in ("--dismiss", "--candidates", "--goal-reviewed", "--probe-links"):
+            self.assertIn(flag, out, flag)

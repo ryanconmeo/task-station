@@ -145,6 +145,56 @@ WHAT A REAL RECONCILE RUN EXPOSED (and this module now covers):
     the half only a reader can do are two separate answers. RENDERING only: `due()` is
     untouched, because the nag, the gate file and `gate_line` all read it.
 
+WHAT THE NEXT PASS ADDED, and the measured cost each one answers:
+
+  * A DISMISSAL LEDGER (`heal --dismiss` / `--undismiss`). The scan re-reported
+    adjudicated false positives on EVERY pass. On one real task 17 findings stood, and 9
+    of them were dead paths a human had already ruled on — so the report repeated what
+    its reader had already answered, which is the cry-wolf failure arriving from a fifth
+    direction. A dismissal adjudicates ONE EXACT STATE, never a category: the fingerprint
+    covers the finding's matched TEXT (check + ref + detail), so the moment that text
+    changes the finding RE-REPORTS. It refuses to record one without a `--why`, because
+    an adjudication with no reason is how a real finding gets buried. Nothing is deleted —
+    `--undismiss` marks the entry retired and full reporting resumes.
+  * MERGE AT SCALE (`heal --candidates`, subject-tier grouping, the size objective). The
+    shape tier proposes groups by how each entry OPENS, which is how a human found
+    sixteen on one task — and it says nothing about whether the work is FINISHED or what
+    the entries are ABOUT. Three additions: a decision whose SUBJECT STEPS are all ticked
+    or superseded is tagged `completed-subject` (the work it records is done, so it has
+    stopped earning digest space); candidates group by SHARED SUBJECT — overlapping step
+    references, a shared release version, a shared PR/story number — which crosses
+    entries that open differently and say the same thing; and the heal stamp snapshots the
+    digest's char total, so the scan can report `chars now / at last heal / delta` instead
+    of a number with nothing to compare it against. A digest that GREW while merge
+    candidates sat outstanding is the one new finding in that work; everything else in it
+    is proposal-tier, because choosing the surviving summary is judgement.
+  * A GOAL REVIEW THAT CAN MAKE A HEAL DUE. `goal_review` counted what had landed since
+    the goal was written and could never act on it, so a goal nobody had re-read since
+    forty decisions ago produced the same silence as one written this morning. Past
+    `heal_goal_review_due` decisions that count IS the due reason, worded as the count.
+    RE-READING is the service, so `heal --goal-reviewed` records the re-read and resets
+    it WITHOUT requiring a rewrite — and `--mark-healed` deliberately does NOT reset it,
+    because a stamp that silently claims the goal was re-read is a stamp that lies.
+  * THE OVERSIZED THRESHOLD WAS 2.4× THE ADVISORY IT ANSWERS TO. The write path nudges at
+    600 chars and this check reported clean up to 4,000, on a task whose decisions AVERAGE
+    ~1,400 — so the number was neither the advisory nor a measurement, just a third
+    opinion. Both now derive from ONE constant (`decisions.LONG_DECISION_CHARS`): >2× is a
+    PROPOSAL (worst-first, capped, never an issue and never due-making) and >6× is a
+    FINDING, which is roughly where the longest real entry sits and is the length past
+    which an entry cannot be superseded a piece at a time.
+  * THE FIRST OUTWARD CHECK. Every other check cross-references the record with ITSELF,
+    which is why a rewritten history leaves nothing to find. Cited commits are now probed
+    against the task's own repos — DECLARED citations only (`commit <sha>`, `main @ <sha>`),
+    never a bare hex token, because task ids and fingerprints are hex too and a false
+    "your commit vanished" costs more than every finding it would ever have made. The
+    probe is INJECTED, so the SessionStart path still spawns no subprocess; the link probe
+    stays opt-in behind `--probe-links`.
+  * AND A THIRD DISCRIMINATOR, because declare-vs-describe shipped incomplete AGAIN. The
+    guard reads the word standing in FRONT of a match; it never read WHO the sentence says
+    did it. So `corrected by decision 184`, `decision 173 investigated` and `why decision
+    150 is NOT superseded` all read as unlinked supersessions — 8 of one real task's 17
+    findings were that one shape. See `reports_another_decision`.
+
 SAFETY — this mutates the decision record on a board holding real work:
 
   * `--dry-run` IS THE DEFAULT. A bare `heal` prints the plan and changes nothing.
@@ -155,8 +205,10 @@ SAFETY — this mutates the decision record on a board holding real work:
     the default digest while keeping it in `history`, labelled with what replaced it.
     All three are reversible via `decisions.restore`.
 
-Stdlib only. Imports `decisions`, `steps` and `paths` (all leaves) — task-station.py
-imports THIS, never the other way around.
+Stdlib only. Imports `decisions`, `steps`, `config` and `paths` (all leaves) —
+task-station.py imports THIS, never the other way around. `urllib` is imported INSIDE the
+link prober rather than at module scope: this module loads on the SessionStart path, and
+an import nobody on the cheap path uses is a cost every session pays for nothing.
 """
 import hashlib
 import json
@@ -165,13 +217,31 @@ import re
 import subprocess
 import time
 
+import config as _config
 import decisions as _dec
 import paths
 import steps as _steps
 
 # -- thresholds (module-level so one edit retunes the whole pass) ----------------
 
-OVERSIZE_CHARS = 4000     # a decision longer than this is a split candidate
+# THE SIZE TIERS, ALL DERIVED FROM ONE NUMBER. `decisions.LONG_DECISION_CHARS` (600) is the
+# advisory the WRITE path nudges with, and it is the single source of truth: two constants
+# that both answer "how long is too long" drift the first time either is tuned, and this
+# check had drifted to 4,000 — 2.4× an advisory it never referenced, on a task whose
+# decisions average ~1,400 chars, so it reported clean on almost everything.
+#
+# TWO TIERS, because one number cannot carry both jobs. Past 2× the advisory an entry is
+# worth LOOKING at, and that is all: a real task's average sits between the two, so
+# reporting every one of them as a defect would put `Heal due? YES` on a healthy record —
+# the exact failure this module has already fixed four times. Past 6× it is a FINDING, and
+# not because 6 is a round number: that is roughly where the longest entry on a real task
+# sits, and it is the length at which an entry can no longer be superseded a piece at a
+# time, because every ruling inside it is welded to every other one.
+WRITE_ADVISORY_CHARS = _dec.LONG_DECISION_CHARS     # 600 — the write-time nudge
+OVERSIZE_PROPOSAL_CHARS = 2 * WRITE_ADVISORY_CHARS  # 1200 — worth reading, never an issue
+OVERSIZE_CHARS = 6 * WRITE_ADVISORY_CHARS           # 3600 — a real finding
+OVERSIZE_TOP_N = 5        # proposals shown worst-first; the rest collapse into "+N more"
+
 SPLIT_MAX_PARTS = 8       # cap on mechanically-derived parts; the tail merges into the last
 MERGE_MIN_NAMED = 2       # cluster size that merges when a NAMED signature matched
 MERGE_MIN_STEM = 3        # cluster size required for the weaker stem signature
@@ -180,6 +250,15 @@ STEM_WORDS = 4            # significant leading words that form a stem signature
 DUE_NEW_DECISIONS = 10    # new decisions since the last heal that make one due
 DUE_AGE_DAYS = 7          # days on an ACTIVE task without a heal that make one due
 DUE_AGE = DUE_AGE_DAYS * 86400
+
+# Decisions that may land after the goal line was last WRITTEN or RE-READ before that
+# alone makes a heal due (`heal_goal_review_due` overrides it; see `goal_review_due`).
+# 25 is deliberately well above DUE_NEW_DECISIONS: ten new decisions mean the log has
+# moved, which is a reason to reconcile the LOG; this limb is about one sentence that
+# nobody has looked at in a long time, and a goal is SUPPOSED to outlive the decisions
+# pursuing it. Firing at ten would make the goal review indistinguishable from the
+# accrual limb it sits beside.
+GOAL_REVIEW_DUE = 25
 
 GATE_DIR = "heal"                        # <data_dir>/heal/
 BACKUP_SUFFIX = ".bak-pre-heal.json"     # sibling-file backup, per this project's `.bak-*` convention
@@ -197,10 +276,15 @@ SUPERSESSION_LANGUAGE = ("SUPERSEDED", "supersedes", "corrected", "was wrong",
 # to DECLARE the staleness rather than describe someone else's. Edit the list HERE.
 STALE_STEP_LANGUAGE = ("STALE", "do not execute", "READ-ME-FIRST", "superseded")
 
-# The FINDING checks, in the order every surface reports them — `(slug, title)`. These
-# are nine of the ten; the tenth is the HEALTH METRIC, which is a measurement rather
-# than a finding (a task can be perfectly consistent and still be far too big to brief),
-# so it lives in `health()` and renders through `health_line()` above the findings.
+# The FINDING checks, in the order every surface reports them — `(slug, title)`. The
+# HEALTH METRIC is deliberately not among them: it is a measurement rather than a finding
+# (a task can be perfectly consistent and still be far too big to brief), so it lives in
+# `health()` and renders through `health_line()` above the findings.
+#
+# The last two are the newest, and each one is a different KIND of check from everything
+# above it. `cited-commit` is the first OUTWARD one — it asks a question of a git repo
+# rather than of the record — and `grew-with-candidates` is the first one about the record
+# as a WHOLE rather than about one entry in it.
 CHECKS = (
     ("ack-undispositioned", "Undispositioned acks"),
     ("correction-unfulfilled", "Corrections never applied"),
@@ -211,6 +295,8 @@ CHECKS = (
     ("stale-step", "Stale steps"),
     ("refragmented", "Re-fragmented consolidations"),
     ("step-restates-superseded", "Steps restating a superseded decision"),
+    ("cited-commit", "Cited commits that resolve nowhere"),
+    ("grew-with-candidates", "Digest grew with candidates outstanding"),
 )
 CHECK_ORDER = [c[0] for c in CHECKS]
 CHECK_TITLES = dict(CHECKS)
@@ -271,11 +357,19 @@ def matched_language(text, patterns):
 #
 # It now routes through `declaring_hits` too. That is the whole point of this section:
 # the question is asked in ONE place, and a new check brings a VOCABULARY to it rather
-# than a new heuristic. FIVE vocabularies exist so far — `NON_DECISION_QUALIFIERS`
-# (check 3), `DECLARING_QUALIFIERS` (check 8), the two memo sets below, and
+# than a new heuristic. EIGHT vocabularies exist so far — `NON_DECISION_QUALIFIERS`
+# (check 3), `DECLARING_QUALIFIERS` (check 8), the two memo sets below,
 # `CONSOLIDATION_QUALIFIERS` (check 9, which asks the same question of a decision
 # claiming to be the one record of several: does it DECLARE that, or describe someone
-# else's consolidation?).
+# else's consolidation?), and the three the REPORTS-ANOTHER-DECISION discriminator brings
+# (`REPORTING_QUALIFIERS`, `REPORTING_VERBS`, `NEGATING_QUALIFIERS`).
+#
+# AND THEN A FIFTH TIME, which is why that discriminator exists at all. Reading the word in
+# FRONT of a match answers "what noun is this keyword about" and CANNOT answer "who does
+# this sentence say did it". `corrected by decision 184` passes the front-word test with
+# nothing in front of the keyword at all, and it is a MINUTE of another decision's work
+# rather than a claim about this one. Same rule, second question, one implementation:
+# `reports_another_decision`, below `decision_refs`.
 
 _WORD_BEFORE = re.compile(r"([A-Za-z][\w.-]*)\s*$")
 
@@ -486,6 +580,26 @@ NON_DECISION_QUALIFIERS = frozenset((
     "release", "commit", "branch", "ticket", "skill", "test", "check", "item"))
 
 
+def _decision_ref_spans(text):
+    """Every decision-shaped reference OCCURRENCE as `(numbers, start, end)`, in the order
+    the two shapes are matched.
+
+    Split out of `decision_refs` so the reporting discriminator below can read WHERE each
+    reference sat — the word in front of it, the word after it, the clause around it — and
+    so there stays exactly ONE place that knows what a decision reference looks like. Two
+    readers with two copies of these regexes would answer differently the first time
+    either was tuned, which is the same failure the declare-vs-describe guard exists to
+    prevent one level up."""
+    spans = []
+    for m in _DECISION_WORD_REF.finditer(text or ""):
+        spans.append(([int(n) for n in _NUMBER.findall(m.group(0))], m.start(), m.end()))
+    for m in _HASH_REF.finditer(text or ""):
+        if qualifier(text, m.start()) in NON_DECISION_QUALIFIERS:
+            continue
+        spans.append(([int(m.group("n"))], m.start(), m.end()))
+    return spans
+
+
 def decision_refs(text, own_index=None, total=None):
     """The decision indices this prose plausibly names, as ints, oldest-first.
 
@@ -501,12 +615,8 @@ def decision_refs(text, own_index=None, total=None):
         out-of-range number (a task number, a version, a line number) is not a
         decision reference on this task."""
     found = []
-    for m in _DECISION_WORD_REF.finditer(text or ""):
-        found.extend(int(n) for n in _NUMBER.findall(m.group(0)))
-    for m in _HASH_REF.finditer(text or ""):
-        if qualifier(text, m.start()) in NON_DECISION_QUALIFIERS:
-            continue
-        found.append(int(m.group("n")))
+    for nums, _start, _end in _decision_ref_spans(text):
+        found.extend(nums)
     out = []
     for n in found:
         if own_index is not None and n >= own_index:
@@ -516,6 +626,168 @@ def decision_refs(text, own_index=None, total=None):
         if n not in out:
             out.append(n)
     return sorted(out)
+
+
+# -- the THIRD discriminator: WHO does the sentence say did it? --------------------
+#
+# THE FIFTH COSTUME OF THE SAME BUG. `qualifier` reads the word standing in FRONT of a
+# match, which answers "is this keyword aimed at this entry or at some other noun". It
+# cannot answer a second question the same sentence raises: WHO does the sentence say
+# performed the correction? On one real task 8 of 17 findings were that shape, and every
+# one of them was a decision REPORTING on another decision's work:
+#
+#   "corrected by decision 184"        — decision 184 did it. This entry is the report.
+#   "decision 173 investigated"        — 173 is the ACTOR of a reporting verb.
+#   "why decision 150 is NOT superseded" — the sentence DENIES the condition outright.
+#
+# All three carry supersession vocabulary AND name an earlier decision, so check 3's two
+# conditions both hold and it fired. The finding it printed — "the digest cannot act on
+# prose, so what this contradicts is still briefing every session" — was flatly wrong:
+# nothing was being contradicted, the entry was minuting a decision that had already been
+# taken. Eight of those in one report is how a reader learns to skip the other nine.
+#
+# THREE READINGS, ONE PER SHAPE, and every one of them is a VOCABULARY brought to an
+# existing reader rather than a fourth heuristic — the rule stated above `qualifier`:
+#
+#   1. AGENT-BY. The word in front of the reference is `by` / `per`, so the decision is
+#      what DID the correcting. Read with `qualifier`, exactly as check 3 reads its own
+#      `NON_DECISION_QUALIFIERS`.
+#   2. ACTOR-SUBJECT. The word AFTER the reference is a reporting verb (`investigated`,
+#      `said`, `found`), so the decision is the SUBJECT of the sentence and the sentence
+#      is minuting what it did. `decision 4 was wrong` survives this: `was` is not a
+#      reporting verb, it is the predicate that makes the sentence a DECLARATION about
+#      decision 4.
+#   3. DENIAL. A supersession keyword in the same clause carries a negator immediately in
+#      front of it (`is NOT superseded`, `was never wrong`). A sentence explaining why
+#      something is NOT superseded is the opposite of a claim that it was.
+#
+# THE ASYMMETRY IS THE SAME ONE EVERY CHECK HERE CHOSE, and it points the same way: a
+# reference that is BOTH declared against and reported on in one long entry is dropped,
+# which costs a missed finding. A missed unlinked supersession costs one confused resume.
+# The alternative — eight false ones per report — costs the whole check.
+
+# Prepositions that, standing in front of a decision reference, make that decision the
+# AGENT of the action rather than its target. Edit the list HERE.
+REPORTING_QUALIFIERS = frozenset(("by", "per"))
+
+# Verbs that, standing immediately AFTER a decision reference, make it the SUBJECT of a
+# report. Deliberately all past/present ACTION verbs and deliberately NOT a form of "to
+# be": `decision 4 was wrong` and `decision 12 is superseded` are declarations ABOUT the
+# named decision, which is exactly what check 3 exists to find.
+#
+# AND DELIBERATELY NONE OF THE SUPERSESSION VOCABULARY ITSELF — no `corrected`, `superseded`,
+# `replaced`. Those words are ambiguous between active and passive at exactly this position,
+# and the passive reading is the FINDING: `decision 4 superseded by this one` is prose
+# claiming a supersession the structure does not record, while `decision 4 superseded the
+# flat-file rule` is a minute. One word cannot tell them apart, and guessing would trade the
+# check's best true positive for one more silenced false one. The passive form is already
+# covered from the other side: `corrected BY decision 184` puts `by` in FRONT of the
+# reference, which is reading 1. Edit the list HERE.
+REPORTING_VERBS = frozenset((
+    "said", "says", "saying", "investigated", "investigates", "found", "finds", "ruled",
+    "rules", "recorded", "records", "noted", "notes", "decided", "decides", "chose",
+    "chooses", "established", "establishes", "explained", "explains", "documented",
+    "documents", "described", "describes", "covered", "covers", "concluded", "concludes",
+    "reported", "reports", "proposed", "proposes", "asked", "asks", "landed", "lands",
+    "shipped", "ships", "added", "adds", "introduced", "introduces", "called", "calls"))
+
+# Words that, standing immediately in front of a supersession keyword, DENY it. Edit HERE.
+#
+# NO CONTRACTIONS, and that is a stated miss rather than an oversight: `qualifier` matches
+# `[A-Za-z][\w.-]*`, so the word it hands back for "isn't superseded" is `t` — the tail after
+# the apostrophe. Listing `isn't` here would look like coverage and buy none, and widening the
+# one shared reader to chase contractions would change what every OTHER vocabulary sees. The
+# cost of the miss is one false positive on "it isn't superseded", which is the cheap
+# direction this module always takes.
+NEGATING_QUALIFIERS = frozenset(("not", "never", "nor", "neither", "without", "no"))
+
+# How far either side of a decision reference counts as "the same sentence" for the denial
+# reading. Bounded on purpose: a decision is often a page long, and a negated keyword
+# eleven sentences away says nothing about this one.
+REPORTING_WINDOW = 120
+
+# A relative pronoun standing between the reference and its verb — `decision 173, WHICH
+# corrected the store`. The clause still says 173 did it, so the reading has to look one word
+# further; two is the whole depth, because a third would start guessing at grammar.
+RELATIVE_PRONOUNS = frozenset(("which", "that", "who"))
+
+_WORDS_AFTER = re.compile(r"[A-Za-z][\w.'-]*")
+_CLAUSE_BREAK = re.compile(r"[.!?;\n]")
+
+
+def _words_after(text, end, count=2):
+    """The first `count` words AFTER a match ending at `end`, lowercased and stripped of
+    trailing punctuation — the mirror of `qualifier`, which reads the one word in front.
+
+    Two rather than one, because a relative pronoun can sit between a decision reference and
+    the verb that says what it did. Stops at the end of the LINE for the same reason
+    `qualifier` starts at one: a line break is a stronger boundary than a space."""
+    tail = (text or "")[end:].split("\n", 1)[0]
+    return [w.lower().strip(".,:;") for w in _WORDS_AFTER.findall(tail)[:max(1, count)]]
+
+
+def _clause_at(text, start, end, window=REPORTING_WINDOW):
+    """The text around `[start, end)`, cut at the nearest sentence or line boundary on
+    each side and capped at `window` chars — "the same sentence", cheaply and without a
+    sentence tokenizer this module would then have to keep in step with the other one."""
+    body = text or ""
+    left = max(0, start - window)
+    head = body[left:start]
+    breaks = list(_CLAUSE_BREAK.finditer(head))
+    if breaks:
+        head = head[breaks[-1].end():]
+    tail = body[end:end + window]
+    m = _CLAUSE_BREAK.search(tail)
+    if m:
+        tail = tail[:m.start()]
+    return head + body[start:end] + tail
+
+
+def _denies_correction(clause, patterns=None):
+    """True when a supersession keyword inside `clause` is NEGATED — the word in front of
+    it is one of `NEGATING_QUALIFIERS`.
+
+    `qualifier` is reused rather than reimplemented: the question ("what word stands in
+    front of this match?") is the module's one shared reader, and only the vocabulary
+    differs. Here a hit means STAY SILENT, so an over-eager read can only cost a missed
+    finding — the cheap direction, as everywhere else in this module."""
+    low = (clause or "").lower()
+    for p in (patterns or SUPERSESSION_LANGUAGE):
+        needle = p.lower()
+        at = low.find(needle)
+        while at != -1:
+            if qualifier(low, at) in NEGATING_QUALIFIERS:
+                return True
+            at = low.find(needle, at + 1)
+    return False
+
+
+def reports_another_decision(text, start, end, window=REPORTING_WINDOW):
+    """True when the reference at `[start, end)` is one this text REPORTS ON rather than
+    declares against — the three readings documented above, in cost order (two word
+    lookups before the clause scan)."""
+    if qualifier(text, start) in REPORTING_QUALIFIERS:
+        return True
+    after = _words_after(text, end, 2)
+    if after and after[0] in REPORTING_VERBS:
+        return True
+    if len(after) > 1 and after[0] in RELATIVE_PRONOUNS and after[1] in REPORTING_VERBS:
+        return True
+    return _denies_correction(_clause_at(text, start, end, window))
+
+
+def reported_decision_refs(text, window=REPORTING_WINDOW):
+    """The decision numbers this text merely REPORTS ON, as a set.
+
+    Returned UNFILTERED by range or direction — the caller already has `decision_refs`
+    for that, and this answers a different question about the same occurrences. A number
+    named twice, once as a target and once as an actor, lands in here: see the asymmetry
+    note above for why that deliberate false negative is the cheaper failure."""
+    out = set()
+    for nums, start, end in _decision_ref_spans(text):
+        if reports_another_decision(text, start, end, window):
+            out.update(nums)
+    return out
 
 
 def prose_supersession(task):
@@ -532,11 +804,16 @@ def prose_supersession(task):
     worse than not having the check at all. (The drift check had this same problem and
     was fixed the same way; see `_ref_shaped`.)
 
-    So TWO conditions must BOTH hold, not one:
+    So THREE conditions must ALL hold, not one:
 
       1. the prose carries supersession language, and
       2. it names a DECISION-SHAPED target — `decision N`, `entry N` or `#N`, pointing
-         at an earlier decision that exists on this task (see `decision_refs`).
+         at an earlier decision that exists on this task (see `decision_refs`), and
+      3. the sentence DECLARES against that decision rather than REPORTING on it
+         (`reported_decision_refs`). Condition 3 shipped four releases late: "corrected by
+         decision 184", "decision 173 investigated" and "why decision 150 is NOT
+         superseded" satisfy 1 and 2 perfectly, and on one real task eight findings of
+         that exact shape stood beside nine real ones.
 
     Skipped, as before, when the decision is already replaced (the mark IS the
     structure) or when another decision names it as ITS replacement — i.e. it already
@@ -563,8 +840,9 @@ def prose_supersession(task):
         hits = matched_language(body, SUPERSESSION_LANGUAGE)
         if not hits:
             continue
+        reported = reported_decision_refs(body)
         refs = [n for n in decision_refs(body, own_index=i, total=len(entries))
-                if n in still_live]
+                if n in still_live and n not in reported]
         if not refs:
             continue
         out.append(_finding(
@@ -578,20 +856,64 @@ def prose_supersession(task):
 
 
 # -- check 4: oversized decisions ------------------------------------------------
+#
+# TWO TIERS OVER ONE ADVISORY — see the constants at the top of this file for why 4,000
+# was neither. The split between them is the same one that separates a finding from a
+# proposal everywhere else in this module: has anything gone WRONG, or is there merely
+# something worth reading?
+#
+#   * >2× the advisory (1,200) is a PROPOSAL. A real task's decisions AVERAGE ~1,400
+#     chars, so this tier describes the NORMAL length of a decision on a working task.
+#     Reporting it as an issue would put `Heal due? YES` on every healthy record on the
+#     board — the cry-wolf failure this module has fixed four times — so it never counts
+#     as an issue, never makes a heal due, and is capped at the worst OVERSIZE_TOP_N with
+#     the remainder collapsed into one "+N more". A list of forty is not a proposal, it is
+#     a wall.
+#   * >6× the advisory (3,600) is a FINDING. That is roughly where the longest entry on a
+#     real task sat, and it is the length at which the entry stops being supersedable a
+#     piece at a time: every ruling inside it is welded to every other one, so the only
+#     honest verb left is `heal --split`. Both tiers name that verb, because "this is long"
+#     with no move attached is a complaint rather than a report.
 
 def oversized(task, limit=OVERSIZE_CHARS):
-    """Still-current decisions past `limit` chars — split candidates. Only live ones:
-    a replaced monster already costs the digest nothing."""
+    """Still-current decisions past the FINDING threshold — the ones a split is the only
+    honest answer to. Only live ones: a replaced monster already costs the digest nothing.
+
+    `limit` stays a parameter (and `plan` passes it through) so one caller can retune the
+    tier without the module having two opinions about it."""
     out = []
     for i, e in _dec.live(task.get("decisions")):
         n = len(_dec.text(e))
         if n > limit:
             out.append(_finding(
                 "oversized", "decision %d" % i,
-                "%d chars (over the %d limit) — split it into atomic decisions; one "
-                "entry this long is unreadable whether or not any of it is wrong"
-                % (n, limit)))
+                "%d chars — %.1f× the %d-char write advisory, and past the point where an "
+                "entry can be superseded a piece at a time: every ruling in it is welded "
+                "to every other one. Split it with `heal --split %d --into <n1,n2,…>` "
+                "(add the atomic parts with `update --decision` first)"
+                % (n, float(n) / max(1, WRITE_ADVISORY_CHARS), WRITE_ADVISORY_CHARS, i)))
     return out
+
+
+def oversized_proposals(task, limit=OVERSIZE_PROPOSAL_CHARS,
+                        finding_limit=OVERSIZE_CHARS, cap=OVERSIZE_TOP_N):
+    """Live decisions in the PROPOSAL band, worst-first, as
+    `{"shown": [{"index", "chars"}, …], "more": N, "total": N}`.
+
+    Entries already reported as FINDINGS are excluded rather than listed twice: the same
+    decision appearing in both an issue list and a proposal list reads as two problems, and
+    a reader who fixes one is then told the other is still outstanding.
+
+    `more` is the count the cap dropped, and it is reported rather than silently truncated
+    — a list that quietly stops at five reads as "there were five"."""
+    rows = []
+    for i, e in _dec.live(task.get("decisions")):
+        n = len(_dec.text(e))
+        if limit < n <= finding_limit:
+            rows.append({"index": i, "chars": n})
+    rows.sort(key=lambda r: (-r["chars"], r["index"]))
+    cap = max(1, int(cap or 1))
+    return {"shown": rows[:cap], "more": max(0, len(rows) - cap), "total": len(rows)}
 
 
 # -- check 5: drift (paths, worktrees, branches) ---------------------------------
@@ -781,19 +1103,29 @@ def mentioned_branches(task):
     return names
 
 
-def branch_prober(task, exists=os.path.exists, run=_run_git):
-    """A `probe(name) -> True | False | None` over the git repos this task touched.
+def task_repos(task, exists=os.path.exists, run=_run_git):
+    """The git repositories this task actually touched, as directory paths.
 
-    None means UNKNOWN — no usable repo was found — and unknown is never reported as
-    drift. That asymmetry is the point: a false "your branch is gone" is far worse
-    than a missed one."""
+    ONE reader for both git probers. They ask different questions of the same set — does
+    this branch resolve, does this commit resolve — and two copies of "which repos does
+    this task mean" would answer differently the first time either was tuned. An empty
+    list is what makes both probers return UNKNOWN rather than False."""
     dirs, seen = [], set()
     for _kind, p in recorded_paths(task):
         for d in (p, os.path.dirname(p)):
             if d and d not in seen and exists(d) and os.path.isdir(d):
                 seen.add(d)
                 dirs.append(d)
-    repos = [d for d in dirs if _is_repo(d, run)]
+    return [d for d in dirs if _is_repo(d, run)]
+
+
+def branch_prober(task, exists=os.path.exists, run=_run_git):
+    """A `probe(name) -> True | False | None` over the git repos this task touched.
+
+    None means UNKNOWN — no usable repo was found — and unknown is never reported as
+    drift. That asymmetry is the point: a false "your branch is gone" is far worse
+    than a missed one."""
+    repos = task_repos(task, exists=exists, run=run)
 
     def probe(name):
         if not repos:
@@ -878,6 +1210,191 @@ def link_rot(task, probe=None):
     """Stored links the probe positively reports as unresolvable. Unknown is silent."""
     return [_finding("link-rot", url, "%s link does not resolve" % kind)
             for kind, url, state in link_states(task, probe) if state is False]
+
+
+# -- the OPT-IN network probe for the check above -----------------------------------
+#
+# `link_states` has always taken a probe and has never been given one, so every link has
+# always read UNKNOWN. That default is right for the SessionStart path — an HTTP round trip
+# per stored link, at every session start, for a check that can only ever say "still there"
+# is not a cost this tool gets to spend on a user's behalf. So the prober exists and is
+# wired only when `--probe-links` asks for it.
+#
+# EVERY FAILURE IS UNKNOWN, NOT DEAD. A private Azure DevOps PR answers 401 or 203 to an
+# unauthenticated HEAD; a corporate proxy answers 407; a flaky DNS answers nothing at all.
+# None of those is evidence the PR is gone, and "your PR link is dead" about a live PR is
+# the most expensive false positive this module could print — it points a reader at work
+# they would then go looking for. So ONLY an explicit 404/410 counts as dead, and
+# everything else — including any exception — degrades to unknown.
+
+LINK_PROBE_TIMEOUT = 4          # seconds per link; a slow host must never hang a scan
+LINK_DEAD_CODES = (404, 410)    # the only two answers that mean GONE
+
+
+def link_prober(timeout=LINK_PROBE_TIMEOUT):
+    """A `probe(url) -> True | False | None` doing one HTTP HEAD per link.
+
+    `urllib` is imported HERE rather than at module scope: this module loads on the
+    SessionStart path, which never probes, and an import that path cannot use is a cost
+    every session pays for nothing."""
+    import urllib.error
+    import urllib.request
+
+    def probe(url):
+        u = str(url or "").strip()
+        if not (u.startswith("http://") or u.startswith("https://")):
+            return None            # not something HTTP can answer for
+        req = urllib.request.Request(u, method="HEAD")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return 200 <= int(getattr(r, "status", 0) or 200) < 400
+        except urllib.error.HTTPError as e:
+            code = int(getattr(e, "code", 0) or 0)
+            if code in LINK_DEAD_CODES:
+                return False
+            return None            # 401/403/405/5xx say nothing about whether it exists
+        except Exception:
+            return None
+    return probe
+
+
+# -- check 11: the FIRST OUTWARD check — cited commits ------------------------------
+#
+# EVERY OTHER CHECK CROSS-REFERENCES THE RECORD WITH ITSELF, and that is a structural
+# ceiling rather than a gap in the vocabulary: the decision log can be perfectly consistent
+# and still cite a commit that a rebase, a squash-merge or a force-push erased. Nothing
+# inside the task contradicts anything, because the thing that changed is outside it. So
+# this one asks a question of a git repo.
+#
+# DECLARED CITATIONS ONLY, and this is the whole reason the check is safe to ship. A
+# sha-shaped token is 7-40 hex characters, and so is a task id prefix, a memo id8, a heal
+# fingerprint, an ANSI colour, a git tree hash and the CSS in a pasted snippet. Matching
+# bare hex would report "your commit vanished" about a task id — a finding that is not
+# merely wrong but unfixable, because there is no commit to go and look for. So a citation
+# must be INTRODUCED: `commit <sha>`, `merged <sha>`, `sha <sha>`, `pushed <sha>`, or an
+# `@` immediately in front (`main @ 4412760`, the form the release notes here use). This is
+# `mentioned_branches`' discipline — explicit phrasing plus a shape gate — applied to the
+# other kind of git ref.
+#
+# AND THE SHAPE GATE IS A DIGIT. Seven hex-only letters spell real English words —
+# `defaced`, `acceded`, `beefed` — so "the commit defaced the config" would otherwise
+# match. Requiring at least one digit costs essentially nothing (a real sha without a digit
+# in its first seven characters is about a 1-in-1000 event) and kills that whole class.
+#
+# UNKNOWN IS NEVER REPORTED, twice over: with no prober wired nothing is probed at all (the
+# cheap path spawns no subprocess), and a probe that finds no usable repo, or that errors,
+# returns None. Only a sha that positively resolves in NONE of the task's repos is a
+# finding. The asymmetry is the one every check here chose, and it is starker for this one:
+# a missed rewritten commit costs one confused reader, while a false "history was rewritten"
+# sends somebody hunting through reflogs for a commit that is sitting right there.
+#
+# THE ONE FALSE POSITIVE THIS CHECK CAN STILL EMIT, named rather than hidden: a commit cited
+# from a repo the task never RECORDED — a plugin's own history quoted on a task whose only
+# recorded path is a different checkout. The scope is what `recorded_paths` knows, and the
+# check cannot widen it without guessing at repos nobody wrote down. So the finding is worded
+# as exactly what was measured — "resolves in none of the TASK'S repos", and "history MAY have
+# been rewritten" — because a hedge in the sentence is cheaper than a check that is silently
+# wrong about which repos it looked in. If that shape shows up in practice, the fix is to
+# record the repo, not to loosen the check.
+
+# The declaring words, then the token. `@\s*` is the second introducer — `main @ 4412760`.
+# Case-insensitive because a decision opens sentences: `Commit 4412760 …`. Edit the list
+# HERE; a word added to it is a promise that what follows it is a git object.
+_SHA_MENTION = re.compile(
+    r"(?:\b(?:commits?|merged?|sha|revisions?|rev|pushed|push)\s+|@\s*)"
+    r"`?(?P<sha>[0-9a-f]{7,40})`?\b", re.I)
+_HAS_DIGIT = re.compile(r"\d")
+
+
+def _sha_shaped(sha):
+    """Whether a hex-looking token is plausibly a commit sha rather than an English word
+    that happens to spell in hex. See the digit gate above."""
+    return bool(_HAS_DIGIT.search(sha or ""))
+
+
+def commit_citations(task):
+    """Commit shas this task DECLARES, as `[(sha, where), …]` — first mention wins, so one
+    sha cited five times is one thing to check.
+
+    Read from the decision log and the `--log` milestone trail (`history`), which are where
+    a task records what shipped. Deliberately NOT from `state`/`summary`/`goal`: those are
+    rewritten in place, so a sha in one is a snapshot of a moment rather than a record of
+    it, and the narrative fields are exactly where prose density is highest."""
+    out, seen = [], set()
+    sources = [("decision %d" % i, _dec.text(e))
+               for i, e in _dec.live(task.get("decisions"))]
+    for n, h in enumerate((task.get("history") or []), 1):
+        if isinstance(h, dict):
+            sources.append(("log entry %d" % n, str(h.get("text") or "")))
+    for where, body in sources:
+        for m in _SHA_MENTION.finditer(body or ""):
+            sha = m.group("sha").lower()
+            if not _sha_shaped(sha) or sha in seen:
+                continue
+            seen.add(sha)
+            out.append((sha, where))
+    return out
+
+
+def _has_commit(d, sha, run=_run_git):
+    """True when `sha` names a COMMIT object in the repo at `d`. `^{commit}` is what makes
+    it a commit rather than any object: a blob whose hash happens to be cited is not a
+    commit, and `cat-file -e` alone would call it one."""
+    ok, _ = run(["git", "-C", d, "cat-file", "-e", "%s^{commit}" % sha])
+    return ok
+
+
+def commit_prober(task, exists=os.path.exists, run=_run_git):
+    """A `probe(sha) -> True | False | None` over the git repos this task touched — the
+    same injected-prober shape as `branch_prober`, and None means UNKNOWN for the same
+    reason: no usable repo was found, which is not evidence about the commit."""
+    repos = task_repos(task, exists=exists, run=run)
+
+    def probe(sha):
+        if not repos:
+            return None
+        for d in repos:
+            if _has_commit(d, sha, run):
+                return True
+        return False
+    return probe
+
+
+def commit_states(task, probe=None):
+    """Every cited commit as `(sha, where, state)` where state is True (resolves), False
+    (resolves in none of the task's repos) or None (UNKNOWN).
+
+    With no `probe` wired — the default, and what the SessionStart path does — every
+    citation is unknown and nothing is reported."""
+    out = []
+    for sha, where in commit_citations(task):
+        state = None
+        if probe is not None:
+            try:
+                state = probe(sha)
+            except Exception:
+                state = None
+            if state is not True and state is not False:
+                state = None
+        out.append((sha, where, state))
+    return out
+
+
+def commit_rot(task, probe=None, states=None):
+    """Cited commits that positively resolve in NONE of the task's repos. Unknown is
+    silent.
+
+    `states` lets a caller that has already probed pass the answers in — `scan` needs the
+    same states for its report, and probing twice would double every subprocess for a
+    check whose whole justification is that the cheap path spawns none."""
+    states = commit_states(task, probe=probe) if states is None else states
+    return [_finding("cited-commit", "%s (%s)" % (sha[:12], where),
+                     "cited commit %s resolves in none of the task's repos — history may "
+                     "have been rewritten (a rebase, a squash-merge or a force-push), so "
+                     "the record points at a commit nobody can now read. Re-cite it from "
+                     "the surviving history, or supersede the entry that names it"
+                     % sha[:12])
+            for sha, where, state in states if state is False]
 
 
 # -- check 7: the health metric --------------------------------------------------
@@ -1063,6 +1580,286 @@ def merge_candidates(task, minimum=MERGE_CANDIDATE_MIN):
         groups[shape].append(i)
     return [{"shape": s, "indices": groups[s]}
             for s in order if len(groups[s]) >= minimum]
+
+
+# -- MERGE AT SCALE: by SUBJECT, and by whether the work is FINISHED ----------------
+#
+# THE SHAPE TIER'S TWO BLIND SPOTS. `leading_shape` matches how an entry OPENS, which is
+# what a human's eye did on a 99-decision task — and it therefore knows nothing about two
+# things that decide whether a merge is right:
+#
+#   * WHETHER THE WORK IS DONE. "True but no longer load-bearing" is a statement about the
+#     WORK, not about the words. A decision that says "step 29: hold the rename until the
+#     export lands" is load-bearing right up to the moment step 29 is ticked, and the shape
+#     tier cannot see that moment arrive. So a decision whose SUBJECT STEPS are all ticked
+#     or superseded is tagged `completed-subject`: the checklist itself says the work it
+#     records is finished.
+#   * WHAT THE ENTRY IS ABOUT. Four decisions about release 2.13.1 that open four different
+#     ways share nothing the shape tier can match, while two unrelated `MY PROCESS ERROR`
+#     entries about different mistakes match perfectly. Subject signals invert that:
+#     overlapping STEP references, a shared RELEASE VERSION, a shared PR or story number.
+#     Each of those is a thing the entries are ABOUT rather than a way they are phrased.
+#
+# THE SHAPE TIER STAYS, as the secondary one. It catches the process-error and scrub-
+# iteration families that carry no version, no PR and no step reference at all, and on the
+# task where it was measured it found all sixteen. Subject groups render FIRST because they
+# are the stronger evidence; a group that appears in both tiers is not a contradiction — one
+# says "these are about the same thing", the other "these are phrased the same way".
+#
+# AND NOTHING HERE IS EVER PERFORMED. Same rule as the shape tier, for the same reason: a
+# wrong merge writes a false consolidation into the record, where it then reads as
+# reconciled fact. TWO members are enough to PROPOSE (unlike the shape tier's three),
+# because a shared subject is direct evidence and a shared opening phrase is not.
+
+SUBJECT_CANDIDATE_MIN = 2      # decisions about one subject before it is worth proposing
+SUBJECT_LABEL_MAX = 3          # signals named in a group's label; the rest are "+N more"
+STEP_RANGE_MAX = 50            # widest `steps N-M` span expanded; see `step_refs`
+
+# A STEP-shaped reference in prose: `step 29`, `steps 3-6`, `steps 3, 4 and 5`. Same
+# discipline as `_DECISION_WORD_REF` and for the same reason — the explicit word is
+# required, so a bare number is never a step reference. A decision's prose is full of bare
+# numbers (chars, versions, percentages, dates), and reading one of them as "step 4" would
+# make a decision's merge candidacy depend on a character count.
+_STEP_WORD_REF = re.compile(
+    r"\b(?:steps?)\s+#?\d+(?:\s*(?:-|–|—|to|,|and|&)\s*#?\d+)*", re.I)
+
+# Inside one matched run: a number, optionally introduced by a RANGE separator. `steps 3-6`
+# means four steps; `steps 3, 6` means two.
+_STEP_PIECE = re.compile(r"(?P<range>-|–|—|\bto\b)?\s*#?(?P<n>\d+)", re.I)
+
+# The subject signals, each one a thing an entry is ABOUT.
+_VERSION_TOKEN = re.compile(r"\b\d+\.\d+\.\d+\b")
+_WORK_ITEM_REF = re.compile(
+    r"\b(?:pull request|pr|story|stories|issue|work item)\s*#?(?P<n>\d{1,7})\b", re.I)
+
+
+def step_refs(text, total=None):
+    """The step indices this prose EXPLICITLY names, as ints, ascending.
+
+    `steps 3-6` expands to 3, 4, 5, 6 — that is the shape a decision actually uses to name
+    a run of checklist items. The expansion is capped at STEP_RANGE_MAX: `steps 1-9999` is
+    a typo or a page reference, and expanding it would hand the caller ten thousand indices
+    to look up. Out-of-range numbers are dropped when `total` is known, which is the same
+    gate `decision_refs` applies — a number past the end of the checklist is not a step."""
+    out = []
+    for m in _STEP_WORD_REF.finditer(text or ""):
+        prev = None
+        for piece in _STEP_PIECE.finditer(m.group(0)):
+            n = int(piece.group("n"))
+            if (piece.group("range") and prev is not None
+                    and prev < n <= prev + STEP_RANGE_MAX):
+                out.extend(range(prev + 1, n + 1))
+            else:
+                out.append(n)
+            prev = n
+    seen, keep = set(), []
+    for n in out:
+        if n < 1 or n in seen:
+            continue
+        if total is not None and n > total:
+            continue
+        seen.add(n)
+        keep.append(n)
+    return sorted(keep)
+
+
+def completed_subjects(task):
+    """Live decisions whose SUBJECT STEPS are ALL finished, as `{index1: [step refs]}`.
+
+    "Finished" is DONE **or** SUPERSEDED, and both belong: a ticked step is work that
+    happened, a superseded one is work the checklist has retired, and in neither case is
+    the decision that recorded the plan for it still load-bearing.
+
+    A decision naming NO step is absent from this — never present-with-an-empty-list. The
+    signal is "the work this entry is about is finished", and a decision that names no work
+    supports no such claim; treating "nothing referenced" as "everything referenced is
+    done" would tag the whole log."""
+    steps = task.get("steps") or []
+    if not steps:
+        return {}
+    finished = set()
+    for i, s in enumerate(steps, 1):
+        if _steps.is_superseded(s) or _steps.is_done(s):
+            finished.add(i)
+    out = {}
+    for i, e in _dec.live(task.get("decisions")):
+        refs = step_refs(_dec.text(e), total=len(steps))
+        if refs and all(n in finished for n in refs):
+            out[i] = refs
+    return out
+
+
+def subject_signals(text, total_steps=None):
+    """What a decision is ABOUT, as a set of short labels — `step 29`, `version 2.13.1`,
+    `PR 1234`.
+
+    THREE signal families, and each one is a thing the record names explicitly rather than
+    a similarity between two texts. Nothing is inferred from wording: two entries share a
+    signal only when they name the same step, the same release or the same work item."""
+    body = text or ""
+    out = set()
+    for n in step_refs(body, total=total_steps):
+        out.add("step %d" % n)
+    for m in _VERSION_TOKEN.finditer(body):
+        out.add("version %s" % m.group(0))
+    for m in _WORK_ITEM_REF.finditer(body):
+        out.add("PR/story %s" % m.group("n"))
+    return out
+
+
+def subject_candidates(task, minimum=SUBJECT_CANDIDATE_MIN):
+    """CURRENT decisions grouped by a SHARED SUBJECT, as
+    `[{"signal", "signals", "indices", "tags"}, …]`, lowest member first.
+
+    Grouping is TRANSITIVE — a decision naming version 2.13.1 and step 4, a second naming
+    2.13.1, and a third naming step 4 are one group. That is deliberate and it is what the
+    shape tier cannot do: they are three entries about one piece of work, and proposing
+    them as three groups of two would leave a reader merging the same subject twice.
+
+    `tags` carries `completed-subject` when every member that names a step has ALL of its
+    steps finished — the strongest form of "true but no longer load-bearing" the record can
+    state on its own, because the checklist says so rather than a reader inferring it."""
+    live = _dec.live(task.get("decisions"))
+    total_steps = len(task.get("steps") or [])
+    sigs = {}
+    for i, e in live:
+        found = subject_signals(_dec.text(e), total_steps=total_steps)
+        if found:
+            sigs[i] = found
+    if len(sigs) < 2:
+        return []
+    by_signal = {}
+    for i in sorted(sigs):
+        for sig in sigs[i]:
+            by_signal.setdefault(sig, []).append(i)
+    parent = dict((i, i) for i in sigs)
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for members in by_signal.values():
+        for other in members[1:]:
+            # The LOWEST index wins the root, so a group's identity does not depend on
+            # which signal happened to be visited first.
+            ra, rb = find(members[0]), find(other)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)
+    grouped = {}
+    for i in sorted(sigs):
+        grouped.setdefault(find(i), []).append(i)
+    finished = completed_subjects(task)
+    out = []
+    for root in sorted(grouped):
+        idxs = grouped[root]
+        if len(idxs) < minimum:
+            continue
+        # The signals that actually LINK the group — one carried by two or more members.
+        # A member's private signals are why it is worth reading, not why it is grouped.
+        shared = sorted(s for s, members in by_signal.items()
+                        if len([i for i in members if i in idxs]) >= 2)
+        stepped = [i for i in idxs
+                   if any(s.startswith("step ") for s in sigs[i])]
+        tags = []
+        if stepped and all(i in finished for i in stepped):
+            tags.append("completed-subject")
+        label = ", ".join(shared[:SUBJECT_LABEL_MAX])
+        if len(shared) > SUBJECT_LABEL_MAX:
+            label += " (+%d more)" % (len(shared) - SUBJECT_LABEL_MAX)
+        out.append({"signal": label or "shared subject", "signals": shared,
+                    "indices": idxs, "tags": tags})
+    return out
+
+
+def candidate_groups(task, subject=None, shape=None):
+    """EVERY merge candidate group — subject tier first, shape tier second — normalised to
+    `{"tier", "label", "indices", "tags"}`.
+
+    One reader, because three surfaces now need "is there anything outstanding to merge?":
+    the `--candidates` view, the grew-with-candidates check, and the scan's own rendering.
+    Three answers to that question would eventually disagree, and the one that made a heal
+    DUE would be the one nobody could reproduce.
+
+    `subject` / `shape` let a caller that has already grouped pass the answers in — `scan`
+    needs both tiers for its report AND for the check, and grouping twice is the same waste
+    the `links` and `commits` reuse above avoids."""
+    subject = subject_candidates(task) if subject is None else subject
+    shape = merge_candidates(task) if shape is None else shape
+    out = []
+    for g in subject:
+        out.append({"tier": "subject", "label": g.get("signal"),
+                    "indices": g.get("indices") or [], "tags": g.get("tags") or []})
+    for g in shape:
+        out.append({"tier": "shape", "label": g.get("shape"),
+                    "indices": g.get("indices") or [], "tags": []})
+    return out
+
+
+# -- the SIZE OBJECTIVE, and the one finding this work can make -----------------------
+#
+# THE NUMBER WITH NOTHING TO COMPARE IT AGAINST. The health line has always printed the
+# digest's char total, and a reader has never been able to tell 96,000 chars that are
+# 40,000 down from last week apart from 96,000 that are 40,000 up. Both read as one large
+# number. So the stamp now snapshots it, and the scan reports `now / at last heal / delta`.
+#
+# GREW-WITH-CANDIDATES-OUTSTANDING IS A FINDING, and it is the ONLY thing in the merge work
+# that can make a heal due — everything else here is a proposal, because choosing a
+# surviving summary is judgement. This one is a finding for the same reason a re-fragmented
+# consolidation is: it is not about what any single entry says, it is about the record as a
+# whole moving the wrong way while a named, mechanical way to move it the right way sat
+# unused. Growth on its own is NOT a defect (a working task records work), and candidates on
+# their own are NOT a defect (nobody has ruled on them). The conjunction is the signal.
+#
+# IT NEEDS A BASELINE, and a task without one is UNKNOWN rather than zero — `accrual`'s rule
+# and for the same reason: every task written before this shipped has no snapshot, so a zero
+# delta would read as "it has not grown" on precisely the tasks nobody has measured.
+
+CHARS_AT_LAST_HEAL = "chars_at_last_heal"     # additive stamp key; see `stamp_healed`
+
+
+def size_objective(task):
+    """The digest's char total now, at the last heal, and the delta — as
+    `{"now", "at_last_heal", "delta", "known"}`.
+
+    `known` is False when no stamp recorded a baseline, in which case both `at_last_heal`
+    and `delta` are None. Never zero: see the note above."""
+    now = _dec.total_chars(task.get("decisions"))
+    raw = task.get(CHARS_AT_LAST_HEAL)
+    try:
+        base = int(raw)
+    except (TypeError, ValueError):
+        return {"now": now, "at_last_heal": None, "delta": None, "known": False}
+    return {"now": now, "at_last_heal": base, "delta": now - base, "known": True}
+
+
+def grew_with_candidates(task, groups=None, size=None):
+    """The ONE finding in the merge work: the digest GREW since the last heal while merge
+    candidates sat outstanding.
+
+    Silent without a baseline (unknown is never a finding), silent when the digest did not
+    grow, and silent when there is nothing to merge. One finding per task, not per group:
+    the defect is the direction the whole record moved."""
+    size = size if size is not None else size_objective(task)
+    if not size.get("known") or (size.get("delta") or 0) <= 0:
+        return []
+    groups = groups if groups is not None else candidate_groups(task)
+    if not groups:
+        return []
+    members = sorted(set(i for g in groups for i in (g.get("indices") or [])))
+    return [_finding(
+        "grew-with-candidates", "digest",
+        "the digest has GROWN by %d chars since the last heal (%d → %d) while %d merge "
+        "candidate group(s) sat outstanding — decisions %s. Neither half is a defect on "
+        "its own: a working task records work, and a group nobody has ruled on is not "
+        "wrong. Together they say the record is getting more expensive to brief in exactly "
+        "the place a named verb was waiting. Read the groups with `heal --candidates`, "
+        "write the ONE surviving summary yourself, then `heal --merge <n1,n2,…> --into "
+        "<n>`. It is not proposed for you: a wrong merge writes a false consolidation into "
+        "the record"
+        % (size.get("delta"), size.get("at_last_heal"), size.get("now"), len(groups),
+           ", ".join(str(i) for i in members)))]
 
 
 # -- check 9: a consolidation that has RE-FRAGMENTED -------------------------------
@@ -1464,9 +2261,42 @@ def pinned_review(task, now=None):
 # is here for the same reason: a zero reads as "nothing has happened since", while the
 # truth is "nobody recorded when the goal was written". Every task that existed before
 # this shipped takes that path, so it is the COMMON case, not an edge one.
+#
+# AND THEN THE COUNT WAS GIVEN TEETH. Counting and never acting made this section a line a
+# reader could skip forever: a goal nobody had looked at across forty decisions printed the
+# same shape of row as one written this morning, and the row said in its own heading that it
+# could never make a heal due. So `due()` now has a limb for it (`goal_review_due`,
+# default 25) — worded as the count, because the count IS the evidence.
+#
+# IT IS STILL NOT A FINDING. The row stays a PROPOSAL: nothing on the record is WRONG, and
+# `mechanical_line` must not inflate. What changed is only that a large enough count is a
+# reason to run the pass, which is what "due" has always meant.
+#
+# RE-READING IS THE SERVICE, NOT REWRITING. The obvious cheap reset — treat a `--mark-healed
+# --note` as proof the goal was re-read — was deliberately REFUSED: a mark-healed note says
+# somebody read the record, not that they read THIS LINE and ruled it still true, and a
+# stamp that silently claims the second is exactly the class of lie the heal stamp itself was
+# added to kill. So there is an explicit verb, `heal --goal-reviewed`, and the mark-healed
+# path leaves this count alone.
 
 GOAL_TOUCHED_FIELD = "goal_touched"    # {"ts": …, "decisions": N} — the write-time baseline
+GOAL_REVIEWED_FIELD = "goal_reviewed"  # {"ts": …, "decisions": N} — the RE-READ baseline
 GOAL_PREVIEW_CHARS = 200               # enough to read the goal, not enough to reprint a page
+
+
+def goal_review_due():
+    """How many decisions may land after the goal was last written or re-read before that
+    alone makes a heal due. `heal_goal_review_due` in config, `TASK_STATION_HEAL_GOAL_
+    REVIEW_DUE` in the environment, else GOAL_REVIEW_DUE.
+
+    POSITIVE-ONLY, and fail-open on anything unreadable — the contract every checker
+    tunable keeps (`config._positive_number`). A zero would make every task with a goal
+    permanently due, which is the always-on alarm this module exists to stop."""
+    try:
+        n = int(_config.heal_goal_review_due())
+        return n if n > 0 else GOAL_REVIEW_DUE
+    except Exception:
+        return GOAL_REVIEW_DUE
 
 
 def stamp_goal_touched(task, now=None):
@@ -1488,6 +2318,40 @@ def stamp_goal_touched(task, now=None):
                                 "decisions": len(task.get("decisions") or [])}
 
 
+def stamp_goal_reviewed(task, now=None):
+    """Record that the GOAL LINE was just RE-READ and found still true — the moment, and how
+    many decisions the log held at that moment. Does NOT save; the caller persists.
+
+    WHY THIS IS A SEPARATE FIELD FROM `goal_touched`. Rewriting the goal and re-reading it
+    are both reviews, and they are not the same event: one changes the sentence, the other
+    ratifies it. Writing the review into `goal_touched` would make the record say the goal
+    was REWRITTEN when it was not, and that field is read by the checker's goal-drift check
+    as the age of the goal ITSELF. So the two are stored apart and `goal_review` takes the
+    LATER of them: whichever happened last is when a human last had eyes on that line.
+
+    ADDITIVE KEY, like every other stamp here — an older task has none and reads as
+    never-reviewed."""
+    task[GOAL_REVIEWED_FIELD] = {"ts": time.time() if now is None else now,
+                                 "decisions": len(task.get("decisions") or [])}
+
+
+def _goal_snapshot(task, field):
+    """One goal baseline as `(decisions, ts)`, each None when absent or garbled. Shared by
+    the two fields so a junk value in either degrades the same way."""
+    snap = task.get(field)
+    if not isinstance(snap, dict):
+        return None, None
+    try:
+        count = int(snap.get("decisions"))
+    except (TypeError, ValueError):
+        count = None
+    try:
+        stamped = float(snap.get("ts")) or None
+    except (TypeError, ValueError):
+        stamped = None
+    return count, stamped
+
+
 def goal_review(task, now=None):
     """The goal line and what has accrued against it, as a dict — `{}` when there is
     nothing honest to say.
@@ -1503,26 +2367,38 @@ def goal_review(task, now=None):
         the surfaces say CANNOT BE COUNTED. Never zero: see the note above.
 
     `age` is how long ago the goal was written, or None when the snapshot carries no
-    usable timestamp — unknown, which is not the same claim as recent."""
+    usable timestamp — unknown, which is not the same claim as recent.
+
+    THE REVIEW KEYS ANSWER A SECOND QUESTION: when did a human last have EYES on this line,
+    written or not (`since_review`, `review_known`, `review_ts`, `review_age`,
+    `reviewed_only`). They read the LATER of the two baselines, and they are what `due()`
+    counts — because the service this section asks for is a re-read, and a goal re-read
+    yesterday is current whether or not one word of it changed."""
     body = str(task.get("goal") or "").strip()
     if not body:
         return {}
     now = time.time() if now is None else now
-    snap = task.get(GOAL_TOUCHED_FIELD)
-    since, known, stamped = None, False, None
-    if isinstance(snap, dict):
-        try:
-            since = max(0, len(task.get("decisions") or []) - int(snap.get("decisions")))
-            known = True
-        except (TypeError, ValueError):
-            since, known = None, False
-        try:
-            stamped = float(snap.get("ts")) or None
-        except (TypeError, ValueError):
-            stamped = None
+    total = len(task.get("decisions") or [])
+    written_at, written_ts = _goal_snapshot(task, GOAL_TOUCHED_FIELD)
+    reviewed_at, reviewed_ts = _goal_snapshot(task, GOAL_REVIEWED_FIELD)
+    since = None if written_at is None else max(0, total - written_at)
+    known = written_at is not None
+    # THE LATER BASELINE WINS, measured in decisions rather than clock time: the count is
+    # what the limb reads, and a re-read recorded at decision 40 is newer evidence than a
+    # rewrite recorded at decision 12 regardless of which wall clock they carry.
+    baseline = written_at
+    reviewed_only = False
+    if reviewed_at is not None and (baseline is None or reviewed_at > baseline):
+        baseline, reviewed_only = reviewed_at, True
+    review_ts = reviewed_ts if reviewed_only else written_ts
     flat = " ".join(body.split())
-    return {"chars": len(body), "since": since, "known": known, "ts": stamped,
-            "age": (max(0.0, now - stamped) if stamped else None),
+    return {"chars": len(body), "since": since, "known": known, "ts": written_ts,
+            "age": (max(0.0, now - written_ts) if written_ts else None),
+            "since_review": (None if baseline is None else max(0, total - baseline)),
+            "review_known": baseline is not None,
+            "review_ts": review_ts,
+            "review_age": (max(0.0, now - review_ts) if review_ts else None),
+            "reviewed_only": reviewed_only,
             "preview": (flat[:GOAL_PREVIEW_CHARS - 1] + "…"
                         if len(flat) > GOAL_PREVIEW_CHARS else flat)}
 
@@ -1619,18 +2495,259 @@ def accrual(task, now=None):
     return out
 
 
+# -- the DISMISSAL LEDGER: adjudicating ONE state, never a category -----------------
+#
+# THE FAILURE THIS FIXES, and it is the fifth face of the same one. On one real task the
+# scan stood at 17 findings; 9 of them were dead paths a human had already read, ruled on
+# and moved past. The scan had no way to know that, so it reported all 9 again on the next
+# pass, and the next. A report that repeats what its reader has already answered is a report
+# its reader stops opening — the identical cost as a report that cries wolf, arriving by a
+# different route. Nine of seventeen is worse than five of seven.
+#
+# SO A DISMISSAL IS AN ADJUDICATION OF ONE EXACT STATE, and the fingerprint is what makes
+# that true rather than aspirational. It covers the finding's MATCHED TEXT — check, ref and
+# the detail line the check generated — so it survives a re-scan and it does NOT survive the
+# underlying text changing. Edit the decision, and the detail line changes with it, the
+# fingerprint stops matching, and the finding RE-REPORTS. That is the design and not a
+# limitation: "decision 12's supersession prose is fine" is a ruling about the sentence that
+# is there now, and the next sentence has not been ruled on by anybody.
+#
+# A WHY IS MANDATORY. A dismissal with no reason is indistinguishable from a finding
+# somebody buried, and six months later nobody — including its author — can tell which it
+# was. So `--dismiss` with no `--why` is REFUSED, and the why is stored on the ledger where
+# `heal --dismissals` prints it beside the date.
+#
+# NOTHING IS DELETED, EVER — the rule every verb in this module already keeps. `--undismiss`
+# marks the entry RETIRED and full reporting resumes; the entry stays on the ledger as the
+# record that somebody once ruled this way and later changed their mind. Re-dismissing
+# appends a new entry rather than reviving the old one, because the second ruling was made
+# at a different moment, by a different session, possibly for a different reason.
+#
+# AND A DISMISSED FINDING LEAVES THE SCAN ENTIRELY — `findings`, the issue count and the due
+# calculus. That is the only version worth having: a "dismissed" section that still counted
+# towards `Heal due?` would leave the alarm on for a state the reader has already
+# adjudicated, which is the whole complaint. One informational line says how many are
+# silenced and how to read them, because a silenced finding must never become an invisible
+# one.
+
+DISMISSALS_FIELD = "heal_dismissals"     # additive: the append-only adjudication ledger
+
+
+def finding_fingerprint(finding):
+    """A stable sha1 over one finding's MATCHED TEXT — check, ref and detail.
+
+    THE DETAIL LINE IS IN THE HASH ON PURPOSE. It is where every check writes what it
+    actually matched: the char count for an oversized entry, the keywords for a stale step,
+    the overlap percentage and the paired decision for a restatement, the shapes for a
+    re-fragmentation. So the hash changes when the underlying text changes, which is exactly
+    when the ruling should expire.
+
+    hashlib, NOT hash() — the same reason `_signature` gives: hash()'s string seed is
+    randomised per process, so a stored fingerprint would stop matching after a restart and
+    every dismissal would silently expire."""
+    blob = "\n".join([str((finding or {}).get("check") or ""),
+                      str((finding or {}).get("ref") or ""),
+                      str((finding or {}).get("detail") or "")])
+    return hashlib.sha1(blob.encode("utf-8", "replace")).hexdigest()
+
+
+def dismissal_ledger(task):
+    """Every dismissal entry ever recorded on this task, oldest first — retired ones
+    included. The ledger is history; `active_dismissals` is the part that silences."""
+    raw = (task or {}).get(DISMISSALS_FIELD)
+    return [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+
+
+def active_dismissals(task):
+    """The dismissals still in force — every ledger entry not marked retired."""
+    return [e for e in dismissal_ledger(task) if not e.get("retired")]
+
+
+def dismissed_fingerprints(task):
+    """The fingerprints currently silenced, as a set."""
+    return set(str(e.get("fingerprint") or "") for e in active_dismissals(task)
+               if e.get("fingerprint"))
+
+
+def apply_dismissals(findings, task):
+    """`(kept, dismissed)` — the findings split by the ledger, each side in the order it
+    arrived. Both halves keep their `fingerprint`, which is what lets a later `--undismiss`
+    and the `--dismissals` listing talk about the same rows the scan matched."""
+    silenced = dismissed_fingerprints(task)
+    kept, dropped = [], []
+    for f in (findings or []):
+        row = dict(f)
+        row["fingerprint"] = finding_fingerprint(f)
+        (dropped if row["fingerprint"] in silenced else kept).append(row)
+    return kept, dropped
+
+
+def dismissal_entry(finding, why, sid=None, now=None):
+    """One ledger row for `finding`. `sid` is the session that adjudicated it, or None when
+    nothing was attributed — never a fabricated actor."""
+    return {"check": str((finding or {}).get("check") or ""),
+            "ref": str((finding or {}).get("ref") or ""),
+            "fingerprint": finding_fingerprint(finding),
+            "why": str(why or "").strip(),
+            "ts": time.time() if now is None else now,
+            "sid": sid or None}
+
+
+def parse_dismiss_selector(raw):
+    """`'<check>:<ref>'` → `(check, ref, error)`.
+
+    Split on the FIRST colon only, because refs legitimately contain them — a link-rot ref
+    is a URL. An input with no colon is refused rather than guessed at: a bare `decision 2`
+    is ambiguous across three different checks that all report decision refs, and silently
+    picking one would dismiss a finding nobody named."""
+    s = str(raw or "").strip()
+    if ":" not in s:
+        return None, None, ("heal --dismiss/--undismiss takes '<check>:<ref>' — e.g. "
+                            "'prose-supersession:decision 12'. %r names no check, and the "
+                            "same ref is reported by several of them, so there is nothing "
+                            "to pick between. The check keys are: %s"
+                            % (s, ", ".join(CHECK_ORDER)))
+    check, ref = s.split(":", 1)
+    check, ref = check.strip(), ref.strip()
+    if not check or not ref:
+        return None, None, ("heal --dismiss/--undismiss: '<check>:<ref>' needs both halves "
+                            "— got %r" % s)
+    return check, ref, None
+
+
+def _row_label(row):
+    """How one finding or ledger row is named back to the reader — the exact selector that
+    would match it, so an error message doubles as the command to retype."""
+    return "%s:%s" % (row.get("check"), row.get("ref"))
+
+
+def _match_rows(rows, check, ref, what):
+    """`(row, error)` — the ONE row a `<check>:<ref>` selector names.
+
+    EXACT FIRST, then unambiguous substring, and an ambiguous or missing ref is REFUSED with
+    the list rather than resolved. That is the same rule `select_acks` keeps and for the same
+    reason: an adjudication written onto the wrong finding is silent, permanent, and only
+    discovered when the finding it should have covered is missing from a later report."""
+    same = [r for r in rows if str(r.get("check") or "") == check]
+    if not same:
+        return None, ("heal: no %s for check %r. %s"
+                      % (what, check, _listing(rows, what)))
+    want = ref.casefold()
+    exact = [r for r in same if str(r.get("ref") or "").casefold() == want]
+    hits = exact or [r for r in same
+                     if want in str(r.get("ref") or "").casefold()]
+    if not hits:
+        return None, ("heal: %r matches no %s. %s"
+                      % (_row_label({"check": check, "ref": ref}), what, _listing(rows, what)))
+    if len(hits) > 1:
+        return None, ("heal: %r is ambiguous — it matches %d: %s. Name one exactly. "
+                      "Nothing was changed."
+                      % (_row_label({"check": check, "ref": ref}), len(hits),
+                         "; ".join(_row_label(r) for r in hits)))
+    return hits[0], None
+
+
+def _listing(rows, what):
+    """The rows a refusal offers instead of guessing — every selector that WOULD work."""
+    if not rows:
+        return "There is no %s on this task at all." % what
+    return ("The %s currently on this task: %s"
+            % (what, "; ".join(_row_label(r) for r in rows)))
+
+
+def dismiss(task, findings, selector, why, sid=None, now=None):
+    """Record ONE dismissal, as `(entry, error)`. Does NOT save — the caller persists.
+
+    THREE REFUSALS, and each one changes nothing at all:
+
+      * NO WHY. An adjudication without a reason is how a real finding gets buried.
+      * NOT A CURRENT FINDING. Dismissing something the scan is not reporting would write a
+        ruling that silences nothing now and might silence something else later, when a
+        finding with that fingerprint eventually appears.
+      * ALREADY DISMISSED. Saying so is the honest answer; appending a duplicate would make
+        the ledger read as two independent rulings by two readers."""
+    if not str(why or "").strip():
+        return None, ("heal --dismiss needs --why '<reason>'. A dismissal is an "
+                      "adjudication: it takes a finding out of the scan, the issue count "
+                      "and the due calculus, and one recorded with no reason is "
+                      "indistinguishable six months later from a finding somebody buried. "
+                      "Nothing was changed.")
+    check, ref, err = parse_dismiss_selector(selector)
+    if err:
+        return None, err
+    row, err = _match_rows(findings, check, ref, "finding")
+    if err:
+        return None, err
+    fp = finding_fingerprint(row)
+    if fp in dismissed_fingerprints(task):
+        return None, ("heal --dismiss %s: already dismissed, and the ledger already carries "
+                      "the why — `heal --dismissals` prints it. Nothing was changed."
+                      % _row_label(row))
+    entry = dismissal_entry(row, why, sid=sid, now=now)
+    task.setdefault(DISMISSALS_FIELD, []).append(entry)
+    return entry, None
+
+
+def undismiss(task, selector, sid=None, now=None):
+    """RETIRE one active dismissal, as `(entry, error)`. Does NOT save.
+
+    Matched against the LEDGER rather than the current findings, deliberately: the finding
+    it silences is by definition absent from the scan, so matching against findings would
+    make every dismissal un-undismissable. Nothing is removed — the entry is marked retired,
+    with who did it and when, so the record shows both rulings."""
+    check, ref, err = parse_dismiss_selector(selector)
+    if err:
+        return None, err
+    active = active_dismissals(task)
+    row, err = _match_rows(active, check, ref, "active dismissal")
+    if err:
+        return None, err
+    row["retired"] = True
+    row["retired_ts"] = time.time() if now is None else now
+    row["retired_by"] = sid or None
+    return row, None
+
+
+def dismissal_rows(task, result=None):
+    """The ledger for display, as `[{entry…, "silencing": bool}, …]`, newest first.
+
+    `silencing` answers the one question a reader of this list actually has: is this ruling
+    still doing anything? An ACTIVE entry whose fingerprint matches nothing in the current
+    scan means the underlying text has CHANGED, so the finding is being reported again and
+    the old ruling no longer covers it. That is the fingerprint design working, and it has to
+    be visible — otherwise the list reads as "9 findings are silenced" when the true answer
+    is "6 are, and 3 rulings have expired". Needs a scan `result` to say so; without one the
+    key is None, meaning unknown rather than False."""
+    seen = None
+    if result is not None:
+        seen = set()
+        for f in ((result.get("findings") or []) + (result.get("dismissed") or [])):
+            seen.add(f.get("fingerprint") or finding_fingerprint(f))
+    out = []
+    for e in reversed(dismissal_ledger(task)):
+        row = dict(e)
+        row["silencing"] = (None if seen is None else
+                            (not e.get("retired")
+                             and str(e.get("fingerprint") or "") in seen))
+        out.append(row)
+    return out
+
+
 # -- the scan --------------------------------------------------------------------
 
-def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=None):
-    """Run all ten checks, plus the five sections that are deliberately NOT checks.
-    NEVER mutates the task — not one field.
+def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=None,
+         commit_probe=None):
+    """Run all eleven checks, plus the sections that are deliberately NOT checks. NEVER
+    mutates the task — not one field.
 
     `findings` is the only key that means "something is wrong", and it is the only one
-    `due()` counts. `merge_candidates`, `pinned_review`, `goal_review`, `ephemeral` and
-    `accrual` ride alongside it as PROPOSALS, INFORMATION and COUNTS: a task can carry
-    plenty of all five and still be perfectly reconciled, so folding any of them into the
-    issue count would put `Heal due? YES` on a healthy task — the exact failure this
-    module has already had to fix four times.
+    `due()` counts. `merge_candidates`, `subject_candidates`, `oversized_proposals`,
+    `pinned_review`, `goal_review`, `ephemeral`, `size` and `accrual` ride alongside it as
+    PROPOSALS, INFORMATION and COUNTS: a task can carry plenty of all of them and still be
+    perfectly reconciled, so folding any into the issue count would put `Heal due? YES` on a
+    healthy task — the exact failure this module has already had to fix four times. The one
+    exception is deliberate and narrow: past `goal_review_due` decisions the GOAL REVIEW can
+    make a heal due, while still never counting as an issue (see the note above it).
 
     `accrual` is the one section that is not about anything the scan FOUND: it is what has
     been recorded since the last heal, printed next to the plain statement that a scan
@@ -1638,14 +2755,27 @@ def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=No
     missing from it. See the note above `accrual` for the release that was recorded
     nowhere while every check reported clean.
 
-    Both network-ish probes default to OFF: `branch_probe=None` means no git
-    subprocess and `link_probe=None` means no HTTP, so the default scan is pure
-    Python plus filesystem stats and is cheap enough for every session start.
-    `heal --scan` wires the git prober; the link probe stays opt-in."""
+    ALL THREE OUTWARD PROBES DEFAULT TO OFF: `branch_probe=None` and `commit_probe=None`
+    mean no git subprocess, `link_probe=None` means no HTTP. So the default scan is pure
+    Python plus filesystem stats and is cheap enough for every session start. `heal --scan`
+    and the dry run wire the two git probers; the link probe stays opt-in behind
+    `--probe-links`.
+
+    DISMISSED FINDINGS LEAVE `findings` ENTIRELY and land in `dismissed` — so the issue
+    count, `due()` and `plan()` all stop seeing them from one place, rather than each
+    learning about the ledger separately."""
     now = time.time() if now is None else now
     # Probed ONCE and reused for both the findings and the report — calling
     # link_states twice would double every network round-trip.
     links = link_states(task, probe=link_probe)
+    commits = commit_states(task, probe=commit_probe)      # probed ONCE, for the same reason
+    size = size_objective(task)
+    # Grouped ONCE and reused three ways — the check below, the report's two tiers, and
+    # anything a caller does with the result. The grouping is pure string work rather than a
+    # round trip, but this scan runs at EVERY session start.
+    subject = subject_candidates(task)
+    shape = merge_candidates(task)
+    groups = candidate_groups(task, subject=subject, shape=shape)
     findings = []
     findings.extend(undispositioned_acks(task))
     findings.extend(unfulfilled_corrections(task))
@@ -1657,16 +2787,25 @@ def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=No
     findings.extend(stale_steps(task))
     findings.extend(refragmented_consolidations(task))
     findings.extend(steps_restating_superseded(task))
+    findings.extend(commit_rot(task, states=commits))
+    findings.extend(grew_with_candidates(task, groups=groups, size=size))
     findings.sort(key=lambda f: CHECK_ORDER.index(f["check"])
                   if f["check"] in CHECK_ORDER else len(CHECK_ORDER))
+    findings, dismissed = apply_dismissals(findings, task)
     return {
         "task": task.get("id"),
         "seq": task.get("seq"),
         "ts": now,
         "findings": findings,
+        "dismissed": dismissed,
         "health": health(task, now=now),
+        "size": size,
         "links": [{"kind": k, "url": u, "state": s} for k, u, s in links],
-        "merge_candidates": merge_candidates(task),
+        "commits": [{"sha": s, "where": w, "state": st} for s, w, st in commits],
+        "merge_candidates": shape,
+        "subject_candidates": subject,
+        "completed_subjects": sorted(completed_subjects(task)),
+        "oversized_proposals": oversized_proposals(task),
         "pinned_review": pinned_review(task, now=now),
         "goal_review": goal_review(task, now=now),
         "ephemeral": vanished_ephemeral(task, exists=exists),
@@ -1746,13 +2885,22 @@ def clear_gate(task_id):
 # -- is a heal due? --------------------------------------------------------------
 
 def due(task, result=None, now=None):
-    """`(is_due, [reasons])` — the four independent limbs from the spec, each named in
-    plain words so the nag can say WHY:
+    """`(is_due, [reasons])` — the five independent limbs, each named in plain words so the
+    nag can say WHY:
 
       * the scan found anything at all,
       * ≥ DUE_NEW_DECISIONS decisions the last heal has never seen,
       * any undispositioned ack exists,
-      * more than DUE_AGE_DAYS days without a heal on an ACTIVE task.
+      * more than DUE_AGE_DAYS days without a heal on an ACTIVE task,
+      * ≥ `goal_review_due()` decisions since the GOAL LINE was last written or re-read.
+
+    THE GOAL LIMB IS THE ONE THING HERE THAT IS NOT A FINDING, and that is not a
+    contradiction — "due" means "run the pass", not "something is wrong". A goal is supposed
+    to outlive the decisions that pursue it, so an untouched one is never a defect; but a
+    goal that has not been READ across twenty-five decisions is a sentence the next cold
+    session will take as the plan on evidence nobody has checked it against. It needs a
+    BASELINE, so every task written before the baseline existed is silent here rather than
+    permanently due, and `heal --goal-reviewed` clears it without requiring a rewrite.
 
     The second limb is worded from the STAMP. With a stamp, "N new decision(s) since the
     last heal" is a true and actionable count. WITHOUT one it used to report the task's
@@ -1781,6 +2929,12 @@ def due(task, result=None, now=None):
     acks = counts(result).get("ack-undispositioned", 0)
     if acks:
         reasons.append("%d ack(s) carry no disposition" % acks)
+    g = result.get("goal_review") or {}
+    if g.get("review_known"):
+        stale = g.get("since_review") or 0
+        threshold = goal_review_due()
+        if stale >= threshold:
+            reasons.append("%d decision(s) since the goal line was last reviewed" % stale)
     if task.get("status") == "active":
         since = h.get("since_heal")
         if since is None:
@@ -1910,11 +3064,22 @@ def stamp_healed(task, now=None, kind=HEAL_KIND_APPLY, note=None):
     way `save.stamp_checkpoint` takes `saved_counts` — exact arithmetic rather than a scan
     of the bounded event feed. `decisions_at_last_heal` stays alongside it, unchanged:
     `health` reads that one, and rewriting a stamp field older releases already write is
-    how a frozen format stops being frozen."""
+    how a frozen format stops being frozen.
+
+    `chars_at_last_heal` is the SIZE OBJECTIVE's baseline (`size_objective`), and it is a
+    different measure from all of those on purpose: the counters say how much was RECORDED,
+    this says how much the digest COSTS. A heal can add four decisions and still leave the
+    digest smaller, which is the whole point of the pass — and until this was snapshotted
+    nothing could tell that outcome from the opposite one. Taken from the LIVE decisions
+    (`decisions.total_chars`), because a replaced entry costs the digest nothing.
+
+    IT IS WRITTEN LAST-ISH ON PURPOSE: every caller stamps AFTER performing its operations,
+    so the baseline is the size the pass LEFT, not the size it found."""
     now = time.time() if now is None else now
     task["last_heal_ts"] = now
     task["decisions_at_last_heal"] = len(task.get("decisions") or [])
     task[ACCRUAL_COUNTS_FIELD] = _recorded_counts(task)
+    task[CHARS_AT_LAST_HEAL] = _dec.total_chars(task.get("decisions"))
     task["last_heal_kind"] = kind
     note = (note or "").strip()
     if note:
@@ -2426,17 +3591,135 @@ def scan_lines(result):
     return out
 
 
+def dismissed_line(result):
+    """ONE row saying how many findings the ledger is silencing, or [] when none.
+
+    A COUNT AND A POINTER, never a list. The whole point of a dismissal is that the reader
+    has already answered that finding, so re-printing the nine of them would put the cost
+    straight back. But it must not be INVISIBLE either — a silenced finding nobody can see
+    is indistinguishable from a check that stopped running — so the count is always there
+    with the command that expands it."""
+    n = len((result or {}).get("dismissed") or [])
+    if not n:
+        return []
+    return ["  %-28s %d  (adjudicated and silenced: out of the findings, the issue count "
+            "and the due calculus. `heal --dismissals` lists each one with its why and its "
+            "date; a dismissal covers ONE exact text, so an edit to the underlying entry "
+            "makes the finding re-report)" % ("Dismissed", n)]
+
+
+def size_line(size):
+    """The digest's size against its baseline: `12,400 chars · at last heal 15,900 · -3,500`.
+
+    THE DELTA IS THE POINT. A char total on its own cannot distinguish a task that is 40k
+    down from last week from one that is 40k up — both read as one large number — and the
+    direction is the only thing that says whether reconciling is working. `not baselined`
+    when no stamp recorded one, never a zero delta: see `size_objective`."""
+    now = (size or {}).get("now") or 0
+    if not (size or {}).get("known"):
+        return ("%d chars · no baseline recorded, so the change since the last heal cannot "
+                "be counted" % now)
+    delta = size.get("delta") or 0
+    return ("%d chars · at last heal %d · %s%d"
+            % (now, size.get("at_last_heal") or 0, "+" if delta > 0 else "", delta))
+
+
+def size_lines(result):
+    """The size objective as ONE display row, always printed.
+
+    Always, including when it cannot be counted — the rule `accrual_lines` already keeps: a
+    measurement that appears only when it has something to say is one the reader never sees
+    on the run where it mattered."""
+    return ["  %-28s %s  (the OBJECTIVE — a reconcile is supposed to make this number go "
+            "DOWN)" % ("Digest size", size_line((result or {}).get("size") or {}))]
+
+
+def oversized_proposal_lines(result):
+    """The proposal-tier oversized decisions as display rows, worst-first, or [].
+
+    Capped and SAYING SO. A real task's decisions average ~1,400 chars, so this tier is the
+    normal length of a working entry: forty rows of it is a wall rather than a proposal, and
+    a list that silently stopped at five would read as "there were five"."""
+    p = (result or {}).get("oversized_proposals") or {}
+    rows = p.get("shown") or []
+    if not rows:
+        return []
+    out = ["  %-28s %d  (PROPOSALS — not findings: over %d chars is worth READING, not a "
+           "defect. Never counted as an issue and they never make a heal due; past %d "
+           "chars one becomes a finding, because that is where an entry stops being "
+           "supersedable a piece at a time)"
+           % ("Long decisions", p.get("total") or len(rows),
+              OVERSIZE_PROPOSAL_CHARS, OVERSIZE_CHARS)]
+    for r in rows:
+        out.append("      • decision %s · %d chars (%.1f× the %d-char write advisory) — if "
+                   "it holds several separate rulings, `heal --split %s --into <n1,n2,…>` "
+                   "cuts it; if it is one ruling that needs every word, leave it"
+                   % (r.get("index"), r.get("chars") or 0,
+                      float(r.get("chars") or 0) / max(1, WRITE_ADVISORY_CHARS),
+                      WRITE_ADVISORY_CHARS, r.get("index")))
+    if p.get("more"):
+        out.append("      • +%d more over %d chars — not listed, because a wall of them is "
+                   "not a proposal. `heal --candidates` and the dry run carry the full "
+                   "decision set" % (p.get("more"), OVERSIZE_PROPOSAL_CHARS))
+    return out
+
+
+def subject_candidate_lines(result):
+    """The SUBJECT-tier merge candidates as display rows, or [].
+
+    Rendered ABOVE the shape tier because they are the stronger evidence: these entries name
+    the same step, the same release or the same work item, while a shape group merely opens
+    the same way. A group tagged `completed-subject` says the checklist itself reports the
+    work finished, which is the closest the record ever comes to stating "true but no longer
+    load-bearing" on its own — and it is still a PROPOSAL, because the surviving summary has
+    to be written by someone who read the group."""
+    cands = (result or {}).get("subject_candidates") or []
+    if not cands:
+        return []
+    done = (result or {}).get("completed_subjects") or []
+    head = ("  %-28s %d  (PROPOSALS — not findings: not counted as issues. Grouped by what "
+            "the entries are ABOUT — a shared step, release or PR/story — which is why two "
+            "members are enough here where the shape tier needs three%s)"
+            % ("Subject candidates", len(cands),
+               (" · %d decision(s) on this task have ALL their subject steps finished"
+                % len(done)) if done else ""))
+    out = [head]
+    for c in cands:
+        idxs = [str(i) for i in (c.get("indices") or [])]
+        tags = c.get("tags") or []
+        out.append("      • decisions %s share %s%s — READ them: if they are all TRUE BUT "
+                   "NO LONGER LOAD-BEARING, write ONE summary decision and `heal --merge "
+                   "%s --into <n>`. `heal --candidates` prints these members in full and "
+                   "nothing else. Never merged from the grouping alone: choosing what the "
+                   "surviving summary says is judgement, and a wrong merge writes a false "
+                   "consolidation into the record."
+                   % (", ".join(idxs), c.get("signal"),
+                      "  [COMPLETED-SUBJECT — every step these name is done or superseded, "
+                      "so the work they record is finished]" if "completed-subject" in tags
+                      else "",
+                      ",".join(idxs)))
+    return out
+
+
 def merge_candidate_lines(result):
     """The merge candidates as display rows, or [] when there are none.
 
     Worded to be unmistakable about their status. They sit next to the findings and must
     never be read as more of them: nothing here is counted as an issue, nothing here
-    makes a heal due, and nothing here is ever performed by `--apply`."""
+    makes a heal due, and nothing here is ever performed by `--apply`.
+
+    THE SECONDARY TIER since subject grouping arrived, and still worth having: it catches the
+    process-error and scrub-iteration families that name no step, no release and no work
+    item, so there is no subject for the stronger tier to match on. A group appearing in both
+    is not a contradiction — one says these are ABOUT the same thing, the other says they are
+    PHRASED the same way."""
     cands = (result or {}).get("merge_candidates") or []
     if not cands:
         return []
     out = ["  %-28s %d  (PROPOSALS — not findings: they are not counted as issues and "
-           "never make a heal due)" % ("Merge candidates", len(cands))]
+           "never make a heal due. The SECONDARY tier: grouped by how each entry OPENS, "
+           "which is weaker evidence than a shared subject, hence three before it counts)"
+           % ("Merge candidates", len(cands))]
     for c in cands:
         idxs = [str(i) for i in (c.get("indices") or [])]
         out.append("      • decisions %s open with the same shape (%r) — READ them: if "
@@ -2495,10 +3778,18 @@ def goal_review_lines(result):
     number rendered next to nine checks reads as a tenth finding unless something stops
     it. The wording deliberately matches `accrual_line`'s "cannot be counted": the two
     sections answer the same shape of question minutes apart, and two different ways of
-    saying "nobody recorded the baseline" would read as two different problems."""
+    saying "nobody recorded the baseline" would read as two different problems.
+
+    IT NO LONGER CLAIMS IT CAN NEVER MAKE A HEAL DUE, because that stopped being true when
+    `due()` gained the goal limb — and a heading that says one thing while the verdict says
+    another is worse than either. It says the precise thing instead: never an ISSUE (it is
+    not a defect, and `mechanical_line` does not count it), and past the threshold it IS a
+    reason to run the pass. The row names the count that would do it, so the number a reader
+    sees is the number the verdict used."""
     g = (result or {}).get("goal_review") or {}
     if not g:
         return []
+    threshold = goal_review_due()
     if g.get("known"):
         n = g.get("since") or 0
         head = ("%d decision(s) since it was last written%s"
@@ -2507,9 +3798,15 @@ def goal_review_lines(result):
     else:
         head = ("no baseline was recorded, so what has landed since it was written CANNOT "
                 "BE COUNTED — which is not the same claim as nothing")
+    if g.get("review_known") and g.get("reviewed_only"):
+        head += (" · re-read (not rewritten) %s, %d decision(s) ago"
+                 % (_fmt_age(g.get("review_age")), g.get("since_review") or 0))
     seq = (result or {}).get("seq")
-    out = ["  %-28s %s  (PROPOSAL — not a finding: never counted as an issue, and it can "
-           "never make a heal due)" % ("Goal review", head)]
+    out = ["  %-28s %s  (PROPOSAL — never counted as an ISSUE: an untouched goal is not a "
+           "defect. It DOES make a heal due at %d decision(s) since it was last written or "
+           "re-read, because at that point the next cold session is taking this sentence as "
+           "the plan on evidence nobody has checked it against)"
+           % ("Goal review", head, threshold)]
     out.append("      • %s" % (g.get("preview") or ""))
     out.append("      • READ IT AGAINST THE NEWEST DECISIONS: does this still say what "
                "DONE looks like, or does the record now show that mission as already "
@@ -2519,8 +3816,13 @@ def goal_review_lines(result):
                "cross-reference it against. An untouched goal is NOT a defect — a goal is "
                "supposed to outlive the decisions that pursue it — so this is a reason to "
                "look, never proof of anything. If it has drifted: `update %s--goal '<what "
-               "done looks like now>'`."
-               % ("--task %s " % seq if seq else ""))
+               "done looks like now>'`. If it is STILL RIGHT, say so and reset the count "
+               "without touching it: `heal --goal-reviewed%s`. Those are the only two "
+               "honest endings — rewriting a correct goal to prove you read it puts a false "
+               "edit in the record, and leaving it unrecorded means the next session is told "
+               "nobody has looked."
+               % ("--task %s " % seq if seq else "",
+                  " --task %s" % seq if seq else ""))
     return out
 
 
@@ -2676,4 +3978,123 @@ def plan_lines(ops):
             out.append("  ack    memo %s / %s → %s (RETRO)   [%s]"
                        % ((op.get("memo") or "?")[:8], (op.get("sid") or "?")[:8],
                           op.get("kind"), op.get("why")))
+    return out
+
+
+# -- the two READ-ONLY views: the ledger, and the candidates ------------------------
+
+
+def _fmt_when(ts_value):
+    """A ledger timestamp as a date plus an age — `2026-08-12 (3d ago)`. A date alone makes
+    a reader do arithmetic; an age alone loses the date they need to match it against a
+    conversation."""
+    try:
+        t = float(ts_value)
+    except (TypeError, ValueError):
+        return "at an unknown time"
+    return "%s (%s)" % (time.strftime("%Y-%m-%d", time.localtime(t)),
+                        _fmt_age(max(0.0, time.time() - t)))
+
+
+def dismissal_lines(task, rows=None, result=None):
+    """The dismissal ledger as display rows — every entry, newest first, with its why.
+
+    THE WHY IS THE POINT OF THE LIST. A dismissal takes a finding out of the report, so the
+    only thing standing between that and a buried defect is a reason somebody can now read
+    and disagree with. An EXPIRED ruling (active, but its fingerprint matches nothing the
+    scan found) is called out in those words: that is the fingerprint design working — the
+    text changed, so the finding is being reported again — and it would otherwise look
+    exactly like a ruling still in force."""
+    rows = dismissal_rows(task, result=result) if rows is None else rows
+    seq = task.get("seq") or str(task.get("id") or "")[:8]
+    if not rows:
+        return ["DISMISSALS — task #%s: none. Nothing on this task has been adjudicated "
+                "away, so every finding the scan reports is being counted." % seq]
+    active = [r for r in rows if not r.get("retired")]
+    out = ["DISMISSALS — task #%s: %d entr%s, %d still in force. A dismissal covers ONE "
+           "exact finding text, so editing the entry it names makes the finding re-report; "
+           "`heal --apply --undismiss '<check>:<ref>'` retires one and restores full "
+           "reporting." % (seq, len(rows), "y" if len(rows) == 1 else "ies", len(active))]
+    for r in rows:
+        state = "RETIRED" if r.get("retired") else (
+            "in force" if r.get("silencing") is not False else
+            "EXPIRED — the text it covered has changed, so that finding is being reported "
+            "again")
+        out.append("  • %s   [%s]" % (_row_label(r), state))
+        out.append("      why: %s" % (r.get("why") or "(none recorded)"))
+        out.append("      dismissed %s%s%s"
+                   % (_fmt_when(r.get("ts")),
+                      (" by session %s" % str(r.get("sid"))[:8]) if r.get("sid") else "",
+                      (" · retired %s" % _fmt_when(r.get("retired_ts")))
+                      if r.get("retired") else ""))
+    return out
+
+
+def candidate_lines(task, result=None):
+    """`heal --candidates` — the CHEAP dry run: the goal line, the pinned decisions, and
+    each candidate group's members IN FULL. Nothing else.
+
+    WHY THIS EXISTS. The full dry run is ~47,000 chars on a real task and 94% of that is the
+    decision list, which is the right price for the judgement it feeds — but a reader who has
+    already decided to work the MERGE candidates needs four groups of text, not the corpus.
+    This is the same reading with the corpus removed.
+
+    THE GOAL AND THE PINS STAY, because a merge summary is written against them: the goal
+    says which of these subjects still matters, and a pinned decision is the one place a
+    stale summary would cost the most. Everything else is deliberately absent."""
+    result = result if result is not None else scan(task)
+    seq = task.get("seq") or str(task.get("id") or "")[:8]
+    entries = task.get("decisions") or []
+    # Reuse the scan's own grouping when it has one (a gate file written by an older version
+    # has neither key, and then this regroups rather than showing nothing).
+    groups = candidate_groups(task, subject=result.get("subject_candidates"),
+                              shape=result.get("merge_candidates"))
+    out = ["[HEAL-CANDIDATES] Task #%s [%s] — %s"
+           % (seq, str(task.get("id") or "")[:8], task.get("title"))]
+    out.append("The MERGE candidates in full, and nothing else — no findings, no plan, no "
+               "corpus. `heal --task %s` is the full dry run when you need the rest." % seq)
+    out.append("")
+    out.append("THE GOAL LINE — which of these subjects still matters is measured against it:")
+    out.append("  %s" % (str(task.get("goal") or "").strip() or "(none set)"))
+    pins = (result.get("pinned_review") or [])
+    out.append("")
+    out.append("PINNED DECISIONS (%d) — these brief EVERY session, so a summary that "
+               "contradicts one is the most expensive kind of stale there is:" % len(pins))
+    for p in pins:
+        out.append("  • decision %s · %d chars — %s"
+                   % (p.get("index"), p.get("chars") or 0, p.get("preview") or ""))
+    if not pins:
+        out.append("  (none pinned)")
+    out.append("")
+    out.append("%s" % size_line(result.get("size") or {}))
+    out.append("")
+    if not groups:
+        out.append("NO CANDIDATE GROUPS — nothing shares a subject (a step, a release, a "
+                   "PR/story) or a leading shape on this task, so there is nothing here to "
+                   "merge. That is a perfectly healthy answer.")
+        return out
+    out.append("CANDIDATE GROUPS (%d) — subject tier first, then shape. For EACH group: are "
+               "these all TRUE BUT NO LONGER LOAD-BEARING? If so write ONE summary decision "
+               "carrying every lasting rule they hold, then `heal --merge <n1,n2,…> --into "
+               "<n>`. The scan proposes, YOU write the survivor, the verb executes — and a "
+               "wrong merge writes a false consolidation into the record, which is why "
+               "nothing here is ever automatic." % len(groups))
+    for g in groups:
+        idxs = g.get("indices") or []
+        out.append("")
+        out.append("  ── %s tier · %s%s · decisions %s"
+                   % (g.get("tier"), g.get("label"),
+                      "  [COMPLETED-SUBJECT: every step these name is done or superseded]"
+                      if "completed-subject" in (g.get("tags") or []) else "",
+                      ", ".join(str(i) for i in idxs)))
+        for i in idxs:
+            if 1 <= i <= len(entries):
+                # The same mark every other surface uses for a pin (task-station's
+                # DECISION_PIN_MARK). Spelled out here rather than imported, because this
+                # module is the one task-station imports and never the other way around.
+                out.append("  %2d. %s%s" % (i,
+                                            "★ " if _dec.is_pinned(entries[i - 1]) else "",
+                                            _dec.text(entries[i - 1])))
+        out.append("     → `heal --merge %s --into <n>` once the summary decision exists"
+                   % ",".join(str(i) for i in idxs))
     return out

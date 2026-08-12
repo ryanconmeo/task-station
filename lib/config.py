@@ -780,6 +780,20 @@ def checker_claim_timeout():
                             "checker_claim_timeout", 600)
 
 
+# -- heal's one tunable (lib/heal.py) -------------------------------------------
+
+def heal_goal_review_due():
+    """Decisions that may land after a task's GOAL LINE was last written or re-read before
+    that alone makes a heal due. Default 25; `TASK_STATION_HEAL_GOAL_REVIEW_DUE` overrides.
+
+    POSITIVE-ONLY, the same contract as the three above and for a sharper reason: a zero
+    would make every task carrying a goal permanently due, which is the always-on alarm the
+    heal stamp was added to kill. `heal --goal-reviewed` records a re-read and resets the
+    count without requiring the goal to be rewritten."""
+    return _positive_number("TASK_STATION_HEAL_GOAL_REVIEW_DUE",
+                            "heal_goal_review_due", 25)
+
+
 def enabled_categories():
     """The configured active-category key list, or None when unconfigured
     (categories.enabled_keys() then defaults to CORE — the lean default)."""
@@ -1578,6 +1592,9 @@ RESET_KEYS = [
     # would keep a hand-tuned drift window in force on a station the user just reset —
     # so they are popped like everything else the config file holds.
     "checker_report_days", "checker_escalate_days", "checker_claim_timeout",
+    # heal's goal-review threshold, popped for the same reason: a hand-tuned window left
+    # behind by a reset would keep making heals due on a station the user just cleared.
+    "heal_goal_review_due",
 ]
 
 

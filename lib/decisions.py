@@ -277,6 +277,13 @@ def digest_order(entries):
 
 # -- write-time length advisory --------------------------------------------------
 
+# THE ONE SIZE NUMBER IN THIS PROJECT. `length_warning` nudges past it at write time, and
+# `heal` DERIVES both of its thresholds from it (`heal.OVERSIZE_PROPOSAL_CHARS` = 2×,
+# `heal.OVERSIZE_CHARS` = 6×) rather than carrying an opinion of its own. It used to carry
+# one — a flat 4,000, which was 2.4× this and referenced nothing — so the write path and the
+# reconcile path disagreed about what "too long" meant and neither could be retuned without
+# the other silently drifting. It lives HERE because heal imports decisions and never the
+# reverse; edit it in this one place.
 LONG_DECISION_CHARS = 600   # past this, `length_warning` nudges — see below
 
 
@@ -289,10 +296,12 @@ def length_warning(entry, index1=None, limit=LONG_DECISION_CHARS):
     refusal produced a workaround rather than a fix. So the write always succeeds,
     in full, byte-identical, and the author gets a suggestion instead of an error.
 
-    Distinct from `heal.OVERSIZE_CHARS` (4000) by job, not by disagreement: this
-    fires at WRITE time, when the author still has the context to split the entry
-    cheaply; that one is the reconcile scan's threshold for an entry already in the
-    log. A nudge can afford to be far more sensitive than a finding."""
+    Distinct from heal's two thresholds by job, not by disagreement — and they are now
+    DERIVED from this constant rather than picked separately (2× is a proposal, 6× a
+    finding). This fires at WRITE time, when the author still has the context to split the
+    entry cheaply; those judge an entry already in the log. A nudge can afford to be far
+    more sensitive than a finding, which is exactly what a multiplier expresses and what two
+    unrelated numbers could not."""
     n = len(text(entry))
     if n <= limit:
         return None
