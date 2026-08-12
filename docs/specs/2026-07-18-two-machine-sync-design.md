@@ -166,7 +166,7 @@ work item under the same integration umbrella.
 LWW scalar clobber when deep-editing the same task on both machines between syncs (log lines
 survive; loser recoverable from git history) — sync at session start/end. Clock skew decides
 ties (NTP ⇒ negligible; deterministic tie-break prevents flapping). seq divergence is permanent
-by design — downstream must key on uuid or handle (lint the private-brain integration once).
+by design — downstream must key on uuid or handle (lint the personal-brain integration once).
 Tombstone beats older edits and wins ties. **Do not** run the rsync baton-pass stopgap and v1
 together — pick one substrate.
 

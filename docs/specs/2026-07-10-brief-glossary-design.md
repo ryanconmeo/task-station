@@ -18,7 +18,7 @@ Anyone should understand a brief in seconds: one named decision, a forced vocabu
 
 ## Non-goals
 
-- **No private brain references anywhere in task-station.** Integration is one-way (private brain → task-station): private brain reads task-station's `export` JSON + artifacts dir. Any "file the decision as a linking note" behavior is a *company-brain* feature, out of scope here.
+- **No personal-brain references anywhere in task-station.** Integration is one-way (personal brain → task-station): the brain reads task-station's `export` JSON + artifacts dir. Any "file the decision as a linking note" behavior is a *company-brain* feature, out of scope here.
 - **Not a full LLM-agnostic migration of task-station.** This feature is built *portable by construction* (logic in core, thin adapters) and ships **Claude adapters now**; Codex adapters are a documented extension point. The broader migration is 387's scope.
 - No ORM/DB changes; glossary + ADO refs live on the existing task JSON record.
 
@@ -28,7 +28,7 @@ Three content types, each with a personal and a team home. Audience follows the 
 
 | Type | What it is | Personal home | Team home | Promote |
 |---|---|---|---|---|
-| Knowledge | durable facts/decisions (markdown) | private brain `notes/` | org brain wiki | `/brain-promote` |
+| Knowledge | durable facts/decisions (markdown) | personal brain `notes/` | org brain wiki | `/brain-promote` |
 | **Artifact** | rendered deliverable (HTML) | **task-station artifacts dir** | shareable link | `/brief --publish` |
 | Code | source | GitHub | ADO | PR |
 
@@ -113,7 +113,7 @@ Claude wires this into UserPromptSubmit; Codex adapter emits the same block thro
 
 **Diagram patterns:** core ships 2 parametrized SVG templates (2×2 `matrix`, before/after `architecture`) reproducing the source file's hand-drawn look; `type:"svg"` allows raw inline SVG passthrough.
 
-**`--publish`:** mints a shareable Claude Artifact (template self-contained → passes CSP). No org-wiki filing; no private brain references.
+**`--publish`:** mints a shareable Claude Artifact (template self-contained → passes CSP). No org-wiki filing; no personal-brain references.
 
 ## Config & output path
 
