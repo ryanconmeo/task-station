@@ -21,6 +21,22 @@
         { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_post_compact.sh\"" } ] },
       { "matcher": "auto", "hooks": [
         { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_post_compact.sh\"" } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [
+        { "type": "command", "timeout": 10, "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_session_end.sh\"" } ] }
+    ],
+    "ConfigChange": [
+      { "matcher": "user_settings", "hooks": [
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_config_change.sh\"" } ] },
+      { "matcher": "project_settings", "hooks": [
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_config_change.sh\"" } ] },
+      { "matcher": "local_settings", "hooks": [
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_config_change.sh\"" } ] }
+    ],
+    "FileChanged": [
+      { "matcher": "config.json|categories.json|repos.json|brains.json|workers.json", "hooks": [
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_file_changed.sh\"" } ] }
     ]
   }
 }

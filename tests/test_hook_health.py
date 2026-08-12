@@ -300,6 +300,36 @@ class NagTest(_HomeMixin, unittest.TestCase):
         self.assertNotIn("\n", n)
         self.assertLess(len(n), 400)
 
+    # -- code 0 = INFORMATIONAL, and the nag is an ALARM ----------------------
+    #
+    # The FileChanged trigger and the WorktreeCreate provisioner record what they DID.
+    # Those belong in the log — `hook-health` is the full record — but a line whose
+    # whole sentence is "N hook failure(s)" must not count them, or a routine config
+    # edit announces itself at the next session start as a broken hook.
+
+    def test_an_informational_record_never_nags(self):
+        self._record("file-changed", code=0, detail="config.json modified")
+        self.assertIsNone(hook_health.nag())
+
+    def test_informational_records_do_not_inflate_the_count(self):
+        self._record("file-changed", code=0)
+        self._record("sweep-orphans", code=2)
+        n = hook_health.nag()
+        self.assertIn("1 hook failure(s)", n)
+        self.assertNotIn("file-changed", n)
+
+    def test_an_informational_record_does_not_stamp_away_a_later_failure(self):
+        """It must not advance the watermark either — a real failure landing after it
+        still has to speak."""
+        self._record("worktree-create", code=0)
+        self.assertIsNone(hook_health.nag())
+        self._record("obsidian-flush", code=1)
+        self.assertIsNotNone(hook_health.nag())
+
+    def test_informational_records_still_list_in_the_summary(self):
+        self._record("file-changed", code=0, detail="config.json modified")
+        self.assertIn("file-changed", "\n".join(hook_health.summary()))
+
     def test_nag_does_not_repeat_for_the_same_failures(self):
         self._record("sweep-orphans")
         self.assertIsNotNone(hook_health.nag())

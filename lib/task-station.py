@@ -33,6 +33,7 @@ import uuid
 from datetime import datetime, timezone
 
 import checker as _checker
+import config_change as _config_change
 import decisions as _dec
 import heal as _heal
 import hook_health
@@ -41,6 +42,7 @@ import paths
 import save as _save
 import steps as _steps
 import store
+import worktree_hook as _worktree_hook
 
 BASE = os.path.dirname(os.path.abspath(__file__))  # code location only (self-invocation)
 
@@ -5382,16 +5384,19 @@ def sweep_orphan_workers(current_sid=None, adapter=None, now=None):
     return reaped
 
 
-def _record_orphan_reap(task_id, worker_sid, actor_sid):
-    """Log one orphan reap onto its task: a `stop` ledger entry naming the worker and
-    the sweeping session, plus a roster flip to `stopped`.
+def _record_orphan_reap(task_id, worker_sid, actor_sid,
+                        detail="reaped on session start: orphaned (spawning hub gone)"):
+    """Log one reap onto its task: a `stop` ledger entry naming the worker and the
+    session that stopped it, plus a roster flip to `stopped`.
 
     Goes through `mutate` (the required read-modify-write path) rather than
     load-then-save, so a sweep appending to the ledger can't clobber a concurrent
-    writer on the same task."""
+    writer on the same task. `detail` is the ONE thing that differs between the two
+    reapers (SessionStart's crash sweep and SessionEnd's exact pass), and it is the
+    only record of WHY a worker stopped — so it is a parameter, not a rewrite."""
     def _apply(t):
         add_ledger(t, "stop", worker_sid=worker_sid, actor_sid=actor_sid,
-                   detail="reaped on session start: orphaned (spawning hub gone)")
+                   detail=detail)
         if worker_sid in (t.get("session_meta") or {}):
             register_worker_session(t, worker_sid, status="stopped")
         t["updated_ts"] = _now()
@@ -5411,6 +5416,334 @@ def cmd_sweep_orphans(a):
     for seq, sid in reaped:
         sys.stderr.write("[task-station] reaped orphaned worker %s (task #%s) — its "
                          "spawning hub session is gone\n" % (sid[:8], seq))
+
+
+# ---- SessionEnd: the EXACT end-of-session pass -------------------------------
+#
+# THIS PAIR AMENDS DECISION 36's W2. That decision was taken when SessionEnd could
+# not be relied on, so the ONLY end-of-session machinery was the SessionStart orphan
+# sweep above: notice at the START of the NEXT session that a hub is gone, and clean
+# up then. SessionEnd verifiably exists (its contract re-verified against the live
+# Claude Code docs on 2026-08-12), so the pair is now:
+#
+#   * SessionEnd — the EXACT path, this module's `session-end`. The session is ending
+#     cleanly, right now, and it knows its own id: stamp its roster row with the
+#     reason, put one line on the task's feed, and stop the workers IT spawned.
+#   * The SessionStart sweep — the CRASH BACKSTOP, UNTOUCHED. SessionEnd is NOT
+#     guaranteed to fire on a crash or a kill, so deleting the sweep because "the end
+#     handles it now" would drop the only case the sweep was ever built for.
+#
+# The two are idempotent against each other by construction: the sweep only considers
+# a worker whose spawner is NOT in the live set, and a worker this pass already reaped
+# is gone from `claude agents --json` before the sweep ever looks at it.
+#
+# THE BUDGET IS THE OTHER CONSTRAINT. All SessionEnd hooks SHARE a 1.5-second budget
+# (raised to 10s by the manifest's per-hook `timeout`, which is a ceiling and not an
+# allowance). So the cheap store work runs unconditionally, and a subprocess is spent
+# ONLY when the delegate registry says this session actually spawned a worker.
+
+# `claude agents --json` is the one subprocess this pass can need. harness's own
+# adapter allows it 20s, which would blow the budget on a wedged CLI; 5s is long
+# enough for a healthy call and short enough to lose gracefully — a timeout returns
+# {}, which every caller reads as "unknown" and therefore reaps nothing, leaving the
+# work to the SessionStart sweep.
+SESSION_END_AGENTS_TIMEOUT = 5
+SESSION_END_REASON_MAX = 40      # a reason is a code word; anything longer is not one
+
+
+class _BoundedAgentsAdapter:
+    """`claude agents --json` under SESSION_END_AGENTS_TIMEOUT, shaped exactly like
+    `harness.ClaudeAdapter.agents_index` so `reap_task_workers` can't tell them apart.
+    `{}` on ANY failure — absence of evidence, never evidence of death."""
+
+    def agents_index(self, cwd=None):
+        cmd = ["claude", "agents", "--json"]
+        if cwd:
+            cmd += ["--cwd", cwd]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=SESSION_END_AGENTS_TIMEOUT)
+            rows = json.loads(r.stdout or "[]")
+        except Exception:
+            return {}
+        return {row["sessionId"]: row for row in rows
+                if isinstance(row, dict) and row.get("sessionId")}
+
+
+def _end_reason(raw):
+    """The session-end reason, normalised for storage.
+
+    The documented set is `clear|resume|logout|prompt_input_exit|
+    bypass_permissions_disabled|other`, but an UNKNOWN value is kept verbatim rather
+    than folded into "other": this field's whole job is to say why a session ended,
+    and mapping a newer build's new reason onto "other" would destroy the one fact
+    worth recording. Whitespace-collapsed and length-capped so a garbage value can
+    never bloat the record."""
+    text = " ".join(str(raw or "").split())[:SESSION_END_REASON_MAX]
+    return text or "other"
+
+
+def _mark_session_ended(task_id, session, reason):
+    """Stamp the session's roster row ENDED and put one `session-end` event on the
+    task's feed. True when this call did it, False when the row was already stamped.
+
+    ADDITIVE FIELDS ONLY (`ended_ts`, `end_reason`) on the existing `session_meta`
+    row — the store format is frozen-additive, and every reader of that row keeps
+    working unchanged.
+
+    `updated_ts` is deliberately NOT bumped. A session ending is not work on the task:
+    bumping it would reorder the board and reset every staleness window each time
+    someone typed /clear, which would make "recently updated" mean "recently closed a
+    terminal"."""
+    state = {"marked": False}
+
+    def _apply(t):
+        state["marked"] = False           # a retry after a write conflict starts clean
+        meta = t.setdefault("session_meta", {})
+        # An attached session with no roster row is possible (a link written before
+        # the roster existed). Recording the end on a bare row beats inventing a role.
+        row = meta.setdefault(session, {})
+        if row.get("ended_ts"):
+            return                        # already stamped → idempotent no-op
+        row["ended_ts"] = _now()
+        row["end_reason"] = reason
+        add_event(t, "session-end", "session %s ended (%s)" % (session[:8], reason),
+                  session)
+        state["marked"] = True
+
+    mutate(task_id, _apply)
+    return state["marked"]
+
+
+def _own_workers(session):
+    """`{seq: [worker_sid, …]}` for the delegate workers THIS session spawned.
+
+    Every gate wants POSITIVE evidence, exactly like `_orphaned_workers`: a registry
+    entry with no recorded `spawner`, or one whose recorded `name` isn't task-station
+    shaped, is skipped rather than guessed at. Empty whenever anything is unknown."""
+    out = {}
+    dg = _delegate_module()
+    if dg is None:
+        return out
+    try:
+        reg = dg.load_reg()
+    except Exception:
+        return out
+    if not isinstance(reg, dict):
+        return out
+    for e in reg.values():
+        if not isinstance(e, dict):
+            continue
+        sid, seq = e.get("session_id"), e.get("seq")
+        if not sid or seq is None or sid == session:
+            continue                      # never the ending session itself
+        if e.get("spawner") != session:
+            continue                      # someone else's worker is never ours to stop
+        if not dg._is_ts_worker_name(e.get("name")):
+            continue                      # unidentifiable → left alone, as the sweep does
+        out.setdefault(seq, []).append(sid)
+    return out
+
+
+def reap_own_workers(session, adapter=None, reason="other"):
+    """Stop the workers THIS session spawned, as it ends. Returns the `(seq, sid)`
+    pairs actually reaped.
+
+    The kill is `delegate.reap_task_workers` — the SAME airtight predicate the close
+    path and the crash sweep use (registry-registered for that seq AND role==worker in
+    the roster AND task-station-named AND not busy AND not this session), narrowed by
+    `only_sids` to the workers this session spawned. So a worker that is mid-turn is
+    left running, and a hub session is never touched.
+
+    Inherits the `reap_workers_on_done` kill switch for free (the reap itself is gated
+    on it). Wholly best-effort: never raises."""
+    reaped = []
+    if not session:
+        return reaped
+    cands = _own_workers(session)
+    if not cands:
+        return reaped                     # nothing spawned → not one subprocess spent
+    dg = _delegate_module()
+    if dg is None:
+        return reaped
+    if adapter is None:
+        if os.environ.get("TASK_STATION_NO_AGENT_QUERY"):
+            return reaped                 # the test/headless escape: never shell out
+        adapter = _BoundedAgentsAdapter()
+    for seq, sids in cands.items():
+        try:
+            task = resolve_ref(str(seq))
+            if not task:
+                continue
+            got = dg.reap_task_workers(seq, adapter=adapter,
+                                       roster=task.get("session_meta") or {},
+                                       current_sid=session, only_sids=sids)
+        except Exception:
+            continue                      # a failed reap never aborts the others
+        for s in (got or []):
+            reaped.append((seq, s))
+            try:
+                _record_orphan_reap(
+                    task["id"], s, session,
+                    detail="reaped on session end (%s): its spawning session ended"
+                           % reason)
+            except Exception:
+                pass                      # the worker IS stopped; logging is best-effort
+    return reaped
+
+
+def cmd_session_end(a):
+    """`task-station session-end --session <sid> --reason <r>` — the SessionEnd hook
+    entry point, and the exact half of the pair documented above.
+
+    ONE pass, in cost order: stamp the roster row + feed (store-local, microseconds),
+    then reap this session's own workers (a subprocess, and only when the registry
+    says there is one). IDEMPOTENT — running it twice stamps once and appends one
+    event — and it ALWAYS exits 0: SessionEnd cannot block, and a reaper that failed
+    a session teardown would be worse than one that did nothing.
+
+    Reaps and failures go to STDERR (which SessionEnd shows to the user only) so
+    nothing this prints can be mistaken for hook output."""
+    session = getattr(a, "session", None)
+    if not session or session == "unknown":
+        return
+    reason = _end_reason(getattr(a, "reason", None))
+    try:
+        task = _session_task(session)     # None for unattached AND skipped sessions
+    except Exception:
+        task = None
+    if task:
+        try:
+            _mark_session_ended(task["id"], session, reason)
+        except Exception:
+            pass                          # a record we could not write < a broken teardown
+    try:
+        reaped = reap_own_workers(session, reason=reason)
+    except Exception:
+        reaped = []
+    for seq, sid in reaped:
+        sys.stderr.write("[task-station] stopped worker %s (task #%s) — its spawning "
+                         "session ended (%s)\n" % (sid[:8], seq, reason))
+
+
+# ---- ConfigChange / FileChanged: the two watcher hooks ------------------------
+
+def cmd_config_change(a):
+    """`task-station config-change --session <sid> --source <s> --file <path>` — the
+    ConfigChange hook entry point.
+
+    WARN BY DEFAULT: write one hook-health record naming the unresolvable paths and
+    exit 0, so the config change lands and the next session start names the problem.
+    ENFORCE (`config_change_enforce`, env `TASK_STATION_CONFIG_ENFORCE`) exits 2,
+    which BLOCKS the change — and the record is written FIRST either way, because a
+    block surfaces no transcript message at all and that record is the only trace the
+    user ever gets.
+
+    NEVER blocks on our own inability to read the file: an unparseable config is
+    Claude Code's error to report, and refusing the save would trap the user's fix
+    inside the file they are fixing (see lib/config_change.py)."""
+    path = (getattr(a, "file", None) or "").strip()
+    if not path:
+        return
+    try:
+        findings = _config_change.unresolvable(path)
+    except Exception:
+        return                            # fail-open: our bug is never their block
+    if not findings:
+        return
+    source = (getattr(a, "source", None) or "").strip() or "settings"
+    detail = "%s [%s]" % (_config_change.detail(path, findings), source)
+    enforce = False
+    try:
+        import config as _cfg
+        enforce = _cfg.config_change_enforce()
+    except Exception:
+        enforce = False
+    try:
+        hook_health.record("config-change", 2 if enforce else 1, detail)
+    except Exception:
+        pass
+    if enforce:
+        sys.stderr.write("[task-station] config change blocked — %s\n" % detail)
+        sys.exit(2)
+
+
+# The data-dir files the station itself READS. The manifest's FileChanged matcher is
+# basename-level, so any project's `config.json` fires this hook; the data-dir test in
+# cmd_file_changed is what makes it OURS, and this set is what makes the record honest.
+STATION_WATCHED_FILES = ("config.json", "categories.json", "repos.json",
+                         "brains.json", "workers.json")
+
+
+def cmd_file_changed(a):
+    """`task-station file-changed --session <sid> --file <path> --change <t>` — the
+    FileChanged hook entry point.
+
+    THE ACTION IS A RE-ARM, NOT A MESSAGE. FileChanged cannot inject context, so
+    there is nothing to tell the model here. What it CAN do is invalidate the
+    checker's self-cap: the pointer/drift nags stay silent until the state they
+    fingerprinted changes, and the station config they were evaluated against just
+    changed underneath them. Clearing the gate re-arms both, so the NEXT session start
+    re-evaluates against the new config instead of trusting a stale fingerprint.
+
+    FILTERS ON THE FULL PATH FIRST. The matcher can only name basenames, so every
+    project's `config.json` reaches this hook; only a file inside `paths.data_dir()`
+    is ours. Everything else returns in microseconds having done nothing."""
+    path = (getattr(a, "file", None) or "").strip()
+    if not path:
+        return
+    try:
+        data = os.path.realpath(paths.data_dir())
+        real = os.path.realpath(os.path.expanduser(path))
+    except Exception:
+        return
+    if real != data and not real.startswith(data + os.sep):
+        return                            # another project's config.json — not ours
+    cleared = None
+    try:
+        session = getattr(a, "session", None)
+        link = get_link(session) if session else None
+        if link and link != SKIP_SENTINEL and _checker.clear_gate(link):
+            cleared = link
+    except Exception:
+        cleared = None
+    base = os.path.basename(real)
+    if base not in STATION_WATCHED_FILES:
+        return                            # inside our dir but nothing we read → silent
+    change = (getattr(a, "change", None) or "").strip() or "modified"
+    try:
+        # Code 0 = INFORMATIONAL (hook_health.record): a config edit is not a hook
+        # failure and must never be counted by the session-start failure nag.
+        hook_health.record("file-changed", 0, "%s %s%s" % (
+            base, change,
+            (" — re-armed the checker gate for task %s" % cleared[:8]) if cleared else ""))
+    except Exception:
+        pass
+
+
+def cmd_worktree_create(a):
+    """`task-station worktree-create` — the WorktreeCreate hook entry point (payload
+    on stdin). CREATES the worktree, prints its absolute path as the first stdout
+    line, then provisions it best-effort. See lib/worktree_hook.py for the contract:
+    the ONLY non-zero exit is a genuine creation failure, which SHOULD fail the
+    harness operation because there is no worktree."""
+    payload = {}
+    try:
+        if not sys.stdin.isatty():
+            raw = sys.stdin.read()
+            payload = json.loads(raw) if (raw or "").strip() else {}
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        rc = _worktree_hook.handle(payload, sys.stdout, sys.stderr)
+    except Exception as e:
+        sys.stderr.write("[task-station] worktree-create failed: %s: %s\n"
+                         % (e.__class__.__name__, e))
+        rc = 1
+    if rc:
+        sys.exit(rc)
 
 
 def _done_gate_line(task):
@@ -14595,6 +14928,45 @@ def main(argv=None):
     sp.add_argument("--session", default=None)
     sp.set_defaults(fn=cmd_sweep_orphans)
 
+    # session-end — the SessionEnd hook's exact pass (roster row + feed + reap this
+    # session's own workers). Idempotent, always exits 0; the SessionStart sweep above
+    # stays as the crash backstop.
+    sp = sub.add_parser("session-end",
+                        help="record a clean session end and stop the workers it spawned")
+    sp.add_argument("--session", required=True)
+    sp.add_argument("--reason", default="other",
+                    help="why the session ended (clear|resume|logout|prompt_input_exit|"
+                         "bypass_permissions_disabled|other); an unknown value is kept verbatim")
+    sp.set_defaults(fn=cmd_session_end)
+
+    # config-change — the ConfigChange hook's path validator. Exit 2 (BLOCK) only in
+    # enforce mode; the hook-health record is written first either way.
+    sp = sub.add_parser("config-change",
+                        help="report config-declared paths that no longer resolve")
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--source", default="",
+                    help="user_settings | project_settings | local_settings")
+    sp.add_argument("--file", dest="file", default=None,
+                    help="the config file that changed")
+    sp.set_defaults(fn=cmd_config_change)
+
+    # file-changed — the FileChanged hook. Acts ONLY on files inside the data dir
+    # (the manifest matcher is basename-level); re-arms the checker gate.
+    sp = sub.add_parser("file-changed",
+                        help="re-arm the checker gate when a station config file changes")
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--file", dest="file", default=None)
+    sp.add_argument("--change", dest="change", default="",
+                    help="modified | created | deleted")
+    sp.set_defaults(fn=cmd_file_changed)
+
+    # worktree-create — the OPT-IN WorktreeCreate hook (installed into the user's own
+    # settings.json by `config --worktree-hook on`, never in the plugin manifest).
+    # Payload on stdin; the worktree's absolute path is the first stdout line.
+    sp = sub.add_parser("worktree-create",
+                        help="create + provision a worktree for the WorktreeCreate hook")
+    sp.set_defaults(fn=cmd_worktree_create)
+
     sp = sub.add_parser("repos")
     sp.add_argument("terms", nargs="*",
                     help="terms to rank repos by; omit (or 'show') to print the index. "
@@ -14890,6 +15262,20 @@ def _add_config_args(sp):
                     const="on", default=None,
                     help="append the eco-footprint column to the cost HUD (default off)")
     sp.add_argument("--hud-eco-get", dest="hud_eco_get", action="store_true")
+    sp.add_argument("--worktree-hook", dest="worktree_hook", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="install (on) / remove (off) the opt-in WorktreeCreate "
+                         "provisioner in your settings.json: new worktrees get the main "
+                         "checkout's .claude/settings.local.json + a trust entry. The hook "
+                         "REPLACES worktree creation while installed (default off)")
+    sp.add_argument("--worktree-hook-get", dest="worktree_hook_get", action="store_true")
+    sp.add_argument("--config-change-enforce", dest="config_change_enforce", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="BLOCK a settings save declaring a path that no longer exists "
+                         "(default off — warn via hook-health only; a block is "
+                         "transcript-silent). TASK_STATION_CONFIG_ENFORCE overrides")
+    sp.add_argument("--config-change-enforce-get", dest="config_change_enforce_get",
+                    action="store_true")
     sp.add_argument("--ultracode-hints", dest="ultracode_hints", nargs="?",
                     choices=["on", "off"], const="on", default=None,
                     help="suggest ultracode multi-agent breadth on fan-out-worthy tasks "

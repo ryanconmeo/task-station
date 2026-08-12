@@ -913,4 +913,114 @@ class Obsidian(unittest.TestCase):
         self.assertNotIn("board_engine", buf.getvalue())
 
 
+class HookFlags(unittest.TestCase):
+    """The two flags the new hook events added: `--config-change-enforce` (ConfigChange
+    warns by default, blocks only on request) and `--worktree-hook` (the opt-in
+    WorktreeCreate provisioner). Both default OFF, both take an env escape, both reset."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._env = {k: os.environ.get(k) for k in
+                     ("TASK_STATION_HOME", "CLAUDE_CONFIG_DIR",
+                      "TASK_STATION_CONFIG_ENFORCE", "TASK_STATION_WORKTREE_HOOK")}
+        os.environ["TASK_STATION_HOME"] = self.tmp
+        os.environ["CLAUDE_CONFIG_DIR"] = self.tmp
+        for k in ("TASK_STATION_CONFIG_ENFORCE", "TASK_STATION_WORKTREE_HOOK"):
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # --- --config-change-enforce ---------------------------------------------
+
+    def test_enforce_defaults_off(self):
+        """A block is transcript-silent, so it is never the default."""
+        self.assertFalse(config.config_change_enforce())
+
+    def test_enforce_via_config_and_env(self):
+        config.set("config_change_enforce", True)
+        self.assertTrue(config.config_change_enforce())
+        os.environ["TASK_STATION_CONFIG_ENFORCE"] = "off"
+        self.assertFalse(config.config_change_enforce())      # env wins
+
+    def test_enforce_setter_and_getter(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            config.cmd_config(_Args(workspace_dirs=None, config_change_enforce="on"))
+        self.assertIn("config_change_enforce = on", buf.getvalue())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            config.cmd_config(_Args(workspace_dirs=None, config_change_enforce_get=True))
+        self.assertEqual(buf.getvalue().strip(), "on")
+
+    def test_enforce_resets(self):
+        self.assertIn("config_change_enforce", config.RESET_KEYS)
+        config.set("config_change_enforce", True)
+        config.reset_settings()
+        self.assertFalse(config.config_change_enforce())
+
+    # --- --worktree-hook ------------------------------------------------------
+
+    def test_worktree_hook_defaults_off(self):
+        self.assertFalse(config.worktree_hook_enabled())
+
+    def test_worktree_hook_via_config_and_env(self):
+        config.set("worktree_hook", True)
+        self.assertTrue(config.worktree_hook_enabled())
+        os.environ["TASK_STATION_WORKTREE_HOOK"] = "off"
+        self.assertFalse(config.worktree_hook_enabled())      # env wins
+
+    def test_worktree_hook_resets(self):
+        self.assertIn("worktree_hook", config.RESET_KEYS)
+        config.set("worktree_hook", True)
+        config.reset_settings()
+        self.assertFalse(config.worktree_hook_enabled())
+
+    def test_worktree_hook_on_installs_and_off_removes(self):
+        import setup
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            config.cmd_config(_Args(workspace_dirs=None, worktree_hook="on"))
+        self.assertEqual(setup.worktree_hook_status(), "installed")
+        self.assertIn("Reverse", buf.getvalue())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            config.cmd_config(_Args(workspace_dirs=None, worktree_hook="off"))
+        self.assertEqual(setup.worktree_hook_status(), "off")
+        self.assertFalse(config.worktree_hook_enabled())
+
+    def test_reset_reports_the_settings_json_leftover(self):
+        """A settings reset pops the flag but cannot remove what lives outside
+        config.json — so it names it with its off-command instead."""
+        import setup
+        setup.install_worktree_hook()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            config.cmd_reset("confirm")
+        self.assertIn("--worktree-hook off", buf.getvalue())
+
+    # --- both rows are on the board ------------------------------------------
+
+    def test_board_rows_present_and_well_formed(self):
+        rows = {r[0]: r for r in config.board_rows()}
+        for flag in ("--worktree-hook", "--config-change-enforce"):
+            self.assertIn(flag, rows)
+            self.assertEqual(len(rows[flag]), 6)          # a valid 6-tuple
+            self.assertEqual(rows[flag][2], "on · off")
+            self.assertIn("(default: off)", rows[flag][3])
+        self.assertEqual(rows["--worktree-hook"][1], "off")
+        self.assertEqual(rows["--config-change-enforce"][1], "off")
+
+    def test_board_renders_both(self):
+        os.environ["COLUMNS"] = "120"
+        board = config.render_board()
+        self.assertIn("--worktree-hook", board)
+        self.assertIn("--config-change-enforce", board)
+
+
 if __name__=="__main__": unittest.main()

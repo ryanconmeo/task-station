@@ -3,6 +3,81 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+The hook surface goes from **5 wired events to 8, plus one installable**. Every one of
+them answers a question the station could previously only guess at — what happened at the
+*end* of a session, whether a config still points at things that exist, whether the
+checker's cached answer is still about the current config, and what a brand-new worktree
+is missing.
+
+### Added
+- **SessionEnd — the EXACT reaper (`session-end`).** A session ending cleanly knows its
+  own id, so it no longer has to be discovered as an orphan at the START of the next
+  session: it stamps its roster row with `ended_ts` + `end_reason` (additive fields), puts
+  one `session-end` event on the attached task's feed, and stops the delegate workers
+  **it** spawned — through the same airtight predicate the close path uses (registry-
+  registered for that seq, `role == worker` in the roster, task-station-named, not busy,
+  not itself). **This amends decision 36's W2**, which was taken when SessionEnd could not
+  be relied on: the SessionStart orphan sweep is **untouched** and stays as the crash
+  backstop, because SessionEnd is not guaranteed to fire on a crash or a kill. The pass is
+  idempotent, always exits 0, and does **not** bump `updated_ts` — a session ending is not
+  work on the task, and letting /clear reorder the board would make "recently updated"
+  mean "recently closed a terminal". All SessionEnd hooks share a **1.5-second** budget,
+  so the manifest entry carries `"timeout": 10` as a ceiling, the store work runs
+  unconditionally, and a subprocess is spent only when the registry says this session
+  actually spawned a worker (bounded to 5s, against harness's own 20s).
+- **ConfigChange — the config-path validator (`config-change`), WARN by default.** Before
+  a settings change takes effect, the paths it declares are checked for still resolving —
+  a `statusLine.command` naming a script that moved, a hook command pointing into a
+  plugin-cache dir a `/plugin update` replaced. None of those fail loudly; the feature
+  just silently stops working. Default is one hook-health record and exit 0, so the next
+  session start names the bad path. `--config-change-enforce on` turns it into a **block**
+  (exit 2) — and the record is written **first** either way, because a blocked config
+  change surfaces **no transcript message at all** and that record is the only trace.
+  Wired for `user_settings|project_settings|local_settings` only: `policy_settings` cannot
+  be blocked, so wiring it would only be a way to look like we might.
+  **What counts as a path is deliberately narrow** — an absolute or `~/` value, or the
+  first such token of a `…command` string (so `bash /abs/host.sh` is checked at the
+  script, not at `bash`). A relative path, a `$VAR`, a glob, and a bare command name are
+  each excluded, because each is a class of false positive, and a check that cries wolf is
+  worse than no check. It **never** blocks on a file we cannot parse.
+- **FileChanged — the pointer/drift re-arm (`file-changed`).** The checker's nags are
+  self-capping: each stays silent until the state it fingerprinted changes. When the
+  station config they were evaluated against changes on disk (external editors included),
+  that cap is guarding a stale answer — so the task's checker gate is dropped and both
+  nags re-evaluate at the next session start. There is nothing to say to the model here
+  (FileChanged cannot inject context), so the hook prints nothing: **the re-armed gate is
+  the mechanism.** The manifest matcher is a **literal filename list**
+  (`config.json|categories.json|repos.json|brains.json|workers.json`) — a hyphen, space or
+  comma anywhere in it silently flips Claude Code to regex parsing, after which the hook
+  stops firing and nothing reports it. It is basename-level, so every project's
+  `config.json` reaches the hook and the engine filters on the full path being inside the
+  data dir.
+- **WorktreeCreate — the provisioner, as an OPT-IN INSTALLER (`config --worktree-hook
+  on|off`, default off).** A new worktree inherits none of the main checkout's local
+  setup, and two consequences bite silently: `.claude/settings.local.json` is gitignored,
+  so a delegated worker hits "tool not granted" on grants the main checkout already made
+  and cannot prompt for them; and the path has no trust entry, so a background session
+  stops on a dialog it cannot answer. The hook creates the worktree itself (`git worktree
+  add` — local branch → checkout, `origin/<branch>` → tracking branch, else a new branch
+  from `base_ref`/`HEAD`, and **never a fetch**), prints its absolute path as the first
+  stdout line, then provisions best-effort. **It is not in the plugin manifest and never
+  will be**: a WorktreeCreate hook REPLACES creation, so a bug in it breaks every worktree
+  on the machine, including Claude's own subagent isolation. `on` writes exactly one entry
+  into your own `settings.json` (at the stable engine path, not the versioned plugin
+  cache); `off` removes exactly that entry; a foreign WorktreeCreate entry is a refusal,
+  because two hooks racing to create a worktree and print a path is not a composition.
+  The only non-zero exit is a genuine creation failure — no provisioning step can change
+  the exit code or touch stdout.
+
+### Changed
+- **Hook-health exit code 0 now means INFORMATIONAL.** `file-changed` and
+  `worktree-create` record what they *did*, and `hook_health.nag()` skips code-0 records
+  so a routine config edit can never announce itself at the next session start as
+  "N hook failure(s)". They still appear in the log and in `task-station hook-health` —
+  the full record, not the alarm.
+
 ## [2.26.0] — 2026-08-12
 
 Six changes to `heal`, all of them paid for by measurements on one real task: a scan

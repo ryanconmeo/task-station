@@ -852,13 +852,87 @@ parse their JSON stdin via `lib/hookjson.py` (`<stdin> | python3 hookjson.py <do
 | `UserPromptSubmit` | `on_user_prompt.sh` | Re-point the engine symlink (so bare aliases track an in-session `/plugin update`); **tint instantly when a known skill runs** (`prompt-tint` → escape written to the origin TTY); auto-title the tab `#<seq>: <title>`; inject the compact track-or-fold guidance. |
 | `PostToolUse` (`Write\|Edit\|NotebookEdit`) | `on_post_tool.sh` | Attached session → auto-promote `open → active`; untracked session → a **one-shot** reminder the first time it edits a file (gated by the `edited` marker, ~one injection per session). |
 | `Stop` | `on_stop.sh` | Refuse to end the turn while the session has edited files but tracked no task (`{"decision":"block"}`). Self-healing (attach/create/skip/`/done` clears it) and **capped at two blocks** so a non-complying loop can't wedge the session. Then `lib/stop_steps.py` runs the seven best-effort turn-end steps (nudge, board refresh, obsidian/usage flush, subscriptions, recap, cost HUD) in **one** interpreter — `stop-gate` keeps its own process because the harness reads its stdout for the block contract. |
+| `SessionEnd` | `on_session_end.sh` | The **exact** end-of-session pass (`session-end`): stamp this session's roster row with `ended_ts` + `end_reason`, put one `session-end` event on the attached task's feed, and stop the delegate workers **this** session spawned. Idempotent, always exits 0. |
+| `ConfigChange` (`user_settings\|project_settings\|local_settings`) | `on_config_change.sh` | Before a settings change takes effect, check the **paths it declares** (`config-change`). WARN by default — one hook-health record, exit 0; `config_change_enforce` turns it into a **block** (exit 2). |
+| `FileChanged` (`config.json\|categories.json\|repos.json\|brains.json\|workers.json`) | `on_file_changed.sh` | A station config file changed on disk → drop the attached task's **checker gate** (`file-changed`) so the pointer/drift nags re-evaluate against the new config at the next session start. Prints nothing. |
+
+**Not in the manifest: `WorktreeCreate`** (`hooks/on_worktree_create.sh`, CLI
+`worktree-create`) — installed only on request, into the user's own `settings.json`, by
+`task-station config --worktree-hook on`. That hook **replaces** worktree creation, so it
+ships opt-in; see [Worktree provisioner](#worktree-provisioner-opt-in) below.
 
 The `PostToolUse` + `Stop` pair is the optional enforcement gate; the others are the
 advisory rail. See [README → Commands & components](../README.md#commands--components).
 
+### The four event contracts the newer hooks depend on
+
+Each is a property of Claude Code, not of this plugin, and each shapes the design above:
+
+- **`SessionEnd`** — fires on a clean end; the matcher is *why*
+  (`clear|resume|logout|prompt_input_exit|bypass_permissions_disabled|other`), carried in
+  `session_end_reason` (some builds send `reason`; the hook reads both). It **cannot
+  block**, and **all SessionEnd hooks share a 1.5-second budget** — ours raises the
+  ceiling with a per-hook `"timeout": 10` and still aims to finish in under 2s. It is
+  **not guaranteed on a crash or kill**, which is exactly why the SessionStart orphan
+  sweep stays as the crash backstop (see below).
+- **`ConfigChange`** — fires *before* the change takes effect; the matcher is the source
+  (`user_settings|project_settings|local_settings|policy_settings|skills`).
+  `policy_settings` **cannot be blocked** and is deliberately not wired; `skills` is out
+  of scope. A block (**exit 2**) surfaces **no transcript message at all**, so the
+  hook-health record is written *first* — it is the only trace the user gets.
+- **`FileChanged`** — fires *after* a watched file changes, external editors included,
+  once per file, and **cannot block**. Its matcher is a **literal filename list, not a
+  regex**: letters, digits, `_`, `.` and `|` keep it literal, while a hyphen, space or
+  comma silently flips it to regex parsing and the hook stops matching. It is
+  basename-level, so every project's `config.json` fires it — `cmd_file_changed` filters
+  on the full path being inside `paths.data_dir()`.
+- **`WorktreeCreate`** — **replaces** creation: the hook must create the worktree itself
+  and print its **absolute path as the first stdout line**, and any non-zero exit fails
+  the creation. No matcher.
+
+(`TaskCompleted` is the harness's own task list, not task-station's steps — recorded here
+so nobody re-proposes wiring it.)
+
+### SessionEnd + the orphan sweep
+
+The `SessionEnd` reaper and the `SessionStart` orphan sweep are one pair, and this
+**amends decision 36's W2**, which was taken when SessionEnd could not be relied on:
+
+- **SessionEnd is the exact path.** The session is ending cleanly and knows its own id,
+  so it reaps the workers *it* spawned (`spawner == this session` in the delegate
+  registry) through the same airtight `delegate.reap_task_workers` predicate the close
+  path uses — registry-registered for that seq, `role == worker` in the roster,
+  task-station-named, not busy, not this session.
+- **The SessionStart sweep is the crash backstop, untouched.** SessionEnd does not fire
+  on a crash or a kill, so removing the sweep would drop the only case it exists for.
+
+They are idempotent against each other by construction: the sweep only considers a worker
+whose spawner is *not* live, and a worker the exact pass already reaped is gone from
+`claude agents --json` before the sweep looks.
+
+### Worktree provisioner (opt-in)
+
+`config --worktree-hook on` writes **one** `WorktreeCreate` entry into the user's
+`settings.json`, pointing at the stable engine path
+(`<config>/task-station-engine/../hooks/on_worktree_create.sh` — the `..` must survive
+un-normalised, since `task-station-engine` symlinks to the active `lib/`). `off` removes
+exactly that entry and only the scaffolding the install created; a **foreign**
+`WorktreeCreate` entry is a refusal, because two hooks racing to create a worktree and
+print a path is not a composition. Same consented-installer discipline as the statusline
+and sandbox installers (backup, atomic write, manifest-recorded).
+
+`lib/worktree_hook.py` then does the work: `git worktree add` (local branch → checkout,
+`origin/<branch>` → tracking branch, else a new branch from `base_ref`/`HEAD` — **never a
+fetch**, this module makes no network calls), print the path, then **best-effort**
+provisioning: copy the main checkout's gitignored `.claude/settings.local.json` (the
+worker tool grants a headless worker cannot prompt for) and add the worktree's
+`hasTrustDialogAccepted` entry to `~/.claude.json` via read-modify-write + atomic replace.
+The **only** non-zero exit is a genuine `git worktree add` failure; no provisioning step
+may change the exit code or touch stdout.
+
 **Hook health.** A hook must never fail or slow a session, so every call it makes is
-masked — which used to mean a permanently-broken call was also invisible. All five hooks
-now source `hooks/_ts_lib.sh` and route their maskable calls through `ts_run <label> …`
+masked — which used to mean a permanently-broken call was also invisible. The hooks
+source `hooks/_ts_lib.sh` and route their maskable calls through `ts_run <label> …`
 (stdout discarded) or `ts_capture <label> …` (stdout passed through, for `x=$(…)` sites).
 Both keep the old non-fatal contract — they always return success — but a non-zero exit
 appends one line (`<iso utc>\t<label>\t<exit code>\t<last stderr line>`) to
@@ -868,11 +942,21 @@ the last 24h, and `task-station hook-health [--clear]` is the human view. A few 
 masked on purpose and say so inline — heredoc/TTY writes that can't be an argv command, and
 predicates like `readlink` or `origin-tty.sh` whose non-zero exit is normal control flow.
 
+Two hooks are deliberately **not** fully masked, and each says so inline:
+`on_config_change.sh` (its exit code **is** the contract — only `2` is honoured as a
+block, anything else is recorded and swallowed) and `on_worktree_create.sh` (it `exec`s
+the engine, so stdout and the exit status pass through untouched).
+
 There are two WRITERS for that one log, in the same format and under the same cap:
 `_ts_lib.sh::ts_health_record` for call sites that really are separate processes, and
 `hook_health.record()` for the Stop steps that now run inside `lib/stop_steps.py`. A step
 there that raises is caught, recorded under the SAME label `ts_run` used, and the remaining
 steps still run — the shell's per-step isolation, kept after the calls were merged.
+
+**Exit code 0 is the INFORMATIONAL record.** `file-changed` and `worktree-create` report
+what they *did*, not that they broke. Those lines stay in the log and in
+`task-station hook-health`, and `hook_health.nag()` alone skips them — a line whose whole
+sentence is "N hook failure(s)" must never be triggered by a routine config edit.
 
 ## (c) Resume logic
 

@@ -109,6 +109,41 @@ def tint_enabled():
         return env.strip().lower() in ("on", "1", "true")
     return bool(get("tint", True))
 
+def config_change_enforce():
+    """Whether the ConfigChange hook BLOCKS a save that declares an unresolvable path
+    — default OFF (warn only). The env escape `TASK_STATION_CONFIG_ENFORCE`
+    (on/off/1/0/true/false) WINS over config; else the persisted
+    `config_change_enforce` flag.
+
+    Off by default because a block there is TRANSCRIPT-SILENT: Claude Code surfaces no
+    message for a blocked config change, so the user would see their edit refused with
+    no reason given. In warn mode the change lands and the hook-health record names the
+    bad path at the next session start. In enforce mode the record is still written
+    FIRST, because it is the only trace a block leaves. Mirrors statusline_enabled()."""
+    env = os.environ.get("TASK_STATION_CONFIG_ENFORCE")
+    if env is not None:
+        return env.strip().lower() in ("on", "1", "true")
+    return bool(get("config_change_enforce", False))
+
+
+def worktree_hook_enabled():
+    """Whether the opt-in WorktreeCreate provisioner is installed — default OFF. The
+    env escape `TASK_STATION_WORKTREE_HOOK` (on/off/1/0/true/false) WINS over config;
+    else the persisted `worktree_hook` flag.
+
+    This one is opt-in for a sharper reason than the other installers: the
+    WorktreeCreate hook REPLACES worktree creation, so while it is on, every worktree
+    Claude Code creates on this machine — including its own subagent isolation — goes
+    through our script. That is worth having (a new worktree otherwise starts with no
+    tool grants and no trust entry) and it is not worth having by default. The flag
+    only records intent; `setup.worktree_hook_status()` reports what is actually in
+    settings.json. Mirrors statusline_enabled()."""
+    env = os.environ.get("TASK_STATION_WORKTREE_HOOK")
+    if env is not None:
+        return env.strip().lower() in ("on", "1", "true")
+    return bool(get("worktree_hook", False))
+
+
 def statusline_enabled():
     """False unless explicitly enabled — default OFF (opt-in; writes to the user's
     settings.json). The env escape `TASK_STATION_STATUSLINE` (on/off/1/0/true/false)
@@ -913,6 +948,16 @@ def _hud_summary():
         return "off"
 
 
+def _worktree_hook_summary():
+    """`installed` / `off` — what is actually wired into settings.json for the
+    WorktreeCreate provisioner (lazy import, like the others)."""
+    try:
+        import setup
+        return setup.worktree_hook_status()
+    except Exception:
+        return "off"
+
+
 def _obsidian_sandbox_summary():
     """`on` / `off` — whether the configured vault is in the sandbox write-allowlist
     (lazy import, like the others)."""
@@ -1104,6 +1149,26 @@ def board_rows():
           "Toggle which rows appear with --hud-rows; the eco column with --hud-eco.",
           "Current: %s" % _hud_summary()],
          "/task-station:config --hud on | off"),
+        ("--worktree-hook", _worktree_hook_summary(), "on · off",
+         "Provision every worktree Claude Code creates — copy .claude/settings.local.json from the main checkout + add the trust entry (default: off)",
+         ["Writes ONE WorktreeCreate entry into your settings.json, pointing at the",
+          "stable engine path; off removes exactly that entry and nothing else.",
+          "The hook REPLACES worktree creation while it is on: our script runs",
+          "`git worktree add` itself and prints the path back. That is why it is",
+          "opt-in — and why `--worktree-hook off` is the one-command reverse if the",
+          "plugin is ever removed while the entry is still installed.",
+          "Provisioning is best-effort and can never fail a creation."],
+         "/task-station:config --worktree-hook on | off"),
+        ("--config-change-enforce", "on" if config_change_enforce() else "off", "on · off",
+         "BLOCK a settings.json save that declares a path which no longer exists, instead of only warning (default: off)",
+         ["Off (default): the change lands and one hook-health record names the bad",
+          "  path, so the next session start tells you about it.",
+          "On: the save is refused (exit 2). Claude Code shows NO message for a blocked",
+          "  config change, so the hook-health record is the only trace — which is why",
+          "  it is written before the block, and why this is off by default.",
+          "Never blocks on a file we cannot parse, and never on a relative path,",
+          "a $VAR, a glob, or a bare command name. TASK_STATION_CONFIG_ENFORCE overrides."],
+         "/task-station:config --config-change-enforce on | off"),
         ("--hud-rows", ",".join(hud_rows()), None,
          "Which cost-HUD rows show, in order (default: task,session,fivehour,week,total)",
          ["Comma-separated subset of: task · session · fivehour · week · total.",
@@ -1575,6 +1640,7 @@ RESET_KEYS = [
     "tint", "title", "guaranteed_tracking", "auto_checkpoint", "checkpoint_at",
     "checkpoint_pct", "context_window", "checkpoint_milestone_edits",
     "statusline", "hud", "hud_rows", "hud_eco", "ultracode_hints",
+    "config_change_enforce", "worktree_hook",
     "notify", "notify_webhook", "delegate_bypass_permissions",
     "reap_workers_on_done",
     "obsidian_vault", "obsidian_daily_note", "obsidian_daily_heading",
@@ -1662,6 +1728,9 @@ def cmd_reset(token):
     if setup.hud_status() != "off":
         leftovers.append(("cost-HUD host/provider in settings.json + statusline.d/",
                           "--hud off"))
+    if setup.worktree_hook_status() != "off":
+        leftovers.append(("WorktreeCreate provisioner entry in settings.json",
+                          "--worktree-hook off"))
     if "policy" in setup._manifest():
         leftovers.append(("delegation-rules block in CLAUDE.md", "--strict-delegation off"))
     if setup.sandbox_allowwrite_status():
@@ -2021,6 +2090,21 @@ def cmd_config(a):
         print("hud_eco = %s" % ("on" if get("hud_eco") else "off")); return
     if getattr(a, "hud_eco_get", False):
         print("on" if hud_eco_enabled() else "off"); return
+    if getattr(a, "worktree_hook_get", False):
+        print("on" if worktree_hook_enabled() else "off"); return
+    if getattr(a, "worktree_hook", None) is not None:
+        # The persisted flag records INTENT; the installer does the reversible write
+        # into the user's settings.json and prints exactly what it wrote/removed —
+        # the statusline installer's contract, applied to a riskier hook.
+        on = a.worktree_hook == "on"
+        set("worktree_hook", on)
+        print(setup.install_worktree_hook() if on else setup.remove_worktree_hook()); return
+    if getattr(a, "config_change_enforce", None) is not None:
+        set("config_change_enforce", a.config_change_enforce == "on")
+        print("config_change_enforce = %s"
+              % ("on" if get("config_change_enforce") else "off")); return
+    if getattr(a, "config_change_enforce_get", False):
+        print("on" if config_change_enforce() else "off"); return
     # No flags: the single unified settings + status board. The status facts are
     # folded into render_board() now, so we no longer print setup.status() here
     # (setup.status() is unchanged and still used by the install flow).

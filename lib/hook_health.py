@@ -125,8 +125,15 @@ def nag(now=None, path=None, stamp=None):
     Capped two ways so it cannot spam: only the last RECENT_WINDOW counts, and a
     stamp records the newest failure already reported — the nag returns None until
     a NEWER one lands (or `clear()` resets it). Naming the stamp as a side effect
-    of rendering mirrors how the delta brief advances its watermark."""
-    hits = recent(now=now, path=path)
+    of rendering mirrors how the delta brief advances its watermark.
+
+    CODE 0 RECORDS ARE SKIPPED, and only here. An exit code of zero is not a
+    failure, so the informational records (the FileChanged trigger, the
+    WorktreeCreate provisioner) must not be counted by a line whose whole sentence
+    is "N hook failure(s)" — that is the cry-wolf failure this file exists to avoid.
+    They stay in the log and still render in `task-station hook-health`, which is
+    the full record rather than the alarm."""
+    hits = [e for e in recent(now=now, path=path) if e["code"] != 0]
     if not hits:
         return None
     newest = max(e["ts"] for e in hits)
@@ -169,7 +176,12 @@ def record(label, code, detail="", path=None, now=None):
     fail-open contract — this function never raises, because its callers are hooks.
 
     Tabs and CRs in `detail` become spaces so a stderr line can never forge a field,
-    and only its last non-blank line is kept: one failure is always exactly one line."""
+    and only its last non-blank line is kept: one failure is always exactly one line.
+
+    `code=0` is the INFORMATIONAL record — a hook reporting what it did rather than
+    that it broke (the FileChanged trigger, the WorktreeCreate provisioner). It is
+    stored and listed like any other, and `nag()` alone ignores it, so a routine
+    config edit can never announce itself as a hook failure."""
     path = path or log_path()
     try:
         code = int(code)

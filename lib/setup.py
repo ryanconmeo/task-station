@@ -627,6 +627,161 @@ def hud_status(path=None):
     return "provider-only"
 
 
+# ------------------------------------ WorktreeCreate provisioner (opt-in) ----
+#
+# `config --worktree-hook on` writes ONE `WorktreeCreate` entry into the user's own
+# settings.json. Same consented-installer discipline as the statusline/sandbox pair
+# above — back up first, atomic read-merge-write, create only the structure we need,
+# record exactly what we created so the reverse is precise, and NEVER touch a foreign
+# entry — but with two rules the others don't need:
+#
+#   * A PLUGIN CANNOT SHIP THIS. The hook REPLACES worktree creation, so a bug in it
+#     breaks every worktree Claude Code makes on the machine, including its own
+#     subagent isolation. Shipping it in hooks/hooks.json would install it for
+#     everyone who installs the plugin; it belongs behind a deliberate opt-in.
+#   * A FOREIGN WorktreeCreate ENTRY IS A REFUSAL, not something to sit beside. Two
+#     hooks that both create the worktree and both print a path is not a composition,
+#     it is a race — so if someone else already owns the event, we install nothing and
+#     say so.
+#
+# The command points at the STABLE engine path (`<config>/task-station-engine/../
+# hooks/on_worktree_create.sh`), not the versioned plugin-cache dir, so a
+# `/plugin update` doesn't leave settings.json pointing at a directory that no longer
+# exists. `task-station-engine` is a symlink to the active `lib/`, so `..` from it is
+# the plugin root — which is why the `..` must survive into the written string and
+# must not be normalised away.
+
+WORKTREE_HOOK_MARKER = "# task-station-managed:worktree-create"
+WORKTREE_HOOK_MANIFEST_KEY = "worktree_hook"
+SETTINGS_BACKUP_WORKTREE = ".bak-worktree-hook"
+
+
+def worktree_hook_script():
+    """The stable path to `hooks/on_worktree_create.sh`, via the `task-station-engine`
+    symlink (refreshed every SessionStart → survives `/plugin update`). The literal
+    `..` is deliberate and must NOT be normalised: the symlink points at `lib/`, so
+    the parent of the symlink target is the plugin root."""
+    return os.path.join(_config_dir(), "task-station-engine", "..",
+                        "hooks", "on_worktree_create.sh")
+
+
+def worktree_hook_command():
+    return 'bash "%s"  %s' % (worktree_hook_script(), WORKTREE_HOOK_MARKER)
+
+
+def _worktree_entries(data):
+    """The `hooks.WorktreeCreate` list in a settings dict, or []."""
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return []
+    entries = hooks.get("WorktreeCreate")
+    return entries if isinstance(entries, list) else []
+
+
+def _is_ours(entry):
+    """True when a WorktreeCreate entry carries OUR marker — the only entries this
+    installer is ever allowed to touch."""
+    if not isinstance(entry, dict):
+        return False
+    for h in (entry.get("hooks") or []):
+        if isinstance(h, dict) and WORKTREE_HOOK_MARKER in str(h.get("command") or ""):
+            return True
+    return False
+
+
+def install_worktree_hook(path=None):
+    """Opt-in install of the WorktreeCreate provisioner. Idempotent (a second `on` is
+    a no-op), refuses to sit beside a foreign entry, and backs settings.json up before
+    any modification. Returns the human message — including the reverse command, which
+    for this hook is also the emergency stop."""
+    path = path or settings_path()
+    data = _read_settings(path)
+    entries = _worktree_entries(data)
+    if any(_is_ours(e) for e in entries):
+        return ("task-station already provisions new worktrees — %s left unchanged.\n"
+                "  entry → %s\n"
+                "Reverse: task-station config --worktree-hook off." % (path, worktree_hook_command()))
+    if entries:
+        return ("Another WorktreeCreate hook already owns worktree creation in %s — "
+                "left untouched, nothing installed. A WorktreeCreate hook REPLACES the "
+                "creation, so two of them would race to create and to print a path. "
+                "Remove the other entry first if you want task-station to provision."
+                % path)
+    _backup_settings_worktree(path)
+    created = []
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        hooks = {}
+        data["hooks"] = hooks
+        created.append("hooks")
+    hooks["WorktreeCreate"] = [
+        {"hooks": [{"type": "command", "command": worktree_hook_command()}]}]
+    created.append("WorktreeCreate")
+    _write_settings(path, data)
+    m = _manifest()
+    m[WORKTREE_HOOK_MANIFEST_KEY] = {"created": created}
+    _save_manifest(m)
+    return ("Installed the task-station worktree provisioner into %s\n"
+            "  WorktreeCreate → %s\n"
+            "New worktrees now get the main checkout's .claude/settings.local.json "
+            "and a trust entry in ~/.claude.json.\n"
+            "This hook CREATES the worktree itself — if the plugin is ever removed "
+            "while it is installed, worktree creation fails until you run the reverse.\n"
+            "Reverse: task-station config --worktree-hook off." % (path, worktree_hook_command()))
+
+
+def remove_worktree_hook(path=None):
+    """Reversible removal: drop ONLY our marked entry, then tear down only the empty
+    scaffolding WE created. A foreign WorktreeCreate entry, and every other key in
+    settings.json, is left exactly as it was."""
+    path = path or settings_path()
+    if not os.path.exists(path):
+        m = _manifest()
+        if m.pop(WORKTREE_HOOK_MANIFEST_KEY, None) is not None:
+            _save_manifest(m)
+            return "settings.json is gone — cleared the worktree-hook manifest entry."
+        return "task-station worktree provisioner not installed — nothing to remove."
+    data = _read_settings(path)
+    entries = _worktree_entries(data)
+    ours = [e for e in entries if _is_ours(e)]
+    if not ours:
+        m = _manifest()
+        if m.pop(WORKTREE_HOOK_MANIFEST_KEY, None) is not None:
+            _save_manifest(m)
+        return "task-station worktree provisioner not installed — nothing to remove."
+    _backup_settings_worktree(path)
+    created = (_manifest().get(WORKTREE_HOOK_MANIFEST_KEY) or {}).get("created", [])
+    kept = [e for e in entries if not _is_ours(e)]
+    hooks = data.get("hooks")
+    if kept:
+        hooks["WorktreeCreate"] = kept
+    elif "WorktreeCreate" in created:
+        del hooks["WorktreeCreate"]
+    else:
+        hooks["WorktreeCreate"] = []      # the list predates us — leave it, emptied
+    if "hooks" in created and data.get("hooks") == {}:
+        del data["hooks"]
+    _write_settings(path, data)
+    m = _manifest()
+    m.pop(WORKTREE_HOOK_MANIFEST_KEY, None)
+    _save_manifest(m)
+    return ("Removed the task-station worktree provisioner from %s. Claude Code "
+            "creates worktrees natively again." % path)
+
+
+def worktree_hook_status(path=None):
+    """'installed' / 'off' — read from settings.json itself, never from the flag. The
+    config flag records intent; this reports what is actually wired."""
+    path = path or settings_path()
+    data = _read_settings(path)
+    return "installed" if any(_is_ours(e) for e in _worktree_entries(data)) else "off"
+
+
+def _backup_settings_worktree(path):
+    if os.path.exists(path):
+        shutil.copyfile(path, path + SETTINGS_BACKUP_WORKTREE)
+
+
 # ------------------------------------- Obsidian sandbox allowWrite (Fix A) ----
 #
 # Opt-in widening of Claude Code's BASH-tool sandbox so an Obsidian vault under a
