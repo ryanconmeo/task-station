@@ -829,6 +829,61 @@ def heal_goal_review_due():
                             "heal_goal_review_due", 25)
 
 
+# -- the prompt rail's two nudges (lib/board/nudges.py) -------------------------
+#
+# Both default ON, and that is a different call from the checker's thresholds above. These
+# are not tuning numbers, they are whether a signal that already exists is allowed to
+# arrive while the session can still act on it — a heal that came due mid-flight, a digest
+# going stale. Each is ONE line, capped at once per (task, session), and silent on a
+# healthy task, so ON costs a healthy prompt nothing. The off switches exist because a
+# per-prompt rail is the one place a user must be able to shut up completely.
+#
+# The two counts are POSITIVE-ONLY on the same reasoning as the checker's: a zero
+# `save_nudge_decisions` would nudge every attached task on every prompt, and a tunable
+# whose extreme value breaks the feature is a footgun the cheap fix is to not accept.
+
+def heal_prompt_nag_enabled():
+    """Whether the UserPromptSubmit rail names a heal that has come DUE on the attached
+    task — default ON. One line, at most once per (task, session), re-armed only when the
+    DUE REASON changes; silent on a task that is not due. The env escape
+    `TASK_STATION_HEAL_PROMPT_NAG` (on/off/1/0/true/false) WINS over config.
+
+    Independent of the SessionStart nag (`heal.nag`), which is not gated by this and stays
+    on: turning this off gives up the mid-session report, not the inherited-state one."""
+    env = os.environ.get("TASK_STATION_HEAL_PROMPT_NAG")
+    if env is not None:
+        return env.strip().lower() in ("on", "1", "true")
+    v = get("heal_prompt_nag")
+    return True if v is None else bool(v)
+
+
+def save_nudge_enabled():
+    """Whether the UserPromptSubmit rail says the attached task's checkpoint is going
+    stale — default ON. One line, at most once per (task, session). A task nobody has ever
+    checkpointed is NEVER nudged (a new task is not stale). The env escape
+    `TASK_STATION_SAVE_NUDGE` (on/off/1/0/true/false) WINS over config."""
+    env = os.environ.get("TASK_STATION_SAVE_NUDGE")
+    if env is not None:
+        return env.strip().lower() in ("on", "1", "true")
+    v = get("save_nudge")
+    return True if v is None else bool(v)
+
+
+def save_nudge_decisions():
+    """Decisions + dated log entries that may land after a full checkpoint before the
+    digest reads stale. Default 6; `TASK_STATION_SAVE_NUDGE_DECISIONS` overrides."""
+    return _positive_number("TASK_STATION_SAVE_NUDGE_DECISIONS",
+                            "save_nudge_decisions", 6)
+
+
+def save_nudge_hours():
+    """Hours that may pass after a full checkpoint before the digest reads stale — and
+    only ever WITH at least one decision since, so the clock alone never nudges. Default
+    12; `TASK_STATION_SAVE_NUDGE_HOURS` overrides."""
+    return _positive_number("TASK_STATION_SAVE_NUDGE_HOURS",
+                            "save_nudge_hours", 12)
+
+
 def enabled_categories():
     """The configured active-category key list, or None when unconfigured
     (categories.enabled_keys() then defaults to CORE — the lean default)."""
@@ -1095,6 +1150,30 @@ def board_rows():
         ("--checkpoint-milestone-edits", str(checkpoint_milestone_edits()) if checkpoint_milestone_edits() else "off", "<count>",
          "with --auto-checkpoint on: fire the light staleness nudge only after this many meaningful events (file edits / status promotions) since the last digest refresh (default 5; 0/off = nudge on any staleness)", None,
          "/task-station:config --checkpoint-milestone-edits <count> | off"),
+        ("--heal-prompt-nag", "on" if heal_prompt_nag_enabled() else "off", "on · off",
+         "Name a heal that comes DUE while you are working, on the prompt rail rather than "
+         "waiting for the next session start (default: on)",
+         ["One line, at most once per task per session, re-armed only when the DUE REASON "
+          "changes — and silent on a task that isn't due.",
+          "off — the mid-session report stops; the SessionStart nag and the /todo save "
+          "gate still report a due heal."],
+         None),
+        ("--save-nudge", "on" if save_nudge_enabled() else "off", "on · off",
+         "Say when the attached task's checkpoint is going stale, on the prompt rail — "
+         "before you have to think to run /todo save (default: on)",
+         ["Fires on volume (--save-nudge-decisions) or on age WITH work to show for it "
+          "(--save-nudge-hours). One line, once per task per session.",
+          "A task nobody has ever checkpointed is NEVER nudged — a new task is not stale."],
+         None),
+        ("--save-nudge-decisions", str(save_nudge_decisions()), "<count>",
+         "with --save-nudge on: decisions + log entries that may land after a full "
+         "checkpoint before the digest reads stale (default 6)", None,
+         "/task-station:config --save-nudge-decisions <count>"),
+        ("--save-nudge-hours", str(save_nudge_hours()), "<hours>",
+         "with --save-nudge on: hours that may pass after a full checkpoint before the "
+         "digest reads stale — and only ever with at least one decision since, so the "
+         "clock alone never nudges (default 12)", None,
+         "/task-station:config --save-nudge-hours <hours>"),
         ("--ultracode-hints", "on" if ultracode_hints_enabled() else "off", "on · off",
          "Suggest multi-agent breadth on big research/review/data tasks (default: on)", None, None),
         ("--notify", "on" if notify_enabled() else "off", "on · off",
@@ -1662,6 +1741,10 @@ RESET_KEYS = [
     # heal's goal-review threshold, popped for the same reason: a hand-tuned window left
     # behind by a reset would keep making heals due on a station the user just cleared.
     "heal_goal_review_due",
+    # The prompt rail's two nudges + their thresholds. Popped like everything else: a
+    # station reset that left `save_nudge` off behind would leave the user with a signal
+    # they had silenced and no longer remembered silencing.
+    "heal_prompt_nag", "save_nudge", "save_nudge_decisions", "save_nudge_hours",
 ]
 
 
@@ -1901,6 +1984,32 @@ def cmd_config(a):
     if getattr(a, "checkpoint_milestone_edits_get", False):
         n = checkpoint_milestone_edits()
         print("off" if n == 0 else str(n)); return
+    if getattr(a, "heal_prompt_nag", None) is not None:
+        set("heal_prompt_nag", a.heal_prompt_nag == "on")
+        print("heal_prompt_nag = %s" % ("on" if get("heal_prompt_nag") else "off")); return
+    if getattr(a, "heal_prompt_nag_get", False):
+        print("on" if heal_prompt_nag_enabled() else "off"); return
+    if getattr(a, "save_nudge", None) is not None:
+        set("save_nudge", a.save_nudge == "on")
+        print("save_nudge = %s" % ("on" if get("save_nudge") else "off")); return
+    if getattr(a, "save_nudge_get", False):
+        print("on" if save_nudge_enabled() else "off"); return
+    if getattr(a, "save_nudge_decisions", None) is not None:
+        try:
+            set("save_nudge_decisions", max(1, int(str(a.save_nudge_decisions).strip())))
+        except ValueError:
+            print("save_nudge_decisions: expected a positive count"); return
+        print("save_nudge_decisions = %s" % save_nudge_decisions()); return
+    if getattr(a, "save_nudge_decisions_get", False):
+        print(str(save_nudge_decisions())); return
+    if getattr(a, "save_nudge_hours", None) is not None:
+        try:
+            set("save_nudge_hours", max(1, int(str(a.save_nudge_hours).strip())))
+        except ValueError:
+            print("save_nudge_hours: expected a positive hour count"); return
+        print("save_nudge_hours = %s" % save_nudge_hours()); return
+    if getattr(a, "save_nudge_hours_get", False):
+        print(str(save_nudge_hours())); return
     if getattr(a, "ultracode_hints", None) is not None:
         set("ultracode_hints", a.ultracode_hints == "on")
         print("ultracode_hints = %s" % ("on" if get("ultracode_hints") else "off")); return

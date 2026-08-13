@@ -17,6 +17,8 @@ import decisions as _dec
 import save as _save
 import steps as _steps
 
+from board import nudges as _nudges
+
 g, set_g = _shared.g, _shared.set_g
 
 __all__ = [
@@ -1014,6 +1016,33 @@ def cmd_prompt_context(a):
         # watermark-cleared (mark_seen doesn't touch them; only `memo ack` does).
         if pending:
             print(pending)
+        # THE TWO RECORD ADVISORIES, in the same rail as the memo nag above and gated the
+        # same way it is: ONE line each, at most once per (task, session), silent on a
+        # healthy task. They are here rather than only at SessionStart because a long
+        # working session is the thing that MAKES its own task heal-due and its checkpoint
+        # stale — by the time either is true the session-start rail has long since run, and
+        # the next surface that would say so is the `save` gate, which this session reaches
+        # only if it already decided to checkpoint. See lib/board/nudges.py.
+        #
+        # HEAL FIRST, SAVE SECOND, which is the order the save gate itself argues for: a
+        # summary written from an unreconciled decision set bakes the drift into the first
+        # field anyone reads, so if both fire, the reconcile is the one to do first.
+        #
+        # Each wrapped separately so one failing advisory cannot silence the other, and
+        # both fail open twice over (here and inside) — a prompt that failed to submit is
+        # strictly worse than an unreported stale digest.
+        try:
+            heal_nudge = _nudges.heal_line(task, a.session)
+        except Exception:
+            heal_nudge = None
+        if heal_nudge:
+            print(heal_nudge)
+        try:
+            save_nudge = _nudges.save_line(task, a.session)
+        except Exception:
+            save_nudge = None
+        if save_nudge:
+            print(save_nudge)
         # Glossary auto-injection: when the attached task carries a canonical
         # vocabulary, append it so every session reuses the same terms. Gated —
         # emits nothing when the glossary is empty, so the per-prompt cost is zero

@@ -2909,7 +2909,10 @@ def due(task, result=None, now=None):
     made the one signal built to be trusted read like a permanent false alarm. So a
     never-healed task says exactly that instead.
 
-    Reasons are returned even when not due, so callers can report the near-misses."""
+    Reasons are returned even when not due, so callers can report the near-misses.
+
+    FOUR OF THE FIVE LIMBS NEED NO SCAN — see `cheap_limbs`, which is the same code and
+    the same wording, reached without one."""
     now = time.time() if now is None else now
     result = result if result is not None else scan(task, now=now)
     h = result.get("health") or {}
@@ -2917,24 +2920,59 @@ def due(task, result=None, now=None):
     n = len(result.get("findings") or [])
     if n:
         reasons.append("the scan found %d issue(s)" % n)
+    # Both inputs come off the SCAN RESULT rather than being recomputed: the ack count
+    # from its findings (so an ack a reconciler adjudicated away stays silenced by the
+    # dismissal ledger), and `goal_review` from the section scan already built. Reading
+    # them back is also what keeps a caller-supplied `result` authoritative — this
+    # function's contract has always been that a passed-in result IS the scan.
+    reasons.extend(text for _limb, text in _blob_limbs(
+        task, h, counts(result).get("ack-undispositioned", 0),
+        result.get("goal_review") or {}, now))
+    return bool(reasons), reasons
+
+
+# The four limbs above that a caller can evaluate WITHOUT a scan, tagged so a caller can
+# fingerprint the LIMB rather than its count. That distinction is the whole self-cap
+# design, and `checker.drift_signature` learned it first: every one of these reasons
+# carries a number that moves on its own (a decision lands, a day passes), so hashing the
+# WORDED reason would re-arm the throttle on every prompt and the nudge built to fire once
+# would fire forever.
+LIMB_NEW_DECISIONS = "new-decisions"   # decisions the last heal has never seen
+LIMB_ACKS = "acks"                     # an ack carrying no disposition
+LIMB_GOAL_REVIEW = "goal-review"       # decisions since the goal line was last read
+LIMB_AGE = "age"                       # days without a heal on an ACTIVE task
+
+
+def _blob_limbs(task, h, acks, g, now):
+    """`[(limb, reason), …]` for the four limbs that are pure BLOB READS — no scan, no
+    filesystem, no git.
+
+    Every input is PASSED IN — `h` a `health()` dict, `acks` the post-dismissal
+    undispositioned-ack count, `g` a `goal_review()` dict — so the caller decides how it
+    got them. `due` reads all three off its scan result (a caller-supplied result stays
+    authoritative, which is that function's long-standing contract) and `cheap_limbs`
+    computes them straight off the blob. Neither can word a reason differently from the
+    other, which is the whole reason this is one function."""
+    out = []
     if h.get("never_healed"):
         total = h.get("decisions_total") or 0
         if total >= DUE_NEW_DECISIONS:
-            reasons.append("no heal has ever been recorded, and %d decision(s) are on "
-                           "the log" % total)
+            out.append((LIMB_NEW_DECISIONS,
+                        "no heal has ever been recorded, and %d decision(s) are on "
+                        "the log" % total))
     else:
         new = h.get("new_since_heal") or 0
         if new >= DUE_NEW_DECISIONS:
-            reasons.append("%d new decision(s) since the last heal" % new)
-    acks = counts(result).get("ack-undispositioned", 0)
+            out.append((LIMB_NEW_DECISIONS,
+                        "%d new decision(s) since the last heal" % new))
     if acks:
-        reasons.append("%d ack(s) carry no disposition" % acks)
-    g = result.get("goal_review") or {}
-    if g.get("review_known"):
+        out.append((LIMB_ACKS, "%d ack(s) carry no disposition" % acks))
+    if (g or {}).get("review_known"):
         stale = g.get("since_review") or 0
         threshold = goal_review_due()
         if stale >= threshold:
-            reasons.append("%d decision(s) since the goal line was last reviewed" % stale)
+            out.append((LIMB_GOAL_REVIEW,
+                        "%d decision(s) since the goal line was last reviewed" % stale))
     if task.get("status") == "active":
         since = h.get("since_heal")
         if since is None:
@@ -2950,9 +2988,35 @@ def due(task, result=None, now=None):
         else:
             healed = True
         if since > DUE_AGE:
-            reasons.append("%d days since the %s on an active task"
-                           % (int(since // 86400), "last heal" if healed else "task was created"))
-    return bool(reasons), reasons
+            out.append((LIMB_AGE, "%d days since the %s on an active task"
+                        % (int(since // 86400),
+                           "last heal" if healed else "task was created")))
+    return out
+
+
+def cheap_limbs(task, now=None):
+    """`[(limb, reason), …]` — every due limb that can be evaluated from the task BLOB
+    alone, in `due`'s order and `due`'s exact wording.
+
+    WHY THIS EXISTS SEPARATELY FROM `due`. `due` runs `scan`, which is cheap enough for a
+    SESSION START (no git, no network — see `scan`) but is eleven checks over every
+    decision, memo and step plus a `stat` per declared path. The UserPromptSubmit rail
+    fires on EVERY prompt, so it needs the same verdict at blob-read cost. What it gives
+    up is exactly one limb — "the scan found N issue(s)" — and it never claims otherwise:
+    a caller here reports the limbs it actually measured.
+
+    The dismissal ledger is applied, so an ack a reconciler adjudicated away stays
+    silent here just as it does in the full pass."""
+    now = time.time() if now is None else now
+    kept, _dismissed = apply_dismissals(undispositioned_acks(task), task)
+    return _blob_limbs(task, health(task, now=now), len(kept),
+                       goal_review(task, now=now), now)
+
+
+def due_cheap(task, now=None):
+    """`(is_due, [reasons])` from `cheap_limbs` — `due`'s shape, without the scan."""
+    limbs = cheap_limbs(task, now=now)
+    return bool(limbs), [text for _limb, text in limbs]
 
 
 def _signature(reasons):
@@ -2992,19 +3056,52 @@ def nag(task, now=None, persist=True):
             % (seq, "; ".join(reasons), h.get("decisions_current", 0), h.get("chars", 0)))
 
 
-def gate_line(task, now=None):
+def gate_line(task, now=None, result=None):
     """The one-line "heal first" warning for the `save` and `done` gates, or None.
 
     Reads the SAME `due` logic as the nag but is NOT self-capping and NEVER persists:
     these gates fire at a decision point (you are about to overwrite the summary, or
     close the task), so they must warn every time. Neither gate blocks, and neither
-    runs the heal."""
+    runs the heal.
+
+    `result` lets a caller that ALREADY holds a scan hand it over instead of paying for a
+    second one. The save gate does exactly that, because it also wants to NAME the first
+    finding (`first_finding_line`) and running the corpus twice to print one extra clause
+    would be the expensive way to say the same thing."""
     if not task:
         return None
-    is_due, reasons = due(task, now=now)
+    is_due, reasons = due(task, result=result, now=now)
     if not is_due:
         return None
     return "heal first — %s. `/todo heal` is a dry run by default." % "; ".join(reasons)
+
+
+FINDING_PREVIEW_CHARS = 110    # enough to recognise WHICH finding, not to reprint its fix
+
+
+def first_finding_line(result, limit=FINDING_PREVIEW_CHARS):
+    """The worst finding as ONE short `<ref> — <detail>` line, or None when the scan found
+    nothing.
+
+    WHY THE SAVE GATE NAMES ONE. "the scan found 3 issue(s)" tells a reader that something
+    fired and nothing about what, so the only way to learn whether it matters was to go
+    run the scan — at the exact moment they had decided to checkpoint instead. One named
+    finding turns that into a judgement they can make in place.
+
+    WORST = FIRST, and it is already sorted: `scan` orders findings by `CHECK_ORDER`, so
+    `findings[0]` is the highest-priority check that fired rather than an arbitrary pick.
+    Naming one and counting the rest is `checker`'s `NAG_ITEMS` reasoning at N=1 — the
+    gate line is a clause inside a bigger block here, not a report of its own.
+
+    The detail is CUT, never summarised: a finding's detail ends with the flag that fixes
+    it, which is a command a truncated line must not pretend to be complete."""
+    findings = (result or {}).get("findings") or []
+    if not findings:
+        return None
+    f = findings[0]
+    line = "%s — %s" % (f.get("ref") or "?", f.get("detail") or "")
+    flat = " ".join(line.split())
+    return (flat[:limit - 1] + "…") if len(flat) > limit else flat
 
 
 # -- the backup ------------------------------------------------------------------

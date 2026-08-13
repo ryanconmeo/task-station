@@ -338,13 +338,23 @@ def _todo_save(a, rest):
     # decision set that still contains refuted entries bakes the drift into the very
     # first field anyone reads. One line, and it does NOT block and does NOT run the
     # heal — this is a warning at a decision point, not a gate. Fail-open.
+    #
+    # THE SCAN IS RUN ONCE HERE AND HANDED TO BOTH READERS. `gate_line` would run its own
+    # otherwise, and the gate's leading clause is "the scan found N issue(s)" — a count
+    # with no subject, which left the only way to learn whether it mattered being to go
+    # run the scan again, at the moment the reader had decided to checkpoint instead. So
+    # the first finding is NAMED in parentheses off the same result: no second corpus
+    # pass, one extra clause, and the judgement can be made in place.
     try:
-        gate = _heal.gate_line(task)
+        result = _heal.scan(task)
+        gate = _heal.gate_line(task, result=result)
+        named = _heal.first_finding_line(result) if gate else None
     except Exception:
-        gate = None
+        gate = named = None
     if gate:
-        out.append("[task-station] %s The summary you are about to REPLACE would be "
-                   "written from a decision set that has not been reconciled." % gate)
+        out.append("[task-station] %s%s The summary you are about to REPLACE would be "
+                   "written from a decision set that has not been reconciled."
+                   % (gate, (" (first: %s)" % named) if named else ""))
     out.append("")
     # THE GAP REPORT REPLACED THE DIGEST DUMP. See `_todo_save`'s docstring for the
     # measurement; the short version is that echoing the digest back to the session that
@@ -1148,6 +1158,31 @@ def _add_config_args(sp):
                          "this many meaningful events (edits / promotions) since the last digest "
                          "refresh (default 5; 0/off = nudge on any staleness)")
     sp.add_argument("--checkpoint-milestone-edits-get", dest="checkpoint_milestone_edits_get",
+                    action="store_true")
+    sp.add_argument("--heal-prompt-nag", dest="heal_prompt_nag", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="name a heal that comes DUE mid-session on the prompt rail, once "
+                         "per task per session, instead of waiting for the next session "
+                         "start (default on)")
+    sp.add_argument("--heal-prompt-nag-get", dest="heal_prompt_nag_get", action="store_true")
+    sp.add_argument("--save-nudge", dest="save_nudge", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="say when the attached task's checkpoint is going stale, on the "
+                         "prompt rail, once per task per session; a never-checkpointed "
+                         "task is never nudged (default on)")
+    sp.add_argument("--save-nudge-get", dest="save_nudge_get", action="store_true")
+    sp.add_argument("--save-nudge-decisions", dest="save_nudge_decisions", nargs="?",
+                    default=None, metavar="COUNT",
+                    help="with --save-nudge on: decisions + log entries that may land "
+                         "after a full checkpoint before the digest reads stale (default 6)")
+    sp.add_argument("--save-nudge-decisions-get", dest="save_nudge_decisions_get",
+                    action="store_true")
+    sp.add_argument("--save-nudge-hours", dest="save_nudge_hours", nargs="?",
+                    default=None, metavar="HOURS",
+                    help="with --save-nudge on: hours that may pass after a full checkpoint "
+                         "before the digest reads stale, and only ever with >= 1 decision "
+                         "since (default 12)")
+    sp.add_argument("--save-nudge-hours-get", dest="save_nudge_hours_get",
                     action="store_true")
     sp.add_argument("--desktop-bridge", dest="desktop_bridge", nargs="?",
                     choices=["on", "off"], const="on", default=None,
