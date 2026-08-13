@@ -1,16 +1,17 @@
 """brain.references — reference records (the task↔knowledge wire).
 
 PROVENANCE: ported from the source's ``tests/test_references.py`` @ 0.14.0. Eleven
-of its 14 cases are here 1:1; the three in ``SearchHintTest`` call
-``brain.reference_hints`` — the search CLI, which lands in chunk 3 — so that class
-is DEFERRED and named in the chunk-2 handoff (the source's module-level
-``import brain`` went with it). Rewrites: module ``note_io`` -> ``brain.notes``,
-``references`` -> ``brain.references``; the ``org_label`` fixture and the five
-fixture-slug lines carrying an org word are neutral here.
+of its 14 cases landed here in chunk 2; the three in ``SearchHintTest`` call
+``reference_hints`` — the search CLI — and were APPENDED in chunk 4c with
+``brain.search`` (the source's module-level ``import brain`` came with them).
+Rewrites: module ``note_io`` -> ``brain.notes``, ``references`` ->
+``brain.references``, ``brain`` -> ``brain.search``; the ``org_label`` fixture and
+the five fixture-slug lines carrying an org word are neutral here.
 
 Covers: ref add stub shape + one-line body; idempotent re-fetch (task appended,
 org_rev/fetched bumped); ref list in both directions (--task / --node); dirty
-detection against a fixture org-brain clone whose HEAD moved; and refresh.
+detection against a fixture org-brain clone whose HEAD moved; refresh; and the
+search hint that fires only for an org hit in a task-attached session.
 """
 import subprocess
 import unittest
@@ -19,6 +20,7 @@ from tests.brain.base import BrainTestCase
 
 import brain.notes as notes
 import brain.references as references
+import brain.search as search
 
 
 class RefFixtureMixin(BrainTestCase):
@@ -185,6 +187,34 @@ class RefRefreshTest(RefFixtureMixin):
     def test_refresh_missing_stub_raises(self):
         with self.assertRaises(notes.NoteIOError):
             references.ref_refresh(self.cfg, "no-such-node", today="2026-07-24")
+
+
+# --------------------------------------------------------------------------- #
+# APPENDED in chunk 4c with brain.search — the OTHER end of the same wire: the
+# nudge that tells a task-attached session to record the reference it just read.
+# In-process (a pure function taking an explicit cfg); no subprocess needed.
+# --------------------------------------------------------------------------- #
+class SearchHintTest(BrainTestCase):
+    def setUp(self):
+        super().setUp()
+        self.vault = self.make_vault(self.home / "vault")
+        (self.vault / "org_brain").mkdir(parents=True, exist_ok=True)
+        self.hit = (str(self.vault / "org_brain" / "org-node.md"), 3, "an org fact")
+
+    def test_hint_fires_for_org_hit_when_task_attached(self):
+        cfg = {"vault": self.vault, "task": "task-station:42", "org_label": "org brain"}
+        lines = search.reference_hints([self.hit], cfg)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("ref add org-node --task task-station:42", lines[0])
+
+    def test_no_hint_without_task(self):
+        cfg = {"vault": self.vault, "task": None, "org_label": "org brain"}
+        self.assertEqual(search.reference_hints([self.hit], cfg), [])
+
+    def test_no_hint_for_non_org_hit(self):
+        cfg = {"vault": self.vault, "task": "task-station:42"}
+        note_hit = (str(self.vault / "notes" / "local.md"), 3, "local")
+        self.assertEqual(search.reference_hints([note_hit], cfg), [])
 
 
 if __name__ == "__main__":

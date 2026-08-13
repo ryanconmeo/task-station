@@ -56,7 +56,10 @@ ENV_KEYS = [
     "TASK_STATION_BRAIN_FORGE_REPO",
     "TASK_STATION_BRAIN_FORGE_TARGET_BRANCH",
     "TASK_STATION_BRAIN_ADO_ORG",
-    "TASK_STATION_BRAIN_TASK_STATION_CLI",
+    # No TASK_STATION_BRAIN_TASK_STATION_CLI: chunk 4c's direct board.memos
+    # bridge retired the config key it named, and test_config's
+    # `test_fixture_clears_exactly_the_module_env_keys` holds this list and
+    # `brain.config.ENV` to the same set.
     "TASK_STATION_BRAIN_KNOWLEDGE_MEMOS",
 ]
 
