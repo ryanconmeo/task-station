@@ -66,57 +66,24 @@ _LIVE_BG_INDEX = None   # per-process snapshot of `claude agents --json` (bg-awa
 PROJECTS_ROOT = os.path.join(
     os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")), "projects")
 
-LOG_KEEP = 25          # max activity-log entries kept per task
-EVENTS_KEEP = 100      # max append-only per-task event-feed entries kept (the delta-brief source)
-EVENT_TEXT_MAX = 160   # max chars stored per event text (privacy + injection-budget cap)
-# DECISIONS ARE NOT TRUNCATED. Every still-current decision renders in the default
-# detail — no age limit, no count limit, no "+N earlier" pointer. The one thing that
-# keeps a decision off this surface is no longer being TRUE (superseded / split /
-# merged), which is `decisions.digest_order`'s job. The removed `DECISIONS_TAIL = 6`
-# selected by age, a proxy for load-bearing-ness and a wrong one: it hid valid old
-# decisions and showed invalid recent ones.
-DECISION_PIN_MARK = "★ "        # marks a pinned decision (now: sorts FIRST) wherever decisions render
-DECISION_DEAD_MARK = "⊘ "       # marks a superseded decision (history view ONLY)
-ACTIVITY_TAIL = 8      # recent-activity entries rendered inline in the default detail
-FILES_KEEP = 15        # max recently-edited file paths kept per task (most-recent-last)
-NUDGE_PROMPT_MAX = 120  # chars of the prompt stored in the activity log
-NUDGE_ESCALATE_AFTER = 4   # unattached prompts before the nudge escalates
-SKIP_SENTINEL = "__skip__"  # link value marking a session intentionally untracked
-MAX_CLOSED_IN_LIST = 5  # closed tasks shown in the /todo list (most recent first)
-SUBSTANCE_FLOOR = 3     # min user messages for a session to count as "real working" work
-IDLE_GAP_CAP = 1800     # >30min between activity bumps starts a NEW time span (the gap is not counted)
-SPANS_KEEP = 200        # max stored [start, end] activity spans per task (append-capped, most-recent kept)
-SEARCH_SCAN_LIMIT = 100  # ranked hits pulled from the store before status-filtering
-SEARCH_HITS_SHOWN = 10   # tier-1 hits rendered (token-economical ranked list)
-DELTA_MAX_ITEMS = 6      # max events surfaced in one injection-time delta brief
-DELTA_MAX_CHARS = 700    # hard char cap on a single delta brief block
+# ----------------------------------------------------------------- facade ----
+# 3.0.0 splits the engine into lib/board/*. THIS file stays the FACADE: the config
+# block above, every seam not yet split, and a star-import of each split module in
+# layer order — so every historical `ts.<name>` still resolves here. 77 test files
+# load this module as a fresh copy by literal path and patch `ts.<name>` directly;
+# the split modules read those names back through `_shared.g("NAME")`.
+#
+# The purge is what keeps those copies independent: each new copy drops the previous
+# copy's `board.*` modules from sys.modules so it imports its OWN generation, and
+# that generation binds to THIS module's globals.
+for _m in [m for m in list(sys.modules) if m == "board" or m.startswith("board.")]:
+    del sys.modules[_m]
 
-# Memo correspondence — a fact/decision handed to a task's working session(s). The
-# body lives in task["memos"] (NOT the event feed, whose EVENT_TEXT_MAX privacy cap
-# + EVENTS_KEEP trim would destroy an unacked memo); the feed carries only a preview.
-# The body itself is UNCAPPED — a memo is inter-session correspondence and must
-# arrive whole (a silent truncation once cut a design spec mid-sentence); the
-# injection surfaces stay budgeted via the preview caps below.
-MEMOS_KEEP     = 50     # trim target: oldest FULLY-ACKED memos beyond this
-MEMOS_HARD_CAP = 200    # safety: past this, trim oldest regardless of acks
-MEMO_PENDING_MAX = 3    # pending-brief lines per injection
-MEMO_LINE_MAX  = 200    # preview chars per pending-brief line
+import board._shared as _bshared                    # noqa: E402
+_bshared.bind(globals())
 
-# CORRECTION-LANGUAGE SAFETY NET. `--corrects` only helps when the sender remembers
-# to declare it; a memo that announced a permission-model change was once acked
-# without the correction ever reaching the durable layer, and two workers were then
-# briefed to do something structurally impossible. So a memo whose BODY reads like a
-# correction but declares no `--corrects` target gets flagged: a warning to the sender
-# at send time (never a block — the sender may have good reason), and a prominent
-# reminder to the acker to go update the durable stores. Edit the list HERE — it is the
-# one place these live.
-CORRECTION_PATTERNS = ("correction", "supersede", "retraction", "withdrawn",
-                       "no longer", "stop doing")
-
-# Which of those patterns are NOUNS. The word standing in front of a pattern means
-# something different depending on its part of speech, which is why the two groups are
-# read with different vocabularies — see `heal.NOUN_DECLARING_QUALIFIERS`.
-CORRECTION_NOUN_PATTERNS = ("correction", "retraction")
+from board._shared import *      # noqa: F401,F403,E402
+from board.state import *        # noqa: F401,F403,E402
 
 
 def correction_language(body):
@@ -150,35 +117,6 @@ def correction_language(body):
                                      _heal.NOUN_DECLARING_QUALIFIERS))
     return [p for p in CORRECTION_PATTERNS if p in hits]
 
-# Task lifecycle is ONE field — `status` — with three values:
-#   open (○)  →  active (●)  →  closed
-# A topic merely *raised* starts `open` and shows on the board immediately; it
-# graduates to `active` when work actually starts (delegate --worktree, a file
-# edit in an attached session, the manual `status` command, or `create --active`);
-# /done closes it. "On the board / not done" means status in {open, active};
-# "is closed" stays status == "closed". A missing/unknown status reads as open
-# (back-compat — pre-existing tasks were open/closed only).
-STATUS_OPEN = "open"
-STATUS_ACTIVE = "active"
-STATUS_CLOSED = "closed"
-STATUS_DEFAULT = STATUS_OPEN
-STATUS_BOARD = (STATUS_OPEN, STATUS_ACTIVE)   # "not closed" — on the board
-STATUS_SETTABLE = (STATUS_OPEN, STATUS_ACTIVE)  # the manual `status` command's range
-STATUS_GLYPH = {STATUS_OPEN: "○", STATUS_ACTIVE: "●"}
-# Closed marker for the Markdown board's status column (✕ U+2715). The ASCII list
-# still mutes closed to a blank placeholder via status_glyph(); this is the
-# Markdown-table mapping only: ● active · ○ new · ✕ closed.
-STATUS_GLYPH_CLOSED = "✕"
-
-# The stored status value `open` DISPLAYS as "new" everywhere user-facing (the
-# per-task state is New ○ · Active ● · Closed ✕). The internal value stays `open`
-# — no migration, full back-compat — and the not-closed board SECTION keeps the
-# name "Open" (it groups New + Active); only the per-task label changes.
-STATUS_DISPLAY = {STATUS_OPEN: "new", STATUS_ACTIVE: "in progress", STATUS_CLOSED: "closed"}
-# `new` is the INPUT ALIAS for the stored `open`, accepted wherever `open` is (the
-# `status`/`create` paths) so a user can type the displayed word back in.
-STATUS_INPUT_ALIASES = {"new": STATUS_OPEN}
-
 
 def status_display(status):
     """User-facing label for a stored status — `open` shows as 'new'. Unknown
@@ -194,15 +132,6 @@ def normalize_status_input(value):
     v = (value or "").strip().lower()
     return STATUS_INPUT_ALIASES.get(v, v)
 
-# Categories / colours are an OPTIONAL plugin: all of that logic lives in
-# categories.py. If it's absent (or fails to import), `cats` is None and the
-# tracker runs plain and colourless — no tags, no --color, no tint hints. See
-# categories.py and CATEGORIES.md.
-try:
-    import categories as cats
-except Exception:
-    cats = None
-
 
 def cat_color(color):
     """Normalised colour to store on a task, or None when categories are off."""
@@ -212,18 +141,6 @@ def cat_color(color):
 def cat_tag(color, pad=False):
     """`<emoji> [TAG]` for the list, or "" when categories are off."""
     return cats.tag(color, pad=pad) if cats else ""
-
-
-def task_status(task):
-    """A task's lifecycle status, defaulting a missing/unknown value to open —
-    so tasks written before this field existed read as open (back-compat)."""
-    s = (task or {}).get("status")
-    return s if s in (STATUS_OPEN, STATUS_ACTIVE, STATUS_CLOSED) else STATUS_DEFAULT
-
-
-def is_closed(task):
-    """True iff the task is done (status == closed)."""
-    return task_status(task) == STATUS_CLOSED
 
 
 def is_on_board(task):
@@ -326,30 +243,6 @@ def auto_enable_category(color):
         print(msg)
 
 
-# ----------------------------------------------------------------- effort ----
-# Optional per-task effort estimate (complexity / scope), shown as a column in
-# the /todo list. Canonical t-shirt sizes; a 5-segment filled bar makes the
-# column scannable at a glance — count of filled segments (not bar height) is
-# the size cue, which reads instantly even on a single row. Stored on the task
-# as one of EFFORT_ORDER, or absent.
-EFFORT_ORDER = ["XS", "S", "M", "L", "XL"]
-_EFFORT_SLOTS = len(EFFORT_ORDER)
-# filled ▰ to (index+1), empty ▱ for the rest → ▰▱▱▱▱ (XS) … ▰▰▰▰▰ (XL)
-EFFORT_GAUGE = {
-    s: "▰" * (i + 1) + "▱" * (_EFFORT_SLOTS - i - 1)
-    for i, s in enumerate(EFFORT_ORDER)
-}
-EFFORT_GAUGE_EMPTY = "▱" * _EFFORT_SLOTS  # placeholder when effort is unset
-EFFORT_WORD = {"XS": "trivial", "S": "small", "M": "medium", "L": "large", "XL": "huge"}
-_EFFORT_ALIASES = {
-    "xs": "XS", "tiny": "XS", "trivial": "XS", "1": "XS",
-    "s": "S", "small": "S", "2": "S",
-    "m": "M", "med": "M", "medium": "M", "3": "M",
-    "l": "L", "large": "L", "big": "L", "4": "L",
-    "xl": "XL", "huge": "XL", "epic": "XL", "5": "XL", "xxl": "XL",
-}
-
-
 def normalize_effort(val):
     """Map an agent/user-supplied effort token to a canonical size, or None.
 
@@ -374,23 +267,6 @@ def effort_cell(effort):
 
 def effort_legend():
     return "Effort:  " + "  ".join("%s %s" % (EFFORT_GAUGE[s], s) for s in EFFORT_ORDER)
-
-
-# --------------------------------------------------------- ultracode fan-out ----
-# "ultracode" is Claude Code's built-in multi-agent Workflow / dynamic-
-# orchestration feature. Task Station never fires it — it only HINTS, and only
-# when a task genuinely warrants breadth, and only for read/analyze/design/review
-# phases (never repo writes, never trivial work).
-#
-# Categories whose NATURE warrants multi-agent breadth even at medium effort.
-# Referenced by category KEY (the slot identifier) so this stays correct if a
-# tag/label is re-skinned: orange = REVIEW, purple = RESEARCH, brown = DATA
-# (databases / schemas / ETL / migrations slot).
-FANOUT_CATEGORIES = ("orange", "purple", "brown")
-_FANOUT_ANY_MIN = "L"       # effort at/above which ANY category is fan-out-worthy
-_FANOUT_BREADTH_MIN = "M"   # effort at/above which a breadth category qualifies
-
-_ULTRACODE_RE = re.compile(r"\bultracode\b", re.I)
 
 
 def fanout_worthy(task):
@@ -451,29 +327,6 @@ def ultracode_steering():
             "CLAUDE.md/hooks/build env). Route every repo MUTATION through "
             "task-station delegation (a worktree worker off the repo's base branch, "
             "with story + PR). Never edit/build/test in workflow subagents.")
-
-
-# Authoritative command help — git/fd/gh style aligned block. ONE source of truth
-# for both surfaces: the ASCII list footer (commands_footer) and the Markdown
-# board footer (commands_footer_md, which fences it so it stays monospace). The
-# description column is auto-aligned to the widest command + a 4-space gutter.
-_COMMANDS_HELP = [
-    ("/todo",                "show the board"),
-    ("/todo <n>",            "open & resume a task"),
-    ("/todo <n> history",    "full trace: decisions + log + activity"),
-    ("/todo <n> prompts",    "exact prompt trail (timestamped, per session)"),
-    ("/todo <n1, n2, …> -s", "jump into task session(s), in a new window"),
-    ("/todo closed [N]",     "list recent closed (default 20)"),
-    ("/todo all",            "show every task (all open + closed)"),
-    ("/todo search <terms>", "search all tasks (add --open/--closed)"),
-    ("/todo board",          "open the visual HTML board"),
-    ("/todo save",           "checkpoint the current task for a seamless resume"),
-    ("/todo heal",           "reconcile the decision log into current state (dry run)"),
-    ("/todo pin",            "pin this session as the task's resume target"),
-    ("/todo done [n,…]",     "close the current task (or by number)"),
-    ("/todo config [flags]", "open settings"),
-]
-_COMMANDS_LEGEND = "<n> a task number  ·  <n1, n2, …> one or more  ·  [N] optional count"
 
 
 def _command_label(label, bare):
@@ -546,112 +399,6 @@ def commands_footer_md():
             + _commands_footer_note(bare))
 
 
-# ---------------------------------------------------------------- storage ----
-#
-# The read/write layer lives in store.py — a SQLite backend (`<store>/tasks.db`)
-# when sqlite3 is available, the original file-per-task JSON store as a fallback.
-# The functions below keep their historical names/signatures so call sites (and
-# the tests) don't change; each just delegates to the active backend. STORE is a
-# module global the tests repoint, so resolve the backend per call against it.
-
-
-def _backend():
-    return store.get_backend(STORE)
-
-
-def _ensure_dirs():
-    _backend().ensure()
-
-
-def _now():
-    return time.time()
-
-
-def _iso(ts):
-    return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
-
-
-def _iso_to_ts(s):
-    """Epoch seconds for an ISO string written by _iso, or None if unparseable."""
-    try:
-        return datetime.fromisoformat(s).timestamp()
-    except (TypeError, ValueError):
-        return None
-
-
-def _local_iso(s):
-    """An ISO timestamp written by _iso (UTC), converted to the system local
-    timezone for display. Naive strings are treated as UTC. Returns the input
-    unchanged if it can't be parsed, so old/foreign values render as-is."""
-    if not s:
-        return s
-    try:
-        dt = datetime.fromisoformat(s)
-    except (TypeError, ValueError):
-        return s
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone().isoformat(timespec="seconds")
-
-
-def load_task(task_id):
-    return _backend().load_task(task_id)
-
-
-RevConflict = store.RevConflict
-
-
-def save_task(task, expected_rev=None):
-    task["updated_at"] = _iso(task["updated_ts"])
-    _backend().save_task(task, expected_rev=expected_rev)
-
-
-def mutate(task_id, mutator_fn, retries=5):
-    """Optimistic read-modify-write: load `task_id`, apply `mutator_fn(task)` in
-    place, save guarded by the loaded rev, and on a concurrent-writer conflict
-    reload + re-run the mutator (up to `retries`). THE required path for any
-    concurrent task mutation — two writers appending to the same feed both survive
-    instead of one clobbering the other (see CONTRIBUTING).
-
-    `mutator_fn` MUST be pure (transform the given dict only; no I/O, no save, no
-    reads of mutable external state) since a conflict re-runs it on fresh state.
-    Returns the saved task (None if it doesn't exist)."""
-    def _wrapped(t):
-        mutator_fn(t)
-        if t.get("updated_ts") is not None:
-            t["updated_at"] = _iso(t["updated_ts"])
-    return _backend().mutate(task_id, _wrapped, retries=retries)
-
-
-def create_with_seq(task):
-    """Transactionally allocate a unique seq and persist `task` in one step —
-    the ONLY correct way to mint a new task's number. Replaces the racy
-    ensure_seqs()+_max_seq()+1 read-then-write: two concurrent creators can never
-    land on the same seq (BEGIN IMMEDIATE + a UNIQUE(seq) index + retry). Returns
-    the task with its assigned `seq`; callers may keep mutating and save_task()."""
-    task["updated_at"] = _iso(task["updated_ts"])
-    return _backend().create_with_seq(task)
-
-
-def delete_task(task_id):
-    """Remove a task from the store entirely. Used to GC an untouched provisional
-    auto-task (Workstream D) when its session is skipped or closed."""
-    _backend().delete_task(task_id)
-
-
-def all_tasks():
-    return _backend().all_tasks()
-
-
-def search_tasks(query, limit=50):
-    """Ranked cross-task search via the active backend (FTS5 index, or the LIKE
-    fallback). Returns [{"id", "snippet", "score"}, …] best-first; the caller loads
-    + filters + renders. Defensive — a store/search hiccup returns no hits rather
-    than breaking the command."""
-    try:
-        return _backend().search(query, limit)
-    except Exception:
-        return []
 # ------------------------------------------------------- Obsidian export hook ---
 # Opt-in, one-way mirror of a task into an Obsidian vault (lib/obsidian_sync.py).
 # Guarded end-to-end: OFF unless a vault is configured, and EVERY call is wrapped
@@ -664,16 +411,6 @@ def _obsidian_vault():
     try:
         import config
         return config.obsidian_vault() or None
-    except Exception:
-        return None
-
-
-def _owner():
-    """The configured shared-vault owner handle, or None when unset (single-owner,
-    BYTE-IDENTICAL to today). Cheap config read on the mutation path."""
-    try:
-        import config
-        return config.owner() or None
     except Exception:
         return None
 
@@ -1132,346 +869,12 @@ def _obsidian_event(task, event):
         sys.stderr.write("task-station: Obsidian daily-note append failed: %s\n" % e)
 
 
-# ---- Tasktrail event ledger (A-2) -------------------------------------------
-# Durable, append-only JSONL record of every mutation (lib/stream.py). The in-blob
-# event feed is a bounded rolling window (EVENTS_KEEP); the stream is the durable
-# record + the substrate for the published contract. Wiring posture mirrors the
-# obsidian hooks: a stream failure must NEVER block the mutation that triggered it.
-
-def _stream_alloc_n(task, persist):
-    """Allocate this task's next monotonic counter `n`. When `persist` (the normal
-    path), bump the value ON THE TASK via the optimistic-rev lock so concurrent
-    emitters stay gapless, and reflect it on the in-hand dict. When not persisting
-    (a task.deleted tombstone — the row is gone), bump the in-hand dict only."""
-    if persist and task.get("id"):
-        box = {"n": None}
-        def _bump(t):
-            t["stream_n"] = int(t.get("stream_n", 0)) + 1
-            box["n"] = t["stream_n"]
-        if mutate(task["id"], _bump) is not None:
-            task["stream_n"] = box["n"]
-            return box["n"]
-    task["stream_n"] = int(task.get("stream_n", 0)) + 1
-    return task["stream_n"]
-
-
-def _stream_emit(kind, task, data, session=None, persist=True):
-    """Emit one Tasktrail event for `task`. Best-effort + fully guarded: a stream
-    problem (config, disk, lock) is swallowed so it can never block the mutation
-    that triggered it. No-op when the stream is disabled."""
-    try:
-        import config
-        if not config.stream_enabled():
-            return None
-        import stream
-        return stream.emit(kind, task, data,
-                           lambda: _stream_alloc_n(task, persist),
-                           actor_session=session, owner=_owner())
-    except Exception:
-        return None
-
-
-def _stream_digest(task):
-    """The machine-readable digest snapshot carried by task.checkpoint / task.snapshot.
-    Model-curated digest fields only (never prompt text). `glossary` and `brief_path`
-    are first-class in the contract but don't exist on the task yet — carry them
-    generically WHEN PRESENT so the contract is forward-compatible."""
-    d = {
-        "title": (task.get("title") or "")[:EVENT_TEXT_MAX],
-        "status": task_status(task),
-        "goal": task.get("goal") or "",
-        "state": task.get("state") or "",
-        # ACTIVE steps only — a superseded step must no more ride a resume snapshot than
-        # a superseded decision does. The elements themselves are carried unchanged, so
-        # a task with nothing superseded emits byte-identically to before.
-        "steps": [s for _i, s in _steps.live(task.get("steps"))],
-        "summary": task.get("summary") or "",
-        # Still-CURRENT decisions only, as plain strings: a superseded decision must
-        # never ride a resume snapshot (that is the bug), and the plain-string
-        # projection keeps the checkpoint contract byte-identical for older readers.
-        "decisions": _dec.live_texts(task.get("decisions")),
-        "prs": task.get("prs") or [],
-        "stories": task.get("stories") or [],
-    }
-    if task.get("closed_ts"):
-        d["closed"] = task["closed_ts"]
-    for k in ("glossary", "brief_path"):
-        if task.get(k) is not None:
-            d[k] = task.get(k)
-    return d
-
-
-def _stream_updated_data(task, changed):
-    """Payload for task.updated: the changed field NAMES plus the new values of the
-    scalar fields, each capped at EVENT_TEXT_MAX (privacy — never a full body)."""
-    fields = {}
-    if "title" in changed:
-        fields["title"] = (task.get("title") or "")[:EVENT_TEXT_MAX]
-    # `summary↺` is --restore-summary: a different verb, the same field changing, so the
-    # feed must carry the new value for it too.
-    if {"summary", "summary+", "summary↺"} & set(changed):
-        fields["summary"] = (task.get("summary") or "")[:EVENT_TEXT_MAX]
-    if "state" in changed:
-        fields["state"] = (task.get("state") or "")[:EVENT_TEXT_MAX]
-    if "goal" in changed:
-        fields["goal"] = (task.get("goal") or "")[:EVENT_TEXT_MAX]
-    if "effort" in changed:
-        fields["effort"] = task.get("effort")
-    if "color" in changed:
-        fields["color"] = task.get("color")
-    return {"changed": list(changed), "fields": fields}
-
-
-def _stream_created_data(task):
-    d = {"title": (task.get("title") or "")[:EVENT_TEXT_MAX],
-         "status": task.get("status")}
-    for k in ("color", "effort", "goal"):
-        if task.get(k) is not None:
-            d[k] = task.get(k)
-    return d
-
-
-def sorted_tasks():
-    """Not-closed (open + active) before closed; within each, most recent
-    activity first."""
-    return sorted(
-        all_tasks(),
-        key=lambda t: (1 if is_closed(t) else 0, -t.get("updated_ts", 0)),
-    )
-
-
-def _max_seq(tasks=None):
-    tasks = tasks if tasks is not None else all_tasks()
-    return max((t.get("seq") or 0 for t in tasks), default=0)
-
-
-def ensure_seqs():
-    """Backfill stable per-task sequence numbers, assigned in creation order.
-
-    Every task gets a permanent `seq` the first time it's seen — the number a
-    user sees in `/todo` and types as `/todo <n>`. Unlike the old render-time
-    index, a task keeps its number even as others are added, closed, or reorder
-    by recent activity. Idempotent: tasks that already have a seq keep it.
-    """
-    tasks = all_tasks()
-    missing = [t for t in tasks if not t.get("seq")]
-    if not missing:
-        return
-    n = _max_seq(tasks)
-    for t in sorted(missing, key=lambda t: t.get("created_ts", 0)):
-        n += 1
-        t["seq"] = n
-        save_task(t)
-
-
-# ------------------------------------------------------------------ links ----
-
-def get_link(session):
-    return _backend().get_link(session)
-
-
-def set_link(session, task_id):
-    _backend().set_link(session, task_id)
-
-
-def clear_link(session):
-    _backend().clear_link(session)
-
-
-def live_session_count(task):
-    """How many of this task's recorded sessions are STILL attached to it.
-
-    `task["sessions"]` is append-only — it keeps every session that ever touched
-    the task, even ones that later attached elsewhere, closed, or were skipped —
-    so a raw `len()` over-reports. The live count is the sessions whose link
-    currently resolves back to this task; that's the real concurrent-session
-    signal /todo surfaces."""
-    return _backend().live_session_count(task)
-
-
-def get_count(session):
-    """How many prompts this session has gone without attaching to a task."""
-    return _backend().get_count(session)
-
-
-def bump_count(session):
-    return _backend().bump_count(session)
-
-
-def clear_count(session):
-    _backend().clear_count(session)
-
-
-# -- edited / blocked markers: the "real work happened" enforcement signal -----
-# A session that has EDITED a file but has no attached task is doing untracked
-# work. `.edited` records that an edit happened; `.blocked` counts how many times
-# the Stop gate has refused to let the turn end, so a non-complying loop can't
-# wedge the session (we give up after STOP_GATE_MAX_BLOCKS).
-STOP_GATE_MAX_BLOCKS = 2
-
-
-def mark_edited(session):
-    """Record that this session edited a file. Returns True only on the FIRST
-    call (so the PostToolUse reminder is one-shot, not per-edit)."""
-    return _backend().mark_edited(session)
-
-
-def has_edited(session):
-    return _backend().has_edited(session)
-
-
-def get_blocked(session):
-    return _backend().get_blocked(session)
-
-
-def bump_blocked(session):
-    return _backend().bump_blocked(session)
-
-
-def clear_edit_markers(session):
-    _backend().clear_edit_markers(session)
-
-
-# -------------------------------------------------------------- utilities ----
-
-def rel_time(ts):
-    if not ts:
-        return "—"
-    d = max(0, int(_now() - ts))
-    if d < 60:
-        return "just now"
-    if d < 3600:
-        return "%dm ago" % (d // 60)
-    if d < 86400:
-        return "%dh ago" % (d // 3600)
-    if d < 7 * 86400:
-        return "%dd ago" % (d // 86400)
-    return datetime.fromtimestamp(ts).strftime("%b %-d")
-
-
-_ORDINAL_REF_RE = re.compile(r"^(\d+)-(\d+)$")
-
-
-def resolve_ref(ref):
-    """Resolve a /todo argument to a task dict.
-
-    An all-digit ref is matched against tasks' stable `seq` numbers (the numbers
-    shown in the listing). A `<seq>-<ordinal>` ref (`4-0`) names one specific HUB
-    SESSION of task 4 and resolves to that TASK here — the ordinal is consumed by
-    the jump path (see `_parse_ordinal_ref`), not by task resolution. Anything else
-    — or a digit / `<seq>-<n>` string matching no seq — is matched against task ids
-    by exact match or prefix, so a longer all-digit id prefix that happens to
-    contain no hex letters (e.g. "03471986") still resolves correctly.
-
-    ORDER is what keeps the session grammar from shadowing an id. A task id is a
-    uuid4 STRING, so it does contain hyphens — the first always at index 8. The only
-    ref that could be read both ways is therefore an 8-digit all-numeric first block
-    plus an all-digit partial second block ("03471986-1234"). The `<seq>-<ordinal>`
-    branch claims such a ref ONLY when a task really carries that seq (seqs are
-    small; a 7-8 digit one does not occur), and otherwise falls through to the
-    id-prefix branch with its behaviour unchanged.
-    """
-    ref = (ref or "").strip()
-    if not ref:
-        return None
-    ensure_seqs()
-    listing = sorted_tasks()
-    if ref.isdigit():
-        i = int(ref)
-        for t in listing:
-            if t.get("seq") == i:
-                return t
-        # No task with that number: fall through and treat as an id prefix.
-    m = _ORDINAL_REF_RE.match(ref)
-    if m:
-        i = int(m.group(1))
-        for t in listing:
-            if t.get("seq") == i:
-                return t
-        # No task with that seq: fall through and treat the whole ref as an id prefix.
-    for t in listing:
-        if t["id"] == ref or t["id"].startswith(ref):
-            return t
-    return None
-
-
-def _parse_ordinal_ref(ref):
-    """`(task, ordinal)` when `ref` is a `<seq>-<ordinal>` session handle naming a
-    REAL task, else None.
-
-    The ordinal comes back as an int and **0 is a perfectly valid ordinal** (it is
-    the session that created the task), so every caller must test `is None` — never
-    truthiness.
-
-    Requiring the task to EXIST is what makes this safe to consult before id-prefix
-    resolution: a ref that merely looks like the grammar but names no such seq (say
-    the uuid prefix "03471986-1234") returns None, and the caller falls through to
-    ordinary id resolution with its behaviour unchanged."""
-    m = _ORDINAL_REF_RE.match((ref or "").strip())
-    if not m:
-        return None
-    ensure_seqs()
-    seq = int(m.group(1))
-    for t in sorted_tasks():
-        if t.get("seq") == seq:
-            return t, int(m.group(2))
-    return None
-
-
-def _resolve_prompt_task_refs(prompt, limit=3):
-    """Detect task references in the user's prompt and resolve them to real
-    tasks, so the agent is handed the seq->id->title binding instead of guessing.
-    Returns a printable block (str), or "" when nothing resolves."""
-    if not prompt:
-        return ""
-    refs = []
-    # "task 387", "task #387", "todo 387", "seq 387", "#387"
-    for m in re.finditer(r"(?i)(?:\b(?:task|todo|seq)\s+#?|#)(\d{1,7})\b", prompt):
-        refs.append(m.group(1))
-    # bracketed hex short-id "[6e756ed6]"
-    for m in re.finditer(r"\[([0-9a-f]{6,40})\]", prompt):
-        refs.append(m.group(1))
-    seen, out = set(), []
-    for r in refs:
-        t = resolve_ref(r)
-        if not t or t["id"] in seen:
-            continue
-        seen.add(t["id"])
-        seq = t.get("seq") or "?"
-        status = t.get("status") or "open"
-        out.append('  - #%s [%s] "%s" - %s - digest: task-station search --detail %s'
-                   % (seq, t["id"][:8], t.get("title") or "", status, seq))
-        if len(out) >= limit:
-            break
-    if not out:
-        return ""
-    return "[task-station] Your message references an existing task - resolved:\n" + "\n".join(out)
-
-
-_DEDUP_STOPWORDS = {
-    "the", "and", "for", "with", "from", "into", "all", "new", "add", "fix",
-    "update", "make", "use", "via", "per", "out", "off", "this", "that",
-}
-
-
-def _norm_tokens(s):
-    toks = re.findall(r"[a-z0-9]+", (s or "").lower())
-    return {t for t in toks if len(t) > 2 and t not in _DEDUP_STOPWORDS}
-
-
-def _norm_nums(s):
-    """Numeric identifiers in a title (PR/bug/story numbers, phase numbers)."""
-    return set(re.findall(r"\d+", s or ""))
-
-
 # --- F9 identity-keyed fold-in -------------------------------------------------
 # Strong identity keys let the attach/nudge path join tasks on IDENTITY (the PR or
 # work-item the prompt names) instead of FLAVOR (shared process words). This is the
 # same principle create-dedup already applies via _norm_nums (see similar_open_task),
 # lifted to a typed, shared extractor so a PR number can never join a story number.
 # A key is a typed string: "pr:<n>" | "wi:<n>". Fail-open — bad/None input → set().
-
-_PR_WORDS = {"pr", "pull", "pullrequest", "pullrequests"}
 
 
 def extract_identity_keys(text):
@@ -1741,16 +1144,6 @@ def memo_send(task, text, from_sid=None, corrects=None):
     task.setdefault("memos", []).append(memo)
     _trim_memos(task)
     return memo
-
-
-# The three ways an ack may DISPOSE of a memo. A bare ack is no longer one of them:
-# an ack is a receipt, and a receipt was mistaken for an integration once already.
-MEMO_DISPOSITIONS = ("decision", "memory", "noop")
-MEMO_DISPOSITION_HELP = (
-    "an ack must say what it DID with the memo — pass exactly one of:\n"
-    "  --decision [TEXT]   promote it to a decision on this task\n"
-    "  --memory <slug>     record that it was folded into that agent-memory note\n"
-    "  --noop \"<reason>\"   no durable change needed (the reason is mandatory)")
 
 
 def memo_ack_disposition(decision=None, memory=None, noop=None):
@@ -2041,9 +1434,6 @@ def add_cost(task, usd, category="real"):
         cost["total_usd"] = round(float(cost.get("total_usd") or 0.0) + usd, 6)
         cost["runs"] = int(cost.get("runs") or 0) + 1
     return True
-
-
-RUNS_CAP = 50   # per-run records kept on a task (most-recent), so a long-lived task can't grow unbounded
 
 
 def _run_cost(usd):
@@ -2864,14 +2254,9 @@ def _project_dir_for(cwd):
 # would block the user's turn, so a missing, malformed, or foreign cache file is
 # ignored and the value simply recomputed. A cache is never a correctness dependency.
 
-CACHE_DIR = "cache"                  # <data_dir>/cache — resolved per call (tests repoint DATA)
-MSGCOUNT_CACHE_FILE = "msgcounts.json"
-MSGCOUNT_CACHE_MAX = 4000            # entries kept on disk; least-recently-used dropped past this
-MSGCOUNT_CACHE_TOUCH = 86400         # refresh an entry's last-used stamp at most once a day
 REPLIES_CACHE_MAX = 256              # reply maps held in memory at once (bounds a big render)
 MSGCOUNT_MEM_MAX = 8192              # in-memory counts kept — a growing transcript mints a
                                      # new key per append, and the MCP server is long-lived
-SESSION_PATH_MEM_MAX = 8192          # resolved transcript paths kept, same reasoning
 
 _MSGCOUNT_MEM = {}       # (path, mtime_ns, size) -> count             [this process]
 _REPLIES_MEM = {}        # (path, mtime_ns, size) -> {uuid: reply}     [this process]
@@ -3099,16 +2484,6 @@ def estimate_session_tokens(session):
         return 0
 
 
-# How much of the transcript tail measure_context_tokens reads. The live context
-# size lives on the LAST assistant message's usage block, which is near the end of
-# the file, so a bounded tail read keeps this cheap even on a multi-MB transcript.
-_USAGE_TAIL_BYTES = 256 * 1024
-# The usage fields that make up the RESIDENT context (what's actually re-sent to the
-# model each turn). output_tokens is deliberately EXCLUDED — generated output isn't
-# part of the next turn's context window.
-_CONTEXT_USAGE_KEYS = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
-
-
 def _extract_usage(o):
     """Pull the `usage` dict out of one decoded transcript line, whether it's nested
     under `message` (Claude Code records assistant turns as {"message": {..., "usage":
@@ -3231,9 +2606,6 @@ def claude_code_model_selection():
         if m:
             return m
     return ""
-
-
-_MODEL_FAMILIES = ("opus", "sonnet", "haiku", "fable")
 
 
 def _model_family_token(model_id):
@@ -3810,30 +3182,6 @@ def related_edges(task, tasks=None, semantic=False):
 # is exactly what leaves the mixed-label duplicate standing, since the two records
 # differ precisely in their kind.
 
-# Label precedence when one pair carries several kinds — LOWEST rank wins. A
-# specific claim outranks a vague one: `related` explicitly claims nothing, so it is
-# weakest. This is the LABEL axis and is deliberately NOT the graph's
-# visual-prominence axis (where spawned-from is the dimmest edge) — different
-# questions.
-#
-# The order, and why:
-#   depends-on   an execution-order claim — it gates when work can start, so it is
-#                the most consequential thing a pair can be.
-#   parent       structural containment; every roll-up is computed over it.
-#   absorbed-by  a lifecycle verdict that also TRANSFERS work: mine became theirs.
-#   replaces     the same terminal verdict without the transfer — their approach was
-#                dropped for mine. Ranks just under absorbed-by because it settles the
-#                pair just as firmly but carries nothing across.
-#   duplicates   names the collision without settling it: same work, no statement about
-#                which survives. Weaker than either verdict, far stronger than `related`.
-#   spawned-from a HISTORICAL fact about where a task came from, not what the pair is
-#                now — which is why both verdicts and even `duplicates` outrank it.
-#   related      claims nothing at all.
-_REL_KIND_RANK = {"depends-on": 0, "parent": 1, "absorbed-by": 2, "replaces": 3,
-                  "duplicates": 4, "spawned-from": 5, "related": 6}
-_REL_KIND_RANK_UNKNOWN = 99
-
-
 def _rel_kind_rank(kind):
     """Precedence rank for a relation kind — lowest wins. An unknown/future kind
     sorts last but never raises, so a store written by a newer version degrades to
@@ -3915,13 +3263,6 @@ def canonical_relations(task, tasks=None, rev=None, edges=None):
 # gets the richer graph and unchanged everything else. The co-citation layer
 # (task↔note) is the ONLY vault-aware part and is gated off by default (see
 # build_board_graph's `knowledge` arg + config.knowledge_graph_enabled()).
-
-# Signal → edge-weight for `touches-same`: a shared PR is the strongest same-work
-# signal (same change), a shared story or file next, a shared repo/project the
-# weakest (mere co-location). An edge's weight sums the weights of every signal the
-# two tasks share, so "same PR + same files" outranks "same repo".
-_SEMANTIC_WEIGHTS = {"pr": 3, "story": 2, "file": 2, "repo": 1}
-
 
 def _task_signals(task):
     """The dedup set of `(kind, value)` signals used to derive `touches-same` edges:
@@ -4484,35 +3825,6 @@ def _session_block_lines(task):
     if len(orphans) > WK_CAP:
         out.append("  … +%d more worker(s)" % (len(orphans) - WK_CAP))
     return out
-
-
-# How each relation kind READS on the `Related:` line, as (stored-here, derived-here).
-# The second word is the inverse a reader sees from the OTHER end: only the subordinate
-# side ever stores an edge, so every superior side is a derived reading. Kinds absent
-# from this table fall back to `related #N` both ways, which is what keeps a store
-# written by a newer version renderable.
-_REL_LINE_WORDS = {
-    "depends-on":   ("depends on #%s", "blocks #%s"),
-    "parent":       ("parent #%s",     "children #%s"),
-    "duplicates":   ("duplicates #%s", "duplicates #%s"),   # symmetric — reads the same
-    "replaces":     ("replaces #%s",   "replaced by #%s"),
-    "absorbed-by":  ("absorbed-by #%s", "absorbed #%s"),
-    "spawned-from": ("from #%s (spawned-from)", "spawned #%s"),
-}
-_REL_LINE_DEFAULT = ("related #%s", "related #%s")
-
-# The same words as bare LABELS, for the grouped form. A run of one still renders through
-# the format strings above, so a lone `spawned-from` keeps its ` (spawned-from)` qualifier
-# byte-for-byte; only a repeat collapses to `label #a, #b`.
-_REL_LINE_LABELS = {
-    "depends-on":   ("depends on", "blocks"),
-    "parent":       ("parent", "children"),
-    "duplicates":   ("duplicates", "duplicates"),
-    "replaces":     ("replaces", "replaced by"),
-    "absorbed-by":  ("absorbed-by", "absorbed"),
-    "spawned-from": ("from", "spawned"),
-}
-_REL_LINE_LABELS_DEFAULT = ("related", "related")
 
 
 def _related_line(task, edges=None):
@@ -5262,11 +4574,6 @@ def _reap_task_workers(task, session=None):
 # full identity predicate and de-registers each worker from the supervisor BEFORE
 # killing its process group, so it cannot be respawned.
 
-# Workers younger than this are skipped: a just-spawned worker's hub may not have its
-# session file on disk yet, which would make a live hub look dead.
-ORPHAN_SWEEP_GRACE_SECS = 120
-
-
 def _live_session_ids():
     """The set of session ids CURRENTLY running, or None meaning "unknown".
 
@@ -5441,15 +4748,6 @@ def cmd_sweep_orphans(a):
 # (raised to 10s by the manifest's per-hook `timeout`, which is a ceiling and not an
 # allowance). So the cheap store work runs unconditionally, and a subprocess is spent
 # ONLY when the delegate registry says this session actually spawned a worker.
-
-# `claude agents --json` is the one subprocess this pass can need. harness's own
-# adapter allows it 20s, which would blow the budget on a wedged CLI; 5s is long
-# enough for a healthy call and short enough to lose gracefully — a timeout returns
-# {}, which every caller reads as "unknown" and therefore reaps nothing, leaving the
-# work to the SessionStart sweep.
-SESSION_END_AGENTS_TIMEOUT = 5
-SESSION_END_REASON_MAX = 40      # a reason is a code word; anything longer is not one
-
 
 class _BoundedAgentsAdapter:
     """`claude agents --json` under SESSION_END_AGENTS_TIMEOUT, shaped exactly like
@@ -5666,13 +4964,6 @@ def cmd_config_change(a):
     if enforce:
         sys.stderr.write("[task-station] config change blocked — %s\n" % detail)
         sys.exit(2)
-
-
-# The data-dir files the station itself READS. The manifest's FileChanged matcher is
-# basename-level, so any project's `config.json` fires this hook; the data-dir test in
-# cmd_file_changed is what makes it OURS, and this set is what makes the record honest.
-STATION_WATCHED_FILES = ("config.json", "categories.json", "repos.json",
-                         "brains.json", "workers.json")
 
 
 def cmd_file_changed(a):
@@ -6246,10 +5537,6 @@ def _md_task_row(task):
     )
 
 
-_MD_HEADER = ("|  | # | Task | Category | Effort | Activity |\n"
-              "|:-:|--:|------|----------|--------|----------|")
-
-
 def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
     """Markdown form of the /todo list — what the skill now prints VERBATIM (no
     hand-transcription). Two GitHub tables, Open first then Closed, preserving the
@@ -6300,17 +5587,6 @@ def _format_list_md(closed_limit=MAX_CLOSED_IN_LIST):
 #     maintained with `update --state` (the model is already in the loop).
 #   • prs    — DERIVED on render by scanning the activity log/summary/state for
 #     PR URLs (GitHub + Azure DevOps); never stored.
-
-# GitHub `…/pull/<n>` and Azure DevOps `…/pullrequest/<n>` (dev.azure.com and the
-# generic `_git/<repo>/pullrequest/<n>` form). Path chars stay URL-safe so a
-# trailing `.`/`)`/space in a note never gets swallowed; `\d+` bounds the tail.
-_PR_URL_RE = re.compile(
-    r'https://github\.com/[\w.-]+/[\w.-]+/pull/\d+'
-    r'|https://dev\.azure\.com/[\w%./+-]+?/pullrequest/\d+'
-    r'|https://[\w.-]+/[\w%./+-]+?/_git/[\w%./+-]+?/pullrequest/\d+',
-    re.IGNORECASE,
-)
-
 
 def extract_prs(task):
     """PR URLs mentioned anywhere in a task's text (activity-log notes, summary,
@@ -6410,24 +5686,6 @@ def append_related(task, other, kind):
 #
 # `--relate` and the `related` kind are untouched: 23 live edges still need their
 # writer until a separate migration converts them.
-
-# OWNERSHIP RULE — decided, not an accident of there being nothing to check yet.
-# `related` (and the later `mentions`) may name a task in ANOTHER person's brain;
-# `depends-on` and `parent` may NOT, because both are COMPUTED OVER — roll-ups and
-# unblocked-work queries — and compute requires freshness. A stale foreign edge would
-# make those answers silently wrong rather than loudly unavailable. v1 has no
-# resolvable foreign handle at all (none can exist before sync lands), so today this
-# only sharpens the error message; it is written as the named rule because this is the
-# ONE place sync has to teach when foreign refs become real.
-_LOCAL_ONLY_KINDS = frozenset(("depends-on", "parent"))
-
-# An interbrain handle is `<owner>-<seq>` (see the board's handle chip). A local seq is
-# all-digits and a local `<seq>-<ordinal>` starts with a digit, so requiring a leading
-# LETTER separates the two grammars. Only consulted after local resolution has already
-# failed, so a false positive can never mis-resolve a real task — at worst it picks the
-# more specific of two "no such task" messages.
-_FOREIGN_HANDLE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.]*-\d+$")
-
 
 def _looks_foreign_ref(ref):
     """Whether `ref` is shaped like another brain's task handle rather than a local
@@ -7515,9 +6773,6 @@ def _is_session_jump_prompt(prompt):
     return any(t in ("-s", "--session") for t in prompt.split())
 
 
-DEFAULT_CLOSED_LIST = 20  # how many closed tasks `/todo closed` (no count) shows
-
-
 def _parse_list_arg(arg):
     """Recognize the listing keywords `closed [N]` and `all`.
 
@@ -7544,67 +6799,6 @@ def _print_list_footer():
     line = update_check.nudge_line()
     if line:
         print(line)
-
-
-_NO_TASK_ATTACHED = ("No task attached — /todo <n> to open one, or create a task "
-                     "first, then /todo save.")
-
-
-# ---------------------------------------------------------- artifact paths ------
-# Deterministic, host-agnostic derivation of a task's brief.html output path under
-# the configured artifacts root (config.artifacts_root(), which derives from the
-# data_dir seam — never a hardcoded ~/ path). Layout:
-#   <artifacts_root>/<project>/<seq>-<title-slug>/brief.html
-# <project> comes from the task's active category TAG (its audience), <seq>-<slug>
-# from the task number + a filesystem-safe title slug.
-
-
-def _slug(s):
-    """Lowercase, collapse every non-alphanumeric run to a single hyphen, and trim
-    leading/trailing hyphens. 'LEGACY Key: Case-Sensitivity!' -> 'legacy-key-case-sensitivity'.
-    Empty/None -> ''."""
-    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
-
-
-def _project_slug(task):
-    """The project folder for `task`'s brief: the slug of its ACTIVE CATEGORY TAG.
-
-    The tag is the resolved one `/todo` renders as `<emoji> [TAG]`, so the folder
-    follows the taxonomy through every layer that shapes it — discipline pack, org
-    pack, and a per-slot user override in config.json's `categories` key. Nothing
-    about the folder is hardcoded here: a user who renames green's tag gets the
-    renamed folder, from THEIR config.
-
-    Reuses categories.hub_slug so a task's artifact folder and its category-hub
-    slug (`[[categories/<slug>]]`) stay the same token. Falls back to the colour
-    slugified when the colour names no category at all, and to 'general' when the
-    task has no colour set."""
-    color = (task.get("color") or "").strip().lower()
-    if color:
-        try:
-            import categories as cats
-            key = cats.resolve(color)
-            if key:
-                return cats.hub_slug(key)
-        except Exception:
-            pass  # categories unavailable: fall back to the colour itself
-    return _slug(color) or "general"
-
-
-def _task_slug(task):
-    """`<seq>-<title-slug>` — the per-task artifact folder name. Falls back to the
-    8-char id prefix when the task has no stable seq yet."""
-    seq = task.get("seq") or task["id"][:8]
-    return "%s-%s" % (seq, _slug(task.get("title")) or "task")
-
-
-def brief_output_path(task):
-    """Absolute path a rendered brief is written to:
-    <artifacts_root>/<project>/<seq>-<slug>/brief.html. Pure derivation — the caller
-    makedirs + writes."""
-    import config
-    return os.path.join(config.artifacts_root(),
-                        _project_slug(task), _task_slug(task), "brief.html")
 
 
 # ------------------------------------------------------------- glossary ---------
@@ -9446,9 +8640,6 @@ def _assistant_text(msg):
         return "\n".join(b.get("text", "") for b in content
                          if isinstance(b, dict) and b.get("type") == "text")
     return ""
-
-
-_BULLET_RE = re.compile(r"^\s*([-*•]|\d+[.)])\s+")
 
 
 def _last_bullet_reply(text):
@@ -11706,9 +10897,6 @@ def _open_path(path):
         return False
 
 
-_BOARD_VER_RE = re.compile(r'name="ts-board-version" content="([0-9]+\.[0-9]+\.[0-9]+)"')
-
-
 def _semver_tuple(s):
     m = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)\s*$", str(s or ""))
     return tuple(int(x) for x in m.groups()) if m else None
@@ -11747,9 +10935,6 @@ def _existing_board_version(path):
 # (The demo fixtures under fixtures/demo-feeds/ are canonical too, as of #444 — they used
 # to be client-side IIFEs, which this path silently skipped. Any legacy non-canonical file
 # is still skipped rather than fatal.)
-
-_OWNER_FALLBACK_COLOR = "#7f8a9c"
-
 
 def _interbrain_on(data_dir):
     """Resolve config.interbrain_mode() for the board: on/off explicit; `auto` → on when
@@ -12108,9 +11293,6 @@ def cmd_fork(a):
 
 
 # -- F5.3 subscriptions: mint memos when a subscribed peer feed advances --------
-
-_SUBS_CHECK_INTERVAL = 120     # seconds between throttled (hook-path) checks
-
 
 def _feed_task(feed, uuid8):
     """The task dict in `feed` whose uuid8 matches (prefix-tolerant), or None."""
