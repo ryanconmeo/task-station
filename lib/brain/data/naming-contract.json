@@ -1,0 +1,158 @@
+{
+  "$comment": "SHIPPED naming contract — the generic half. Everything here is company-agnostic and safe to publish: generic areas, the slug shape, and the detector vocabularies. The ORG's own domain words and their area mapping are NOT here; they live in the org brain's schemas/node-types.json (domains.registry), which is PR-gated. That split is what keeps this repo free of any organisation's fingerprints.",
+  "version": "1.0.0",
+  "shape": "<domain>[-<subdomain>]-<subject>",
+  "subjectMaxWords": 3,
+  "allowed": "a-z0-9-",
+  "minLength": 3,
+  "maxLength": 80,
+  "reservedStems": [
+    "index",
+    "log",
+    "readme",
+    "setup",
+    "claude",
+    "team-rules",
+    "memory"
+  ],
+  "areas": {
+    "$comment": "Three families. Business = what the organisation does (APQC PCF level-1 anchored). Technical = what it builds and runs on, named generically so no vendor appears. Product = this toolchain, because notes about the tool are the first notes anyone writes. Vertical packs add more; an industrial pack adds production/inventory/quality/assets/safety.",
+    "business": [
+      "strategy",
+      "finance",
+      "customer",
+      "sales",
+      "pricing",
+      "product",
+      "service",
+      "procurement",
+      "people",
+      "it",
+      "risk"
+    ],
+    "technical": [
+      "repo",
+      "cloud",
+      "data",
+      "ai"
+    ],
+    "toolchain": [
+      "task-station",
+      "brain-station"
+    ],
+    "packs": {
+      "industrial": [
+        "production",
+        "inventory",
+        "quality",
+        "assets",
+        "safety"
+      ]
+    }
+  },
+  "severity": {
+    "$comment": "Only an unregistered domain is an error. Everything else warns and the write still succeeds — a refusal makes an author drop the fact or fake a name to get past the gate, which is worse than a bad name.",
+    "unregistered-domain": "error",
+    "reserved-stem": "error",
+    "illegal-characters": "error",
+    "subject-too-long": "warn",
+    "claim-shaped": "warn",
+    "generic-token": "warn",
+    "date-in-slug": "warn",
+    "no-domain": "warn"
+  },
+  "datesAllowedIn": [
+    "reports",
+    "plans",
+    "raw"
+  ],
+  "domainRequiredIn": [
+    "notes",
+    "memory"
+  ],
+  "$comment_domainRequiredIn": "Only knowledge nodes carry a domain. reports/ and plans/ are dated artifacts and raw/ is undigested capture — requiring a domain there would flag correct names.",
+  "claimShape": {
+    "$comment": "A name that states a verdict is unstable by construction: correct the claim and the name lies. Three signals, measured at 19% of a 126-node corpus.",
+    "leadingImperative": [
+      "never",
+      "always",
+      "avoid",
+      "prefer",
+      "use",
+      "dont",
+      "do",
+      "keep",
+      "stop",
+      "add",
+      "run",
+      "check",
+      "make",
+      "let",
+      "put",
+      "treat",
+      "defer",
+      "scan"
+    ],
+    "embeddedCopula": [
+      "is",
+      "was",
+      "are",
+      "were",
+      "isnt",
+      "wasnt",
+      "arent",
+      "becomes",
+      "beats",
+      "needs",
+      "means"
+    ],
+    "negation": [
+      "no",
+      "not",
+      "never",
+      "cannot",
+      "cant",
+      "without",
+      "nothing"
+    ]
+  },
+  "genericTokens": [
+    "misc",
+    "stuff",
+    "untitled",
+    "tmp",
+    "temp",
+    "junk",
+    "notes",
+    "note",
+    "new",
+    "draft",
+    "wip",
+    "todo"
+  ],
+  "stopwords": [
+    "the",
+    "a",
+    "an",
+    "of",
+    "to",
+    "for",
+    "and",
+    "in",
+    "on",
+    "with",
+    "vs",
+    "via"
+  ],
+  "findTarget": {
+    "$comment": "The lookup is mandatory — no node is created without a result in hand — but the ACTION is graded, and slug text alone never triggers an update. Evidence: two notes scored 0.595 on slug similarity and are entirely different facts (one says a reload leg is ADF rather than a pipeline, the other says that reload needs four pre-existing framework tables). A false merge is worse than a fork, because a fork is visible.",
+    "updateAtOrAbove": 0.9,
+    "chooseAtOrAbove": 0.6,
+    "scoreOn": "description",
+    "slugTextMayAutoMerge": false
+  },
+  "meaningGuard": {
+    "$comment": "Never auto-apply a rename that drops a word appearing in this many nodes or fewer. Rarity was tried as a name GENERATOR and rejected — with six words tied at frequency 1 the tie-break went alphabetical and dropped a proper noun, and cluster terms are frequent precisely because they name something real, so rarity demoted the identifying words. It works as a guard.",
+    "rareWordThreshold": 2
+  }
+}
