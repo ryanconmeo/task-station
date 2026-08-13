@@ -14,7 +14,8 @@ assertions pin down:
 1. The set of names the suite actually patches equals ROUTED below. A future
    release that patches a 24th name fails HERE, loudly, instead of failing
    mysteriously later — re-derive the set and route the new name.
-2. No module under `lib/board/` reads one of those names bare. Definitions
+2. No SPLIT-ENGINE SEAM under `lib/board/` reads one of those names bare (the
+   seams are listed in SEAM_FILES below, and only they are scanned). Definitions
    (`def mutate(...)`), attribute access (`backend.mutate`) and the string
    literal inside `g("mutate")` are all fine; a bare `mutate` reference is not.
 
@@ -82,6 +83,23 @@ ROUTED = {
 # The §3 patch-surface regex: an assignment onto the engine module, which every
 # test file binds as `ts`.
 _PATCH_RE = re.compile(r"\bts\.([A-Za-z_]+) *=")
+
+# The split-engine seams — the ONLY files assertion 2 scans, named explicitly
+# rather than walked, because `lib/board/` is no longer only the split engine.
+#
+# The routed-name contract belongs to code that was carved OUT of the facade:
+# it still runs against the facade's live namespace, so it must reach every
+# patchable name through g(). Phase 3 also moves the flat import-only modules
+# (`store.py`, `save.py`, `export.py`, …) under `lib/board/`, and those never
+# had that relationship — a test's `ts.subprocess = fake` never reached them
+# before the split either, because they always imported `subprocess` into their
+# own namespace. A bare read of a routed name inside one of THEM is therefore
+# behavior-correct, not a bug, and scanning them would be a false positive.
+# So: seams route via g(); moved standalone modules own their imports.
+SEAM_FILES = ["_shared.py", "state.py", "model.py", "memos.py", "sessions.py",
+              "render.py", "graph.py", "boardio.py", "cli.py",
+              "cmds/__init__.py", "cmds/maintain.py", "cmds/manage.py",
+              "cmds/view.py", "cmds/sub.py", "cmds/surface.py"]
 
 
 def _py_files(root):
@@ -211,11 +229,18 @@ class PatchSurfaceTests(unittest.TestCase):
                sorted(ROUTED - patched) or "none"))
 
     def test_board_modules_never_read_a_routed_name_bare(self):
-        """Inside lib/board/, a routed name is only ever reached through
-        g(...)/set_g(...) — never as a bare load, never rebound with `global`."""
+        """Inside the split-engine seams, a routed name is only ever reached
+        through g(...)/set_g(...) — never as a bare load, never rebound with
+        `global`. Only SEAM_FILES are scanned; see the note beside that list."""
         offenders = []
-        for path in _py_files(BOARD_DIR):
+        for seam in SEAM_FILES:
+            path = os.path.join(BOARD_DIR, *seam.split("/"))
             rel = os.path.relpath(path, ROOT)
+            # A renamed or deleted seam must fail here, not silently drop out of
+            # coverage — the list is hardcoded, so absence is the failure mode.
+            self.assertTrue(os.path.isfile(path),
+                            "SEAM_FILES names %s, which does not exist — update "
+                            "the list when a seam is renamed or removed." % rel)
             tree = ast.parse(_read(path), filename=path)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Name) and node.id in ROUTED:

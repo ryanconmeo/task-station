@@ -41,15 +41,37 @@ PROJECTS_ROOT = os.path.join(
 
 # ----------------------------------------------------------------- facade ----
 # 3.0.0 splits the engine into lib/board/*. THIS file stays the FACADE: the config
-# block above, every seam not yet split, and a star-import of each split module in
-# layer order — so every historical `ts.<name>` still resolves here. 77 test files
-# load this module as a fresh copy by literal path and patch `ts.<name>` directly;
-# the split modules read those names back through `_shared.g("NAME")`.
+# block above (the routed constants — DATA, STORE, TASKS_DIR, …), and a star-import
+# of every seam in layer order — so every historical `ts.<name>` still resolves
+# here. 77 test files load this module as a fresh copy by literal path and patch
+# `ts.<name>` directly; the seams read those names back through
+# `_shared.g("NAME")`.
 #
-# The purge is what keeps those copies independent: each new copy drops the previous
-# copy's `board.*` modules from sys.modules so it imports its OWN generation, and
-# that generation binds to THIS module's globals.
-for _m in [m for m in list(sys.modules) if m == "board" or m.startswith("board.")]:
+# THE PURGE REGENERATES THE SEAMS, AND ONLY THE SEAMS. Each seam calls
+# `bind(globals())` against the facade copy that imported it, so a copy reusing the
+# previous copy's seam modules would read the PREVIOUS copy's namespace and every
+# `ts.<name>` patch would silently miss. Dropping exactly the seam entries is what
+# makes each fresh copy import its OWN generation, bound to THIS module's globals.
+#
+# MOVED FLAT MODULES ARE DELIBERATELY NOT PURGED — `board.categories`, `board.heal`,
+# `board.store` and the rest of the Phase-3 movers. They bind nothing, so they need
+# no generation of their own: they are PROCESS-SHARED, which is exactly the semantics
+# they had at `lib/` root before the move, and their `lib/<name>.py` shims alias the
+# same module object either way. Purging them broke two things at once — a reimport
+# per engine copy for modules that never needed one, and `importlib.reload()`, which
+# resolves a module by its `__name__` (`board.categories` after the move) and raises
+# ImportError when that key is gone. The tests reload `categories` 30 times.
+#
+# So the purge is an EXPLICIT LIST rather than a `board.*` prefix sweep: a prefix
+# sweep cannot tell a seam from a mover, and `lib/board/` now holds both. `board`
+# itself also stays cached — it is a namespace package with no bound state.
+_SEAM_MODULES = (
+    "board._shared", "board.state", "board.model", "board.memos",
+    "board.sessions", "board.render", "board.graph", "board.boardio",
+    "board.cmds", "board.cmds.maintain", "board.cmds.manage",
+    "board.cmds.view", "board.cmds.sub", "board.cmds.surface", "board.cli",
+)
+for _m in [m for m in _SEAM_MODULES if m in sys.modules]:
     del sys.modules[_m]
 
 import board._shared as _bshared                    # noqa: E402
