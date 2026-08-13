@@ -12,11 +12,31 @@ That contract only holds while the two sides agree, which is what these two
 assertions pin down:
 
 1. The set of names the suite actually patches equals ROUTED below. A future
-   release that patches a 22nd name fails HERE, loudly, instead of failing
+   release that patches a 24th name fails HERE, loudly, instead of failing
    mysteriously later — re-derive the set and route the new name.
 2. No module under `lib/board/` reads one of those names bare. Definitions
    (`def mutate(...)`), attribute access (`backend.mutate`) and the string
    literal inside `g("mutate")` are all fine; a bare `mutate` reference is not.
+
+A test patches the engine module in TWO forms, and assertion 1 must see both:
+a plain attribute assignment onto `ts` (the §3 regex form), and a `setattr` on
+`ts` whose name is either a string literal or a function parameter. The example
+forms are spelled with a placeholder below so this docstring is not itself
+scanned as a patch site:
+
+    ts.<name> = fake                   # the §3 regex form
+    setattr(ts, "<name>", spy)         # a literal setattr
+    setattr(ts, attr, spy)             # setattr through a parameter
+
+The third form is what `tests/test_transcript_cache.py` uses: a `_count_parses`
+helper whose `attr` parameter defaults to `"_session_msgcount_uncached"` and is
+passed `"_prompt_replies_all"` at four call sites. The §3 regex cannot see any
+of it, which is exactly how those two names were missed when the routed set was
+first derived (chunk 3). `_setattr_patched` below closes that hole: it resolves
+ONE hop — a `setattr(ts, <param>, …)` back to that parameter's string default
+and to the string literals its call sites pass. Deeper indirection is out of
+scope on purpose; if a future test needs it, this guard should fail loudly
+rather than quietly under-report.
 
 Stdlib + unittest only, and it reads source rather than importing anything — it
 must stay runnable even when the engine itself is mid-surgery.
@@ -30,8 +50,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS_DIR = os.path.join(ROOT, "tests")
 BOARD_DIR = os.path.join(ROOT, "lib", "board")
 
-# The routed set (PHASE2-ROSTER.json `routed_21`). Nine of these are also the
-# facade-resident config globals, which the seams read the same way.
+# The routed set (PHASE2-ROSTER.json `routed_21` + `routed_setattr_2`). Nine of
+# these are also the facade-resident config globals, which the seams read the
+# same way. The last two are the setattr-patched pair the §3 regex missed.
 ROUTED = {
     "DATA",
     "STORE",
@@ -54,6 +75,8 @@ ROUTED = {
     "_bare_commands",
     "REPLIES_CACHE_MAX",
     "MSGCOUNT_MEM_MAX",
+    "_session_msgcount_uncached",
+    "_prompt_replies_all",
 }
 
 # The §3 patch-surface regex: an assignment onto the engine module, which every
@@ -73,22 +96,117 @@ def _read(path):
         return fh.read()
 
 
+def _positional_args(fn):
+    return list(getattr(fn.args, "posonlyargs", [])) + list(fn.args.args)
+
+
+def _is_ts_setattr(node):
+    """A `setattr(ts, <name>, …)` call — the patch form the §3 regex can't see."""
+    return (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name) and node.func.id == "setattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Name) and node.args[0].id == "ts")
+
+
+def _str_const(node):
+    """The node's value when it is a string literal, else None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _param_defaults(fn, param):
+    """String defaults bound to `param` in `fn`'s signature."""
+    args = _positional_args(fn)
+    defaults = list(fn.args.defaults)
+    offset = len(args) - len(defaults)
+    out = []
+    for i, a in enumerate(args):
+        if a.arg == param and i >= offset:
+            v = _str_const(defaults[i - offset])
+            if v is not None:
+                out.append(v)
+    for a, d in zip(fn.args.kwonlyargs, fn.args.kw_defaults):
+        if a.arg == param and d is not None:
+            v = _str_const(d)
+            if v is not None:
+                out.append(v)
+    return out
+
+
+def _param_call_strings(tree, fn, param):
+    """Every string literal passed as `param` to a call of `fn` in this file."""
+    names = [a.arg for a in _positional_args(fn)]
+    idx = names.index(param) if param in names else None
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        called = (f.attr if isinstance(f, ast.Attribute)
+                  else f.id if isinstance(f, ast.Name) else None)
+        if called != fn.name:
+            continue
+        for kw in node.keywords:
+            if kw.arg == param:
+                v = _str_const(kw.value)
+                if v is not None:
+                    out.append(v)
+        if idx is None:
+            continue
+        # A bound-method call (`self._count_parses(x)`) omits `self`, so the
+        # caller's positional list starts one slot after the signature's.
+        pos = idx - 1 if isinstance(f, ast.Attribute) else idx
+        if 0 <= pos < len(node.args):
+            v = _str_const(node.args[pos])
+            if v is not None:
+                out.append(v)
+    return out
+
+
+def _setattr_patched(source, path):
+    """Names patched via `setattr(ts, …)` — a string literal, or a parameter
+    resolved one hop back to its default and its call sites' literals."""
+    names = set()
+    tree = ast.parse(source, filename=path)
+    for node in ast.walk(tree):
+        if _is_ts_setattr(node):
+            v = _str_const(node.args[1])
+            if v is not None:
+                names.add(v)
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params = {a.arg for a in _positional_args(fn) + list(fn.args.kwonlyargs)}
+        for node in ast.walk(fn):
+            if not _is_ts_setattr(node):
+                continue
+            target = node.args[1]
+            if isinstance(target, ast.Name) and target.id in params:
+                names.update(_param_defaults(fn, target.id))
+                names.update(_param_call_strings(tree, fn, target.id))
+    return names
+
+
 class PatchSurfaceTests(unittest.TestCase):
 
     def test_suite_patch_surface_equals_the_routed_set(self):
         """Every name the suite patches on the engine module is routed, and
-        nothing is routed that the suite never patches."""
+        nothing is routed that the suite never patches. Both patch forms count:
+        `ts.<name> = …` and `setattr(ts, …)`."""
         patched = set()
         for path in _py_files(TESTS_DIR):
-            patched |= set(_PATCH_RE.findall(_read(path)))
+            source = _read(path)
+            patched |= set(_PATCH_RE.findall(source))
+            patched |= _setattr_patched(source, path)
         self.assertEqual(
             patched, ROUTED,
             "the suite's patch surface no longer matches the routed set.\n"
             "  patched but NOT routed: %s\n"
             "  routed but NOT patched: %s\n"
             "Re-derive the surface, add the name to ROUTED here AND to "
-            "PHASE2-ROSTER.json's routed_21, and rewrite every read of it "
-            "inside lib/board/ as g(\"<name>\")."
+            "PHASE2-ROSTER.json's routed_21 / routed_setattr_2, and rewrite "
+            "every read of it inside lib/board/ as g(\"<name>\")."
             % (sorted(patched - ROUTED) or "none",
                sorted(ROUTED - patched) or "none"))
 
