@@ -8,8 +8,9 @@ everything that knows what a *note* is — which is this module.
 Every mutation of a vault note MUST go through :func:`write_note`. Nothing else
 in the brain plane is permitted to ``path.write_text`` a note. (A ``raw/`` drop
 is not a note: it is an untrusted, un-schema'd capture that the heal pass reads
-and deletes — ``brain.distill`` writes those directly by design, as does the
-ingest INDEX.md line. The guarantee covers schema'd notes.) Centralising
+and deletes — ``brain.distill`` writes those directly by design, as do the
+ingest INDEX.md line and the heal pass's ``reports/health/`` + LOG.md output.
+The guarantee covers schema'd notes.) Centralising
 writes here buys five guarantees the scattered writers could not:
 
   (a) slug validation + path containment — a slug is ``^[a-z0-9][a-z0-9-]{1,80}$``
