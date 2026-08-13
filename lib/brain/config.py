@@ -73,10 +73,12 @@ ENV = {
     "forge_repo": "TASK_STATION_BRAIN_FORGE_REPO",
     "forge_target_branch": "TASK_STATION_BRAIN_FORGE_TARGET_BRANCH",
     "ado_org": "TASK_STATION_BRAIN_ADO_ORG",
-    # Subscription memos. task_station_cli = the published task-station CLI
-    # (stable engine path by default). knowledge_memos gates memo delivery —
-    # tri-state: unset ⇒ auto-on iff task-station is detected.
-    "task_station_cli": "TASK_STATION_BRAIN_TASK_STATION_CLI",
+    # Subscription memos. knowledge_memos gates memo delivery — tri-state: unset
+    # ⇒ auto-on iff the board plane is detected (its store is on disk). The
+    # standalone source also carried a `task_station_cli` path here, because it
+    # delivered memos by shelling out to the published CLI; 3.0.0's brain->board
+    # bridge is a DIRECT `board.memos` call (brain/subscribe.py), so the key, its
+    # env name and its default died with the subprocess.
     "knowledge_memos": "TASK_STATION_BRAIN_KNOWLEDGE_MEMOS",
 }
 _TRUE = {"1", "true", "yes", "on"}
@@ -127,13 +129,6 @@ def DEFAULT_TASKS_DB():
     ``~/.claude/...`` so a relocated store is still found (the standalone source
     could not do this — it had no core.paths to read)."""
     return _data_home() / "store/tasks.db"
-
-
-def DEFAULT_TASK_STATION_CLI():
-    """The stable published task-station CLI entry (memo delivery bridge). The
-    ``task-station-engine`` symlink is re-pointed at the active lib/ every
-    session, so this path survives version bumps."""
-    return Path.home() / ".claude/task-station-engine/task-station.py"
 
 
 def DEFAULT_EPISODIC_STREAM(tasks_db):
@@ -394,9 +389,9 @@ def load(_warn=True):
         # Default None so the helper's own env / built-in fallbacks stay
         # authoritative when nothing is configured here.
         "ado_org": _pick(cfg, "ado_org", None),
-        # Subscription memos: the published task-station CLI + the delivery gate
-        # (tri-state; None ⇒ the subscriber auto-decides by detection).
-        "task_station_cli": _pick_path(cfg, "task_station_cli", DEFAULT_TASK_STATION_CLI()),
+        # Subscription memos: the delivery gate (tri-state; None ⇒ the subscriber
+        # auto-decides by detection — see brain/subscribe.py::board_present, which
+        # reads `tasks_db` above; the memo bridge needs no path of its own).
         "knowledge_memos": _resolve_tristate(cfg, "knowledge_memos"),
     }
 
