@@ -884,6 +884,40 @@ def save_nudge_hours():
                             "save_nudge_hours", 12)
 
 
+# -- the memo nag's quieting (lib/board/memos.py) -------------------------------
+#
+# The third per-prompt signal, and the one that grew loud on its own. The "N memo(s)
+# awaiting YOUR ack" block is ack-gated PER SESSION, so on a long-lived task a session
+# that opens late inherits every memo it personally never acked — 22 of them in the
+# incident behind this, every one already dispositioned by peer sessions. Quieting drops
+# the ones the room has SETTLED (a decision/memory ack from anyone, or dispositions from
+# `memo_quiet_after` distinct sessions) from the NAG only; `memo show`, the detail view
+# and the ack path are untouched, so nothing is hidden from the record.
+#
+# Default ON for the same reason the two above are: a signal that cries wolf is the one
+# failure a per-prompt rail cannot afford. The count is POSITIVE-ONLY — a zero would
+# settle every memo on sight and silence the nag entirely, which is the off switch, not a
+# threshold.
+
+def memo_quiet_enabled():
+    """Whether the awaiting-your-ack nag drops memos the room has already settled —
+    default ON. The env escape `TASK_STATION_MEMO_QUIET` (on/off/1/0/true/false) WINS over
+    config. Off restores the pre-3.0.0 behaviour: every memo this session never acked,
+    every prompt, regardless of what peers did with it."""
+    env = os.environ.get("TASK_STATION_MEMO_QUIET")
+    if env is not None:
+        return env.strip().lower() in ("on", "1", "true")
+    v = get("memo_quiet")
+    return True if v is None else bool(v)
+
+
+def memo_quiet_after():
+    """Distinct sessions whose dispositions (any kind, noop included) settle a memo for
+    the nag. Default 3; `TASK_STATION_MEMO_QUIET_AFTER` overrides. A decision/memory ack
+    from ANY single session settles it regardless of this count."""
+    return _positive_number("TASK_STATION_MEMO_QUIET_AFTER", "memo_quiet_after", 3)
+
+
 def enabled_categories():
     """The configured active-category key list, or None when unconfigured
     (categories.enabled_keys() then defaults to CORE — the lean default)."""
@@ -1174,6 +1208,20 @@ def board_rows():
          "digest reads stale — and only ever with at least one decision since, so the "
          "clock alone never nudges (default 12)", None,
          "/task-station:config --save-nudge-hours <hours>"),
+        ("--memo-quiet", "on" if memo_quiet_enabled() else "off", "on · off",
+         "Keep memos the room has already SETTLED out of the per-prompt "
+         "\"awaiting YOUR ack\" nag (default: on)",
+         ["Settled = any session acked it with a decision/memory disposition (a durable "
+          "store took it), or --memo-quiet-after distinct sessions dispositioned it.",
+          "The nag only: `memo show`, the task detail view and `memo ack` keep listing "
+          "every memo, and a quieted memo stays ackable.",
+          "off — every memo this session never acked is listed on every prompt, however "
+          "many peers have already handled it."],
+         None),
+        ("--memo-quiet-after", str(memo_quiet_after()), "<count>",
+         "with --memo-quiet on: distinct sessions whose dispositions (any kind, noop "
+         "included) settle a memo for the nag (default 3)", None,
+         "/task-station:config --memo-quiet-after <count>"),
         ("--ultracode-hints", "on" if ultracode_hints_enabled() else "off", "on · off",
          "Suggest multi-agent breadth on big research/review/data tasks (default: on)", None, None),
         ("--notify", "on" if notify_enabled() else "off", "on · off",
@@ -1745,6 +1793,10 @@ RESET_KEYS = [
     # station reset that left `save_nudge` off behind would leave the user with a signal
     # they had silenced and no longer remembered silencing.
     "heal_prompt_nag", "save_nudge", "save_nudge_decisions", "save_nudge_hours",
+    # The memo nag's quieting + its quorum, popped for the same reason: a reset that left
+    # `memo_quiet` off behind would keep re-listing settled memos on a station the user
+    # just cleared, and a hand-tuned quorum would keep a threshold nobody remembers.
+    "memo_quiet", "memo_quiet_after",
 ]
 
 
@@ -2010,6 +2062,19 @@ def cmd_config(a):
         print("save_nudge_hours = %s" % save_nudge_hours()); return
     if getattr(a, "save_nudge_hours_get", False):
         print(str(save_nudge_hours())); return
+    if getattr(a, "memo_quiet", None) is not None:
+        set("memo_quiet", a.memo_quiet == "on")
+        print("memo_quiet = %s" % ("on" if get("memo_quiet") else "off")); return
+    if getattr(a, "memo_quiet_get", False):
+        print("on" if memo_quiet_enabled() else "off"); return
+    if getattr(a, "memo_quiet_after", None) is not None:
+        try:
+            set("memo_quiet_after", max(1, int(str(a.memo_quiet_after).strip())))
+        except ValueError:
+            print("memo_quiet_after: expected a positive session count"); return
+        print("memo_quiet_after = %s" % memo_quiet_after()); return
+    if getattr(a, "memo_quiet_after_get", False):
+        print(str(memo_quiet_after())); return
     if getattr(a, "ultracode_hints", None) is not None:
         set("ultracode_hints", a.ultracode_hints == "on")
         print("ultracode_hints = %s" % ("on" if get("ultracode_hints") else "off")); return

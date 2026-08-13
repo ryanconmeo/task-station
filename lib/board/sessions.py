@@ -126,13 +126,25 @@ def memo_pending_brief(task, session):
     fact handed to a task is never silently missed. Renders newest-last, ≤
     MEMO_PENDING_MAX lines (≤ MEMO_LINE_MAX chars each), each with the shared ack
     ledger inline so peers can see who's already handled it (no double-implement).
-    None on a task with no memos feed (back-compat)."""
-    pending = memo_pending(task, session)                # oldest-first, ack-gated
+    None on a task with no memos feed (back-compat).
+
+    THIS is the one surface that quiets SETTLED memos (`memo_pending(..., quiet=True)` —
+    see memos.memo_settled): a memo a peer already folded into a durable store, or that
+    three distinct sessions have dispositioned, is not news this session must be handed on
+    every prompt. Quieting is scoped to the nag and nowhere else — `memo show`, the detail
+    view and the ack path all keep the full pending list — so a quieted memo is one line
+    less on the rail, never one memo less on the record. When it hides anything, the count
+    line says so and names the surface that lists them all."""
+    pending = memo_pending(task, session, quiet=True)     # oldest-first, ack-gated
     if not pending:
         return None
+    quieted = len(memo_pending(task, session)) - len(pending)
+    head = ("[task-station] %d memo(s) awaiting YOUR ack on [%s]:"
+            % (len(pending), task["id"][:8]))
+    if quieted > 0:
+        head += (" (%d settled memo(s) quieted — memo show lists all)" % quieted)
     shown = pending[-MEMO_PENDING_MAX:]                  # newest-last within the cap
-    out = ["[task-station] %d memo(s) awaiting YOUR ack on [%s]:"
-           % (len(pending), task["id"][:8])]
+    out = [head]
     for m in shown:
         body = " ".join((m.get("text") or "").split())
         ackers = [a.get("sid", "")[:8] for a in (m.get("acks") or []) if a.get("sid")]

@@ -1184,6 +1184,19 @@ def _add_config_args(sp):
                          "since (default 12)")
     sp.add_argument("--save-nudge-hours-get", dest="save_nudge_hours_get",
                     action="store_true")
+    sp.add_argument("--memo-quiet", dest="memo_quiet", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="keep memos the room has already SETTLED (a decision/memory ack "
+                         "from anyone, or --memo-quiet-after distinct dispositions) out of "
+                         "the per-prompt awaiting-your-ack nag; `memo show` still lists "
+                         "every memo (default on)")
+    sp.add_argument("--memo-quiet-get", dest="memo_quiet_get", action="store_true")
+    sp.add_argument("--memo-quiet-after", dest="memo_quiet_after", nargs="?",
+                    default=None, metavar="COUNT",
+                    help="with --memo-quiet on: distinct sessions whose dispositions (any "
+                         "kind, noop included) settle a memo for the nag (default 3)")
+    sp.add_argument("--memo-quiet-after-get", dest="memo_quiet_after_get",
+                    action="store_true")
     sp.add_argument("--desktop-bridge", dest="desktop_bridge", nargs="?",
                     choices=["on", "off"], const="on", default=None,
                     help="wire the dependency-free MCP server into Claude Desktop (on) / remove it (off)")

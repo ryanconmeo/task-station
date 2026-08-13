@@ -14,7 +14,8 @@ import paths
 g, set_g = _shared.g, _shared.set_g
 
 __all__ = [
-    "_memo_src_label", "_memo_pending_for", "memo_pending", "_trim_memos",
+    "_memo_src_label", "_memo_pending_for", "MEMO_QUIET_AFTER",
+    "_memo_dispositioned_by", "memo_settled", "memo_pending", "_trim_memos",
     "memo_corrections", "memo_send",
     "memo_ack_disposition", "memo_ack", "_memo_by_prefix",
     "mark_seen",
@@ -52,10 +53,113 @@ def _memo_pending_for(memo, session):
     return session not in {a.get("sid") for a in (memo.get("acks") or [])}
 
 
-def memo_pending(task, session):
+# -- settled memos: when the ROOM has answered, one session's silence isn't news ----
+#
+# `_memo_pending_for` is per-session and unbounded, and that is right for the ledger: a
+# memo this session never acked IS unacked by this session, forever. It is wrong for the
+# per-prompt NAG. A long-lived task collects memos faster than any one session acks them,
+# so a session that opens on day nine inherits every memo it personally never saw — a real
+# session opened to 22 of them, every single one already dispositioned by peer hubs. A nag
+# that lists two dozen items nobody needs to act on is not a signal, and the cost is that
+# the one memo that DOES need this session is buried in it.
+#
+# So the nag (and ONLY the nag) drops memos the room has already settled. Settled is not
+# "old" and not "seen" — it is a durable-store fact or a quorum:
+#
+#   (a) ANY session acked it with a DECISION or MEMORY disposition. Those two are the
+#       dispositions that say a durable store was updated, and a durable store is shared:
+#       once the fact is in the decision log or a memory note, a second session
+#       re-integrating it produces the double-implement the ack ledger exists to prevent.
+#   (b) `after` DISTINCT sessions have dispositioned it at all — noop included. One noop
+#       is one session's judgement call; three independent ones are the room's.
+#
+# A RETRO-filled disposition counts in both limbs. It is a later reconcile pass's
+# reasonable guess rather than the acking session's own answer (which is why every ledger
+# surface tags it "(retro)"), but the question here is only whether ANOTHER session still
+# needs to be nagged — and the cost of being wrong is one memo that stays fully visible in
+# `memo show`, in the detail view, in every count, and remains ackable. Quieting hides a
+# memo from ONE nag; it never removes it from anything.
+#
+# A BARE ack — no disposition at all — deliberately counts toward NEITHER limb. It records
+# only that a session saw the memo, which is the exact shape the disposition requirement
+# was added to stop treating as an integration. `heal --dispose-acks` is how a bare ack
+# becomes a settling one.
+
+MEMO_QUIET_AFTER = 3      # distinct dispositioning sessions that settle a memo (limb b)
+
+_MEMO_DURABLE_KINDS = ("decision", "memory")     # limb (a): a durable store took it
+
+
+def _memo_dispositioned_by(memo):
+    """`(sessions, kinds)` for a memo's ack ledger: the DISTINCT session ids that acked it
+    with a disposition, and the set of disposition kinds recorded. Acks with no sid, or
+    with no disposition (or a disposition carrying no `kind`), are skipped — see the note
+    above on why a bare ack settles nothing."""
+    sessions, kinds = set(), set()
+    for a in ((memo or {}).get("acks") or []):
+        sid = a.get("sid")
+        kind = (a.get("disposition") or {}).get("kind")
+        if not sid or not kind:
+            continue
+        sessions.add(sid)
+        kinds.add(kind)
+    return sessions, kinds
+
+
+def memo_settled(memo, after=MEMO_QUIET_AFTER):
+    """True when the room has dealt with this memo: a decision/memory disposition from ANY
+    session, or dispositions from >= `after` DISTINCT sessions (any kind, noop included).
+
+    Pure and side-effect-free — it reads the memo's ack ledger exactly as stored, so it
+    holds for a legacy memo (no acks → False) and for a retro-dispositioned one alike. A
+    non-positive/unparseable `after` falls back to MEMO_QUIET_AFTER: a zero would settle
+    every memo on sight, which is the "quiets everything" footgun the positive-only config
+    contract refuses everywhere else."""
+    try:
+        after = int(after)
+    except (TypeError, ValueError):
+        after = MEMO_QUIET_AFTER
+    if after <= 0:
+        after = MEMO_QUIET_AFTER
+    sessions, kinds = _memo_dispositioned_by(memo)
+    if kinds & set(_MEMO_DURABLE_KINDS):
+        return True
+    return len(sessions) >= after
+
+
+def _memo_quiet_settings():
+    """`(enabled, after)` for the nag's quieting, read fresh from `config` (a file read,
+    which tests repoint and a tuning change lands in without a restart).
+
+    A raising/absent config falls back to the SHIPPED DEFAULTS — quieting ON at
+    MEMO_QUIET_AFTER — rather than to the unquieted list. This is the deliberate opposite
+    of the prompt rail's usual fail-open, because "open" here means MORE noise, not less:
+    the failure mode being fixed is a nag nobody reads. Nothing is lost either way — a
+    quieted memo is still in `memo show`, still in the detail view, still ackable."""
+    try:
+        import config as _cfg
+        return bool(_cfg.memo_quiet_enabled()), _cfg.memo_quiet_after()
+    except Exception:
+        return True, MEMO_QUIET_AFTER
+
+
+def memo_pending(task, session, quiet=False):
     """Memos on `task` still awaiting `session`'s ack, oldest-first. Empty for a task
-    with no memos feed (back-compat) or for the sender's own session."""
-    return [m for m in (task.get("memos") or []) if _memo_pending_for(m, session)]
+    with no memos feed (back-compat) or for the sender's own session.
+
+    `quiet=True` ADDITIONALLY drops memos the room has settled (see `memo_settled`), and
+    is the awaiting-your-ack NAG's view — nothing else passes it. Every other caller
+    (`memo show`, the detail view's "Memos:" section, `memo ack`, the trim, every count)
+    keeps seeing the full per-session pending list, unchanged. The quieting is opt-in at
+    the call site on purpose: this must never become a silent global change to what
+    "pending" means, because "pending for me" is the ledger's own claim."""
+    pending = [m for m in (task.get("memos") or []) if _memo_pending_for(m, session)]
+    if not quiet:
+        return pending
+    enabled, after = _memo_quiet_settings()
+    if not enabled:
+        return pending
+    return [m for m in pending if not memo_settled(m, after)]
 
 
 def _trim_memos(task):
