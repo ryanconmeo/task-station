@@ -2430,7 +2430,7 @@ def _row(t, theme, variant):
         sess = "none"
     seq = t.get("seq")
     seqcell = ('#%s' % _e(seq)) if seq is not None else ""
-    # F1: the display-only Interbrain handle chip (rnguyen-<seq>) rides next to the seq —
+    # F1: the display-only Interbrain handle chip (<alias>-<seq>) rides next to the seq —
     # only when Interbrain is on (the `_ib` stamp), so the off render is byte-parity.
     if t.get("_ib"):
         seqcell = seqcell + _handle_chip(t)

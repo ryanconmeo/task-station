@@ -37,6 +37,9 @@ class _Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="feeds-tests-")
         os.environ["TASK_STATION_HOME"] = self.tmp
+        # self identity is runtime config now (feeds.self_alias()) — pin it so every
+        # handle/alias assertion below keeps meaning what it meant.
+        os.environ["TASK_STATION_SELF_ALIAS"] = "rnguyen"
         ts.DATA = self.tmp
         ts.STORE = os.path.join(self.tmp, "store")
         ts.TASKS_DIR = os.path.join(ts.STORE, "tasks")
@@ -46,6 +49,7 @@ class _Base(unittest.TestCase):
 
     def tearDown(self):
         os.environ.pop("TASK_STATION_HOME", None)
+        os.environ.pop("TASK_STATION_SELF_ALIAS", None)
         store.reset_cache()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
@@ -180,7 +184,7 @@ class FeedRootTest(_Base):
         self.assertIsNone(feeds.read_self_feed(self.tmp))
         self._seed("A task")
         self._export()
-        self.assertEqual(feeds.read_self_feed(self.tmp)["alias"], feeds.SELF_ALIAS)
+        self.assertEqual(feeds.read_self_feed(self.tmp)["alias"], "rnguyen")
 
 
 # ---- signal ids: the frozen join key ----------------------------------------------
@@ -362,6 +366,58 @@ class ViewModelTest(_Base):
         self.assertEqual(vm["summary"], "the summary")
         for k in ("session_tree", "work_mix", "sessions", "prompts", "open_command"):
             self.assertIn(k, vm)
+
+
+# ---- self identity: runtime config, never a code literal ---------------------------
+
+class SelfAliasTest(_Base):
+    """3.0.0 ships publicly, so the self alias may not be baked into the module. It
+    resolves at call time: env TASK_STATION_SELF_ALIAS > config `self_alias` > the OS
+    username — and the SELF fill comes from SELF_COLOR, not an OWNER_COLORS entry."""
+
+    def _pin(self, value):
+        """Set (`value`) or clear (None) the env alias for ONE test. The cleanup pops
+        it — exactly what _Base.tearDown does — so no alias leaks into the next test
+        (the whole suite shares one process)."""
+        self.addCleanup(os.environ.pop, "TASK_STATION_SELF_ALIAS", None)
+        if value is None:
+            os.environ.pop("TASK_STATION_SELF_ALIAS", None)
+        else:
+            os.environ["TASK_STATION_SELF_ALIAS"] = value
+
+    def test_env_alias_owns_the_whole_self_feed(self):
+        """The env alias reaches every identity field the feed carries — feed
+        alias/owner, the per-task handle, participants — and the fill is SELF_COLOR."""
+        self._pin("kdoe")
+        t = self._seed("Aliased")
+        self._export()
+        feed = self._self_feed()
+        self.assertEqual(feed["alias"], "kdoe")
+        self.assertEqual(feed["owner"], "kdoe")
+        self.assertEqual(feed["color"], feeds.SELF_COLOR["light"])
+        self.assertEqual(feed["color_dark"], feeds.SELF_COLOR["dark"])
+        vm = [x for x in feed["tasks"] if x["title"] == "Aliased"][0]
+        self.assertEqual(vm["handle"], "kdoe-%s" % t["seq"])
+        self.assertEqual(vm["participants"], ["kdoe"])
+        self.assertEqual(vm["owner"], "kdoe")
+
+    def test_config_self_alias_is_the_fallback(self):
+        """No env → the runtime config key under TASK_STATION_HOME."""
+        self._pin(None)
+        import config
+        config.set("self_alias", "cfguser")
+        self.assertEqual(feeds.self_alias(), "cfguser")
+
+    def test_default_is_the_os_username(self):
+        """No env, no config key → the OS username, so a fresh install still has an
+        identity without any setup."""
+        self._pin(None)
+        import getpass
+        self.assertEqual(feeds.self_alias(), getpass.getuser())
+
+    def test_no_identity_literal_left_in_the_module(self):
+        self.assertNotIn("rnguyen", feeds.OWNER_COLORS)
+        self.assertEqual(feeds.SELF_COLOR, {"light": "#cf8a22", "dark": "#b97e1f"})
 
 
 # ---- archive shard -----------------------------------------------------------------

@@ -49,8 +49,9 @@ present. When the ledger is off/empty there is no span data to estimate from, so
 
 VOCABULARY (Interbrain federation): products task-station / brain-station / Interbrain;
 the event stream is the *tasklog*; sync repo, relay, registry, boundaries, private/
-public/org brain, handle (`<alias>-<n>`), memo. Self alias = `rnguyen`; demo peers
-`jpark`/`kosei`; org alias `org`.
+public/org brain, handle (`<alias>-<n>`), memo. Self alias arrives from runtime config
+(`self_alias()`: env > config `self_alias` > OS username); demo peers `jpark`/`kosei`;
+org alias `org`.
 """
 import hashlib
 import json
@@ -62,13 +63,36 @@ from core.fsutil import atomic_write as _atomic_write  # moved to core.fsutil in
 
 # ---- identity / palette -----------------------------------------------------
 
-SELF_ALIAS = "rnguyen"            # self = Entra local-part (org identity system)
 SELF_BRAIN = "main"
 
-# Owner fill colors — CVD-validated set (always paired with the alias label in the
-# UI so color is never the sole channel). light / dark variants.
+SELF_COLOR = {"light": "#cf8a22", "dark": "#b97e1f"}   # the SELF fill (was the old self entry)
+
+
+def self_alias():
+    """Self identity — the user's alias (e.g. an Entra/AD local-part). Arrives
+    from runtime config, never from code: env TASK_STATION_SELF_ALIAS >
+    config.json `self_alias` > the OS username. Display + feed identity only."""
+    env = os.environ.get("TASK_STATION_SELF_ALIAS")
+    if env and env.strip():
+        return env.strip()
+    try:
+        import config as _config
+        v = _config.get("self_alias")
+        if v and str(v).strip():
+            return str(v).strip()
+    except Exception:
+        pass
+    try:
+        import getpass
+        return getpass.getuser() or "self"
+    except Exception:
+        return "self"
+
+
+# DEMO peer + org fills — CVD-validated set (always paired with the alias label in
+# the UI so color is never the sole channel). light / dark variants. The SELF fill is
+# SELF_COLOR, keyed onto the feed at write time by the runtime alias.
 OWNER_COLORS = {
-    "rnguyen": {"light": "#cf8a22", "dark": "#b97e1f"},
     "jpark":   {"light": "#4f8fe6", "dark": "#4f8fe6"},
     "kosei":   {"light": "#279a84", "dark": "#279a84"},
     "org":     {"light": "#8f7ae0", "dark": "#8f7ae0"},
@@ -217,10 +241,11 @@ def self_view_model(ts, backend, task, live_ids, cfg=None):
     `brain` (where the task lives) and `shares` (resolved audience list) come from
     brains.json via `cfg` (default brain "main", no shares). `shared_org` is derived
     (True iff the task is shared to `org`)."""
+    alias = self_alias()
     tid = task.get("id") or ""
     uuid8 = tid[:8]
     seq = task.get("seq")
-    handle = "%s-%s" % (SELF_ALIAS, seq if seq is not None else uuid8)
+    handle = "%s-%s" % (alias, seq if seq is not None else uuid8)
     sessions = set(task.get("sessions") or [])
     live = bool(sessions & live_ids)
     done, total = ts.step_progress(task)
@@ -278,8 +303,8 @@ def self_view_model(ts, backend, task, live_ids, cfg=None):
             "steps_total": total,
             "decisions_tail": decisions,
         },
-        "participants": [SELF_ALIAS],
-        "owner": SELF_ALIAS,
+        "participants": [alias],
+        "owner": alias,
         "shared_org": ("org" in shares),
     }
     vm.update(rich)
@@ -453,12 +478,13 @@ def peer_feed_files(data_dir):
 # ---- feed objects -----------------------------------------------------------
 
 def _self_feed_obj(recent, has_archive):
-    oc = OWNER_COLORS[SELF_ALIAS]
+    alias = self_alias()
+    oc = SELF_COLOR
     return {
         "schema": FEED_SCHEMA,
         "kind": "self",
-        "alias": SELF_ALIAS,
-        "owner": SELF_ALIAS,
+        "alias": alias,
+        "owner": alias,
         "brain": SELF_BRAIN,
         "label": "My brain · main",
         # F5: the feed carries its own content rev so a subscriber can diff it.
@@ -475,12 +501,13 @@ def _self_feed_obj(recent, has_archive):
 
 
 def _archive_feed_obj(archive):
-    oc = OWNER_COLORS[SELF_ALIAS]
+    alias = self_alias()
+    oc = SELF_COLOR
     return {
         "schema": FEED_SCHEMA,
         "kind": "archive",
-        "alias": SELF_ALIAS,
-        "owner": SELF_ALIAS,
+        "alias": alias,
+        "owner": alias,
         "brain": SELF_BRAIN,
         "label": "My brain · archive",
         "editable": True,
