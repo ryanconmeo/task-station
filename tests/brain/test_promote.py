@@ -7,8 +7,10 @@ nothing here reaches az or a remote.
 PROVENANCE: ported in 3.0.0 Phase 4 (chunk 4b) from the brain source tree's
 ``tests/test_promote.py`` @ 0.14.0. Ten of its eleven cases are here 1:1. The
 eleventh, ``SkillHygieneTest``, reads ``skills/brain-promote/SKILL.md`` — a brain
-SKILL asset that does not ship in this repo yet (chunk 5 owns the skills/
-templates/vault-scaffold decision), so it is DEFERRED BY NAME rather than faked.
+SKILL asset that did not ship in this repo when chunk 4b landed, so it was
+DEFERRED BY NAME rather than faked. **Chunk 5b shipped the skills and APPENDED it
+below**, widened to every brain skill and with its needle list genericized; see
+that class's own docstring.
 
 Rewrites: module ``note_io`` -> ``brain.notes``, ``promote`` -> ``brain.promote``,
 ``forge`` -> ``core.forge``; the org product word in every fixture slug and in the
@@ -21,6 +23,7 @@ ADDED here (no source counterpart): the collapse-to-reference ACTION
 shape, the strip rules as pure functions, the local PR stamp, and the layer rule.
 """
 import json
+import re
 import subprocess
 import unittest
 from unittest import mock
@@ -495,6 +498,106 @@ class PromotePublishLayeringTest(unittest.TestCase):
         a decision, not a drift."""
         self.assertIn("core", top_level_imports(LIB / "brain/promote.py"))
         self.assertNotIn("core", top_level_imports(LIB / "brain/publish.py"))
+
+
+class SkillHygieneTest(unittest.TestCase):
+    """APPENDED by chunk 5b — the case chunk 4b deferred (D49), widened.
+
+    The source asserted ONE thing about ONE file: that ``brain-promote``'s skill
+    no longer carried the token/push/PR mechanics after they moved into
+    ``promote.py``. The claim generalises — a skill is prose a model follows, so
+    anything operational it spells out is a copy that drifts from the code — so
+    it now reads every brain skill this repo ships.
+
+    THE NEEDLE LIST IS GENERICIZED. Two of the source's eight needles were one
+    organisation's words; they are replaced by what these skills genuinely must
+    not contain: a module invoked by its retired ``scripts/<file>.py`` path, and a
+    module name that no longer exists. **The org-term half stays a ripgrep**, as
+    in every prior chunk (5a §6.2): writing those words here as string literals
+    would plant in the tree the exact spellings the scrub sweep exists to keep
+    out. Old spellings are described, never written.
+
+    Plain ``TestCase``: this reads shipped files and needs no temp home.
+    """
+
+    SKILLS = ("brain", "brain-heal", "brain-init", "brain-promote", "brain-save", "ado")
+
+    # Forge mechanics + one developer's local clone path. Six of the source's
+    # eight needles, unchanged: these belong in brain.promote, never in prose.
+    FORGE_MECHANICS = ("az account", "az repos", "http.extraheader", "499b84ac",
+                       "dev.azure.com", "Workspace/org_brain")
+
+    # The two REPLACEMENT needles' first half: every module the 3.0.0 port
+    # renamed, in the spelling a stale skill would still carry. ``scripts/``
+    # catches the path form on its own; the rest catch a bare filename.
+    RETIRED_PATHS = ("scripts/", "brain.py", "note_io", "reconcile-gate.py",
+                     "tier_lint.py", "lint.py", "ingest_artifacts.py",
+                     "auto-distill.py", "org-brain-pull.py", "subscriptions.py",
+                     "mcp_server.py", "init_home.py", "publish_setup.py",
+                     "promote.py", "publish.py", "ado_tree.py", "ado_resolve.py")
+
+    _MODULE_RX = re.compile(r"\bbrain\.([a-z_][a-z0-9_]*)")
+    # A skill the SessionStart routing document routes to, e.g. ``brain-save``.
+    _ROUTED_RX = re.compile(r"\bbrain-[a-z]+(?:-[a-z]+)*\b")
+
+    def _skill(self, name):
+        path = LIB.parent / "skills" / name / "SKILL.md"
+        self.assertTrue(path.exists(), f"skills/{name}/SKILL.md missing")
+        return path
+
+    def test_skills_carry_no_forge_mechanics_or_local_clone_paths(self):
+        for name in self.SKILLS:
+            text = self._skill(name).read_text()
+            for bad in self.FORGE_MECHANICS:
+                self.assertNotIn(bad, text,
+                                 f"skills/{name} still carries forbidden literal {bad!r}")
+
+    def test_no_skill_invokes_a_module_by_its_retired_path(self):
+        """The 3.0.0 port turned every ``scripts/<file>.py`` invocation into
+        ``python3 -m brain.<module>``. A skill that missed the rewrite reads
+        perfectly and runs nothing."""
+        for name in self.SKILLS:
+            text = self._skill(name).read_text()
+            for bad in self.RETIRED_PATHS:
+                self.assertNotIn(bad, text,
+                                 f"skills/{name} still invokes {bad!r} — rewrite it to the -m form")
+
+    def test_every_brain_module_a_skill_names_exists(self):
+        named = set()
+        for name in self.SKILLS:
+            text = self._skill(name).read_text()
+            for mod in self._MODULE_RX.findall(text):
+                named.add(mod)
+                self.assertTrue((LIB / "brain" / f"{mod}.py").exists(),
+                                f"skills/{name} names brain.{mod}, which does not exist")
+        # a rewrite that deleted the invocations entirely would pass vacuously
+        self.assertIn("search", named)
+
+    def test_every_skill_frontmatter_names_its_own_directory(self):
+        for name in self.SKILLS:
+            head = self._skill(name).read_text().split("---", 2)[1]
+            self.assertIn(f"name: {name}\n", head,
+                          f"skills/{name} frontmatter does not declare `name: {name}`")
+            self.assertIn("description:", head, f"skills/{name} has no description")
+
+    def test_the_routing_document_ships_and_routes_only_to_skills_that_exist(self):
+        """The SessionStart hook injects ``$CLAUDE_PLUGIN_ROOT/system-instructions.md``
+        verbatim (5a's ``inject._routing_text``), and injects NOTHING when it is
+        missing — silently, by design. So the only thing that can notice the
+        document is absent, or that it routes a user at a skill this repo does not
+        ship, is a test. Both halves are here."""
+        doc = LIB.parent / "system-instructions.md"
+        self.assertTrue(doc.exists(),
+                        "system-instructions.md must sit at the plugin root — it is what "
+                        "inject._routing_text() reads, and without it SessionStart ships "
+                        "the orientation line with no routing rules")
+        text = doc.read_text()
+        self.assertTrue(text.strip(), "the routing document is empty")
+        routed = {n for n in self._ROUTED_RX.findall(text) if n != "brain-station"}
+        self.assertTrue(routed, "the routing document names no skill at all")
+        for name in sorted(routed):
+            self.assertIn(name, self.SKILLS,
+                          f"the routing document routes to /{name}, which does not ship")
 
 
 if __name__ == "__main__":
