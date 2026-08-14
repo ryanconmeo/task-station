@@ -17,15 +17,19 @@ mechanical differences:
     source's retired prefix.
 
 The source's ``AutoPullTest`` (throttle stamp + ``pull()`` failure breadcrumb)
-lives in its ``tests/test_team_rules.py``, which is chunk 5's — the error-log
-labels and the stamp filename are therefore kept at their source spellings so
-that port needs no rewrite.
+lived in its ``tests/test_team_rules.py``; chunk 5a APPENDED it at the bottom of
+this file, as chunk 4a's handoff asked. D33 kept the error-log labels and the
+stamp filename at their source spellings, so all 5 cases land with no assertion
+rewritten — the only change is that the stamp filename is READ from
+``orgpull.STAMP_NAME`` instead of being re-spelled in the test.
 """
 import os
 import subprocess
+import time
 
 from tests.brain.base import BrainTestCase, ENV_KEYS
 
+import brain.config as bconfig
 import brain.orgpull as orgpull
 
 
@@ -108,6 +112,47 @@ class PullIntegrationTest(SpawnSeamMixin):
     def test_main_no_spawn_when_up_to_date(self):
         self._main()                    # clone already == remote -> HEAD unchanged -> no spawn
         self.assertEqual(self.calls, [])
+
+
+# --------------------------------------------------------------------------- #
+# APPENDED in chunk 5a — the throttle + breadcrumb half of org-pull coverage,
+# ported from the source's ``tests/test_team_rules.py::AutoPullTest`` (5 cases).
+# It tests `orgpull`, so it belongs here rather than in a second module that
+# would drift from this one; its sibling `ClaudeMdImportTest` went to
+# `test_init_home.py` for the same reason.
+# --------------------------------------------------------------------------- #
+class AutoPullTest(BrainTestCase):
+    def test_is_due_when_no_stamp(self):
+        self.assertTrue(orgpull.is_due())
+
+    def test_throttled_after_touch(self):
+        orgpull._touch_stamp()
+        self.assertFalse(orgpull.is_due())                 # just pulled -> not due
+
+    def test_due_again_after_24h(self):
+        orgpull._touch_stamp()
+        # the stamp filename is the module's constant, never re-spelled here (D33)
+        stamp = bconfig.state_dir() / orgpull.STAMP_NAME
+        old = time.time() - 25 * 3600
+        os.utime(stamp, (old, old))
+        self.assertTrue(orgpull.is_due())
+
+    def test_no_org_brain_clone_is_graceful(self):
+        cfg = {"org_brain_clone": self.home / "no-such-org_brain"}
+        self.assertEqual(orgpull.pull(cfg), "no org_brain git clone")
+
+    def test_pull_failure_silent_but_logged(self):
+        org_brain = self.home / "org_brain"
+        org_brain.mkdir()
+        subprocess.run(["git", "-C", str(org_brain), "init"], capture_output=True)
+        subprocess.run(["git", "-C", str(org_brain), "config", "user.email", "t@e.com"], capture_output=True)
+        subprocess.run(["git", "-C", str(org_brain), "config", "user.name", "T"], capture_output=True)
+        cfg = {"org_brain_clone": org_brain}
+        status = orgpull.pull(cfg)                          # no remote -> git pull fails
+        self.assertIn("logged", status)                    # returned quietly, no raise
+        log = (bconfig.state_dir() / "error.log")
+        self.assertTrue(log.exists())
+        self.assertIn("org-brain-pull", log.read_text())
 
 
 if __name__ == "__main__":

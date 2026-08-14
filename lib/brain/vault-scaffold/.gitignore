@@ -1,0 +1,11 @@
+# Obsidian workspace state
+.obsidian/workspace*
+.obsidian/cache
+.trash/
+
+# Optional symlinked stores — never commit their contents from the vault
+/memory
+/task-station
+
+# Lint bookkeeping
+reports/health/.last-lint
