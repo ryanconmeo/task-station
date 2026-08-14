@@ -91,6 +91,20 @@ PROJECTS_ROOT = os.path.join(
 # every reader of it is best-effort and version-tolerant (see _remove_bg_session_file).
 SESSIONS_DIR = os.path.join(
     os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude"), "sessions")
+# The CURRENT store (measured 2026-08-14 on this machine, 1.4k files): nested
+# <root>/<org-uuid>/<user-uuid>/local_<uuid>.json, where the file's own
+# `sessionId` is the local_<uuid> name and `cliSessionId` is the id the agents
+# list keys on. A module global so tests can repoint it; every reader stays
+# best-effort and version-tolerant.
+SESSIONS_STORE_ROOT = os.path.join(
+    HOME, "Library", "Application Support", "Claude", "claude-code-sessions")
+# The harness JOB records — measured 2026-08-14: <config>/jobs/<short-sid>/
+# state.json is what `claude agents --json` actually renders for background
+# agents (state/tempo/detail/needs/tokens/output.result). Store-file removal and
+# process kills alone leave a ghost row; flipping `state` to a terminal value is
+# what clears it. A module global so tests can repoint it.
+JOBS_ROOT = os.path.join(
+    os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude"), "jobs")
 
 
 def _now():
@@ -601,6 +615,11 @@ def run_worker(dirpath, task, session_id=None, resume=False, timeout=None, name=
 # watchdog = timeout. `--bg` runs FULL session init, so a worker is `busy` for a
 # noticeable startup window — the poll loop must tolerate a long initial busy.
 IDLE_AGENT_STATES = {"idle"}          # spike 1b: 'idle' = turn complete / waiting
+# Parked, not progressing (444-17: five `blocked` launches burned ~3h because the
+# poll loop had no exit for them). A worker in one of these states is NOT working
+# and will not start on its own — the loop fails FAST with a diagnosis instead of
+# spinning to the watchdog, and status renders it as stalled, never "running".
+STALLED_AGENT_STATES = {"blocked", "stalled", "needs-input"}
 
 
 def _kill_pid_group(pid, grace=3):
@@ -623,20 +642,131 @@ def _kill_pid_group(pid, grace=3):
         pass
 
 
+def _find_agent_pids(sid):
+    """PIDs of live bg-agent processes whose command line carries `sid`.
+    Background agents run as daemon-spawned `--bg-pty-host` processes (their own
+    process-group leaders, measured pid==pgid) whose argv embeds the session
+    transcript path — the agents JSON rows for them carry NO pid, so the pid must
+    be resolved from `ps`. Only lines that are recognizably bg agents are
+    accepted (`--bg-pty-host`, or a task-station/wk worker --name): a user
+    interactively resuming the same sid must never match. Best-effort []."""
+    if not sid:
+        return []
+    try:
+        r = subprocess.run(["ps", "-axo", "pid=,command="],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return []
+    pids = []
+    for line in (r.stdout or "").splitlines():
+        if sid not in line:
+            continue
+        if ("--bg-pty-host" not in line and "--name task-station-" not in line
+                and "--name wk-" not in line):
+            continue
+        head = line.strip().split(None, 1)[0]
+        if head.isdigit() and int(head) != os.getpid():
+            pids.append(int(head))
+    return pids
+
+
+def _job_record(sid):
+    """The harness job record for a bg agent: JOBS_ROOT/<short-sid>/state.json as
+    a (path, dict) tuple, or (None, None). Prefix-tolerant in both directions —
+    the dir name is the SHORT id. Never raises."""
+    if not sid:
+        return None, None
+    try:
+        dirs = os.listdir(JOBS_ROOT)
+    except Exception:
+        return None, None
+    for d in dirs:
+        if not (sid.startswith(d) or d.startswith(sid)):
+            continue
+        p = os.path.join(JOBS_ROOT, d, "state.json")
+        try:
+            with open(p) as f:
+                doc = json.load(f)
+        except Exception:
+            return None, None
+        return (p, doc) if isinstance(doc, dict) else (None, None)
+    return None, None
+
+
+def _job_result(sid):
+    """The worker's final result text from its job record (`output.result`) —
+    for a bg agent this outlives the process and is cheaper and cleaner than the
+    transcript tail. None when absent."""
+    _, doc = _job_record(sid)
+    if not doc:
+        return None
+    out = doc.get("output")
+    txt = out.get("result") if isinstance(out, dict) else None
+    return txt if (isinstance(txt, str) and txt.strip()) else None
+
+
+def _job_diagnosis(sid):
+    """One diagnostic phrase from the job record for a parked agent — the record's
+    `needs` field literally says what it is waiting for (the 444-17 blocked
+    workers were waiting on denied tool actions). '' when unknowable."""
+    _, doc = _job_record(sid)
+    if not doc:
+        return ""
+    bits = []
+    if doc.get("detail"):
+        bits.append("detail: %s" % doc["detail"])
+    if doc.get("needs"):
+        bits.append("needs: %s" % doc["needs"])
+    return "; ".join(str(b)[:300] for b in bits)
+
+
+def _mark_job_done(sid):
+    """Flip a parked agent's job record to state 'done' so the agents list stops
+    serving the row — measured 2026-08-14: THIS file is what `claude agents
+    --json` renders; store-file removal + process kill alone leave a ghost row.
+    Schema-preserving (state/tempo only, atomic replace), keeps output.result
+    (the worker's final report). True when flipped; silently False on any
+    surprise or when already terminal. Never raises."""
+    p, doc = _job_record(sid)
+    if not p or not doc:
+        return False
+    try:
+        if doc.get("state") in ("done", "failed"):
+            return False
+        doc["state"] = "done"
+        doc["tempo"] = "done"
+        tmp = "%s.ts-tmp.%d" % (p, os.getpid())
+        with open(tmp, "w") as f:
+            json.dump(doc, f, indent=1)
+        os.replace(tmp, p)
+        return True
+    except Exception:
+        return False
+
+
 def run_worker_bg(adapter, dirpath, task, session_id=None, resume=False,
                   timeout=None, name=None, model=None, key=None, poll_secs=5,
-                  permission_mode="dontAsk", on_launch=None):
+                  permission_mode="dontAsk", on_launch=None, stall_grace=45):
     """Launch a DETACHED `--bg` worker and poll `claude agents --json` until it
-    reaches `idle` (turn complete → ok), leaves the list (`gone` → died), or the
-    wall-clock watchdog fires (→ killed, timed_out). No stdout pipe exists under
-    --bg: the id comes from the launch print; liveness/phase come from the agents
-    row; the human inspects by attaching in Agent View. Heartbeats reuse the
-    existing registry fields (pid/last_event_ts/phase) so `delegate status` renders
-    unchanged.
+    reaches `idle` (turn complete → ok), leaves the list (`gone` → died), parks in
+    a STALLED_AGENT_STATES state for `stall_grace` seconds (→ fail fast with a
+    diagnosis line), or the wall-clock watchdog fires (→ killed, timed_out). No
+    stdout pipe exists under --bg: the id comes from the launch print;
+    liveness/phase come from the agents row; the human inspects by attaching in
+    Agent View.
+
+    LIVENESS TRUTH (444-17, B1): the heartbeat only advances `last_event_ts` on a
+    state that is evidence of progress (busy/idle) — a poll that observes a PARKED
+    state must not manufacture freshness, that is exactly the lie that hid five
+    blocked workers for ~3h. Every poll records the observed `agent_state`
+    verbatim so `status` can render the truth even after this loop is gone. A
+    parked state is judged against transcript-existence when the grace trips, and
+    the diagnosis line SAYS the state and the transcript verdict.
 
     Returns (sid, final_state, timed_out). final_state is the LAST observed agents
-    state ('idle' when it completed, 'gone' once unlisted). Raises SystemExit when
-    the launch itself failed (no id printed)."""
+    state ('idle' when it completed, 'gone' once unlisted, a stalled state when
+    the grace tripped). Raises SystemExit when the launch itself failed (no id
+    printed)."""
     env = dict(os.environ, TASK_STATION_SUPPRESS="1")
     sid = adapter.spawn_worker(task, dirpath, model=model, name=name,
                                session_id=session_id, resume=resume, env=env,
@@ -651,21 +781,44 @@ def run_worker_bg(adapter, dirpath, task, session_id=None, resume=False,
     started = _now()
     deadline = (started + timeout) if timeout else None
     state, pid = "unknown", None
+    parked_since = None
     if key:
         _touch_heartbeat(key, pid=None, started_ts=started, exit=None,
-                         phase="bg worker launched")
+                         phase="bg worker launched", agent_state="launched")
     # Settle: give the agent a moment to appear in the list before the first poll.
     time.sleep(min(poll_secs, 2))
     while True:
         st = adapter.worker_status(sid)
         state, pid = st["state"], (st.get("pid") or pid)
+        parked = state in STALLED_AGENT_STATES
         if key:
-            _touch_heartbeat(key, pid=pid, last_event_ts=_now(),
-                             phase="agent status: %s" % state)
+            hb = {"pid": pid, "phase": "agent status: %s" % state,
+                  "agent_state": state}
+            if not parked:                    # progress evidence only — never a
+                hb["last_event_ts"] = _now()  # parked poll (the 444-17 lie)
+            _touch_heartbeat(key, **hb)
         if state in IDLE_AGENT_STATES:            # turn complete → ok
             return sid, state, False
         if state == "gone":                       # unlisted → died / killed
             return sid, "gone", False
+        if parked:
+            parked_since = parked_since or _now()
+            if _now() - parked_since >= max(0, stall_grace):
+                t = _find_transcript(sid)
+                verdict = ("transcript ABSENT — the session never started a turn"
+                           if not t else "transcript exists: %s" % t)
+                jd = _job_diagnosis(sid)
+                print("delegate: worker %s is PARKED in agents state '%s' "
+                      "(%ds and not progressing; %s%s). Treating it as STALLED "
+                      "instead of waiting for the watchdog — attach via Agent "
+                      "View, fix the cause (trust/grants preflight output above), "
+                      "or `delegate reap-parked`."
+                      % (sid, state, _now() - parked_since, verdict,
+                         ("; " + jd) if jd else ""),
+                      file=sys.stderr, flush=True)
+                return sid, state, False
+        else:
+            parked_since = None                   # recovered — reset the grace
         if deadline and _now() >= deadline:       # wall-clock watchdog
             if pid:
                 _kill_pid_group(pid)
@@ -677,12 +830,13 @@ def _classify_exit_bg(final_state, timed_out):
     """B4 terminal rule re-derived for --bg (spike 1b): there is NO stdout `result`
     event and NO transcript `result` record, so terminal truth = the agents-row
     status the poll loop last saw. `timeout` wins; a session that reached `idle` is
-    `ok`; a parked `stalled`/`needs-input` status is `stalled` (its own label for
-    the ledger/notify, abnormal for accounting); anything else (`gone` before idle,
-    an error status) is `crash`. -> (label, is_abnormal)."""
+    `ok`; a parked STALLED_AGENT_STATES status — including `blocked`, the state the
+    five 444-17 launches sat in — is `stalled` (its own label for the ledger/notify,
+    abnormal for accounting); anything else (`gone` before idle, an error status) is
+    `crash`. -> (label, is_abnormal)."""
     if timed_out:
         return "timeout", True
-    if final_state in ("stalled", "needs-input"):
+    if final_state in STALLED_AGENT_STATES:
         return "stalled", True
     if final_state in IDLE_AGENT_STATES:
         return "ok", False
@@ -714,21 +868,32 @@ def _remove_bg_session_file(worker_sid):
     """Best-effort: delete the ClaudeCode.app supervisor's session-store file for a
     `--bg` worker so it can't be RESPAWNED after its process group is killed (kill
     ALONE is insufficient — the supervisor restarts a killed --bg agent from this
-    file, and reclaims no RAM). The store lives at <config>/sessions/<name>.json but
-    the FILENAME is not a reliable key, so scan the dir and match the file whose
-    `sessionId` field equals `worker_sid` (prefix-tolerant, since a stored id may be
-    short). Removes at most one matching file.
+    file, and reclaims no RAM). TWO store layouts are scanned, oldest first:
 
-    The store path/schema is Claude-Code-INTERNAL and may change — EVERYTHING here is
-    guarded and version-tolerant: a missing dir, a non-JSON/odd-schema file, or a
-    remove that fails is a silent no-op. NEVER raises (a reaping helper must never
-    block or break a task close)."""
+      * legacy flat  <config>/sessions/<name>.json — match on `sessionId`;
+      * current nested  SESSIONS_STORE_ROOT/<org>/<user>/local_<uuid>.json —
+        the file's own `sessionId` is the local_<uuid> filename; the id the
+        agents list keys on is `cliSessionId`, so BOTH keys are matched
+        (measured 2026-08-14: reaping matched 0 files until cliSessionId was
+        read — the "reaped 40" that changed nothing).
+
+    Prefix-tolerant in both directions (a stored id may be short). Removes at
+    most one matching file. The store path/schema is Claude-Code-INTERNAL and may
+    change — EVERYTHING here is guarded: a missing dir, a non-JSON/odd-schema
+    file, or a remove that fails is a silent no-op. NEVER raises (a reaping
+    helper must never block or break a task close)."""
     if not worker_sid:
         return
+
+    def _match(sid):
+        return (isinstance(sid, str) and sid and
+                (sid == worker_sid or sid.startswith(worker_sid)
+                 or worker_sid.startswith(sid)))
+
     try:
         names = os.listdir(SESSIONS_DIR)
     except Exception:
-        return                                          # no dir / unreadable → nothing to do
+        names = []
     for fn in names:
         if not fn.endswith(".json"):
             continue
@@ -738,17 +903,36 @@ def _remove_bg_session_file(worker_sid):
                 obj = json.load(f)
         except Exception:
             continue                                    # unreadable / non-JSON → skip
-        if not isinstance(obj, dict):
-            continue
-        sid = obj.get("sessionId")
-        if not isinstance(sid, str) or not sid:
-            continue
-        if sid == worker_sid or sid.startswith(worker_sid) or worker_sid.startswith(sid):
+        if isinstance(obj, dict) and _match(obj.get("sessionId")):
             try:
                 os.remove(path)
             except Exception:
                 pass
             return
+    # Nested current store. Walk shallowly (root/org/user/*.json) and stop at
+    # the first match — one agent has one store file.
+    try:
+        walk = os.walk(SESSIONS_STORE_ROOT)
+    except Exception:
+        return
+    for dirpath, _dirs, files in walk:
+        for fn in files:
+            if not fn.endswith(".json"):
+                continue
+            path = os.path.join(dirpath, fn)
+            try:
+                with open(path) as f:
+                    obj = json.load(f)
+            except Exception:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if _match(obj.get("cliSessionId")) or _match(obj.get("sessionId")):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+                return
 
 
 def reap_task_workers(seq, adapter=None, roster=None, current_sid=None,
@@ -780,9 +964,11 @@ def reap_task_workers(seq, adapter=None, roster=None, current_sid=None,
     decided WHICH of a task's workers are orphaned — reaping this task's other workers,
     whose hubs are still alive, would be exactly the bug it is trying to avoid.
 
-    For each confirmed candidate WITH a live-agents pid: remove its session-store file
-    FIRST (so the supervisor can't restart it), THEN SIGTERM→SIGKILL its process group.
-    Returns the list of sids actually reaped (so the caller can ledger each `stop`).
+    For each confirmed candidate: remove its session-store file FIRST (so the
+    supervisor can't restart it), THEN SIGTERM→SIGKILL its process group when the
+    agents row carries a pid (background rows usually don't — the store row IS the
+    agent then). Returns the list of sids actually reaped (so the caller can ledger
+    each `stop`).
 
     Wholly best-effort: the whole reap is gated OFF by config `reap_workers_on_done`
     (default ON) → []; an unimportable/failing adapter, an unreadable registry, a
@@ -855,16 +1041,19 @@ def reap_task_workers(seq, adapter=None, roster=None, current_sid=None,
                 or entry.get("name") or entry.get("label"))
         if not _is_ts_worker_name(name):
             continue
-        # (d) a busy/working worker is left alone.
-        status = str(row.get("status") or "").strip().lower()
+        # (d) a busy/working worker is left alone. Background rows carry the state
+        # in `state` (no `status`, no pid — the two agents-list row shapes), so
+        # both keys are read; requiring a pid here is what let parked bg agents
+        # accumulate forever (B4) — the store file IS the agent when pid is absent.
+        status = str(row.get("status") or row.get("state") or "").strip().lower()
         if status in BUSY_AGENT_STATES:
             continue
-        pid = row.get("pid")
-        if not pid:
-            continue                                    # zombie/no-pid → Claude Code prunes it
         try:
             _remove_bg_session_file(full_sid)           # FILE FIRST — block a respawn…
-            _kill_pid_group(pid)                        # …THEN kill the group
+            pids = [row["pid"]] if row.get("pid") else _find_agent_pids(full_sid)
+            for pid in pids:                            # …THEN kill the process group(s)
+                _kill_pid_group(pid)                    # (bg rows carry no pid in JSON)
+            _mark_job_done(full_sid)                    # …THEN the rendered job record
             reaped.append(sid)
         except Exception:
             pass                                        # a kill failure never aborts the close
@@ -1006,7 +1195,11 @@ def _worker_name(seq, project, label, worktree, entry=None, resuming=False):
 
 # streaming/liveness fields carried across an entry rebuild (pre-register sets
 # them; a post-run refresh must NOT drop the heartbeat state).
-_STREAM_KEYS = ("pid", "started_ts", "last_event_ts", "phase", "exit")
+_STREAM_KEYS = ("pid", "started_ts", "last_event_ts", "phase", "exit",
+                "agent_state",     # last agents-list state observed (bg truth, B1)
+                "report_path",     # durable child report artifact (B3)
+                "trust_ok_ts",     # last successful trust preflight (B2)
+                "grants_probed")   # grants surfaced once per slot (B2)
 
 
 def _save_entry(reg, key, project, seq, label, dirpath, sid, model=None, name=None,
@@ -1211,6 +1404,120 @@ def _parse_result(out):
     return result_text, sid, cost, model, usage
 
 
+# ---- B3: the durable child report ------------------------------------------
+# The 3.0.0 migration's worktree HANDOFF-*.md files are the proven prototype:
+# an untracked worktree-root artifact with the same named sections every time.
+# delegate formalizes exactly that shape — the worker is CONTRACTED to write it,
+# and when it doesn't (or the run was backgrounded, where stdout is lost —
+# task-station-backgrounded-delegate-loses-report), the worker's final message
+# is harvested into the same file so the report always survives the process.
+
+REPORT_SECTIONS = ("What was done", "Deviations (each with WHY)",
+                   "Gates run vs NOT run",
+                   "Unverified (mandatory — every claim you could not verify; "
+                   "write 'none' only if truly none)",
+                   "Suspicious / decisions for the hub",
+                   "What the next chunk inherits")
+
+REPORT_CONTRACT = """
+
+--- REPORT CONTRACT (task-station delegate) ---
+Before you finish, WRITE your final report to %s (create or overwrite) with EXACTLY these sections:
+%s
+The FILE is the durable report — keep your final chat message to a short summary of it."""
+
+
+def _report_slug(seq, label):
+    raw = str(label or (seq if seq else "") or "worker")
+    keep = "".join(c if (c.isalnum() or c in "._-") else "-" for c in raw)
+    return keep.strip("-") or "worker"
+
+
+def _report_path(dirpath, repo_root, seq, label, project=None):
+    """Where the durable child report lives: the WORKTREE root (the HANDOFF
+    prototype's home — untracked, survives the session, reviewable by the hub).
+    A main-checkout (read-only) run must never drop files into the user's
+    checkout, so its harvest lands under the data dir instead."""
+    if _is_main_checkout(dirpath, repo_root):
+        d = os.path.join(REG_DIR, "reports")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            pass
+        return os.path.join(d, "HANDOFF-REPORT-%s-%s.md"
+                            % (project or os.path.basename(dirpath),
+                               _report_slug(seq, label)))
+    return os.path.join(dirpath, "HANDOFF-REPORT-%s.md" % _report_slug(seq, label))
+
+
+def _with_report_contract(task, rpath):
+    sections = "\n".join("## " + s for s in REPORT_SECTIONS)
+    return task + (REPORT_CONTRACT % (rpath, sections))
+
+
+def _transcript_final_text(sid):
+    """The transcript's last assistant-message text — under --bg the only copy of
+    the worker's final report (no stdout result event exists there). None when the
+    transcript is absent/unreadable or holds no assistant text. Never raises."""
+    p = _find_transcript(sid)
+    if not p:
+        return None
+    try:
+        with open(p, errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    for ln in reversed(lines):
+        try:
+            rec = json.loads(ln)
+        except Exception:
+            continue
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        msg = rec.get("message") or {}
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list):
+            txt = "\n".join(b.get("text", "") for b in content
+                            if isinstance(b, dict) and b.get("type") == "text").strip()
+            if txt:
+                return txt
+    return None
+
+
+def _persist_report(rpath, started_ts, sid, result_text=None):
+    """Ensure the durable child report exists. A worker-authored file (mtime at or
+    after this run's start) wins untouched; otherwise the worker's final message —
+    the stdout result on the streaming path, the transcript tail under --bg — is
+    harvested into the file WITH a banner saying so. Returns (path_or_None, how)
+    where how ∈ worker-authored | harvested | none. Best-effort: never raises."""
+    try:
+        if os.path.isfile(rpath) and os.path.getmtime(rpath) >= (started_ts or 0):
+            return rpath, "worker-authored"
+    except OSError:
+        pass
+    source = "result event"
+    text = (result_text or "").strip()
+    if not text:
+        source, text = "job record", (_job_result(sid) or "").strip()
+    if not text:
+        source, text = "session transcript", (_transcript_final_text(sid) or "").strip()
+    if not text:
+        return (rpath if os.path.isfile(rpath) else None), "none"
+    banner = ("# HANDOFF (delegate-harvested)\n\n"
+              "> The worker did not write the contracted report file; this is its\n"
+              "> final message, harvested from the %s by delegate so the report\n"
+              "> survives backgrounding. session: %s · %s\n\n"
+              % (source, sid or "?", time.strftime("%Y-%m-%d %H:%M")))
+    try:
+        with open(rpath, "w", encoding="utf-8") as f:
+            f.write(banner + text + "\n")
+        return rpath, "harvested"
+    except OSError:
+        return None, "none"
+
+
 def _post_worker_event(seq, project, label, sid, ok, result_text):
     """Best-effort: append a `worker` event to the /todo task's feed so a resumed/
     attached session learns a delegated run finished or failed. Fired via WS1's
@@ -1325,6 +1632,118 @@ def _bg_permission_mode(dirpath):
     except Exception:
         on = False
     return "bypassPermissions" if (on and _under_worktrees(dirpath)) else "dontAsk"
+
+
+def _worktree_hook():
+    """Import lib/board/worktree_hook lazily. Delegate must stay importable when
+    the board plane is absent/broken — the preflight then degrades to a warning
+    instead of blocking the launch."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from board import worktree_hook
+    return worktree_hook
+
+
+def _trust_state(dirpath):
+    """Whether ~/.claude.json marks `dirpath` trusted: True/False, or None when
+    the file is missing/unreadable/odd-schema (unknowable ≠ untrusted)."""
+    try:
+        wh = _worktree_hook()
+        with open(wh.claude_json_path(None), encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        e = (data.get("projects") or {}).get(dirpath)
+        return bool(isinstance(e, dict) and e.get("hasTrustDialogAccepted") is True)
+    except Exception:
+        return None
+
+
+def _effective_grants(dirpath):
+    """Probe the permission grants a worker launched in `dirpath` will ACTUALLY
+    get: the merged permissions.allow/deny of the user settings file, the dir's
+    checked-in .claude/settings.json, and its gitignored
+    .claude/settings.local.json (the file worktree provisioning copies). Returns
+    {"allow": [...], "deny": [...], "sources": [(label, path, n_allow)],
+    "missing": ["label:path", ...]}.
+
+    A probe of the settings surface, not a full simulation — managed policy and
+    per-launch --allowedTools are not visible here. Across the 13 3.0.0-migration
+    worker sessions the granted set varied wildly while every brief guessed at it
+    (444-19); this makes the real set printable ONCE so the hub can put the truth
+    in the brief."""
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+    files = [("user", os.path.join(cfg, "settings.json")),
+             ("project", os.path.join(dirpath, ".claude", "settings.json")),
+             ("local", os.path.join(dirpath, ".claude", "settings.local.json"))]
+    allow, deny, sources, missing = [], [], [], []
+    for label, p in files:
+        if not os.path.isfile(p):
+            missing.append("%s:%s" % (label, p))
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                doc = json.load(f)
+            perms = (doc.get("permissions") or {}) if isinstance(doc, dict) else {}
+            a = [x for x in (perms.get("allow") or []) if isinstance(x, str)]
+            d = [x for x in (perms.get("deny") or []) if isinstance(x, str)]
+        except Exception:
+            missing.append("%s:%s (unreadable)" % (label, p))
+            continue
+        sources.append((label, p, len(a)))
+        allow += [x for x in a if x not in allow]
+        deny += [x for x in d if x not in deny]
+    return {"allow": allow, "deny": deny, "sources": sources, "missing": missing}
+
+
+def _preflight_launch(dirpath, entry):
+    """B2: trust + grant preflight, run before EVERY launch. An untrusted dir
+    doesn't prompt under --bg/dontAsk — Claude Code ignores the dir's allowlists
+    entirely and the worker parks in agents state 'blocked' with no prompt
+    anywhere (the 444-17 failure). So: verify the ~/.claude.json trust entry,
+    repair it when absent, ALERT when a previously-verified entry has been wiped
+    (that means something rewrote ~/.claude.json), and surface the probed grant
+    set once per worker slot so the hub can brief the worker with the REAL
+    toolset. Returns registry fields to persist ({} on a fully failed probe);
+    never raises and never blocks the launch."""
+    fields = {}
+    prior = (entry or {}).get("trust_ok_ts")
+    trusted = _trust_state(dirpath)
+    if trusted is not True:
+        added = False
+        try:
+            added = _worktree_hook().add_trust_entry(dirpath)
+        except Exception:
+            pass
+        trusted = _trust_state(dirpath)
+        if trusted:
+            if prior:
+                print("delegate: TRUST WIPE — the ~/.claude.json trust entry for "
+                      "%s was verified %s ago but is gone now (something rewrote "
+                      "~/.claude.json); re-added." % (dirpath, _fmt_age(_now() - prior)),
+                      file=sys.stderr)
+            elif added:
+                print("delegate: added the ~/.claude.json trust entry for %s"
+                      % dirpath, file=sys.stderr)
+        else:
+            print("delegate: WARNING — %s is UNTRUSTED and the repair failed "
+                  "(~/.claude.json missing or unwritable). The worker will very "
+                  "likely park in agents state 'blocked': untrusted dirs ignore "
+                  "every allowlist. Open the dir interactively once, or fix "
+                  "~/.claude.json." % dirpath, file=sys.stderr)
+    if trusted:
+        fields["trust_ok_ts"] = _now()
+    if not (entry or {}).get("grants_probed"):
+        g = _effective_grants(dirpath)
+        srcs = ", ".join("%s(%d)" % (label, n) for label, _, n in g["sources"]) or "none"
+        print("delegate: worker grants probe — allow[%d]: %s%s · deny[%d] · sources: %s"
+              % (len(g["allow"]), ", ".join(g["allow"][:12]),
+                 " …" if len(g["allow"]) > 12 else "", len(g["deny"]), srcs),
+              file=sys.stderr)
+        if g["missing"]:
+            print("delegate:   no grant file at: %s" % "; ".join(g["missing"]),
+                  file=sys.stderr)
+        fields["grants_probed"] = _now()
+    return fields
 
 
 def _under_worktrees(dirpath):
@@ -1547,6 +1966,18 @@ def cmd_run(a):
         dirpath = (resolve_worktree(repo_root, a.worktree, branch=a.branch,
                                     base=a.base) if a.worktree else repo_root)
 
+    # B2: trust + grant preflight — before EVERY launch path. An untrusted dir
+    # doesn't prompt under --bg/dontAsk; the worker just parks in agents state
+    # 'blocked' with no prompt anywhere (444-17). Repair + alert happen here.
+    preflight_fields = _preflight_launch(dirpath, entry)
+    if preflight_fields and key in reg:
+        _touch_heartbeat(key, **preflight_fields)
+    # B3: the durable child report — contract the worker to write it, and fix
+    # where it lands so every exit path below can harvest into the same file.
+    report_file = _report_path(dirpath, repo_root, seq, label, project=project)
+    task_text = _with_report_contract(a.task, report_file)
+    run_started = _now()
+
     # ---- --bg background-worker lifecycle (claude harness; #463) -------------
     # Adapters WITHOUT bg (Codex until Phase 6) fall through to the legacy `-p`
     # streaming path below. Under --bg the id is NOT chooseable (--session-id is
@@ -1559,15 +1990,17 @@ def cmd_run(a):
         def _on_launch(new_sid):
             _save_entry(reg, key, project, seq, label, dirpath, new_sid,
                         model=requested_model, name=name, bg=True, harness=adapter.name,
-                        pid=None, started_ts=_now(), exit=None, agent_state="launched")
+                        pid=None, started_ts=_now(), exit=None, agent_state="launched",
+                        **preflight_fields)
             _register_worker(seq, new_sid, name, requested_model, adapter.name, "running")
             _ledger(seq, "resume" if resume else "spawn", new_sid,
                     detail="%s%s" % (project, (":" + label) if label else ""))
 
         sid, final_state, timed_out = run_worker_bg(
-            adapter, dirpath, a.task, session_id=sid, resume=resume,
+            adapter, dirpath, task_text, session_id=sid, resume=resume,
             timeout=a.timeout, name=name, model=requested_model, key=key,
-            permission_mode=pmode, on_launch=_on_launch)
+            permission_mode=pmode, on_launch=_on_launch,
+            stall_grace=getattr(a, "stall_grace", 45))
         final_sid = sid
         exit_label, abnormal = _classify_exit_bg(final_state, timed_out)
         _save_entry(reg, key, project, seq, label, dirpath, sid,
@@ -1578,8 +2011,13 @@ def cmd_run(a):
             # Auto-WIP the WORKTREE only — never the main checkout.
             sha = None if _is_main_checkout(dirpath, repo_root) \
                 else _wip_commit(dirpath, exit_label, a.task)
+            # B3: even an abnormal exit keeps whatever final text exists — a
+            # stalled/crashed worker's partial report still beats stdout that no
+            # one captured.
+            rp, rhow = _persist_report(report_file, run_started, sid)
             _touch_heartbeat(key, pid=None, exit=exit_label,
-                             phase=("auto-wip %s" % sha) if sha else exit_label)
+                             phase=("auto-wip %s" % sha) if sha else exit_label,
+                             **({"report_path": rp} if rp else {}))
             _register_worker(seq, sid, name, requested_model, adapter.name, exit_label)
             _ledger(seq, exit_label, sid)
             # Crashed/timed-out tokens still cost money → record them in the WASTED
@@ -1593,8 +2031,9 @@ def cmd_run(a):
                          sid=sid, name=name)
             raise SystemExit(
                 "delegate: worker %s — session %s saved in %s; resume with the same "
-                "--seq/--project, or `delegate adopt` from another hub.%s"
-                % (exit_label, sid, dirpath, wip_note))
+                "--seq/--project, or `delegate adopt` from another hub.%s%s"
+                % (exit_label, sid, dirpath, wip_note,
+                   ("\n  report: %s (%s)." % (rp, rhow)) if rp else ""))
 
         # OK: the agent reached `idle` (turn complete). The REPORTED cost channel
         # (transcript-usage sum) lands in Phase 5 — there is no stdout result event
@@ -1607,8 +2046,15 @@ def cmd_run(a):
         uncommitted = None if _is_main_checkout(dirpath, repo_root) \
             else _uncommitted_total(dirpath)
         unc_phrase = _uncommitted_phrase(uncommitted)
-        _touch_heartbeat(key, pid=None, exit="ok", phase="idle",
-                         **({"uncommitted": uncommitted} if unc_phrase else {}))
+        # B3: secure the durable report — worker-authored file honored, else the
+        # transcript tail is harvested (the bg channel's only copy of the report).
+        rp, rhow = _persist_report(report_file, run_started, sid)
+        extra_hb = {}
+        if unc_phrase:
+            extra_hb["uncommitted"] = uncommitted
+        if rp:
+            extra_hb["report_path"] = rp
+        _touch_heartbeat(key, pid=None, exit="ok", phase="idle", **extra_hb)
         _register_worker(seq, sid, name, requested_model, adapter.name, "ok")
         _ledger(seq, "finish", sid,
                 detail="%s%s" % (project, (":" + label) if label else ""))
@@ -1640,6 +2086,8 @@ def cmd_run(a):
             foot += "  session: %s  (resume: claude --resume %s)" % (sid, sid)
         if name:
             foot += "  attach: Agent View → %s" % name
+        if rp:
+            foot += "  report: %s (%s)" % (rp, rhow)
         if unc_phrase:
             foot += "  !! %s" % unc_phrase
         print(foot, file=sys.stderr)
@@ -1660,7 +2108,7 @@ def cmd_run(a):
         _ledger(seq, "resume", sid,
                 detail="%s%s" % (project, (":" + label) if label else ""))
         rc, result_json, stderr_text, timed_out = run_worker(
-            dirpath, a.task, session_id=sid, resume=True, timeout=a.timeout,
+            dirpath, task_text, session_id=sid, resume=True, timeout=a.timeout,
             name=name, model=requested_model, key=key, adapter=adapter)
         # Resume that couldn't even start (nonzero, no events, not a timeout) →
         # the saved id is unresumable; start a fresh pre-registered worker. A
@@ -1678,7 +2126,7 @@ def cmd_run(a):
         _ledger(seq, "spawn", sid,
                 detail="%s%s" % (project, (":" + label) if label else ""))
         rc, result_json, stderr_text, timed_out = run_worker(
-            dirpath, a.task, session_id=sid, resume=False, timeout=a.timeout,
+            dirpath, task_text, session_id=sid, resume=False, timeout=a.timeout,
             name=name, model=requested_model, key=key, adapter=adapter)
 
     result_text, echoed_sid, cost, result_model, usage = _parse_result(result_json or "")
@@ -1694,8 +2142,12 @@ def cmd_run(a):
         # cwd), where it would sweep the user's own uncommitted work into a commit.
         sha = None if _is_main_checkout(dirpath, repo_root) \
             else _wip_commit(dirpath, exit_label, a.task)
+        # B3: keep whatever final text exists even on an abnormal exit.
+        rp, rhow = _persist_report(report_file, run_started, sid,
+                                   result_text=(result_text if result_json else None))
         _touch_heartbeat(key, pid=None, exit=exit_label,
-                         phase=("auto-wip %s" % sha) if sha else "abnormal exit")
+                         phase=("auto-wip %s" % sha) if sha else "abnormal exit",
+                         **({"report_path": rp} if rp else {}))
         _register_worker(seq, sid, name, run_model, adapter.name, exit_label)
         _ledger(seq, exit_label, sid)
         wip_feed = (" (auto-WIP %s)" % sha) if sha else ""
@@ -1736,10 +2188,19 @@ def cmd_run(a):
     unc_phrase = _uncommitted_phrase(uncommitted)
     _save_entry(reg, key, project, seq, label, dirpath, sid, model=run_model,
                 name=name, harness=adapter.name)   # refresh ts + sid + model + harness
+    # B3: secure the durable report — the worker-authored file wins; else the
+    # stdout result is harvested into it so backgrounding the delegate process
+    # itself can never lose the report.
+    rp, rhow = _persist_report(report_file, run_started, sid, result_text=result_text)
     # `uncommitted` is deliberately NOT in _STREAM_KEYS: the _save_entry rebuild above
     # drops any count from a previous run, so it is only ever written when true NOW.
+    extra_hb = {}
+    if unc_phrase:
+        extra_hb["uncommitted"] = uncommitted
+    if rp:
+        extra_hb["report_path"] = rp
     _touch_heartbeat(key, pid=None, exit="ok",    # terminal state: finished OK, resumable-distinct
-                     **({"uncommitted": uncommitted} if unc_phrase else {}))
+                     **extra_hb)
     _register_worker(seq, final_sid, name, run_model, adapter.name, "ok")
     _ledger(seq, "finish", final_sid,
             detail="%s%s" % (project, (":" + label) if label else ""))
@@ -1795,6 +2256,8 @@ def cmd_run(a):
     foot = "— worker '%s'  dir: %s" % (key, dirpath)
     if final_sid:
         foot += "  session: %s  (resume: cd %s && claude --resume %s)" % (final_sid, dirpath, final_sid)
+    if rp:
+        foot += "  report: %s (%s)" % (rp, rhow)
     if cost is not None:
         foot += "  cost: $%.4f" % cost
     if run_model:
@@ -1874,13 +2337,21 @@ def _uncommitted_banner(dirpath, n):
             "`git -C %s status`, then commit or discard." % (phrase, dirpath, dirpath))
 
 
-def _liveness(entry, now=None):
+def _liveness(entry, now=None, live_state=None):
     """Classify a registry entry → (glyph, text) for status/list (S2).
 
     exit recorded            → ○ finished (<exit>) <age> ago
+    bg, agents say parked     → ○ STALLED (agents state '<s>') — named, never "running"
+    bg, agents say busy       → ● running [bg] (last progress <N>s ago)
     pid present + alive       → ● running (quiet <N>s)
     pid present but gone      → ○ not running — session resumable
     legacy entry (no pid key) → ? unknown
+
+    `live_state` is a JUST-PROBED agents state for a bg entry (cmd_status passes
+    it); when absent the entry's recorded `agent_state` heartbeat is used. A bg
+    worker's liveness is judged from the agents state — NEVER from pid (bg agents
+    rows carry none, which made a live bg worker render "not running" and a parked
+    one "running"; 444-17/B1) and never from a poll-touched timestamp.
 
     A CLEAN exit that left the worktree dirty renders its count INSIDE the parens
     — `finished (ok — 6 UNCOMMITTED)`. Only a clean exit does: an abnormal one has
@@ -1893,6 +2364,18 @@ def _liveness(entry, now=None):
                if entry["exit"] == "ok" else "")
         return "○", "finished (%s%s) %s ago" % (
             entry["exit"], (" — " + unc) if unc else "", age)
+    astate = live_state or entry.get("agent_state")
+    if entry.get("bg") and astate:
+        quiet = now - (entry.get("last_event_ts") or entry.get("started_ts") or now)
+        if astate in STALLED_AGENT_STATES:
+            return "○", ("STALLED — agents state '%s', no progress for %s "
+                         "(attach in Agent View, resume, or `delegate reap-parked`)"
+                         % (astate, _fmt_age(max(0, quiet))))
+        if astate == "gone":
+            return "○", "not running — session resumable"
+        if astate in IDLE_AGENT_STATES:
+            return "○", "turn complete (idle) — collect/resume"
+        return "●", "running [bg %s] (last progress %ds ago)" % (astate, max(0, quiet))
     if "pid" not in entry:
         return "?", "unknown"                # pre-1.82 entry, no liveness info
     pid = entry.get("pid")
@@ -1991,9 +2474,34 @@ def cmd_status(a):
     if not matched:
         print("delegate: no workers match that filter.")
         return
+    # One agents snapshot for every live bg entry (B1): their liveness is judged
+    # from the CURRENT agents state + transcript, never from the recorded
+    # heartbeat alone — the recorded state freezes the moment the polling hub dies.
+    agents_idx = None
+    if any(e.get("bg") and not e.get("exit") for _, e in matched):
+        try:
+            agents_idx = harness.get_adapter(None).agents_index()
+        except Exception:
+            agents_idx = None
     for key, e in matched:
-        glyph, live = _liveness(e, now)
+        live_state = None
+        if agents_idx is not None and e.get("bg") and not e.get("exit"):
+            sid = e.get("session_id") or ""
+            row = agents_idx.get(sid)
+            if row is None and sid:
+                hits = [r for s, r in agents_idx.items() if s.startswith(sid)]
+                row = hits[0] if len(hits) == 1 else None
+            live_state = ((row.get("status") or row.get("state") or "running")
+                          if row else "gone")
+        glyph, live = _liveness(e, now, live_state=live_state)
         print("%s %s  %s" % (glyph, key, live))
+        if live_state in STALLED_AGENT_STATES:
+            t = _find_transcript(e.get("session_id"))
+            jd = _job_diagnosis(e.get("session_id"))
+            print("    truth: agents state '%s'; transcript %s%s"
+                  % (live_state, ("ABSENT — the session never started a turn"
+                                  if not t else "exists (%s)" % t),
+                     ("; " + jd) if jd else ""))
         gs = _worktree_git_state(e.get("dir"))
         if gs:
             print("    git:   %s" % gs)
@@ -2002,9 +2510,108 @@ def cmd_status(a):
             hb = e.get("last_event_ts")
             phase_age = ("  (%s ago)" % _fmt_age(now - hb)) if hb else ""
             print("    phase: %s%s" % (phase, phase_age))
+        rp = e.get("report_path")
+        if rp:
+            print("    report: %s%s" % (rp, "" if os.path.isfile(rp) else "  (missing!)"))
         sid = e.get("session_id")
         if sid and e.get("dir"):
             print("    resume: cd %s && claude --resume %s" % (e["dir"], sid))
+
+
+def cmd_reap_parked(a):
+    """`delegate reap-parked` — sweep task-station bg agents PARKED in a stalled
+    agents state (B4: 39 had accumulated on this machine by 444-17, oldest 16
+    days, because nothing ever removed a blocked bg agent — the task-close reaper
+    wants a registry ∩ roster match and used to want a pid, and parked bg rows
+    reliably have neither). Predicate — ALL must hold:
+      kind == background · task-station worker name (unless --all-names) ·
+      agents state in STALLED_AGENT_STATES · older than --min-age-mins ·
+      not the current session.
+    Reap = remove the supervisor's session-store file FIRST (blocks a respawn),
+    then kill the pid group when a pid exists (parked bg rows usually carry none —
+    the store row IS the agent then). --dry-run prints the verdicts and changes
+    nothing."""
+    adapter = harness.get_adapter(getattr(a, "harness", None))
+    idx = adapter.agents_index()
+    if not idx:
+        print("delegate: agents list unavailable or empty — nothing to reap.")
+        return
+    now_ms = _now() * 1000
+    current = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+    hit = kept = 0
+    for sid, row in sorted(idx.items(), key=lambda kv: kv[1].get("startedAt") or 0):
+        if row.get("kind") != "background":
+            continue
+        name = row.get("name") or ""
+        if not getattr(a, "all_names", False) and not _is_ts_worker_name(name):
+            continue
+        state = row.get("status") or row.get("state")
+        if state not in STALLED_AGENT_STATES:
+            continue
+        if current and (sid == current or sid.startswith(current)
+                        or current.startswith(sid)):
+            continue
+        age_min = max(0, (now_ms - (row.get("startedAt") or now_ms)) / 60000.0)
+        age_txt = _fmt_age(int(age_min * 60))
+        if age_min < a.min_age_mins:
+            kept += 1
+            print("· kept        %s  '%s' %s old — under --min-age-mins %d  %s"
+                  % (sid[:8], state, age_txt, a.min_age_mins, name))
+            continue
+        if getattr(a, "dry_run", False):
+            hit += 1
+            print("· would reap  %s  '%s' %s old  %s" % (sid[:8], state, age_txt, name))
+            continue
+        try:
+            _remove_bg_session_file(sid)              # FILE FIRST — block a respawn…
+            pids = [row["pid"]] if row.get("pid") else _find_agent_pids(sid)
+            for pid in pids:                          # …THEN the process(es); parked bg
+                _kill_pid_group(pid)                  # rows carry no pid in the JSON
+            _mark_job_done(sid)                       # …THEN the job record — the row
+            hit += 1                                  # the agents list actually renders
+            print("· reaped      %s  '%s' %s old%s  %s"
+                  % (sid[:8], state, age_txt,
+                     ("  (killed pid %s)" % ",".join(map(str, pids))) if pids else "",
+                     name))
+        except Exception as e:
+            print("· FAILED      %s  (%s)" % (sid[:8], e.__class__.__name__))
+    print("delegate: %s %d parked agent(s)%s."
+          % ("would reap" if getattr(a, "dry_run", False) else "reaped", hit,
+             (", kept %d under the age floor" % kept) if kept else ""))
+
+
+def cmd_grants(a):
+    """`delegate grants` — print the probed trust + grant surface for a repo or
+    worktree, so the hub can paste the REAL toolset into a brief instead of
+    guessing (B2; across 13 migration worker sessions the granted set varied
+    wildly and every brief guessed)."""
+    repo_root = _resolve_dir_from_args(a)
+    dirpath = repo_root
+    if getattr(a, "worktree", None):
+        dirpath = worktree_path(repo_root, a.worktree)
+        if not os.path.isdir(dirpath):
+            raise SystemExit("delegate: worktree %s does not exist (grants probes "
+                             "never create one)." % dirpath)
+    g = _effective_grants(dirpath)
+    trusted = _trust_state(dirpath)
+    if getattr(a, "json", False):
+        print(json.dumps({"dir": dirpath, "trusted": trusted, **g}, indent=2))
+        return
+    tr = {True: "yes", False: "NO — a worker here will park 'blocked'; a delegate "
+                              "run repairs it", None: "unknown (~/.claude.json unreadable)"}
+    print("dir:     %s" % dirpath)
+    print("trusted: %s" % tr[trusted])
+    print("allow (%d):" % len(g["allow"]))
+    for x in g["allow"]:
+        print("  %s" % x)
+    if g["deny"]:
+        print("deny (%d):" % len(g["deny"]))
+        for x in g["deny"]:
+            print("  %s" % x)
+    for label, p, n in g["sources"]:
+        print("source: %s (%d allow) %s" % (label, n, p))
+    for m in g["missing"]:
+        print("absent: %s" % m)
 
 
 def cmd_list(a):
@@ -2073,6 +2680,10 @@ def main():
                         "author-only mechanical edits; pass a stronger model e.g. opus for "
                         "genuinely hard work)")
     r.add_argument("--timeout", type=int, default=None, help="seconds before giving up on the worker")
+    r.add_argument("--stall-grace", type=int, default=45,
+                   help="seconds a --bg worker may sit in a parked agents state "
+                        "(blocked/stalled/needs-input) before delegate fails fast "
+                        "with the diagnosis instead of waiting (default 45)")
     r.add_argument("--harness", default="claude", choices=["claude", "codex"],
                    help="AI CLI to run the worker on (default: claude)")
     r.set_defaults(func=cmd_run)
@@ -2095,6 +2706,28 @@ def main():
     d.add_argument("--worktree", default=None,
                    help="print the <repo>-worktrees/<name> path instead (does not create it)")
     d.set_defaults(func=cmd_dir)
+
+    rp = sub.add_parser("reap-parked",
+                        help="sweep task-station bg agents parked in a stalled "
+                             "agents state (blocked/stalled/needs-input)")
+    rp.add_argument("--min-age-mins", type=int, default=360,
+                    help="only reap agents parked at least this long (default 360)")
+    rp.add_argument("--dry-run", action="store_true",
+                    help="print the verdicts; remove/kill nothing")
+    rp.add_argument("--all-names", action="store_true",
+                    help="drop the task-station-name safety filter (DANGEROUS: "
+                         "can reap bg agents other tools spawned)")
+    rp.add_argument("--harness", default="claude", choices=["claude", "codex"])
+    rp.set_defaults(func=cmd_reap_parked)
+
+    gr = sub.add_parser("grants",
+                        help="probe the trust + permission grants a worker in a "
+                             "repo/worktree will actually have (for briefs)")
+    _add_repo_or_project(gr, project_required=True)
+    gr.add_argument("--worktree", default=None,
+                    help="probe the <repo>-worktrees/<name> tree instead (never creates it)")
+    gr.add_argument("--json", action="store_true", help="machine-readable output")
+    gr.set_defaults(func=cmd_grants)
 
     a = ap.parse_args()
     a.func(a)

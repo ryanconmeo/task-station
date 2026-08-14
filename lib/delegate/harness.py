@@ -143,19 +143,25 @@ class ClaudeAdapter(HarnessAdapter):
                 if isinstance(row, dict) and row.get("sessionId")}
 
     def worker_status(self, worker_id):
-        """{'state': <agents status | 'gone'>, 'pid': int|None, 'raw': row|None}.
-        'gone' = the sid is not in the agents list (unlisted → finished/killed).
-        Matches the full sessionId, falling back to a unique prefix match so a
-        stored SHORT id still resolves."""
+        """{'state': <agents state | 'gone'>, 'pid': int|None, 'kind': str|None,
+        'raw': row|None}. 'gone' = the sid is not in the agents list (unlisted →
+        finished/killed). Matches the full sessionId, falling back to a unique
+        prefix match so a stored SHORT id still resolves.
+
+        The agents list emits TWO row shapes (444-17 ground truth): interactive
+        rows carry `status` + `pid`; `kind: background` rows carry `state` and NO
+        pid. Reading only `status` made every parked bg worker fall through to the
+        'running' default — the lying-liveness root cause — so both keys are read,
+        `status` first (the shape the spike was written against)."""
         idx = self.agents_index()
         row = idx.get(worker_id)
         if row is None:
             hit = [r for sid, r in idx.items() if sid.startswith(worker_id)]
             row = hit[0] if len(hit) == 1 else None
         if row is None:
-            return {"state": "gone", "pid": None, "raw": None}
-        return {"state": row.get("status") or "running",
-                "pid": row.get("pid"), "raw": row}
+            return {"state": "gone", "pid": None, "kind": None, "raw": None}
+        return {"state": row.get("status") or row.get("state") or "running",
+                "pid": row.get("pid"), "kind": row.get("kind"), "raw": row}
 
 
 class CodexAdapter(HarnessAdapter):
