@@ -21,6 +21,7 @@ not an org, and chunk 5's team-rules suite asserts on them.
 Layer rule: brain may import core and its own siblings, never board. Stdlib +
 the sibling ``config`` / ``errorlog`` modules only. Python 3.9+.
 """
+import os
 import subprocess
 import sys
 import time
@@ -50,20 +51,25 @@ def _clone_head(cfg):
 def _spawn_check():
     """Launch the subscription-memo check DETACHED — fire-and-forget, fully
     isolated from this process (own session, no stdio), so it can never block or
-    break the SessionStart path. Fail-open: a spawn error is a breadcrumb only.
+    break the SessionStart path. Fail-open: ANY spawn error is a breadcrumb and a
+    ``False`` return, never a raise.
 
-    The target is the sibling ``subscribe`` module (chunk 4c). Running a package
-    module by PATH cannot work while its imports are relative, so this spawn is
-    inert until Phase 5 wires a real entry point — re-point this one line then.
+    The target is the sibling ``subscribe`` module (chunk 4c), run through its
+    ``-m`` entry point — a package module with relative imports cannot be run by
+    path. ``os.environ`` is handed through unchanged: it already carries ``lib/``
+    on ``PYTHONPATH``, because every sanctioned launch context (the hook mux,
+    ``.mcp.json``, the tests' ``PINNED_ENV``) puts it there. No ``__file__``
+    math — Phase 5 wired this seam live.
     """
-    script = Path(__file__).resolve().parent / "subscribe.py"
     try:
         subprocess.Popen(
-            [sys.executable, str(script), "check"],
+            [sys.executable, "-m", "brain.subscribe", "check"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
-    except (OSError, subprocess.SubprocessError) as e:
+            start_new_session=True, env=os.environ.copy())
+        return True
+    except Exception as e:
         errorlog.record("org-brain-pull:spawn", e)
+        return False
 
 
 def maybe_notify_subscriptions(before, after):

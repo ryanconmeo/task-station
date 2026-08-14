@@ -25,9 +25,12 @@ Blocks Bash commands that would write a secret into the session transcript
 Fail-open: any parsing/logic error allows the command (a buggy guard must not
 brick the shell). The reason message never echoes the matched secret.
 
-Registration is Phase 5's: the source shipped it as a plugin PreToolUse(Bash)
-hook in its own ``hooks/hooks.json``; this repo's ``hooks/hooks.json`` has no
-PreToolUse block yet, so the guard is CODE-COMPLETE BUT UNWIRED here.
+WIRED in Phase 5, exactly as the source wired it: ``hooks/hooks.json`` registers
+``python3 "${CLAUDE_PLUGIN_ROOT}/lib/brain/hooks/guard.py"`` under
+``PreToolUse`` with matcher ``Bash``. It is the ONE hook that skips the board's
+hook mux — PreToolUse is a brain-only event, so there is nothing to merge — and
+the ONE hook invoked by PATH, which is why the stdlib-only rule above is
+load-bearing.
 """
 import json
 import re

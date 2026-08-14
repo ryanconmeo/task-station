@@ -1,5 +1,5 @@
-"""The hook manifest — what task-station wires, and the two things about it that are
-easy to get silently wrong.
+"""The hook manifest — what task-station wires, and the three things about it that
+are easy to get silently wrong.
 
 1. THE FileChanged MATCHER IS A LITERAL FILENAME LIST, NOT A REGEX — but only while it
    stays inside the character set that keeps it literal. A hyphen, a space or a comma
@@ -10,6 +10,13 @@ easy to get silently wrong.
    worktree creation, so shipping it in the plugin would put our script in front of
    every worktree — including Claude's own subagent isolation — on every install. It
    ships as an opt-in installer instead (`config --worktree-hook on`).
+3. NOT EVERY COMMAND IS A SHELL SCRIPT IN hooks/ ANY MORE (3.0.0). Three events are
+   claimed by both planes and run ONE python mux (`lib/hookmux.py`) that spawns the
+   board's shell hook and the brain plane's hooks itself; PreToolUse(Bash) runs the
+   brain's secret guard directly, by path. So the "points at a script that exists"
+   check resolves any plugin-root-relative path, not just `hooks/<name>.sh`.
+   `tests/test_hookmux.py` owns the mux's own behaviour and the deeper agreement
+   between this manifest and the mux's children table.
 """
 import json
 import os
@@ -17,6 +24,7 @@ import unittest
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _HOOKS_DIR = os.path.join(_REPO_ROOT, "hooks")
+_ROOT_VAR = "${CLAUDE_PLUGIN_ROOT}"
 
 
 def _manifest():
@@ -33,22 +41,49 @@ def _read(name):
         return f.read()
 
 
+def _targets(cmd):
+    """The plugin-root-relative paths a command names (a hook command is
+    `<runner> "${CLAUDE_PLUGIN_ROOT}/<path>" [args]`)."""
+    return [part.split(_ROOT_VAR + "/", 1)[1].rstrip('"')
+            for part in cmd.split() if _ROOT_VAR + "/" in part]
+
+
 class ManifestShape(unittest.TestCase):
     def setUp(self):
         self.hooks = _manifest()
 
-    def test_eight_events_are_wired(self):
+    def test_nine_events_are_wired(self):
+        """PreToolUse joined in 3.0.0 — the brain plane's secret guard."""
         self.assertEqual(set(self.hooks), {
-            "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "PostCompact",
-            "SessionEnd", "ConfigChange", "FileChanged"})
+            "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
+            "PostCompact", "SessionEnd", "ConfigChange", "FileChanged"})
 
-    def test_every_command_points_at_a_script_that_exists(self):
+    def test_every_command_points_at_a_file_that_exists(self):
         for event, entries in self.hooks.items():
             for cmd in _commands(entries):
-                self.assertIn("${CLAUDE_PLUGIN_ROOT}/hooks/", cmd, event)
-                name = cmd.rsplit("/", 1)[-1].rstrip('"')
-                self.assertTrue(os.path.isfile(os.path.join(_HOOKS_DIR, name)),
-                                "%s → %s" % (event, name))
+                targets = _targets(cmd)
+                self.assertEqual(len(targets), 1, "%s → %s" % (event, cmd))
+                self.assertTrue(os.path.isfile(os.path.join(_REPO_ROOT, targets[0])),
+                                "%s → %s" % (event, targets[0]))
+
+    def test_the_shared_events_run_the_mux_and_nothing_else(self):
+        """SessionStart / UserPromptSubmit / Stop belong to BOTH planes, so each
+        registers exactly one command — the mux — which runs the board's shell
+        hook and the brain's hooks itself, in order."""
+        for event, arg in (("SessionStart", "session-start"),
+                           ("UserPromptSubmit", "user-prompt"), ("Stop", "stop")):
+            self.assertEqual(
+                _commands(self.hooks[event]),
+                ['python3 "${CLAUDE_PLUGIN_ROOT}/lib/hookmux.py" %s' % arg], event)
+
+    def test_pre_tool_use_runs_the_guard_directly_on_bash(self):
+        """A brain-only event: nothing to merge, so no mux — and the guard runs by
+        PATH, which is why it may never grow a non-stdlib import."""
+        entries = self.hooks["PreToolUse"]
+        self.assertEqual([e.get("matcher") for e in entries], ["Bash"])
+        self.assertEqual(
+            _commands(entries),
+            ['python3 "${CLAUDE_PLUGIN_ROOT}/lib/brain/hooks/guard.py"'])
 
     def test_worktree_create_is_never_shipped_in_the_manifest(self):
         self.assertNotIn("WorktreeCreate", self.hooks)
@@ -120,10 +155,16 @@ class FileChangedMatcher(unittest.TestCase):
 
 
 class ScriptDiscipline(unittest.TestCase):
-    """The house idiom every manifest-shipped hook keeps — and the one script that
-    deliberately breaks it."""
+    """The house idiom every manifest-reachable hook keeps — and the one script
+    that deliberately breaks it.
 
-    MANIFEST_SCRIPTS = ("on_session_end.sh", "on_config_change.sh", "on_file_changed.sh")
+    The three muxed scripts are reached through `lib/hookmux.py` rather than named
+    in the manifest, which changes who spawns them and nothing about what they owe
+    a session: the same suppress guard, the same shared lib, the same jq-free
+    stdin parse."""
+
+    MANIFEST_SCRIPTS = ("on_session_end.sh", "on_config_change.sh", "on_file_changed.sh",
+                        "on_session_start.sh", "on_user_prompt.sh", "on_stop.sh")
 
     def test_manifest_hooks_early_exit_inside_a_worker(self):
         for name in self.MANIFEST_SCRIPTS:
@@ -180,6 +221,28 @@ class ScriptDiscipline(unittest.TestCase):
             if not name.endswith(".sh") or name.startswith("_"):
                 continue
             self.assertTrue(_read(name).startswith("#!/usr/bin/env bash"), name)
+
+
+class McpJsonManifest(unittest.TestCase):
+    """`.mcp.json` registers the ONE MCP server (the board bridge, which mounts
+    the brain tools lazily). It is the only registration the CLI reads, and
+    `lib/mcp_server.py` is named by literal path — this pins the two together."""
+
+    def setUp(self):
+        with open(os.path.join(_REPO_ROOT, ".mcp.json"), encoding="utf-8") as f:
+            self.servers = json.load(f)["mcpServers"]
+
+    def test_exactly_one_server_and_it_is_the_board_bridge(self):
+        self.assertEqual(list(self.servers), ["task-station"])
+        srv = self.servers["task-station"]
+        self.assertEqual(srv["command"], "python3")
+        target = srv["args"][0].split(_ROOT_VAR + "/", 1)[1]
+        self.assertEqual(target, "lib/mcp_server.py")
+        self.assertTrue(os.path.isfile(os.path.join(_REPO_ROOT, target)))
+
+    def test_the_server_env_puts_lib_on_pythonpath(self):
+        env = self.servers["task-station"].get("env") or {}
+        self.assertTrue(env.get("PYTHONPATH", "").endswith("/lib"))
 
 
 if __name__ == "__main__":
