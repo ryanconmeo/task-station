@@ -330,6 +330,13 @@ class Concurrency(_Base):
             "import store\n"
             "s=importlib.util.spec_from_file_location('task_station', os.path.join(LIB,'task-station.py'))\n"
             "m=importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
+            # This test manufactures pathological contention (4 writers, one DB).
+            # The claim under test is GAPLESS ALLOCATION, not that the production
+            # 10s retry budget suffices on any hardware — a slow 2-core CI runner
+            # can starve one child past it, which exits 1 and flakes the suite.
+            # Widen the budget for the children only; a real allocation bug still
+            # fails the gapless assertion below.
+            "store.LOCK_RETRY_BUDGET_S = 60.0\n"
             "class A:\n pass\n"
             "for i in range(int(os.environ['K'])):\n"
             " a=A(); a.task=os.environ['SEQ']; a.kind='log'; a.text='x'; a.session=None\n"
@@ -343,7 +350,7 @@ class Concurrency(_Base):
         procs = [subprocess.Popen([sys.executable, "-c", driver], env=env)
                  for _ in range(4)]
         for p in procs:
-            self.assertEqual(p.wait(timeout=60), 0)
+            self.assertEqual(p.wait(timeout=120), 0)
         # 1 task.created (parent) + 4 procs * 20 task.event = 81 events, gapless 1..81.
         ns = sorted(e["n"] for e in self.events() if e["task"]["uuid"] == t["uuid"])
         self.assertEqual(ns, list(range(1, 82)))
