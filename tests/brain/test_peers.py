@@ -1,11 +1,14 @@
 """brain.peers — the peers layer (lazy, read-only teammate private brains).
 
 PROVENANCE: ported in 3.0.0 Phase 4 (chunk 4c) from the brain source tree's
-``tests/test_peers.py`` @ 0.14.0. 15 of its 16 cases port 1:1; the 16th
-(``SearchIntegrationTest::test_injection_never_includes_peers``) drives
-``context-inject.py``, which becomes ``brain/hooks/inject.py`` in CHUNK 5 — it is
-DEFERRED by name in the chunk-4c handoff rather than faked here. Two cases are
-ADDED (below).
+``tests/test_peers.py`` @ 0.14.0. 15 of its 16 cases ported 1:1 then; the 16th
+(``SearchIntegrationTest::test_injection_never_includes_peers``) drove
+``context-inject.py`` and was DEFERRED by name until that module landed. Chunk 5a
+ported it (bottom of this file) — as plain ``import brain.hooks.inject``, with no
+``spec_from_file_location``: the trick died with the rename. It sits in its own
+class rather than back inside ``SearchIntegrationTest``, because that class is
+skipped without ripgrep and this guard must never be silently skipped. Two cases
+are ADDED (below).
 
 Rewrites: modules ``pb_config`` -> ``brain.config``, ``peers`` -> ``brain.peers``,
 ``brain`` -> ``brain.search``; env names come from chunk 1's
@@ -21,15 +24,18 @@ from a local fixture 'remote' repo; ff-only sync; remove; and search integration
 — peer tier inclusion, tier priority (own > org_brain > peers), and the
 peer:<alias>/<slug> label.
 """
+import ast
 import json
 import os
 import shutil
 import subprocess
 import unittest
+from pathlib import Path
 
 from tests.brain.base import BrainTestCase, ENV_KEYS
 
 import brain.config as bconfig
+import brain.hooks.inject as inject
 import brain.peers as peers
 import brain.search as search
 
@@ -255,6 +261,53 @@ class SearchIntegrationTest(PeersBase):
         hits = search.search_hits(["sharedterm"], roots)
         self.assertEqual(len(hits), 1)
         self.assertTrue(hits[0][0].endswith("vault/notes/shared.md"))
+
+
+# --------------------------------------------------------------------------- #
+# APPENDED in chunk 5a — the guard chunk 4c deferred by name.
+# --------------------------------------------------------------------------- #
+class InjectionNeverIncludesPeersTest(PeersBase):
+    """A teammate's notes must never reach someone's context unasked.
+
+    The peers tier is explicit opt-in — CLI ``--peers``, MCP ``peers: true`` — and
+    the injection hook has no way to pass it: :func:`brain.hooks.inject._inject_roots`
+    builds its own curated list (notes/projects/reports) and never calls
+    ``search.default_roots``, whose ``include_peers`` parameter is the only door.
+    Both halves are asserted, because "it doesn't today" is not a guarantee.
+
+    Needs no ripgrep: this is about which ROOTS are assembled, not what is found
+    in them — which is also why it is not inside the rg-skipped class above.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.vault = self.make_vault(self.home / "vault")
+        self.assertIn("TASK_STATION_BRAIN_VAULT", ENV_KEYS)
+        os.environ["TASK_STATION_BRAIN_VAULT"] = str(self.vault)
+
+    def _peer_note(self, alias, slug, body):
+        d = self.peers_dir / alias / "notes"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{slug}.md").write_text(
+            f"---\nname: {slug}\ndescription: d\nverified: 2026-01-01\n---\n\n{body}\n")
+
+    def test_injection_never_includes_peers(self):
+        self._peer_note("ada", "peeronly", "peeronly content")
+        roots = inject._inject_roots(bconfig.load())
+        self.assertTrue(roots, "the fixture vault should have injectable roots")
+        for _t, p in roots:
+            self.assertNotIn(str(self.peers_dir), str(p))
+
+    def test_the_hook_never_reaches_the_only_door_to_the_peers_tier(self):
+        # read the CODE, not the prose: the module's docstring names both of
+        # these while explaining why it must not call them.
+        tree = ast.parse(Path(inject.__file__).read_text())
+        passed = {kw.arg for n in ast.walk(tree) if isinstance(n, ast.Call)
+                  for kw in n.keywords}
+        self.assertNotIn("include_peers", passed)
+        called = {n.func.attr for n in ast.walk(tree)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+        self.assertNotIn("default_roots", called)
 
 
 if __name__ == "__main__":
