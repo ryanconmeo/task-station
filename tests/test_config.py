@@ -107,9 +107,15 @@ class Config(unittest.TestCase):
         self.assertIn("--editor-scheme", keys)
 
     def test_reset_clears_editor_scheme(self):
+        os.environ.pop("TASK_STATION_EDITOR_SCHEME", None)
         config.set("editor_scheme", "cursor")
         config.reset_settings()
-        self.assertEqual(config.editor_scheme(), "vscode")
+        # Reset clears the stored override and resolution falls back to
+        # auto-detection, whose answer is machine-dependent (vscode on a dev
+        # box, file on a bare CI runner) — assert the fallback happened, never
+        # one machine's editor.
+        self.assertIn(config.get("editor_scheme"), (None, ""))
+        self.assertEqual(config.editor_scheme(), config.detect_editor_scheme())
 
     # --- --tint flag --------------------------------------------------------
     def test_tint_enabled_default_on(self):

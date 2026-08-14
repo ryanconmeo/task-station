@@ -30,7 +30,10 @@ WHAT CHANGED, AND WHY (the whole derivation, so the next reader can re-check it)
 
 SCOPE: all of ``lib/`` (both planes, every file type — .py, .sh, .json, .md and
 the shipped vault scaffold), not just this chunk's files. The source scanned its
-whole executable surface too.
+whole executable surface too. ``__pycache__`` is EXCLUDED: compiled bytecode
+embeds the absolute path of whatever machine imported the module (CI:
+``/home/runner/...``), it is gitignored and never ships, and scanning it turned
+this guard red on every CI runner while the real shipped surface was clean.
 
 ALLOWLIST: exactly one file, ``lib/open-session-window.sh``, whose line 11 is a
 usage COMMENT showing a terminal command (``cd /Users/me && claude --resume …``).
@@ -56,7 +59,9 @@ ALLOWLIST = {"open-session-window.sh"}
 
 def _surface_files():
     return [f for f in sorted(LIB.rglob("*"))
-            if f.is_file() and str(f.relative_to(LIB)) not in ALLOWLIST]
+            if f.is_file()
+            and "__pycache__" not in f.parts
+            and str(f.relative_to(LIB)) not in ALLOWLIST]
 
 
 class NoHardcodedPathsTest(unittest.TestCase):
