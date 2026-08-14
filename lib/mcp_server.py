@@ -29,6 +29,14 @@ any MCP client) uses to pull task-station's episodic layer on demand —
 `get_prompts` (a task's captured prompt trail, when prompt capture is enabled).
 They complement the pull-based markdown export: export for a durable snapshot,
 these for interactive, up-to-the-moment queries over the same shared store.
+
+TWO PLANES, ONE SERVER (3.0.0). This bridge also serves the brain plane's
+`brain_*` tools by mounting `brain.mcp_tools` — see `_brain()` and
+`_brain_tools_call()` below. The mount is lazy and optional: if that import
+fails, the board's tools serve alone. Only TOOLS mount; the brain plane has no
+prompts and no resources (its `handle()` answers initialize / tools/list /
+tools/call / ping and advertises `capabilities: {"tools": {}}` only), so
+`prompts/*` and `resources/*` here stay board-only.
 """
 import importlib.util
 import json
@@ -641,11 +649,99 @@ def _text_content(text):
     return [{"type": "text", "text": text}]
 
 
+# ------------------------------------------------------------ the brain mount ---
+#
+# 3.0.0 ships two planes in one plugin, and ONE MCP server serves both: the board
+# tools above plus the brain plane's `brain_*` tools (`brain.mcp_tools`). The
+# brain's own server module still exists and still runs standalone — this mount
+# just borrows its `TOOLS` (already the three-key shape a tools/list entry needs)
+# and its `HANDLERS` (name -> callable returning the result text), and wraps them
+# in THIS server's conventions.
+#
+# The load is LAZY and never fatal: a plugin installed without the brain plane, or
+# with a broken one, serves the board alone and says so once on stderr.
+
+_BRAIN = None
+_BRAIN_LOADED = False
+
+
+def _brain():
+    """The brain plane's MCP tool layer, or None (lazy, cached, never raises).
+
+    The `_LIB` bootstrap at the top of this file already put `lib/` on `sys.path`,
+    so `import brain.mcp_tools` resolves whenever the plane ships. Any failure —
+    absent package, broken config at its import-time load, anything — is ONE
+    stderr line and a permanent None: the board's tools must keep serving.
+    """
+    global _BRAIN, _BRAIN_LOADED
+    if not _BRAIN_LOADED:
+        _BRAIN_LOADED = True
+        try:
+            import brain.mcp_tools as _brain_mcp
+            _BRAIN = _brain_mcp
+        except Exception as e:
+            sys.stderr.write("task-station MCP: brain plane unavailable: %s\n" % e)
+            _BRAIN = None
+    return _BRAIN
+
+
+def _tool_descriptors():
+    """Every advertised tool: the board's (minus its `handler` key), then the
+    brain's (which carry no handler key at all — they are already name +
+    description + inputSchema)."""
+    tools = [{k: t[k] for k in ("name", "description", "inputSchema")} for t in TOOLS]
+    brain = _brain()
+    if brain is not None:
+        tools.extend(brain.TOOLS)
+    return tools
+
+
+def _brain_note(name, exc):
+    """Record a brain-handler failure on the brain's own error log — where
+    `brain.mcp_tools.handle` would have recorded it, since this mount calls the
+    handler directly instead of going through that dispatcher. Best-effort."""
+    brain = _brain()
+    try:
+        brain.errorlog.record("mcp:tool:%s" % name, exc)
+    except Exception:
+        pass
+
+
+def _brain_tools_call(name, args):
+    """Run a brain tool and return a board-shaped result, or None when `name` is
+    not a brain tool (so the caller can fall through to its unknown-tool line).
+
+    Every brain handler returns the result TEXT, exactly like the board's, so the
+    success mapping is `{"content": [text]}`. A raised error becomes an isError
+    result carrying `Type: message` — the board's own error rendering, which is
+    what makes an unconfigured vault read as `ConfigError: … Refusing to write …`
+    rather than a dead server. `SystemExit` is caught alongside `Exception` on
+    purpose: `brain.search` exits the process when ripgrep is missing, which is
+    fine for a one-shot CLI and fatal for a long-lived server.
+    """
+    brain = _brain()
+    if brain is None:
+        return None
+    handler = brain.HANDLERS.get(name)
+    if handler is None:
+        return None
+    try:
+        text = handler(args)
+    except (Exception, SystemExit) as e:
+        _brain_note(name, e)
+        return {"content": _text_content("%s: %s" % (type(e).__name__, e)),
+                "isError": True}
+    return {"content": _text_content(text)}
+
+
 def _handle_tools_call(params):
     name = params.get("name")
     args = params.get("arguments") or {}
     tool = _TOOLS_BY_NAME.get(name)
     if tool is None:
+        brain_result = _brain_tools_call(name, args)
+        if brain_result is not None:
+            return brain_result
         # A bad tool name is a tool-execution error (reported in the result with
         # isError) rather than a transport-level JSON-RPC error.
         return {"content": _text_content("Unknown tool: %s" % name), "isError": True}
@@ -712,8 +808,7 @@ def dispatch(method, params):
     if method == "ping":
         return {}
     if method == "tools/list":
-        return {"tools": [{k: t[k] for k in ("name", "description", "inputSchema")}
-                          for t in TOOLS]}
+        return {"tools": _tool_descriptors()}
     if method == "tools/call":
         return _handle_tools_call(params)
     if method == "prompts/list":

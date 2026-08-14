@@ -3,7 +3,9 @@ clone HEAD moved, run the subscription check DETACHED and fail-open.
 
 Gated on an actual HEAD move so a no-op pull costs nothing; the spawn is isolated
 behind a patchable seam so the test never has to reach into a real detached
-process.
+process. Phase 5 wired that seam LIVE (``-m brain.subscribe check``, detached,
+inheriting the environment) — ``SpawnCheckTest`` pins the launch contract; every
+class after it still swaps the seam out to test the gating around it.
 
 PROVENANCE: ported in 3.0.0 Phase 4 (chunk 4a) from the brain source tree's
 ``tests/test_org_brain_pull.py`` @ 0.14.0. All 5 source cases port. Two
@@ -25,6 +27,7 @@ rewritten — the only change is that the stamp filename is READ from
 """
 import os
 import subprocess
+import sys
 import time
 
 from tests.brain.base import BrainTestCase, ENV_KEYS
@@ -42,6 +45,56 @@ class SpawnSeamMixin(BrainTestCase):
         self._orig = orgpull._spawn_check
         orgpull._spawn_check = lambda: self.calls.append(1)
         self.addCleanup(setattr, orgpull, "_spawn_check", self._orig)
+
+
+class SpawnCheckTest(BrainTestCase):
+    """ADDED in Phase 5 — the seam itself, now that it is LIVE. Everything below
+    this class swaps `_spawn_check` out; this one runs the shipped function with
+    `subprocess.Popen` monkeypatched, so the launch CONTRACT is pinned without a
+    real detached child outliving the test."""
+
+    def _record_popen(self, exc=None):
+        spawns = []
+        real = subprocess.Popen
+
+        def fake(argv, **kwargs):
+            spawns.append((argv, kwargs))
+            if exc is not None:
+                raise exc
+            return None
+
+        subprocess.Popen = fake
+        self.addCleanup(setattr, subprocess, "Popen", real)
+        return spawns
+
+    def test_it_launches_the_subscribe_module_detached(self):
+        """`-m`, not a path: a package module with relative imports cannot be run
+        by file, which is exactly why this seam sat inert through Phase 4."""
+        spawns = self._record_popen()
+        self.assertIs(orgpull._spawn_check(), True)
+        self.assertEqual(len(spawns), 1)
+        argv, kwargs = spawns[0]
+        self.assertEqual(argv, [sys.executable, "-m", "brain.subscribe", "check"])
+        for stream in ("stdin", "stdout", "stderr"):
+            self.assertEqual(kwargs[stream], subprocess.DEVNULL, stream)
+        self.assertTrue(kwargs["start_new_session"])
+
+    def test_the_child_inherits_the_environment(self):
+        spawns = self._record_popen()
+        os.environ["TASK_STATION_BRAIN_SPAWN_PROBE"] = "carried"
+        self.addCleanup(os.environ.pop, "TASK_STATION_BRAIN_SPAWN_PROBE", None)
+        orgpull._spawn_check()
+        env = spawns[0][1]["env"]
+        self.assertEqual(env.get("TASK_STATION_BRAIN_SPAWN_PROBE"), "carried")
+        self.assertEqual(env, dict(os.environ))
+        self.assertIsNot(env, os.environ)
+
+    def test_a_failed_spawn_is_false_and_a_breadcrumb(self):
+        self._record_popen(exc=OSError("no such interpreter"))
+        self.assertIs(orgpull._spawn_check(), False)
+        log = bconfig.state_dir() / "error.log"
+        self.assertTrue(log.exists())
+        self.assertIn("org-brain-pull:spawn", log.read_text())
 
 
 class NotifyGateTest(SpawnSeamMixin):

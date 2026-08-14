@@ -64,9 +64,11 @@ def _scaffold_dir():
     """The bundled vault-scaffold: file-relative first (deterministic for tests
     and the normal layout), then $CLAUDE_PLUGIN_ROOT as a fallback.
 
-    THE THIRD (and last) SANCTIONED ``__file__`` ANCHOR in the brain plane, with
-    ``naming.py`` (its data file) and ``orgpull.py`` (its spawn target). The
-    source hopped up TWO dirs (``scripts/`` -> repo root -> ``vault-scaffold/``);
+    THE SECOND (and, since Phase 5, LAST) SANCTIONED ``__file__`` ANCHOR in the
+    brain plane, with ``naming.py`` (its data file). Both point at a data
+    directory that ships INSIDE the package, which is the only thing this anchor
+    is for; ``orgpull.py`` held a third until Phase 5 replaced its path-based
+    spawn with a ``-m`` entry point. The source hopped up TWO dirs (``scripts/`` -> repo root -> ``vault-scaffold/``);
     the scaffold is a child of this package now, so it is one hop. The env
     fallback keeps its role — it just names the in-package location."""
     local = Path(__file__).resolve().parent / "vault-scaffold"

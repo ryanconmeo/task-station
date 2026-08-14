@@ -8,7 +8,13 @@ create lands in the very store the CLI reads, round-trips through the CLI's own
 render path, and walks the open → active → closed lifecycle. NONE of this needs
 the `mcp` SDK: the server is hand-rolled in stdlib only (json + sys), so the
 module imports, runs, and serves a full protocol round-trip with `mcp` absent.
+
+`BrainMountTest` (3.0.0) covers the other half of what this one server now is:
+the brain plane's `brain_*` tools, mounted beside the board's — lazily, so a
+plugin whose brain plane is missing or broken still serves the board alone.
 """
+import builtins
+import contextlib
 import importlib
 import importlib.util
 import io
@@ -23,6 +29,11 @@ LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 sys.path.insert(0, LIB)
 
 import store  # the shared store module the engine + bridge both use
+
+# The brain plane's own test fixture: one temp $HOME with every TASK_STATION_BRAIN_*
+# key cleared and the data-home vars re-pointed into it. Imported rather than
+# re-derived — it is the only place that knows the complete list (see BrainMountTest).
+from tests.brain.base import BrainTestCase  # noqa: E402
 
 
 def _load_mcp_server():
@@ -233,6 +244,12 @@ class McpProtocolTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="task-station-mcp-proto-")
         os.environ["TASK_STATION_HOME"] = self.tmp
         self.mcp = _load_mcp_server()
+        # This class pins the BOARD's protocol surface, so the brain mount is held
+        # OFF here (a loaded-but-empty cache, which `_brain()` never retries):
+        # `BrainMountTest` owns the mounted behaviour, against a temp home. Without
+        # this, importing the brain plane would resolve the DEVELOPER's real config,
+        # and `test_tools_list_has_the_tools` would see five extra names.
+        self.mcp._BRAIN, self.mcp._BRAIN_LOADED = None, True
         self.ts = self.mcp._engine()
         self.ts.DATA = self.tmp
         self.ts.STORE = os.path.join(self.tmp, "store")
@@ -300,6 +317,8 @@ class McpProtocolTest(unittest.TestCase):
 
     # -- tools/list ---------------------------------------------------------
     def test_tools_list_has_the_tools(self):
+        """The board's eleven, exactly — the brain mount is held off in setUp, so
+        an extra name here means the BOARD grew (or lost) a tool."""
         resp = self._one({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = {t["name"] for t in resp["result"]["tools"]}
         self.assertEqual(
@@ -453,6 +472,131 @@ class McpProtocolTest(unittest.TestCase):
                 sys.modules["mcp"] = saved
             else:
                 sys.modules.pop("mcp", None)
+
+
+def _purge_brain_modules():
+    """Drop every `brain.*` module from the import cache.
+
+    `brain.search` resolves the config ONCE, at import, and every brain tool then
+    reads that resolution — which is correct for a long-lived server and lethal
+    for an in-process test, because a copy imported by an earlier test (or by the
+    brain suite) would point at the developer's REAL vault. Purging before and
+    after each case makes the mount import fresh, under this test's temp home.
+    """
+    for name in [m for m in list(sys.modules)
+                 if m == "brain" or m.startswith("brain.")]:
+        del sys.modules[name]
+
+
+class BrainMountTest(BrainTestCase):
+    """The two-plane bridge: board tools + `brain_*` tools on ONE server.
+
+    Isolation comes from the brain suite's own fixture (`tests/brain/base.py`),
+    which is the only thing that knows every env key a brain config reads.
+    """
+
+    def setUp(self):
+        super().setUp()                       # temp $HOME, cleared brain env, PINNED_ENV
+        self.vault = self.make_vault(self.home / "vault")
+        os.environ["TASK_STATION_BRAIN_VAULT"] = str(self.vault)
+        _purge_brain_modules()
+        self.addCleanup(_purge_brain_modules)
+        self.mcp = _load_mcp_server()         # a fresh module: the mount is uncached
+
+    def call(self, name, **args):
+        return self.mcp.dispatch("tools/call", {"name": name, "arguments": args})
+
+    def text(self, result):
+        return result["content"][0]["text"]
+
+    # -- tools/list carries both planes, with no name collision --------------
+    def test_tools_list_serves_board_and_brain(self):
+        names = [t["name"] for t in self.mcp.dispatch("tools/list", {})["tools"]]
+        board = {t["name"] for t in self.mcp.TOOLS}
+        plane = self.mcp._brain()
+        self.assertIsNotNone(plane, "the brain plane did not load — see the stderr line")
+        brain = set(plane.HANDLERS)
+        self.assertTrue(board.issubset(names))
+        self.assertTrue(brain.issubset(names))
+        self.assertEqual(board & brain, set(), "a tool name is claimed by both planes")
+        self.assertEqual(len(names), len(set(names)), "duplicate tool name")
+
+    def test_no_advertised_tool_leaks_a_handler_key(self):
+        """`handler` is how the board binds a tool to a callable; it is not part
+        of the wire contract and must never reach a client."""
+        for t in self.mcp.dispatch("tools/list", {})["tools"]:
+            self.assertEqual(set(t), {"name", "description", "inputSchema"}, t["name"])
+            self.assertEqual(t["inputSchema"]["type"], "object")
+
+    # -- a brain tool round-trips through the board's dispatch ---------------
+    def test_brain_status_round_trips(self):
+        result = self.call("brain_status")
+        self.assertFalse(result.get("isError"), result)
+        self.assertIn(str(self.vault), self.text(result))
+
+    def test_brain_log_writes_the_configured_vault(self):
+        result = self.call("brain_log", op="note", message="through the bridge")
+        self.assertFalse(result.get("isError"), result)
+        self.assertEqual(self.text(result), "logged")
+        self.assertIn("through the bridge", (self.vault / "LOG.md").read_text())
+
+    def test_a_brain_tool_error_is_an_is_error_result(self):
+        """Handler exceptions are RESULTS, exactly like the board's own — the
+        client sees the failure, the server keeps serving."""
+        result = self.call("brain_save")          # required args missing
+        self.assertTrue(result["isError"])
+        self.assertTrue(self.text(result).strip())
+        # …and the server is still answering afterwards.
+        self.assertFalse(self.call("brain_status").get("isError"))
+
+    def test_an_unconfigured_brain_names_the_config_problem(self):
+        """A config edited AFTER the server started is the real case: the write
+        path re-checks it and refuses rather than writing to a defaulted vault."""
+        self.assertFalse(self.call("brain_status").get("isError"))   # good config first
+        self.write_primary_config("{ not json")
+        result = self.call("brain_save", slug="repo-a-fact",
+                           description="d", body="b")
+        self.assertTrue(result["isError"])
+        message = self.text(result)
+        self.assertIn("ConfigError", message)
+        self.assertIn("Refusing to write", message)
+        self.assertFalse((self.vault / "notes/repo-a-fact.md").exists())
+
+    # -- the brain plane is optional ----------------------------------------
+    def test_without_the_brain_plane_the_board_serves_alone(self):
+        self.mcp._brain = lambda: None                 # the loader found nothing
+        names = {t["name"] for t in self.mcp.dispatch("tools/list", {})["tools"]}
+        self.assertEqual(names, {t["name"] for t in self.mcp.TOOLS})
+        result = self.call("brain_search", query="anything")
+        self.assertTrue(result["isError"])
+        self.assertIn("Unknown tool: brain_search", self.text(result))
+
+    def test_an_unknown_tool_is_still_an_unknown_tool_result(self):
+        """The board's rule wins on the bridge: unknown name → isError RESULT, not
+        a JSON-RPC error (the brain's standalone server answers -32602)."""
+        result = self.call("no_such_tool")
+        self.assertTrue(result["isError"])
+        self.assertIn("Unknown tool", self.text(result))
+
+    def test_a_broken_brain_import_is_one_stderr_line_not_a_crash(self):
+        mod = _load_mcp_server()
+        mod._BRAIN, mod._BRAIN_LOADED = None, False
+        real_import = builtins.__import__
+
+        def explode(name, *a, **kw):
+            if name.startswith("brain"):
+                raise ImportError("no brain plane here")
+            return real_import(name, *a, **kw)
+
+        builtins.__import__ = explode
+        self.addCleanup(setattr, builtins, "__import__", real_import)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertIsNone(mod._brain())
+            self.assertIsNone(mod._brain())            # cached: still no second try
+        self.assertEqual(err.getvalue().count("brain plane unavailable"), 1)
+        self.assertEqual({t["name"] for t in mod.dispatch("tools/list", {})["tools"]},
+                         {t["name"] for t in mod.TOOLS})
 
 
 if __name__ == "__main__":

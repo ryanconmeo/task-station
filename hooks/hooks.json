@@ -2,11 +2,15 @@
   "hooks": {
     "SessionStart": [
       { "hooks": [
-        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_session_start.sh\"" } ] }
+        { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/lib/hookmux.py\" session-start" } ] }
     ],
     "UserPromptSubmit": [
       { "hooks": [
-        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_user_prompt.sh\"" } ] }
+        { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/lib/hookmux.py\" user-prompt" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [
+        { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/lib/brain/hooks/guard.py\"" } ] }
     ],
     "PostToolUse": [
       { "matcher": "Write|Edit|NotebookEdit", "hooks": [
@@ -14,7 +18,7 @@
     ],
     "Stop": [
       { "hooks": [
-        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/on_stop.sh\"" } ] }
+        { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/lib/hookmux.py\" stop" } ] }
     ],
     "PostCompact": [
       { "matcher": "manual", "hooks": [

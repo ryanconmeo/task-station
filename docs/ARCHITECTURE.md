@@ -846,10 +846,21 @@ parse their JSON stdin via `lib/hookjson.py` (`<stdin> | python3 hookjson.py <do
 [default]`), a silent no-op on malformed input that mirrors `jq -r '.path // default'`; the
 `SessionStart` output JSON is built with an inline `python3 -c … json.dumps` one-liner.
 
+**Three events belong to both planes, so they run through one mux** (3.0.0). `SessionStart`,
+`UserPromptSubmit` and `Stop` register a single command — `python3
+"${CLAUDE_PLUGIN_ROOT}/lib/hookmux.py" <event>` — and `lib/hookmux.py` spawns the board's
+shell hook FIRST and the brain plane's hooks after it (`-m brain.hooks.inject` /
+`.gate` / `.distill`), hands them all the same stdin, and merges what they print into at
+most one document: `additionalContext` concatenated in that order, every other key
+first-writer-wins. A child that fails is a stderr breadcrumb; the mux always exits 0. The
+`Script` column below is therefore what the mux runs for the board, not what the manifest
+names directly.
+
 | Hook | Script | What it does |
 |---|---|---|
 | `SessionStart` | `on_session_start.sh` | Refresh the `~/.claude/task-station-engine` symlink → the active `lib/`; self-register the status-line segment; (opt-in) install bare `/todo` `/done` `/repos` aliases; emit the open-tasks / attached-task context + one-time setup nudge; set the session title; **tint the originating window** to the attached task's category (`session-tint`). |
 | `UserPromptSubmit` | `on_user_prompt.sh` | Re-point the engine symlink (so bare aliases track an in-session `/plugin update`); **tint instantly when a known skill runs** (`prompt-tint` → escape written to the origin TTY); auto-title the tab `#<seq>: <title>`; inject the compact track-or-fold guidance. |
+| `PreToolUse` (`Bash`) | `lib/brain/hooks/guard.py` | The brain plane's **secret guard**: deny a Bash command that would write a secret into the transcript (a JWT or opaque token as a literal flag value, or a secret-reading command whose output is neither suppressed nor captured). Brain-only event, so it is registered **directly, by path** — no mux — and it **fails open**: any parse or logic error allows the command. |
 | `PostToolUse` (`Write\|Edit\|NotebookEdit`) | `on_post_tool.sh` | Attached session → auto-promote `open → active`; untracked session → a **one-shot** reminder the first time it edits a file (gated by the `edited` marker, ~one injection per session). |
 | `Stop` | `on_stop.sh` | Refuse to end the turn while the session has edited files but tracked no task (`{"decision":"block"}`). Self-healing (attach/create/skip/`/done` clears it) and **capped at two blocks** so a non-complying loop can't wedge the session. Then `lib/stop_steps.py` runs the seven best-effort turn-end steps (nudge, board refresh, obsidian/usage flush, subscriptions, recap, cost HUD) in **one** interpreter — `stop-gate` keeps its own process because the harness reads its stdout for the block contract. |
 | `SessionEnd` | `on_session_end.sh` | The **exact** end-of-session pass (`session-end`): stamp this session's roster row with `ended_ts` + `end_reason`, put one `session-end` event on the attached task's feed, and stop the delegate workers **this** session spawned. Idempotent, always exits 0. |

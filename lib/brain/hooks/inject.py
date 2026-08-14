@@ -33,11 +33,14 @@ path to reach it: peers are explicit opt-in (CLI ``--peers`` / MCP ``peers:
 true``) and a teammate's notes must never arrive in someone's context unasked.
 ``tests/brain/test_peers.py::test_injection_never_includes_peers`` is the guard.
 
-TWO SPAWNS ARE INERT (see :func:`_spawn_weekly_lint` / :func:`_spawn_orgpull`).
-The source launched both by ``__file__``-relative path; a package module with
-relative imports cannot be run that way, and reaching back out of the package to
-find ``lib/`` would be a fourth ``__file__`` anchor. Both are one-line seams,
-patchable by tests, that Phase 5 re-points at real entry points.
+ONE SPAWN IS LIVE, ONE STAYS DARK. :func:`_spawn_orgpull` went live in Phase 5:
+it launches ``python3 -m brain.orgpull`` detached, inheriting ``os.environ`` —
+which carries ``lib/`` on ``PYTHONPATH``, because every sanctioned launch context
+(the hook mux, ``.mcp.json``, the tests' ``PINNED_ENV``) puts it there. No
+``__file__`` math, in either direction. :func:`_spawn_weekly_lint` stays INERT by
+ruling — its 7-day throttle was a shell script that this port never carried, and
+3.0.0 ships the lint through ``/brain-heal`` instead. Both remain named,
+patchable seams, so the SessionStart sequence still says what happens here.
 
 THE ENTRY POINT IS ``-m``: ``python3 -m brain.hooks.inject --session-start`` /
 ``--prompt`` with ``lib/`` on ``PYTHONPATH``.
@@ -48,6 +51,7 @@ Layer rule: brain may import core and its own siblings, never board. Stdlib +
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -117,14 +121,16 @@ def _spawn_weekly_lint():
     """Fire the throttled weekly lint in the background (session context has the
     file-access grants a background daemon does not).
 
-    INERT until Phase 5. The source spawned a sibling shell script
-    (``scripts/lint-weekly.sh``) that owned BOTH the 7-day throttle stamp and the
-    ``lint.py --notify --quiet`` invocation; that script is not part of this port,
-    so there is nothing to launch yet. The engine it drove exists
-    (:func:`brain.heal_lint.main` takes ``--notify``/``--quiet``) — what is
-    missing is the throttle, which Phase 5 either re-ships as a script or folds
-    into ``heal_lint`` (~10 lines: a ``.last-lint`` stamp under
-    ``config.state_dir()`` and a 6-day window).
+    INERT, and Phase 5 ruled that it STAYS dark for 3.0.0 (accepted-dark). The
+    source spawned a sibling shell script (``scripts/lint-weekly.sh``) that owned
+    BOTH the 7-day throttle stamp and the ``lint.py --notify --quiet``
+    invocation; that script is not part of this port, so there is nothing to
+    launch. The engine it drove exists (:func:`brain.heal_lint.main` takes
+    ``--notify``/``--quiet``) and users reach it through ``/brain-heal`` — what is
+    missing is only the throttle, which a later release either re-ships as a
+    script or folds into ``heal_lint`` (~10 lines: a ``.last-lint`` stamp under
+    ``config.state_dir()`` and a 6-day window). Nothing advertises the weekly
+    lint, so nothing promises a feature that is off.
 
     Kept as a named seam rather than deleted so the SessionStart sequence — and
     the test that pins it — still says what is supposed to happen here."""
@@ -135,18 +141,27 @@ def _spawn_orgpull():
     """Fire the throttled org-brain pull, detached (keeps org team-rules fresh;
     self-throttles 24h).
 
-    INERT until Phase 5, exactly like :func:`brain.orgpull._spawn_check` (D34).
-    ``brain.orgpull.main()`` is the target and it is hook-shaped already (exits 0,
-    swallows everything). The fix is one line —
-    ``subprocess.Popen([sys.executable, "-m", "brain.orgpull"], start_new_session=True,
-    stdout=DEVNULL, stderr=DEVNULL, env={**os.environ, "PYTHONPATH": <lib>})`` —
-    but it needs ``lib/`` reachable in the CHILD env, which is a Phase-5 packaging
-    decision, not a porting one. Spawning by path cannot work (relative imports)
-    and finding ``lib/`` from here would mean new ``__file__`` math.
+    LIVE since Phase 5, in the shape :func:`brain.orgpull._spawn_check` promised
+    (D34): its own session, no stdio, and ``os.environ`` handed through
+    unchanged — the environment already carries ``lib/`` on ``PYTHONPATH``, so the
+    child can import the package it is asked to run. ``brain.orgpull.main()`` is
+    hook-shaped (exits 0, swallows everything), and nothing here waits for it.
 
-    Returns whether a pull was actually launched, so a caller can never mistake
-    the inert seam for a fired one."""
-    return False
+    Fail-open: ANY exception is a breadcrumb and a ``False`` return, never a
+    raise — a session must start even when a background pull cannot.
+
+    Returns whether a pull was actually launched, so a caller can never mistake a
+    failed spawn for a fired one."""
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "brain.orgpull"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True,
+            env=os.environ.copy())
+        return True
+    except Exception as e:
+        errorlog.record("inject:spawn-orgpull", e)
+        return False
 
 
 def session_start(payload, cfg):

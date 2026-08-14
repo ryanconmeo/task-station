@@ -4,15 +4,16 @@ PROVENANCE: ported in 3.0.0 Phase 4 (chunk 5a) from the brain source tree's
 ``tests/test_guard.py`` @ 0.14.0. 7 of its 8 cases port 1:1, driven exactly as
 the source drove them — the guard as a SUBPROCESS with a PreToolUse hook-JSON
 payload on stdin, which is how Claude Code invokes it. The 8th
-(``test_hooks_json_registers_guard_on_bash``) is **DEFERRED**: it asserts the
-source plugin's ``hooks/hooks.json`` wiring, and this repo's ``hooks/hooks.json``
-has no PreToolUse block yet — hook REGISTRATION is Phase 5's, and a test written
-now would either fail or assert markup nobody ships. Named in the chunk-5a
-handoff rather than faked.
+(``test_hooks_json_registers_guard_on_bash``) was DEFERRED in chunk 5a because
+this repo had no PreToolUse block to assert; Phase 5 wrote that block and the
+case now lives in ``tests/test_hookmux.py::GuardRegistrationTest``, beside the
+rest of the hook wiring it asserts (and with the manifest's own command form
+actually executed, which the source's version did not do).
 
-By-path (not ``-m``) is deliberate here: guard.py imports nothing but the stdlib,
-so it stays runnable as a plain file, which is the cheapest thing for Phase 5 to
-wire. ``McpHooksLayeringTest`` pins that property from the other side.
+By-path (not ``-m``) is deliberate here and in the manifest: guard.py imports
+nothing but the stdlib, so it stays runnable as a plain file — the cheapest way
+to wire a hook that has no siblings to merge with.
+``McpHooksLayeringTest`` pins that property from the other side.
 
 ADDED: a behavioural matrix over :func:`brain.hooks.guard.detect` — the real
 match logic, both directions (what must block, what must pass), including the

@@ -5,9 +5,13 @@ PROVENANCE: ported in 3.0.0 Phase 4 (chunk 5a) from the brain source tree's
 ``scripts/mcp_server.py`` @ 0.14.0 (module rename ``mcp_server`` ->
 ``brain.mcp_tools``, per the plan's port map). The five tool NAMES, their
 JSON-Schema input contracts and their result strings are unchanged — Phase 5
-mounts them on the board's MCP bridge, and any rename there is Phase 5's call,
-not this port's. Two tool DESCRIPTIONS lost an org word (the scrub gate); no
-wire key, enum value or default moved.
+MOUNTED them, unrenamed, on the board's MCP bridge (``lib/mcp_server.py``'s
+``_brain()`` / ``_brain_tools_call()``: it borrows ``TOOLS`` and ``HANDLERS``
+directly, so this module's own ``handle``/``serve`` stay the standalone path).
+Two tool DESCRIPTIONS lost an org word (the scrub gate) and ``brain_save``'s
+gained a sentence about the slug's domain gate in Phase 5 (the shipped behaviour
+was refusing writes the description never mentioned); no wire key, enum value or
+default has moved.
 
 What else changed, and only this:
 
@@ -23,9 +27,11 @@ What else changed, and only this:
     the same module object, reached through the module that already resolved it).
   * ``note_io`` -> the sibling :mod:`brain.notes`.
   * :func:`_server_version` reads ``$CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json``
-    rather than walking ``__file__`` up to a repo root — the brain plane has a
-    fixed budget of three ``__file__`` anchors (naming, orgpull, init_home) and
-    this is not one of them. Same fallback contract: ``"0.0.0"``, logged.
+    rather than walking ``__file__`` up to a repo root — the brain plane keeps a
+    fixed, tiny budget of ``__file__`` anchors (``naming`` and ``init_home``,
+    each pointing at a data file that ships beside it; ``orgpull``'s went away in
+    Phase 5 when its spawn stopped needing a path) and this is not one of them.
+    Same fallback contract: ``"0.0.0"``, logged.
 
 THE IMPORT-TIME CONFIG LOAD IS LOAD-BEARING, and deliberately kept. Importing
 :mod:`brain.search` resolves the config once, at import, and every tool then
@@ -77,7 +83,7 @@ TOOLS = [
     },
     {
         "name": "brain_save",
-        "description": "Save an atomic fact into the vault (the private brain). A new slug is created with full frontmatter; an existing slug is UPDATED by appending a dated bullet under ## Updates and merging frontmatter (its body is preserved, never clobbered). Two sanctioned triggers: (1) explicit brain-directed capture ('save this to the brain/private brain'), and (2) the vault's autonomous hub write-back policy — model-initiated whenever a durable fact is learned or corrected, no user ask needed. Only exclusion: a bare 'remember this' with no brain/vault mention routes to Claude's own memory, not here.",
+        "description": "Save an atomic fact into the vault (the private brain). A new slug is created with full frontmatter; an existing slug is UPDATED by appending a dated bullet under ## Updates and merging frontmatter (its body is preserved, never clobbered). SLUG SHAPE IS ENFORCED: `<domain>-<subject>`, where the domain is one the naming contract registers (the shipped generic areas — `repo`, `data`, `cloud`, `ai`, `finance`, `people`, `task-station`, `brain-station`, … — plus any the org brain adds); an UNREGISTERED domain is refused, not guessed, so this call returns an error instead of a note. Before saving, run `python3 -m brain.search find-target \"<the fact's title>\"` to see whether an existing note should absorb the fact. Two sanctioned triggers: (1) explicit brain-directed capture ('save this to the brain/private brain'), and (2) the vault's autonomous hub write-back policy — model-initiated whenever a durable fact is learned or corrected, no user ask needed. Only exclusion: a bare 'remember this' with no brain/vault mention routes to Claude's own memory, not here.",
         "inputSchema": {"type": "object", "properties": {
             "slug": {"type": "string", "description": "kebab-case note name"},
             "description": {"type": "string", "description": "one-line summary"},
@@ -174,8 +180,8 @@ def _server_version():
     ``$CLAUDE_PLUGIN_ROOT`` (the one env var the harness always sets for a
     plugin). Falls back to '0.0.0' (logged) when the manifest is unset or
     unreadable. The source anchored this to ``__file__`` walked up one dir; the
-    package layout has no such fixed distance to the plugin root, and adding a
-    fourth ``__file__`` anchor to the brain plane to guess one would be worse
+    package layout has no such fixed distance to the plugin root, and adding
+    another ``__file__`` anchor to the brain plane to guess one would be worse
     than reading the variable that already holds the answer."""
     root = os.environ.get("CLAUDE_PLUGIN_ROOT")
     if not root:

@@ -15,8 +15,9 @@ mechanical differences:
     of the top 3 — is unchanged.
 
 ADDED: the SessionStart path (the source tested only ``--prompt`` and the GC),
-the two INERT spawn seams, the never-break-the-session contract, and the
-``-m brain.hooks.*`` entry points that Phase 5 will wire.
+the two spawn seams — one wired LIVE in Phase 5, one deliberately dark — the
+never-break-the-session contract, and the ``-m brain.hooks.*`` entry points the
+hook mux runs.
 """
 import contextlib
 import io
@@ -176,10 +177,17 @@ class SessionStartTest(BrainTestCase):
 
 
 class SpawnSeamTest(BrainTestCase):
-    """ADDED — the two spawns are INERT until Phase 5 wires entry points (the
-    weekly lint, whose throttling shell script is not part of this port, and the
-    org-brain pull, D34's shape). Both halves are asserted: SessionStart still
-    CALLS them in order, and the shipped seams start no process."""
+    """The two SessionStart spawns. Phase 5 wired ONE of them live — the org-brain
+    pull — and ruled the other (the weekly lint, whose 7-day throttle was a shell
+    script this port never carried) stays dark. Three halves are asserted:
+    SessionStart still CALLS both, in order and before the vault check; the live
+    one launches the module detached and fails open; the dark one still starts
+    nothing and still says so by returning False.
+
+    ``subprocess.Popen`` is monkeypatched rather than let loose: a real detached
+    child would outlive the test, and what is under test is the launch CONTRACT
+    (argv, stdio, session, env), not the pull itself — ``test_orgpull`` owns that.
+    """
 
     def setUp(self):
         super().setUp()
@@ -192,6 +200,22 @@ class SpawnSeamTest(BrainTestCase):
             self.addCleanup(setattr, inject, name, self.shipped[name])
             setattr(inject, name, (lambda n: lambda: self.calls.append(n))(name))
 
+    def _record_popen(self, exc=None):
+        """Swap the real Popen for a recorder (or an exploder). Returns the list
+        of ``(argv, kwargs)`` a spawn would have made."""
+        spawns = []
+        real = subprocess.Popen
+
+        def fake(argv, **kwargs):
+            spawns.append((argv, kwargs))
+            if exc is not None:
+                raise exc
+            return None
+
+        subprocess.Popen = fake
+        self.addCleanup(setattr, subprocess, "Popen", real)
+        return spawns
+
     def test_session_start_fires_both_seams_once_each(self):
         _run_session_start(self.cfg)
         self.assertEqual(self.calls, ["_spawn_weekly_lint", "_spawn_orgpull"])
@@ -203,12 +227,46 @@ class SpawnSeamTest(BrainTestCase):
         self.assertEqual(out, "")
         self.assertEqual(self.calls, ["_spawn_weekly_lint", "_spawn_orgpull"])
 
-    def test_the_shipped_seams_are_inert(self):
-        """Called for real (not the stubs): each returns False and starts nothing.
-        ``False`` is the contract — a caller can never read the inert seam as a
-        fired one."""
-        self.assertIs(self.shipped["_spawn_weekly_lint"](), False)
+    def test_the_orgpull_seam_launches_the_module_detached(self):
+        spawns = self._record_popen()
+        self.assertIs(self.shipped["_spawn_orgpull"](), True)
+        self.assertEqual(len(spawns), 1)
+        argv, kwargs = spawns[0]
+        self.assertEqual(argv, [sys.executable, "-m", "brain.orgpull"])
+        for stream in ("stdin", "stdout", "stderr"):
+            self.assertEqual(kwargs[stream], subprocess.DEVNULL, stream)
+        self.assertTrue(kwargs["start_new_session"])
+
+    def test_the_orgpull_child_inherits_the_environment(self):
+        """The packaging answer: no ``__file__`` math and no hand-built env — the
+        child gets os.environ, which already carries ``lib/`` on PYTHONPATH in
+        every sanctioned launch context. A COPY, so the session's own env is
+        never handed to a detached process to mutate."""
+        spawns = self._record_popen()
+        os.environ["TASK_STATION_BRAIN_SPAWN_PROBE"] = "carried"
+        self.addCleanup(os.environ.pop, "TASK_STATION_BRAIN_SPAWN_PROBE", None)
+        self.shipped["_spawn_orgpull"]()
+        env = spawns[0][1]["env"]
+        self.assertEqual(env.get("TASK_STATION_BRAIN_SPAWN_PROBE"), "carried")
+        self.assertEqual(env, dict(os.environ))
+        self.assertIsNot(env, os.environ)
+
+    def test_a_failed_orgpull_spawn_is_false_and_a_breadcrumb(self):
+        """Fail-open is the contract a hook lives by: no raise, no True, and a
+        line in the error log so a permanently-broken spawn cannot hide."""
+        self._record_popen(exc=OSError("no such interpreter"))
         self.assertIs(self.shipped["_spawn_orgpull"](), False)
+        log = bconfig.state_dir() / "error.log"
+        self.assertTrue(log.exists())
+        self.assertIn("inject:spawn-orgpull", log.read_text())
+
+    def test_the_weekly_lint_seam_is_still_dark(self):
+        """Accepted-dark for 3.0.0: it starts no process and returns False, so a
+        caller can never read the seam as a fired one. ``/brain-heal`` runs the
+        lint in the foreground, which is the path users actually get."""
+        spawns = self._record_popen()
+        self.assertIs(self.shipped["_spawn_weekly_lint"](), False)
+        self.assertEqual(spawns, [])
 
 
 class NeverBreaksTheSessionTest(BrainTestCase):
@@ -250,11 +308,11 @@ class NeverBreaksTheSessionTest(BrainTestCase):
 
 
 class HookEntryPointTest(BrainTestCase):
-    """ADDED — ``python3 -m brain.hooks.<name>`` is the uniform entry point Phase 5
-    wires. Four modules, one contract: run against a temp home, exit 0, emit no
-    traceback. A package module with relative imports cannot be run by path, so if
-    this stops working every hook stops working at once — which is why it fails
-    here, by name, rather than in whatever hooks.json Phase 5 writes."""
+    """ADDED — ``python3 -m brain.hooks.<name>`` is the uniform entry point the
+    hook mux runs. Four modules, one contract: run against a temp home, exit 0,
+    emit no traceback. A package module with relative imports cannot be run by
+    path, so if this stops working every hook stops working at once — which is
+    why it fails here, by name, rather than inside the mux."""
 
     def _run(self, module, *args, stdin=""):
         env = dict(os.environ)

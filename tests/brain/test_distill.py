@@ -24,8 +24,12 @@ module actually makes:
 The ``claude -p`` subprocess is stubbed by swapping the module's ``subprocess``
 reference (never the stdlib module itself), so no test shells out.
 
-NOT COVERED HERE, deliberately: the hook wiring itself (the Stop-hook payload
-contract, hooks.json) — that is chunk 5, with the rest of ``hooks/``.
+NOT COVERED HERE, deliberately: the hook wiring itself. Phase 5 wrote it — the
+Stop event runs ``lib/hookmux.py stop``, which spawns the board's ``on_stop.sh``
+and then ``python3 -m brain.hooks.distill`` on the same payload — and it is
+asserted where it lives: ``tests/test_hookmux.py`` (the manifest ↔ children-table
+agreement and the merge rules) and ``test_inject.py::HookEntryPointTest`` (the
+``-m brain.hooks.distill`` entry point running end to end).
 """
 import contextlib
 import io
