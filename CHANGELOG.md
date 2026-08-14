@@ -3,6 +3,51 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.1.0] — 2026-08-14
+
+Worker truth: delegate now judges background workers by what the harness actually
+reports, preflight-repairs what silently parks them, and never loses their report.
+
+### Added
+- `delegate reap-parked` — sweep task-station background agents parked in a stalled
+  agents state (blocked / stalled / needs-input): remove the supervisor's
+  session-store file (legacy flat layout and the nested `claude-code-sessions`
+  store, matched on `cliSessionId`), kill the pty-host process group resolved from
+  `ps` (background rows carry no pid), and flip the harness job record
+  (`<config>/jobs/<short-sid>/state.json`) to `done` — the file the agents list
+  actually renders. `--min-age-mins` (default 360), `--dry-run`, `--all-names`.
+- `delegate grants [--worktree] [--json]` — probe the trust state and the merged
+  `permissions.allow`/`deny` a worker in a repo/worktree will actually get
+  (user + project + local settings), so a brief can carry the real toolset
+  instead of a guess.
+- Trust + grant preflight before **every** launch: verify/repair the
+  `~/.claude.json` trust entry (an untrusted dir under `--bg` parks the worker in
+  `blocked` with no prompt anywhere), alert when a previously-verified entry has
+  been wiped, and print the probed grant set once per worker slot.
+- Durable child report: every brief is contracted to end by writing
+  `HANDOFF-REPORT-<slug>.md` at the worktree root (fixed sections, mandatory
+  *Unverified* list); when the worker doesn't, delegate harvests its final
+  message — stdout result, else the job record's `output.result`, else the
+  transcript tail — into the same file, so backgrounding can never lose the
+  report. The path lands in the registry, `status`, and the run footer.
+- `--stall-grace <secs>` on `run` (default 45): how long a `--bg` worker may sit
+  in a parked agents state before delegate fails fast with the diagnosis line
+  (agents state, transcript existence, and the job record's `needs`/`detail`).
+
+### Fixed
+- Lying liveness for background workers: the agents list emits two row shapes —
+  interactive rows carry `status`+`pid`, `kind: background` rows carry `state`
+  and no pid — and only `status` was read, so every parked bg worker rendered as
+  `running` while the poll loop refreshed its own heartbeat (the 3h × 5-launch
+  tax). Both keys are read now; the heartbeat only advances on progress states;
+  a parked state is classified `stalled` and *said*; `status` re-probes the live
+  agents state for background entries instead of trusting pid or a poll-touched
+  timestamp.
+- The task-close reaper skipped any worker without a pid ("Claude Code prunes
+  it" — refuted: 40 pid-less parked agents had accumulated, oldest 16 days). It
+  now reads both row shapes and reaps via store-file removal + job-record flip,
+  killing a process group only when one exists.
+
 ## [3.0.0] — 2026-08-14
 
 Task Station becomes **one plugin carrying two planes**. The task board — the episodic
