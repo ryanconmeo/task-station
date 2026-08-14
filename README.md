@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-2.27.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.0.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -19,6 +19,7 @@ Your work in Claude Code scatters across sessions. Close the terminal and the ta
 - **Checkpoint anytime; resumes stay cheap.** `/todo save` captures the task's full context as a lean snapshot, while the growing decision/log history stays off the resume path — pull it on demand with `/todo <n> history`. A resume costs about the same on day 30 as on day 1.
 - **Ship repo changes without leaving your hub.** Delegate to a worktree-isolated worker that runs inside the target repo with its own `CLAUDE.md`, hooks, and environment — one worker per task and repo.
 - **Your terminal tells you what you're in.** Every category owns a full colour palette; the terminal tints the instant a task or skill runs, so your current context is always visible at a glance.
+- **A knowledge plane, in the same plugin.** [brain-station](#the-knowledge-plane-brain-station) pairs the board (the record of *work*) with a personal Markdown wiki (the record of *what is true*): search with citations, one-command capture, self-healing, hook-driven context injection, and an optional PR-gated org tier. Entirely opt-in — the board never notices if you skip it.
 - **Your board survives every update.** State lives in a local SQLite store outside the plugin cache, so `/plugin update` never wipes your board or history.
 - **Private by default.** Everything stays on your machine — no telemetry; the version check and repo enrichment are opt-in and send no task data.
 
@@ -238,7 +239,7 @@ Task Station ships a dependency-free MCP server (stdio JSON-RPC, no SDK, no pip)
 task-station config --desktop-bridge on   # then restart Claude Desktop
 ```
 
-This safely merges one entry into your existing Desktop config (backed up first) and is fully reversible (`--desktop-bridge off`). Bridge tools: `list_tasks` · `search_tasks` · `create_task` · `get_task` · `set_status` · `add_note`, plus a `todo` prompt and `task://<seq>` resources.
+This safely merges one entry into your existing Desktop config (backed up first) and is fully reversible (`--desktop-bridge off`). The bridge advertises **16 tools** — eleven board tools (`list_tasks` · `create_task` · `search_tasks` · `get_task` · `get_prompts` · `set_status` · `add_note` · `list_sessions` · `send_memo` · `list_memos` · `ack_memo`) and, when a brain is configured, five [knowledge-plane](#the-knowledge-plane-brain-station) tools (`brain_search` · `brain_status` · `brain_save` · `brain_log` · `brain_recent_tasks`) — plus a `todo` prompt and `task://<seq>` resources. Brain tools mount lazily: any brain-side failure leaves the board serving alone. In Claude Code the plugin's `.mcp.json` registers the same server, so CLI and Desktop share one server and one store.
 
 ## Status bar
 
@@ -358,6 +359,51 @@ Task Station is the **episodic layer** of a memory stack: it records *what happe
 
 The body sections are `## Goal`, `## State`, `## Summary`, `## Decisions`, `## History`, `## Usage` (model mix %, tokens, `$ derived · $ reported`, work-phase mix), and — when enabled — `## Prompts` (the full timestamped trail). Task Station is generic: the export points anywhere and carries **no** integration-specific naming, so it composes with any downstream tooling you choose.
 
+## The knowledge plane (brain-station)
+
+The export contract above feeds *any* second brain — but since 3.0.0 the plugin ships
+one. **brain-station** is the knowledge plane to the board's episodic plane: where a task
+records what *happened*, a brain note records what is *true* — one fact per note, plain
+Markdown with frontmatter (`name` / `description` / `type` / `scope` / `verified:`), so
+validity is a dated field you can lint, not a vibe. Task notes accumulate; knowledge
+notes converge. Everything is opt-in and stdlib-only, like the rest of the plugin.
+
+```text
+/brain-init                # first run: preflight, scaffold the vault, write the config
+/brain what do we know about the deploy pipeline?
+/brain-save                # distill this conversation's durable takeaways into notes
+/brain-heal                # self-healing pass: tier-lint, lint fixes, episode ingest
+/brain-promote <note>      # personal note → org-brain PR (when an org tier is linked)
+/ado 1234                  # read an Azure DevOps work-item tree in one zero-token call
+```
+
+- **`/brain-init` scaffolds everything** from the bundled vault template: the vault
+  (default `~/brains/brain`), its `CLAUDE.md` schema rules, an `INDEX.md` catalog, and
+  the runtime config. It is idempotent and reversible, and it can migrate-then-link your
+  existing agent-memory directory into the vault so memory and knowledge share one graph.
+- **Hooks keep the brain ambient.** On each prompt, relevant notes are injected as
+  context (throttled per topic, keyword-gated, `inject_context` to disable); a Stop-hook
+  distiller (opt-in, `auto_distill`) captures durable facts from the session; a daily
+  dirty-gated heal nag keeps the vault reconciled; and a `PreToolUse(Bash)` **secret
+  guard** denies commands that would echo a secret into the transcript (it fails open —
+  a guard bug never blocks your shell).
+- **Federation is layered, never magic.** A personal note marked `scope: team` becomes a
+  promotion candidate; `/brain-promote` converts it to the org schema and lands it as a
+  PR a lead approves. An org-brain clone joins search read-only; peers' published
+  subsets can be subscribed and searched, and a peer's copy never beats your own note.
+- **Configuration** resolves `~/.claude/brain-station.json` → `~/brains/config.json`
+  (vault, memory, org-brain clone, publish mirror, inject/distill toggles), and every
+  key has a `TASK_STATION_BRAIN_*` environment override. Org values — labels, keywords,
+  forge coordinates — arrive at runtime from an org profile
+  (`python3 -m brain.init_home --profile <org.json>`), never from code.
+- **The same MCP server serves both planes** — see [the Desktop bridge](#claude-desktop-bridge):
+  five `brain_*` tools mount beside the board's eleven, in Claude Code (via the plugin's
+  `.mcp.json`) and Claude Desktop alike.
+
+Full reference — configuration, hooks, federation, the `python3 -m brain.*` command
+line — in [docs/BRAIN.md](docs/BRAIN.md); note naming rules in
+[docs/brain-naming.md](docs/brain-naming.md).
+
 ## Configuration
 
 `task-station config` (no args) prints a settings + status board, and `/task-station:config` is the console for it. Key flags:
@@ -402,7 +448,7 @@ By default a fresh, unattached session gets a *nudge* — Claude is told to trac
 
 ## How it works
 
-Tasks live in a local SQLite database (WAL mode, indexed), read on every prompt via hooks. A task is one record with a three-state lifecycle and a stable `seq` number you never lose. Hooks drive the automation: `SessionStart` announces and tints, `UserPromptSubmit` tints on a known skill and keeps the task fresh, `PostToolUse` promotes a task to active on an edit, and `Stop` blocks ending a turn with untracked edits. With [automatic checkpointing](#automatic-checkpointing-opt-in) on, `Stop` proactively prompts a full structured `/todo save` once the measured context reaches `--checkpoint-pct` % of `--context-window` (before compaction), `PostCompact` stashes the compaction summary as a fallback, and `Stop`/`SessionStart` add the digest-freshness nudges. Three more events round out the edges: `SessionEnd` records *why* a session ended and stops the workers it spawned (the `SessionStart` sweep stays as the crash backstop), `ConfigChange` reports settings paths that no longer resolve, and `FileChanged` re-arms the pointer/drift checks when a station config file changes on disk. A ninth, `WorktreeCreate`, is installable rather than shipped (`--worktree-hook`), because that hook replaces worktree creation. Under the hood the engine is a single stdlib-only Python program (`lib/task-station.py`); the slash commands, the hooks, and the [`task-station` CLI](#the-task-station-cli) on `bin/` all invoke it. The deeper mechanics — resume/cwd recovery, the "fold don't fork" dedup, the worker registry, repo-index enrichment, the Desktop launcher — are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Tasks live in a local SQLite database (WAL mode, indexed), read on every prompt via hooks. A task is one record with a three-state lifecycle and a stable `seq` number you never lose. Hooks drive the automation: `SessionStart` announces and tints, `UserPromptSubmit` tints on a known skill and keeps the task fresh, `PostToolUse` promotes a task to active on an edit, and `Stop` blocks ending a turn with untracked edits. With [automatic checkpointing](#automatic-checkpointing-opt-in) on, `Stop` proactively prompts a full structured `/todo save` once the measured context reaches `--checkpoint-pct` % of `--context-window` (before compaction), `PostCompact` stashes the compaction summary as a fallback, and `Stop`/`SessionStart` add the digest-freshness nudges. Three more events round out the edges: `SessionEnd` records *why* a session ended and stops the workers it spawned (the `SessionStart` sweep stays as the crash backstop), `ConfigChange` reports settings paths that no longer resolve, and `FileChanged` re-arms the pointer/drift checks when a station config file changes on disk. A ninth, `WorktreeCreate`, is installable rather than shipped (`--worktree-hook`), because that hook replaces worktree creation. Under the hood the code is stdlib-only Python in three packages — `lib/core/` (shared plumbing), `lib/board/` (the engine), `lib/brain/` (the [knowledge plane](#the-knowledge-plane-brain-station)) — fronted by the `lib/task-station.py` facade; the slash commands, the hooks, and the [`task-station` CLI](#the-task-station-cli) on `bin/` all invoke it. Where both planes want the same hook event, one registered command (`lib/hookmux.py`) runs both planes' handlers in order — board first — and merges their output, so a failure in one plane never breaks the session. The deeper mechanics — resume/cwd recovery, the "fold don't fork" dedup, the worker registry, repo-index enrichment, the Desktop launcher — are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## FAQ
 
@@ -417,7 +463,7 @@ From a directory outside any single repo — your home `~`, or a parent folder a
 
 ## Data & privacy
 
-Everything is local. No telemetry, ever. The opt-in update check makes at most one `git ls-remote` per day and sends no task data. Repo-index LLM enrichment is off by default, fingerprint-gated, limited to file *names* with a secret denylist, and hard-disabled by `TASK_STATION_REPO_ENRICH=off`. See [PRIVACY.md](PRIVACY.md).
+Everything is local. No telemetry, ever. The opt-in update check makes at most one `git ls-remote` per day and sends no task data. Repo-index LLM enrichment is off by default, fingerprint-gated, limited to file *names* with a secret denylist, and hard-disabled by `TASK_STATION_REPO_ENRICH=off`. The [knowledge plane](#the-knowledge-plane-brain-station) follows the same rule: notes are plain Markdown in directories you chose, and its only network operations are the ones you configure explicitly (the promote PR, org-pull, publish). See [PRIVACY.md](PRIVACY.md).
 
 ## Platform support
 

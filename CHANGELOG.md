@@ -3,6 +3,72 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.0.0] — 2026-08-14
+
+Task Station becomes **one plugin carrying two planes**. The task board — the episodic
+plane, the record of *work* — is joined by **brain-station**, the knowledge plane: a
+personal Markdown wiki (the **private brain**) with search, capture, self-healing, an
+optional PR-gated **org brain** tier, and hook-driven context injection. One install, one
+version stream, one MCP server, one hook manifest. The board behaves exactly as before
+whether or not a brain is configured — every brain surface stays silent until one exists.
+
+### Added
+- **The knowledge plane (`lib/brain/`).** A vault of atomic Markdown notes with
+  frontmatter (`name`/`description`/`type`/`scope`/`verified`), scaffolded on first run
+  from the bundled `lib/brain/vault-scaffold/`. Naming is owned by one module
+  (`lib/brain/naming.py`, contract data in `lib/brain/data/naming-contract.json`,
+  spec in [docs/brain-naming.md](docs/brain-naming.md)); notes, references and search
+  ride the same stdlib-only, no-pip rule as the board. The plane includes: episodic
+  **ingest/distill** (the board's own store is the brain's episodic source), a
+  three-part **heal** pass (tier re-filing, lint, daily dirty-gated cadence),
+  **promote/publish** to an org tier, **org-pull/peers** federation, and an
+  Azure DevOps work-item reader (`python3 -m brain.ado_tree <id>`) so briefs can read a
+  work-item tree in one zero-token call. Configuration resolves
+  `~/.claude/brain-station.json` → `~/brains/config.json`, with per-key
+  `TASK_STATION_BRAIN_*` environment overrides; org values (labels, keywords, forge
+  coordinates) arrive at runtime from an org profile (`-m brain.init_home --profile`),
+  never from code.
+- **Six new skills** — `/brain` (query with citations), `/brain-save` (capture),
+  `/brain-heal` (self-healing pass), `/brain-init` (first-run scaffold, idempotent and
+  reversible), `/brain-promote` (note → org-brain PR), `/ado` (work-item tree reader) —
+  plus `system-instructions.md` at the plugin root, the natural-language routing doc
+  that maps plain phrases ("search the brain for X", "save this to the brain") to the
+  right skill.
+- **Five brain MCP tools on the same bridge** — `brain_search`, `brain_status`,
+  `brain_save`, `brain_log`, `brain_recent_tasks`. The Desktop bridge now advertises
+  **16 tools** (11 board + 5 brain); brain tools mount lazily, and any brain-side
+  failure leaves the board serving alone. A new **`.mcp.json`** registers the same
+  server for Claude Code sessions, so CLI and Desktop share one server and one store.
+- **The hook mux (`lib/hookmux.py`).** Both planes want the same three events, and the
+  harness runs same-event hooks in parallel — two JSON docs on one stdout don't merge.
+  The manifest therefore registers **one command per shared event**
+  (SessionStart / UserPromptSubmit / Stop) and the mux runs the children **in order**
+  (board first — tint and attach resolve before context injection), fans the same stdin
+  to each, concatenates `additionalContext`, resolves other keys first-writer-wins, and
+  always exits 0 — a failing child leaves a stderr breadcrumb and never breaks the
+  session.
+- **PreToolUse(Bash) secret guard.** The brain plane's guard denies a Bash command that
+  would write a secret into the transcript (an opaque token as a literal flag value, or
+  a secret-reading command whose output is neither suppressed nor captured). Brain-only
+  event, registered directly (no mux), and it **fails open** — any parse or logic error
+  allows the command.
+
+### Changed
+- **Self-identity now comes from runtime config, never from code.** The feeds/graph
+  plane resolves *who you are* at call time: `TASK_STATION_SELF_ALIAS` env var, else
+  `self_alias` in the station's `config.json`, else the OS username. Previous releases
+  shipped a hardcoded default alias; if your board showed it, set
+  `"self_alias": "<your-handle>"` in the station config (the same `config.json` the
+  rest of the board reads). The identity-keyed colour entry is replaced by a
+  `SELF_COLOR` default; demo peers keep their colours.
+- **Internal layout: the engine is now packages.** `lib/` is split into `lib/core/`
+  (shared plumbing), `lib/board/` (the engine in ten seam modules plus the moved flat
+  modules), and `lib/brain/` (the knowledge plane) behind the same `lib/task-station.py`
+  facade. Every entry point (`/todo` and friends, the `task-station` CLI, hooks, the
+  Desktop bridge), the on-disk data formats, and the store are **unchanged**; moved
+  modules keep import-compatible shims. If you scripted against `lib/` internals,
+  the flat module names still resolve.
+
 ## [2.27.0] — 2026-08-12
 
 The hook surface goes from **5 wired events to 8, plus one installable**. Every one of
