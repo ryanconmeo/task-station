@@ -433,7 +433,11 @@ class LegacyPathUncommittedTest(_CmdRunMixin, unittest.TestCase):
         before = _head_count(self.wt)
         self._run()
         self.assertEqual(_head_count(self.wt), before)
-        self.assertEqual(dg._worktree_dirty_counts(self.wt), (1, 1))
+        # (1, 2): the seeded dirty+untracked pair, plus the HANDOFF-REPORT-*.md
+        # the delegate harvests into the worktree root (B3) — an intentional
+        # artifact, not an auto-commit. Measured BEFORE the harvest, the count
+        # the entry reports stays the worker's own dirt.
+        self.assertEqual(dg._worktree_dirty_counts(self.wt), (1, 2))
 
     def test_clean_finish_is_unchanged(self):
         out, err = self._run()

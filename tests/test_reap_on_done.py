@@ -227,12 +227,18 @@ class ReapTaskWorkersTest(unittest.TestCase):
         self.assertEqual(dg.reap_task_workers(7, adapter=ad, roster=roster), ["w7"])
         self.assertEqual(self.killed, [1])
 
-    def test_skips_zombie_no_pid(self):
+    def test_no_pid_worker_reaped_via_store_file(self):
+        # 444 A1 (B4): a confirmed candidate WITHOUT a pid is still reaped by
+        # removing its session-store file — "Claude Code prunes it" was refuted
+        # on this machine (40 pid-less parked bg agents accumulated, oldest 16d).
+        # No pid → nothing to kill; the store row IS the agent.
         self._reg({"7:proj": {"seq": 7, "session_id": "w1"}})
+        sf = self._seed_session_file("w1")
         ad = FakeAdapter({"w1": {"sessionId": "w1", "pid": None, "status": "idle", "name": _wname()}})
         roster = self._worker("w1", name=_wname())
-        self.assertEqual(dg.reap_task_workers(7, adapter=ad, roster=roster), [])
+        self.assertEqual(dg.reap_task_workers(7, adapter=ad, roster=roster), ["w1"])
         self.assertEqual(self.killed, [])
+        self.assertFalse(os.path.exists(sf))
 
     def test_skips_gone_worker(self):
         self._reg({"7:proj": {"seq": 7, "session_id": "w1"}})
