@@ -94,7 +94,7 @@ def save_task(task, expected_rev=None):
     _backend().save_task(task, expected_rev=expected_rev)
 
 
-def mutate(task_id, mutator_fn, retries=5):
+def mutate(task_id, mutator_fn, retries=20):
     """Optimistic read-modify-write: load `task_id`, apply `mutator_fn(task)` in
     place, save guarded by the loaded rev, and on a concurrent-writer conflict
     reload + re-run the mutator (up to `retries`). THE required path for any
