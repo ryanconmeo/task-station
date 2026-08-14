@@ -551,11 +551,15 @@ class SqliteBackend:
         self._sync_fts(conn, task)
         conn.commit()
 
-    def mutate(self, task_id, mutator_fn, retries=5):
+    def mutate(self, task_id, mutator_fn, retries=20):
         """Optimistic read-modify-write: load the task, apply `mutator_fn(task)`
         (which mutates the dict in place), then save guarded by the loaded rev. On a
         RevConflict, reload the FRESH task and re-run the mutator, up to `retries`
-        times. Returns the saved task, or None if the task doesn't exist.
+        times — with a tiny jittered backoff between attempts, because competing
+        writers that retry in lockstep can hand one of them an N-loss streak (a
+        fixed 5-attempt spin crashed a 4-writer append on CI runners). Same cure
+        the lock layer got in 2.23.0, scaled to CAS cost. Returns the saved task,
+        or None if the task doesn't exist.
 
         `mutator_fn` MUST be PURE: it may only transform the task dict it is given,
         with no external side effects (no I/O, no saving, no reads of state that
@@ -575,6 +579,8 @@ class SqliteBackend:
             except RevConflict:
                 if attempt >= retries:
                     raise
+                time.sleep(random.uniform(0.001,
+                                          min(0.002 * (2 ** attempt), 0.05)))
 
     @_retry_locked
     def create_with_seq(self, task):
