@@ -1732,6 +1732,20 @@ def _preflight_launch(dirpath, entry):
                   "~/.claude.json." % dirpath, file=sys.stderr)
     if trusted:
         fields["trust_ok_ts"] = _now()
+    # The repo's own .mcp.json needs a one-time per-project approval that a
+    # headless worker cannot answer — it parks in 'blocked' on the dialog (the
+    # 444-17 class, root-caused via the job record's `needs` field). Settle it
+    # for exactly what the target repo declares, respecting an explicit choice.
+    try:
+        approved = _worktree_hook().approve_project_mcp(dirpath)
+        if approved:
+            print("delegate: pre-approved this tree's project MCP server(s) so the "
+                  "worker can't park on the approval dialog: %s (declared by "
+                  "%s/.mcp.json; wrote enableAllProjectMcpServers to its "
+                  ".claude/settings.local.json)" % (", ".join(approved), dirpath),
+                  file=sys.stderr)
+    except Exception:
+        pass
     if not (entry or {}).get("grants_probed"):
         g = _effective_grants(dirpath)
         srcs = ", ".join("%s(%d)" % (label, n) for label, _, n in g["sources"]) or "none"

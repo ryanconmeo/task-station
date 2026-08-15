@@ -253,6 +253,60 @@ class PreflightTest(unittest.TestCase):
         self.assertIn("UNTRUSTED", err)
         self.assertIn("blocked", err)
 
+    def _settings_local(self):
+        return os.path.join(self.wt, ".claude", "settings.local.json")
+
+    def _seed_mcp_json(self):
+        with open(os.path.join(self.wt, ".mcp.json"), "w") as f:
+            json.dump({"mcpServers": {"task-station": {"command": "python3"}}}, f)
+
+    def test_project_mcp_is_preapproved(self):
+        # A headless worker parks forever on the "approve 1 new project MCP
+        # server — attach to respond" dialog (the 444-17 blocked class, root
+        # -caused via the job record's `needs`). MEASURED 2026-08-14: the flag
+        # that clears it is enableAllProjectMcpServers in the tree's OWN
+        # .claude/settings.local.json — writing enabledMcpjsonServers on the
+        # ~/.claude.json project entry does NOT (both spawn-tested).
+        self._write_cj({self.wt: {"hasTrustDialogAccepted": True}})
+        self._seed_mcp_json()
+        _, err = self._preflight(entry={"grants_probed": dg._now()})
+        self.assertIn("pre-approved", err)
+        self.assertIn("task-station", err)
+        with open(self._settings_local()) as f:
+            self.assertIs(json.load(f)["enableAllProjectMcpServers"], True)
+
+    def test_explicit_refusal_is_respected(self):
+        # enableAllProjectMcpServers already present = the user's own choice,
+        # either way. False must NOT be flipped to true behind their back.
+        self._write_cj({self.wt: {"hasTrustDialogAccepted": True}})
+        self._seed_mcp_json()
+        os.makedirs(os.path.dirname(self._settings_local()), exist_ok=True)
+        with open(self._settings_local(), "w") as f:
+            json.dump({"enableAllProjectMcpServers": False}, f)
+        _, err = self._preflight(entry={"grants_probed": dg._now()})
+        self.assertNotIn("pre-approved", err)
+        with open(self._settings_local()) as f:
+            self.assertIs(json.load(f)["enableAllProjectMcpServers"], False)
+
+    def test_no_mcp_json_writes_nothing(self):
+        self._write_cj({self.wt: {"hasTrustDialogAccepted": True}})
+        _, err = self._preflight(entry={"grants_probed": dg._now()})
+        self.assertNotIn("pre-approved", err)
+        self.assertFalse(os.path.exists(self._settings_local()))
+
+    def test_existing_grants_are_preserved_by_the_approval_write(self):
+        # The approval must not clobber the tool allowlist living in the same file.
+        self._write_cj({self.wt: {"hasTrustDialogAccepted": True}})
+        self._seed_mcp_json()
+        os.makedirs(os.path.dirname(self._settings_local()), exist_ok=True)
+        with open(self._settings_local(), "w") as f:
+            json.dump({"permissions": {"allow": ["Bash(git:*)"]}}, f)
+        self._preflight(entry={"grants_probed": dg._now()})
+        with open(self._settings_local()) as f:
+            doc = json.load(f)
+        self.assertIs(doc["enableAllProjectMcpServers"], True)
+        self.assertEqual(doc["permissions"]["allow"], ["Bash(git:*)"])
+
     def test_grants_probe_once(self):
         self._write_cj({self.wt: {"hasTrustDialogAccepted": True}})
         os.makedirs(os.path.join(self.wt, ".claude"))

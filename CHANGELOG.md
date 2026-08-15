@@ -24,6 +24,13 @@ reports, preflight-repairs what silently parks them, and never loses their repor
   `~/.claude.json` trust entry (an untrusted dir under `--bg` parks the worker in
   `blocked` with no prompt anywhere), alert when a previously-verified entry has
   been wiped, and print the probed grant set once per worker slot.
+- Project-MCP pre-approval in the same preflight: a repo carrying its own
+  `.mcp.json` puts a headless worker in front of an *"approve 1 new project MCP
+  server — attach to respond"* dialog it can never answer, so it parks in
+  `blocked` forever. Spawning a worker in a repo is the approval intent, so
+  delegate writes `enableAllProjectMcpServers` into that tree's
+  `.claude/settings.local.json` — and leaves an existing value of its own alone,
+  in either direction.
 - Durable child report: every brief is contracted to end by writing
   `HANDOFF-REPORT-<slug>.md` at the worktree root (fixed sections, mandatory
   *Unverified* list); when the worker doesn't, delegate harvests its final

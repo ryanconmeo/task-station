@@ -10,6 +10,10 @@ delegate/workers.json
 # run loses its stdout), which means these are written on every delegation, not occasionally.
 BRIEF-*.md
 REPORT-*.md
+# …and since 3.1.0 that report is MECHANIZED, not a convention: delegate contracts
+# every worker to write HANDOFF-REPORT-<slug>.md here and harvests its final message
+# into the same file when it doesn't.
+HANDOFF-REPORT-*.md
 
 # macOS Finder metadata
 .DS_Store
