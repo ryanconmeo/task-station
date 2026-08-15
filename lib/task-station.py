@@ -69,7 +69,8 @@ _SEAM_MODULES = (
     "board._shared", "board.state", "board.model", "board.memos",
     "board.sessions", "board.render", "board.graph", "board.boardio",
     "board.cmds", "board.cmds.maintain", "board.cmds.manage",
-    "board.cmds.view", "board.cmds.sub", "board.cmds.surface", "board.cli",
+    "board.cmds.view", "board.cmds.sub", "board.cmds.surface",
+    "board.cmds.loop", "board.cli",
 )
 for _m in [m for m in _SEAM_MODULES if m in sys.modules]:
     del sys.modules[_m]

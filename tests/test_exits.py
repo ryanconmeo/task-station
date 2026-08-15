@@ -1,0 +1,396 @@
+"""EXIT CONDITIONS — a plan item that settles itself, so DONE is computed not asserted.
+
+WHAT THIS COVERS AND WHY IT MATTERS. `claims` proved that a registered command keeps an
+assertion honest: seventeen of them stayed true for a year because something ran them. In
+the same document, thirteen prose STEPS silently became true and nobody noticed for
+weeks. `heal` structurally cannot catch that — it reconciles the record against itself,
+never against reality, and a step reading "Phase 4 brain port" declares nothing to
+reconcile.
+
+So the tests here are ultimately about four invariants, each of which is a way this
+mechanism could be worse than not existing:
+
+  1. A CONDITION THAT ASSERTS NOTHING IS REFUSED. One with no expected substring passes
+     forever whatever the command prints — green while proving nothing.
+  2. A CONDITION THAT DID NOT RUN REFUTES NOTHING. A timeout or a missing binary is
+     `unknown`, never `unmet`, and must move no tick in either direction. (The checker's
+     "uncountable is never zero" rule, one layer down.)
+  3. AN EMPTY REGISTRATION IS NEVER SATISFIED. `state` is `none`, not `met` — otherwise
+     a task with no conditions would release every dependent wave by having checked
+     nothing, which is the green-board-with-nothing-behind-it failure.
+  4. TICKING IS AUTOMATIC, UNTICKING IS OPT-IN. A passing condition ticks. A failing one
+     on already-ticked work is a REGRESSION report, not a silent rewrite of somebody's
+     record — a missing binary and a real regression present identically.
+
+Isolation copies the `_repoint` idiom from tests/test_checker.py. No test here spawns a
+shell: `evaluate` takes an injectable `run`, and the CLI tests use commands (`echo`) that
+are cheap and deterministic.
+"""
+import importlib.util
+import io
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LIB = os.path.join(_REPO_ROOT, "lib")
+sys.path.insert(0, LIB)
+
+_TMP_HOME = tempfile.mkdtemp(prefix="ts-exits-")
+os.environ["TASK_STATION_HOME"] = _TMP_HOME
+
+import exits                  # noqa: E402
+import steps as steps_mod     # noqa: E402
+import store                  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location(
+    "task_station", os.path.join(LIB, "task-station.py"))
+ts = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ts)
+
+
+class _Args:
+    def __init__(self, **kw):
+        defaults = dict(session=None, task=None, step=None, cmd=None, expect=None,
+                        dry_run=False, untick=False, timeout=None)
+        defaults.update(kw)
+        self.__dict__.update(defaults)
+
+
+def _repoint(tmp):
+    os.environ["TASK_STATION_HOME"] = tmp
+    ts.DATA = tmp
+    ts.STORE = os.path.join(tmp, "store")
+    ts.TASKS_DIR = os.path.join(ts.STORE, "tasks")
+    ts.LINKS_DIR = os.path.join(ts.STORE, "links")
+    store.reset_cache()
+
+
+def _runner(mapping):
+    """A stand-in for the shell: maps a command string to `(output, status)`. Every unit
+    test injects one, so the suite proves the LOGIC without depending on any binary being
+    present on the machine running it."""
+    def run(cmd, _timeout):
+        return mapping.get(cmd, ("", "ran"))
+    return run
+
+
+class _Base(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="exits-test-")
+        _repoint(self.tmp)
+
+    def tearDown(self):
+        store.reset_cache()
+        os.environ.pop("TASK_STATION_HOME", None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _task(self, *step_texts, **fields):
+        t = ts.new_task(fields.pop("title", "A task"), "summary")
+        t["steps"] = [{"text": s, "done": False} for s in step_texts]
+        t.update(fields)
+        ts.save_task(t)
+        ts.ensure_seqs()
+        return ts.load_task(t["id"])
+
+    def _out(self, fn, args):
+        buf = io.StringIO()
+        code = None
+        with redirect_stdout(buf):
+            try:
+                fn(args)
+            except SystemExit as exc:
+                code = exc.code
+        return buf.getvalue(), code
+
+
+# -- (1) registration: what is refused, and why ---------------------------------
+
+class RegistrationTest(_Base):
+    def test_a_condition_asserting_nothing_is_refused(self):
+        """No expected substring = passes forever whatever the command prints. That is
+        the one failure a verification mechanism must not have, so it is refused at
+        registration rather than discovered later as a green that meant nothing."""
+        t = self._task("build it")
+        ok, err = exits.set_condition(t["steps"], 1, "echo hi", [])
+        self.assertFalse(ok)
+        self.assertIn("no --expect", err)
+        self.assertIn("pass whatever the command printed", err)
+
+    def test_blank_expectations_do_not_count_as_expectations(self):
+        t = self._task("build it")
+        ok, err = exits.set_condition(t["steps"], 1, "echo hi", ["  ", ""])
+        self.assertFalse(ok)
+        self.assertIn("no --expect", err)
+
+    def test_empty_command_is_refused(self):
+        t = self._task("build it")
+        ok, err = exits.set_condition(t["steps"], 1, "   ", ["x"])
+        self.assertFalse(ok)
+        self.assertIn("--cmd", err)
+
+    def test_out_of_range_step_is_an_error_not_a_silent_noop(self):
+        t = self._task("build it")
+        ok, err = exits.set_condition(t["steps"], 7, "echo hi", ["hi"])
+        self.assertFalse(ok)
+        self.assertIn("no such step", err)
+
+    def test_superseded_step_is_refused_and_says_how_to_undo_it(self):
+        """A retired step is off the active checklist, so a condition there could never
+        tick anything — storing one would read later as a gate that silently does
+        nothing."""
+        t = self._task("old plan", "new plan")
+        steps_mod.mark_superseded(t["steps"], 1, 2)
+        ok, err = exits.set_condition(t["steps"], 1, "echo hi", ["hi"])
+        self.assertFalse(ok)
+        self.assertIn("superseded", err)
+        self.assertIn("--step-restore 1", err)
+
+    def test_registration_upserts_rather_than_appending(self):
+        t = self._task("build it")
+        exits.set_condition(t["steps"], 1, "echo one", ["one"])
+        exits.set_condition(t["steps"], 1, "echo two", ["two"])
+        cond = exits.condition(t["steps"][0])
+        self.assertEqual(cond["cmd"], "echo two")
+        self.assertEqual(cond["expect"], ["two"])
+
+    def test_clearing_a_condition_that_is_not_there_is_an_error(self):
+        """'Removed' after a typo reads as success, and the reader then believes a gate
+        is gone while it is still armed."""
+        t = self._task("build it")
+        ok, err = exits.clear_condition(t["steps"], 1)
+        self.assertFalse(ok)
+        self.assertIn("no exit condition", err)
+
+    def test_clearing_keeps_the_step_and_its_tick(self):
+        t = self._task("build it")
+        exits.set_condition(t["steps"], 1, "echo one", ["one"])
+        steps_mod.set_done(t["steps"], 1, True)
+        ok, _ = exits.clear_condition(t["steps"], 1)
+        self.assertTrue(ok)
+        self.assertTrue(steps_mod.is_done(t["steps"][0]))
+        self.assertEqual(steps_mod.text(t["steps"][0]), "build it")
+        self.assertIsNone(exits.condition(t["steps"][0]))
+
+
+# -- (2) reading a garbled store never raises ------------------------------------
+
+class ShapeTest(_Base):
+    def test_garbage_is_filtered_not_raised(self):
+        """A store this module did not write is never a reason to break a render — the
+        same contract `checker.claim_items` keeps."""
+        for junk in (None, "a string", {"cmd": "", "expect": ["x"]},
+                     {"cmd": "echo hi", "expect": []}, {"cmd": "echo hi"}):
+            self.assertIsNone(exits.condition({"text": "s", "done": False, "exit": junk}))
+        self.assertIsNone(exits.condition("a legacy bare string step"))
+
+    def test_an_ordinary_step_still_round_trips_byte_identically(self):
+        """The back-compat guarantee: adding this feature must not change how an
+        untouched step is stored, or every older reader sees a different record."""
+        plain = {"text": "build it", "done": False}
+        self.assertEqual(steps_mod.compact(plain), plain)
+
+    def test_the_condition_survives_supersede_and_restore(self):
+        t = self._task("build it", "and again")
+        exits.set_condition(t["steps"], 1, "echo one", ["one"])
+        steps_mod.mark_superseded(t["steps"], 1, 2)
+        steps_mod.restore(t["steps"], 1)
+        self.assertEqual(exits.condition(t["steps"][0])["cmd"], "echo one")
+
+    def test_superseded_steps_are_excluded_from_items(self):
+        t = self._task("old", "new")
+        exits.set_condition(t["steps"], 1, "echo one", ["one"])
+        exits.set_condition(t["steps"], 2, "echo two", ["two"])
+        steps_mod.mark_superseded(t["steps"], 1, 2)
+        self.assertEqual([i["n"] for i in exits.items(t)], [2])
+
+
+# -- (3) the rollup: an empty registration is never satisfied ---------------------
+
+class StateTest(_Base):
+    def test_no_conditions_reads_none_never_met(self):
+        """THE dangerous line this module could print. `satisfied` gates the wave
+        planner, so `none` reading as `met` would release dependent work on the strength
+        of an empty checklist."""
+        t = self._task("build it")
+        self.assertEqual(exits.state(t), exits.NONE)
+        self.assertFalse(exits.satisfied(t))
+
+    def test_registered_but_never_run_is_unknown_not_unmet(self):
+        t = self._task("build it")
+        exits.set_condition(t["steps"], 1, "echo one", ["one"])
+        self.assertEqual(exits.item_state(t["steps"][0]), exits.UNKNOWN)
+        self.assertEqual(exits.state(t), exits.UNKNOWN)
+        self.assertFalse(exits.satisfied(t))
+
+    def test_all_met_is_satisfied(self):
+        t = self._task("a", "b")
+        exits.set_condition(t["steps"], 1, "one", ["ok"])
+        exits.set_condition(t["steps"], 2, "two", ["ok"])
+        exits.evaluate(t, run=_runner({"one": ("ok", "ran"), "two": ("ok", "ran")}))
+        self.assertEqual(exits.state(t), exits.MET)
+        self.assertTrue(exits.satisfied(t))
+        self.assertEqual(exits.summary(t), {"total": 2, "met": 2, "unmet": 0, "unknown": 0})
+
+    def test_one_unmet_beats_one_unknown_in_the_rollup(self):
+        """A task with something REFUTED reads `unmet` even when another condition never
+        ran: the strongest negative evidence is the honest headline."""
+        t = self._task("a", "b")
+        exits.set_condition(t["steps"], 1, "one", ["ok"])
+        exits.set_condition(t["steps"], 2, "two", ["ok"])
+        exits.evaluate(t, run=_runner({"one": ("nope", "ran"), "two": ("", "timeout")}))
+        self.assertEqual(exits.state(t), exits.UNMET)
+
+
+# -- (4) evaluation + the tick rules ---------------------------------------------
+
+class EvaluateTest(_Base):
+    def test_missing_substrings_are_named_not_dumped(self):
+        t = self._task("build it")
+        exits.set_condition(t["steps"], 1, "c", ["ALPHA", "BETA"])
+        res = exits.evaluate(t, run=_runner({"c": ("ALPHA only", "ran")}))
+        self.assertEqual(res[0]["missing"], ["BETA"])
+        self.assertFalse(res[0]["ok"])
+
+    def test_a_passing_condition_ticks_its_step(self):
+        """The drift this whole module exists to kill: nobody has to notice."""
+        t = self._task("build it")
+        exits.set_condition(t["steps"], 1, "c", ["DONE"])
+        res = exits.evaluate(t, run=_runner({"c": ("all DONE", "ran")}))
+        moved = exits.apply_results(t, res)
+        self.assertEqual(moved["ticked"], [1])
+        self.assertTrue(steps_mod.is_done(t["steps"][0]))
+
+    def test_a_failing_condition_on_ticked_work_reports_but_does_not_untick(self):
+        t = self._task("build it")
+        exits.set_condition(t["steps"], 1, "c", ["DONE"])
+        steps_mod.set_done(t["steps"], 1, True)
+        res = exits.evaluate(t, run=_runner({"c": ("broken", "ran")}))
+        moved = exits.apply_results(t, res)
+        self.assertEqual(moved["regressed"], [1])
+        self.assertEqual(moved["unticked"], [])
+        self.assertTrue(steps_mod.is_done(t["steps"][0]))
+
+    def test_untick_is_opt_in(self):
+        t = self._task("build it")
+        exits.set_condition(t["steps"], 1, "c", ["DONE"])
+        steps_mod.set_done(t["steps"], 1, True)
+        res = exits.evaluate(t, run=_runner({"c": ("broken", "ran")}))
+        moved = exits.apply_results(t, res, untick=True)
+        self.assertEqual(moved["unticked"], [1])
+        self.assertFalse(steps_mod.is_done(t["steps"][0]))
+
+    def test_a_timeout_moves_no_tick_in_either_direction(self):
+        """Invariant 2. A command that did not run has refuted nothing — and has proved
+        nothing either."""
+        t = self._task("unticked", "ticked")
+        exits.set_condition(t["steps"], 1, "a", ["X"])
+        exits.set_condition(t["steps"], 2, "b", ["X"])
+        steps_mod.set_done(t["steps"], 2, True)
+        res = exits.evaluate(t, run=_runner({"a": ("", "timeout"), "b": ("", "timeout")}))
+        moved = exits.apply_results(t, res, untick=True)
+        self.assertEqual(moved["unknown"], [1, 2])
+        self.assertEqual(moved["ticked"], [])
+        self.assertEqual(moved["unticked"], [])
+        self.assertFalse(steps_mod.is_done(t["steps"][0]))
+        self.assertTrue(steps_mod.is_done(t["steps"][1]))
+
+    def test_a_launch_error_is_unknown_and_keeps_its_message(self):
+        t = self._task("build it")
+        exits.set_condition(t["steps"], 1, "c", ["X"])
+        res = exits.evaluate(t, run=_runner({"c": ("no such file", "error")}))
+        self.assertEqual(res[0]["status"], "error")
+        self.assertEqual(exits.item_state(t["steps"][0]), exits.UNKNOWN)
+
+    def test_only_restricts_to_one_step(self):
+        t = self._task("a", "b")
+        exits.set_condition(t["steps"], 1, "one", ["ok"])
+        exits.set_condition(t["steps"], 2, "two", ["ok"])
+        res = exits.evaluate(t, only=[2], run=_runner({"one": ("ok", "ran"),
+                                                       "two": ("ok", "ran")}))
+        self.assertEqual([r["n"] for r in res], [2])
+        self.assertEqual(exits.item_state(t["steps"][0]), exits.UNKNOWN)
+
+    def test_the_result_is_stored_so_a_later_read_costs_nothing(self):
+        """The scan reads stored verdicts rather than re-running commands; without this
+        the planner would be as expensive as the conditions it plans over."""
+        t = self._task("build it")
+        exits.set_condition(t["steps"], 1, "c", ["OK"])
+        exits.evaluate(t, run=_runner({"c": ("OK", "ran")}), now=1000.0)
+        ts.save_task(t)
+        again = ts.load_task(t["id"])
+        self.assertEqual(exits.state(again), exits.MET)
+        self.assertEqual(exits.last_run_ts(again), 1000.0)
+
+
+# -- (5) the CLI surface ----------------------------------------------------------
+
+class CliTest(_Base):
+    def test_show_on_a_task_with_nothing_registered_says_how_to_register(self):
+        t = self._task("build it")
+        out, _ = self._out(ts.cmd_exit_show, _Args(task=str(t["seq"])))
+        self.assertIn("no exit conditions registered", out)
+        self.assertIn("exit-add", out)
+
+    def test_add_then_tick_exits_zero_when_everything_is_met(self):
+        t = self._task("build it")
+        self._out(ts.cmd_exit_add, _Args(task=str(t["seq"]), step=1,
+                                         cmd="echo SHIPPED", expect=["SHIPPED"]))
+        out, code = self._out(ts.cmd_exit_tick, _Args(task=str(t["seq"])))
+        self.assertIsNone(code)                      # exit 0 = every condition met
+        self.assertIn("1/1 met", out)
+        self.assertIn("ticked: step 1", out)
+        self.assertTrue(steps_mod.is_done(ts.load_task(t["id"])["steps"][0]))
+
+    def test_tick_exits_one_when_anything_is_not_met(self):
+        """The exit code is what lets this GATE a release step rather than only inform a
+        reader, so 'not proven met' must never exit 0."""
+        t = self._task("build it")
+        self._out(ts.cmd_exit_add, _Args(task=str(t["seq"]), step=1,
+                                         cmd="echo nope", expect=["SHIPPED"]))
+        out, code = self._out(ts.cmd_exit_tick, _Args(task=str(t["seq"])))
+        self.assertEqual(code, 1)
+        self.assertIn("missing from the output: SHIPPED", out)
+
+    def test_dry_run_reports_without_moving_a_tick(self):
+        t = self._task("build it")
+        self._out(ts.cmd_exit_add, _Args(task=str(t["seq"]), step=1,
+                                         cmd="echo SHIPPED", expect=["SHIPPED"]))
+        out, _ = self._out(ts.cmd_exit_tick, _Args(task=str(t["seq"]), dry_run=True))
+        self.assertIn("nothing was ticked", out)
+        self.assertFalse(steps_mod.is_done(ts.load_task(t["id"])["steps"][0]))
+
+    def test_tick_on_a_task_with_no_conditions_says_so_and_does_not_fail(self):
+        t = self._task("build it")
+        out, code = self._out(ts.cmd_exit_tick, _Args(task=str(t["seq"])))
+        self.assertIsNone(code)
+        self.assertIn("registers no exit conditions", out)
+
+    def test_add_refuses_a_condition_with_no_expectation_from_the_cli(self):
+        t = self._task("build it")
+        out, code = self._out(ts.cmd_exit_add, _Args(task=str(t["seq"]), step=1,
+                                                     cmd="echo hi", expect=None))
+        self.assertEqual(code, 2)
+        self.assertIn("pass whatever the command printed", out)
+
+    def test_an_unknown_task_ref_reports_rather_than_raising(self):
+        out, _ = self._out(ts.cmd_exit_show, _Args(task="99999"))
+        self.assertIn("No task matching", out)
+
+    def test_show_marks_met_unmet_and_never_run_distinctly(self):
+        t = self._task("a", "b", "c")
+        for n, cmd, want in ((1, "echo YES", "YES"), (2, "echo no", "YES"),
+                             (3, "echo YES", "YES")):
+            self._out(ts.cmd_exit_add, _Args(task=str(t["seq"]), step=n,
+                                             cmd=cmd, expect=[want]))
+        self._out(ts.cmd_exit_tick, _Args(task=str(t["seq"]), step=1))
+        self._out(ts.cmd_exit_tick, _Args(task=str(t["seq"]), step=2))
+        out, _ = self._out(ts.cmd_exit_show, _Args(task=str(t["seq"])))
+        self.assertIn("1 met · 1 unmet · 1 not run", out)
+
+
+if __name__ == "__main__":
+    unittest.main()

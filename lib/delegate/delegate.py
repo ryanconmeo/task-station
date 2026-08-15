@@ -1935,15 +1935,65 @@ def _select_slot(a, project, repo_root, reg):
     return main_key, reg.get(main_key, {})   # no worktree worker → read-only @main slot
 
 
+def _orchestrator_guard(seq, force=False, session=None):
+    """B6 — REFUSE to delegate from a task flagged orchestrator-only, naming the child
+    that should own the work instead.
+
+    The rule was prose twice and broken twice on 2026-08-11, both times the same way: a
+    hub session sitting on the parent delegated from the parent, so the work landed with
+    no child owning it and nothing for the gate to grade. Prose could not enforce it.
+
+    The VERDICT is task-station's (`orchestrator-check` — it needs the wave computation,
+    and there must be exactly one of those), so this is a subprocess call, exactly like
+    every other cross-plane question delegate asks. THE GUARD FAILS OPEN: any failure to
+    reach the checker — a missing interpreter, a timeout, an unexpected exit code —
+    returns silently. A guard that blocked delegation because it could not run would be
+    worse than the rule being unenforced.
+
+    `--force` is a DELIBERATE, RECORDED override rather than a silent one: it prints the
+    refusal it is overriding and writes an event onto the task, so the exception is in
+    the record where the next reader will find it."""
+    if not seq:
+        return
+    try:
+        out = subprocess.run(["python3", TASK_STATION_PY, "orchestrator-check",
+                              "--task", str(seq)],
+                             capture_output=True, text=True, timeout=30)
+    except Exception:
+        return
+    if out.returncode != 3:
+        return
+    message = (out.stdout or "").strip() or (
+        "delegate run refused: task #%s is flagged orchestrator-only." % seq)
+    if not force:
+        raise SystemExit(message)
+    sys.stderr.write("delegate: --force overriding the orchestrator guard on #%s.\n%s\n"
+                     % (seq, message))
+    try:
+        subprocess.run(["python3", TASK_STATION_PY, "add-event", "--task", str(seq),
+                        "--kind", "log", "--text",
+                        "delegate --force: overrode the orchestrator-only guard"]
+                       + (["--session", session] if session else []),
+                       capture_output=True, text=True, timeout=20)
+    except Exception:
+        pass
+
+
 def cmd_run(a):
+    # Bind a no-seq delegation to the calling session's attached /todo task so the
+    # worktree worker is found even when --seq/--worktree are omitted (--solo opts out).
+    _maybe_inherit_seq(a)
+    # B6: the orchestrator guard runs FIRST — before the adapter, the repo resolution and
+    # every side effect. A delegation from an orchestrator-only task is wrong no matter
+    # how the repo resolves, and answering "which repo did you mean" before "this task
+    # must not hold work" would make the reader fix the wrong thing.
+    _orchestrator_guard(a.seq, force=getattr(a, "force", False),
+                        session=getattr(a, "session", None))
     # Resolve the harness adapter (Phase 2 seam). ClaudeAdapter is the default and
     # behaves exactly as today; the registry/task record stay authoritative.
     adapter = harness.get_adapter(getattr(a, "harness", None))
     repo_root = _resolve_dir_from_args(a)
     project = os.path.basename(repo_root)          # key/name stay the repo's
-    # Bind a no-seq delegation to the calling session's attached /todo task so the
-    # worktree worker is found even when --seq/--worktree are omitted (--solo opts out).
-    _maybe_inherit_seq(a)
     seq, label = a.seq, a.label
 
     # Pick the registry slot. Worktree workers and read-only/main-checkout workers
@@ -2700,6 +2750,10 @@ def main():
                         "with the diagnosis instead of waiting (default 45)")
     r.add_argument("--harness", default="claude", choices=["claude", "codex"],
                    help="AI CLI to run the worker on (default: claude)")
+    r.add_argument("--force", action="store_true",
+                   help="override the orchestrator-only guard for this run. Deliberate "
+                        "and RECORDED: the refusal it overrides is printed, and an event "
+                        "saying so is written onto the task.")
     r.set_defaults(func=cmd_run)
 
     l = sub.add_parser("list", help="list known workers")
