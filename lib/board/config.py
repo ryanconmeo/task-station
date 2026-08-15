@@ -815,6 +815,64 @@ def checker_claim_timeout():
                             "checker_claim_timeout", 600)
 
 
+def exit_command_timeout():
+    """Seconds one exit-condition command may run during `exit-tick`. Default 120 —
+    a FIFTH of the claim timeout, and deliberately: a claim legitimately runs a whole
+    test suite, while an exit condition settles one checklist item and is almost always
+    a grep or a status query. `exit-tick` also runs every condition on the task in one
+    pass, so the generous per-command budget that is right for a claim would let one
+    wedged command hold a whole plan's verdict hostage.
+    `TASK_STATION_EXIT_COMMAND_TIMEOUT` overrides. Never reached at session start: an
+    exit condition, like a claim, is never run there."""
+    return _positive_number("TASK_STATION_EXIT_COMMAND_TIMEOUT",
+                            "exit_command_timeout", 120)
+
+
+# -- the loop's knobs (lib/loop.py) ---------------------------------------------
+#
+# Q2 and Q6, decided 2026-08-14. All three are MACHINE-scoped rather than per-task: two
+# orchestrators running at once share one machine, and a per-task cap would let them
+# sum to a load neither one asked for.
+
+
+def loop_accept_threshold():
+    """The minimum grade a child's work must reach on EVERY rubric dimension for the
+    graded gate to accept it. Default `A-`, ruled by Ryan 2026-08-14 (it supersedes the
+    earlier `B` default), and PER-DIMENSION rather than an average: a rubric averaged
+    into one number lets a failed gate-integrity dimension hide behind five strong ones,
+    which is the exact failure the six dimensions exist to separate.
+
+    `TASK_STATION_LOOP_ACCEPT_THRESHOLD` overrides. An unrecognised value falls back to
+    the default rather than accepting everything — a typo'd threshold must never read as
+    "accept anything"."""
+    raw = str(os.environ.get("TASK_STATION_LOOP_ACCEPT_THRESHOLD")
+              or get("loop_accept_threshold") or "").strip().upper()
+    return raw or "A-"
+
+
+def loop_children_max():
+    """Concurrent child sessions one loop may hold open. Default 3.
+    `TASK_STATION_LOOP_CHILDREN_MAX` overrides."""
+    return _positive_number("TASK_STATION_LOOP_CHILDREN_MAX", "loop_children_max", 3)
+
+
+def loop_retry_max():
+    """How many times the gate may REJECT a child before the loop must park it instead
+    of asking again. Default 2. A retry budget is not pessimism: an unbounded loop that
+    keeps handing the same rejection back is the failure mode an autonomous gate has,
+    and parking makes the stall visible to a person instead of burning tokens on it.
+    `TASK_STATION_LOOP_RETRY_MAX` overrides."""
+    return _positive_number("TASK_STATION_LOOP_RETRY_MAX", "loop_retry_max", 2)
+
+
+def loop_builds_max():
+    """Concurrent build / full-suite runs allowed on this MACHINE. Default 1, and the
+    default is not timidity: this machine OOMs on concurrent builds, and this repo's own
+    load-dependent flakes made a parallel suite run a source of false red. A full suite
+    run counts as a build. `TASK_STATION_LOOP_BUILDS_MAX` overrides."""
+    return _positive_number("TASK_STATION_LOOP_BUILDS_MAX", "loop_builds_max", 1)
+
+
 # -- heal's one tunable (lib/heal.py) -------------------------------------------
 
 def heal_goal_review_due():
@@ -1786,6 +1844,12 @@ RESET_KEYS = [
     # would keep a hand-tuned drift window in force on a station the user just reset —
     # so they are popped like everything else the config file holds.
     "checker_report_days", "checker_escalate_days", "checker_claim_timeout",
+    # The exit-condition timeout and the loop's three knobs, popped for the same
+    # reason: a hand-tuned acceptance threshold or concurrency cap left behind by a
+    # reset would keep governing a loop on a station the user had just cleared, and
+    # `accept_threshold` in particular decides what gets ACCEPTED.
+    "exit_command_timeout", "loop_accept_threshold", "loop_children_max",
+    "loop_builds_max", "loop_retry_max",
     # heal's goal-review threshold, popped for the same reason: a hand-tuned window left
     # behind by a reset would keep making heals due on a station the user just cleared.
     "heal_goal_review_due",

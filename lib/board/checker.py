@@ -919,6 +919,18 @@ def _tail(text, limit=CLAIM_OUTPUT_TAIL):
     return "…" + body[-(limit - 1):]
 
 
+# The two primitives above, under public names, because `exits.py` runs user commands
+# too — a step's exit condition is the same `(command, expected substrings)` shape
+# aimed at a checklist item instead of a document. It calls these rather than growing
+# its own copy: what "ran" / "timeout" / "error" mean, and how much output is kept, are
+# decisions that must be made in ONE place or the two surfaces will quietly disagree
+# about whether a command that wrote to stderr and exited 0 had passed. Aliases rather
+# than renames, because `verify(run=…)` defaults to `_run_claim` and the suite patches
+# that name.
+run_command = _run_claim
+output_tail = _tail
+
+
 def verify(task, only=None, timeout=None, now=None, run=None):
     """Run the registered claims and record the outcome. Returns the results list.
 

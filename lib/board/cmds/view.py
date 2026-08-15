@@ -1268,7 +1268,9 @@ def cmd_guidance(a):
         "--restore-decision N UNDOES a supersede/split/merge mark (every reconcile is "
         "reversible; nothing is ever deleted) · --log dated history "
         "(off the resume path; see /todo <n> history) · --pr stored PR url · "
-        "--story stored story/work-item url)",
+        "--story stored story/work-item url · --orchestrator on|off flags the task "
+        "ORCHESTRATOR-ONLY, so `delegate run --seq <it>` REFUSES and names the child that "
+        "should own the work)",
         "  heal  [--task <ref>] [--scan [--probe-links]] [--apply [--verbose]] [--all] "
         "[--mark-healed [--note '…']] [--goal-reviewed] [--candidates] [--dismissals] "
         "[--apply --dismiss '<check>:<ref>' --why '…' | --undismiss '<check>:<ref>'] "
@@ -1301,6 +1303,39 @@ def cmd_guidance(a):
         "`heal --merge n1,n2 --into N` "
         "for what is TRUE BUT NO LONGER LOAD-BEARING; `update --step-supersede N` is the "
         "same idea for a stale STEP. No verb ever deletes a decision",
+        "  exit-add  --task <ref> --step N --cmd '<shell>' --expect '<substr>' [--expect …]   — "
+        "give a checklist STEP the command that settles it, so DONE is COMPUTED not asserted. "
+        "AT LEAST ONE --expect is required: a condition asserting nothing passes forever "
+        "whatever the command printed. Upserts by step; `exit-rm --step N` drops one",
+        "  exit-show  [--task <ref>]   — what each step's condition is and how it last went. "
+        "Reads only; runs NOTHING",
+        "  exit-tick  [--task <ref>] [--step N] [--dry-run] [--untick] [--timeout S]   — RUN "
+        "the conditions and TICK the steps that passed. EXITS 1 when anything is not met, so "
+        "it can gate a release rather than only inform. A condition that did NOT run "
+        "(timeout/launch error) is UNKNOWN, refutes nothing and moves no tick either way; a "
+        "FAILING condition on already-ticked work is reported as a REGRESSION and left alone "
+        "unless --untick",
+        "  scan  [--task <ref>] [--all] [--run] [--json]   — the ZERO-TOKEN loop driver: waves "
+        "over depends-on, each node's exit-condition rollup, and the stopping condition "
+        "(ready|complete|blocked|empty). Calls no model and — without --run — no shell. A "
+        "predecessor releases its dependents when CLOSED or when every exit condition it "
+        "registered is MET; a task registering NONE is never settled, so an empty checklist "
+        "cannot release work by having checked nothing. Cycles are reported, never traversed",
+        "  invoke  --task <child> [--from <orch>] --ask '<the request>' [--role scout|"
+        "implementer|reviewer|judge] [--model M] [--permission-mode P] [--cwd D] "
+        "[--print-command]   — spawn a child session ALREADY ATTACHED to its own task, so its "
+        "SessionStart injects that task's digest and the ask carries the REQUEST ONLY. There "
+        "is no brief to get wrong; an ask long enough to be context is warned about",
+        "  grade  --task <child> --dim G1=A --dim G2=A- … [--threshold G] [--note '…'] "
+        "[--park human-gate|blocked-external|retries-exhausted --why '…'] [--no-decision] "
+        "[--json]   — one pass of the graded acceptance gate. PREFER the `judge` SKILL, which "
+        "runs the mechanical gate FIRST and supplies the judgment this command cannot. "
+        "Acceptance is PER-DIMENSION (default A-), never an average, and an ungraded "
+        "dimension is not a pass. Exit codes: 0 accepted · 1 rejected with retries left · 3 "
+        "retry budget spent · 4 parked · 2 bad command. A PARKED child is NEVER retried",
+        "  orchestrator-check  --task <ref>   — silent + exit 0 when delegating from this task "
+        "is allowed; the refusal + exit 3 when it is flagged orchestrator-only "
+        "(`update --orchestrator on`). delegate run consults it before spawning anything",
         "  status  --task <ref> [new|active]   — show/set status (new = stored open; close via done)",
         "  pin     --task <ref> [--session <s>] [--new]   (or just --session <s> to pin THIS session "
         "to its attached task)   ·   unpin --task <ref>   — pin/unpin a resume target",

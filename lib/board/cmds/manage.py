@@ -16,6 +16,7 @@ import sys
 import decisions as _dec
 import heal as _heal
 import hook_health
+import loop as _loop
 import paths
 import save as _save
 import steps as _steps
@@ -1045,6 +1046,17 @@ def _update_one(ref, a):
                 msgs.append("update: ignoring --effort %r — use xs/s/m/l/xl (or 1–5)." % a.effort)
             else:
                 task["effort"] = e; changed.append("effort")
+        # The orchestrator flag (B6): this task PLANS and GRADES, it does not hold work.
+        # Explicit rather than inferred from "has children" — see lib/loop.py for why a
+        # rule that fired on every parent would be switched off within a day.
+        orch = getattr(a, "orchestrator", None)
+        if orch is not None:
+            on = str(orch).strip().lower() in ("on", "true", "yes", "1")
+            if on:
+                task[_loop.ORCHESTRATOR_FIELD] = True
+            else:
+                task.pop(_loop.ORCHESTRATOR_FIELD, None)
+            changed.append("orchestrator")
         # WRITE-TIME SNAPSHOTS, taken LAST — after this update's own --decision / --log
         # appends have landed. Taken any earlier, a summary written in the same call as
         # three decisions would immediately read as three decisions out of date, and the

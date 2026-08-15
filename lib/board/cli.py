@@ -157,6 +157,146 @@ def main(argv=None):
                          "checker_claim_timeout, 600s)")
     sp.set_defaults(fn=cmd_claims)
 
+    # ---- the loop: exit conditions · the wave scan · invoke · the graded gate ----
+    #
+    # EXIT CONDITIONS make a checklist item settle ITSELF: a runnable command plus the
+    # substrings its output must contain, in the shape `claims` already uses, so DONE is
+    # computed rather than asserted. See lib/exits.py for the evidence this is built on
+    # (seventeen claims stayed honest for a year; thirteen prose steps silently became
+    # true and nobody noticed).
+
+    sp = sub.add_parser("exit-add",
+                        help="attach the command that settles one checklist step")
+    sp.add_argument("--task", default=None, help="task by seq/id (default: the attached task)")
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--step", type=int, required=True, metavar="N",
+                    help="the 1-based step number, as `/todo <n>` prints it")
+    sp.add_argument("--cmd", required=True, metavar="SHELL",
+                    help="the shell command that settles this step")
+    sp.add_argument("--expect", action="append", default=None, metavar="SUBSTR",
+                    help="a substring that must appear in the command's combined "
+                         "stdout+stderr (repeatable). AT LEAST ONE IS REQUIRED: a "
+                         "condition asserting nothing would pass forever, whatever the "
+                         "command printed.")
+    sp.set_defaults(fn=cmd_exit_add)
+
+    sp = sub.add_parser("exit-rm", help="drop a step's exit condition (the step stays)")
+    sp.add_argument("--task", default=None)
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--step", type=int, required=True, metavar="N")
+    sp.set_defaults(fn=cmd_exit_rm)
+
+    sp = sub.add_parser("exit-show",
+                        help="what each step's exit condition is and how it last went "
+                             "(reads only — runs nothing)")
+    sp.add_argument("--task", default=None)
+    sp.add_argument("--session", default=None)
+    sp.set_defaults(fn=cmd_exit_show)
+
+    sp = sub.add_parser("exit-tick",
+                        help="RUN the exit conditions and tick the steps that passed")
+    sp.add_argument("--task", default=None)
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--step", type=int, default=None, metavar="N",
+                    help="run just this step's condition")
+    sp.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="run the commands and report, but move no ticks")
+    sp.add_argument("--untick", action="store_true",
+                    help="also UNTICK a ticked step whose condition now fails. Off by "
+                         "default: rewriting somebody's record of finished work on one "
+                         "command's exit status is a bigger claim than a tick, and a "
+                         "moved file or a missing binary presents identically. A "
+                         "condition that did not RUN never moves a tick either way.")
+    sp.add_argument("--timeout", type=int, default=None, metavar="SECONDS",
+                    help="per-command timeout for this run (default: the configured "
+                         "exit_command_timeout, 120s)")
+    sp.set_defaults(fn=cmd_exit_tick)
+
+    # scan — the ZERO-TOKEN half of the loop driver. Waves over `depends-on`, the
+    # exit-condition rollup, and the stopping condition. No model, and (without --run)
+    # no shell either.
+    sp = sub.add_parser("scan",
+                        help="compute waves over depends-on and print what is unblocked")
+    sp.add_argument("--task", default=None,
+                    help="plan this task's CHILDREN (default: the attached task)")
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--all", dest="all", action="store_true",
+                    help="plan every open/active task on the board instead")
+    sp.add_argument("--run", action="store_true",
+                    help="re-run every node's exit conditions first, instead of reading "
+                         "the stored results. Costs whatever those commands cost.")
+    sp.add_argument("--json", dest="as_json", action="store_true",
+                    help="the structured report — the same object the text view renders")
+    sp.set_defaults(fn=cmd_scan)
+
+    # invoke — spawn a child session ALREADY ATTACHED to its own task, so the hooks
+    # inject that task's digest and the ask carries the REQUEST only.
+    sp = sub.add_parser("invoke",
+                        help="spawn a child session pre-attached to its own task")
+    sp.add_argument("--task", default=None, metavar="CHILD",
+                    help="the child task to invoke (seq/id)")
+    sp.add_argument("--from", dest="from_ref", default=None, metavar="ORCH",
+                    help="the orchestrator task making the request (default: the "
+                         "session's attached task)")
+    sp.add_argument("--ask", default=None,
+                    help="the REQUEST, and only the request. The child reads its own "
+                         "context from its own task record at session start, so "
+                         "anything here restating that context is a lossy copy of it.")
+    sp.add_argument("--role", default=None,
+                    help="scout | implementer | reviewer | judge — sets the child's "
+                         "model and permission mode from the role table")
+    sp.add_argument("--model", default=None,
+                    help="override the role's model (an alias like opus/sonnet/haiku, "
+                         "never a pinned id)")
+    sp.add_argument("--permission-mode", dest="permission_mode", default=None,
+                    help="override the role's permission mode (plan | acceptEdits | "
+                         "default | bypassPermissions)")
+    sp.add_argument("--cwd", default=None,
+                    help="directory the child starts in (default: where the task's most "
+                         "recent session ran)")
+    sp.add_argument("--print-command", dest="print_command", action="store_true",
+                    help="print the launch command instead of opening a window")
+    sp.add_argument("--session", default=None)
+    sp.set_defaults(fn=cmd_invoke)
+
+    # grade — record one pass of the graded acceptance gate on a child task. The engine
+    # does the arithmetic; the SKILL supplies the judgment.
+    sp = sub.add_parser("grade",
+                        help="grade a child's work against the six rubric dimensions")
+    sp.add_argument("--task", default=None, metavar="CHILD")
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--dim", action="append", default=None, metavar="G1=A-",
+                    help="one dimension's grade (repeatable). ACCEPTANCE IS "
+                         "PER-DIMENSION, not an average — an average lets a failed "
+                         "gate-integrity dimension hide behind five strong ones. A "
+                         "dimension left ungraded is not a pass either.")
+    sp.add_argument("--threshold", default=None, metavar="GRADE",
+                    help="override the configured accept threshold for this grading "
+                         "(default: loop_accept_threshold, A-)")
+    sp.add_argument("--note", default=None, help="one line of judgment, stored with the grade")
+    sp.add_argument("--park", default=None, metavar="REASON",
+                    help="record that this child does NOT come back to the loop: "
+                         "human-gate | blocked-external | retries-exhausted. A parked "
+                         "child is never retried.")
+    sp.add_argument("--why", default=None,
+                    help="with --park: MANDATORY. A park with no reason is "
+                         "indistinguishable later from work somebody quietly dropped.")
+    sp.add_argument("--no-decision", dest="no_decision", action="store_true",
+                    help="do not also append the grade as a decision on the task")
+    sp.add_argument("--json", dest="as_json", action="store_true")
+    sp.set_defaults(fn=cmd_grade)
+
+    # orchestrator-check — the guard delegate.py consults before it spawns anything.
+    # Silent + exit 0 when delegation is allowed; the refusal + exit 3 when it is not.
+    sp = sub.add_parser("orchestrator-check",
+                        help="refuse (exit 3) if this task is orchestrator-only, naming "
+                             "the child that should own the work")
+    sp.add_argument("--task", default=None)
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--verb", default=None,
+                    help="how the caller is spelled in the refusal (default 'delegate run')")
+    sp.set_defaults(fn=cmd_orchestrator_check)
+
     # heal — the RECONCILE pass: turn the append-only decision log into current state.
     # Per-task by default; a DRY RUN by default. See cmd_heal and lib/heal.py.
     sp = sub.add_parser("heal",
@@ -518,6 +658,13 @@ def main(argv=None):
                     help="description for the --story url in this update "
                          "(or the most-recent stored story when no --story is given)")
     sp.add_argument("--color", default=None); sp.add_argument("--effort", default=None)
+    sp.add_argument("--orchestrator", default=None, choices=["on", "off"],
+                    help="flag this task ORCHESTRATOR-ONLY: it plans and grades, it does "
+                         "not hold work. `delegate run --seq <this>` then REFUSES and "
+                         "names the child that should own the work instead. Explicit "
+                         "rather than inferred from having children — plenty of parents "
+                         "legitimately hold their own work, and a guard that fires on "
+                         "every parent gets switched off.")
     sp.add_argument("--trail-visibility", dest="trail_visibility", default=None,
                     choices=["private", "checkpoints", "full"],
                     help="F5: how much of this task's trail its feed exports — private "

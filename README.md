@@ -210,6 +210,56 @@ task-station config --notify-webhook "https://…"         # POST each event as 
 
 Both channels are best-effort by design — a missing tool or a down webhook can never break a delegation. The env vars `TASK_STATION_NOTIFY` and `TASK_STATION_NOTIFY_WEBHOOK` override the stored config.
 
+## The loop — plans that check themselves
+
+A plan's items normally *assert* they are done. Task Station lets each item **prove** it: a checklist step can carry a runnable command plus the substrings its output must contain — the same shape `claims` uses for a whole document, aimed at one step.
+
+```text
+task-station exit-add  --task 12 --step 3 --cmd 'grep -c TODO src/*.py' --expect '0'
+task-station exit-show --task 12                 # what is registered, how it last went — runs nothing
+task-station exit-tick --task 12                 # RUNS them; ticks what passed; exit 1 if anything is not met
+```
+
+`exit-tick` moves the tick, so **done is computed, not asserted**. Three rules make that safe:
+
+- **A condition with no `--expect` is refused** — it would pass forever whatever the command printed.
+- **A condition that did not run refutes nothing.** A timeout or a missing binary is *unknown*, never *unmet*, and never moves a tick in either direction.
+- **Ticking is automatic; unticking is opt-in** (`--untick`). A failing condition on already-ticked work is reported as a **regression** — a real regression and a moved file look identical from here, and rewriting your record of finished work on that evidence is a bigger claim than a tick.
+
+### Waves, and what is unblocked now
+
+Once items can settle themselves, "what can start?" becomes a computation over the `depends-on` edges you already store:
+
+```text
+task-station scan --task 444          # waves over depends-on + the stopping condition
+task-station scan --task 444 --json   # the same object, for a driver
+```
+
+`scan` calls **no model** and — without `--run` — **no shell**: it reads the verdicts `exit-tick` stored. A predecessor releases its dependents when it is **closed** or **every exit condition it registered is met**; a task registering *no* conditions is never settled, so an empty checklist can't release work by having checked nothing. Cycles are reported, never traversed; a dependency on a deleted task doesn't deadlock but is named. The stopping condition is four values — `ready` · `complete` · `blocked` · `empty` — because "nothing to do" and "nothing I *can* do" are opposite situations.
+
+### Children, and the gate
+
+```text
+task-station invoke --task 531 --from 444 --ask '<the request>' [--role implementer]
+task-station grade  --task 531 --dim G1=A --dim G2=A- … [--park human-gate --why '…']
+```
+
+`invoke` spawns a session **already attached to the child's own task**, so its SessionStart injects that task's digest and the ask carries the request only — there is no brief to get wrong. `--role` (scout · implementer · reviewer · judge) sets the child's model and permission mode from a small role table.
+
+`grade` records one pass of the acceptance gate against six rubric dimensions. **Acceptance is per-dimension** (default `A-`), never an average — an average lets a failed gate-integrity dimension hide behind five strong ones — and an ungraded dimension is not a pass. Exit codes let a driver branch: `0` accepted · `1` rejected with retries left · `3` retry budget spent · `4` parked · `2` bad command. **A parked child is never retried**, which is how a human gate halts the loop cleanly instead of being re-asked with a better prompt.
+
+The **judgment** — what grade each dimension earns — is the `judge` skill's, not a flag's. The engine owns only what is deterministic.
+
+### The orchestrator flag
+
+```text
+task-station update --task 444 --orchestrator on
+```
+
+A task flagged orchestrator-only plans and grades; it does not hold work. `delegate run --seq 444` then **refuses and names the child that should own the work**, with the exact command to run there. Explicit rather than inferred from "has children" — plenty of parents legitimately hold their own work, and a guard that fires on every parent gets switched off. `delegate run --force` overrides it deliberately and writes the override onto the task.
+
+Tunables (config.json keys / env, no board row): `exit_command_timeout` (120s) · `loop_accept_threshold` (`A-`) · `loop_retry_max` (2) · `loop_children_max` (3) · `loop_builds_max` (1, **machine-wide** — two orchestrators share it).
+
 ## Fan-out hints (ultracode)
 
 Some tasks want **breadth** — many subagents reading, analysing, designing, or reviewing in parallel. Claude Code's built-in `ultracode` mode does exactly that, and Task Station knows which tasks would benefit: on a fan-out-worthy task (effort L/XL, or RESEARCH / REVIEW / DATA at M+) the detail recap and the SessionStart line surface a one-line suggestion to run it with `ultracode`. The human opts in by typing the keyword — Task Station never fires orchestration itself, and trivial work never triggers the hint.
