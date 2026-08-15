@@ -182,11 +182,36 @@ def state(task):
     return MET
 
 
+def coverage(task):
+    """`{"live", "covered", "uncovered", "uncovered_open"}` — how much of the ACTIVE
+    checklist can settle itself.
+
+    `uncovered_open` is the number that matters: live steps with no condition AND no
+    tick. Those are the items nothing can compute, and their existence is what stops a
+    partially-instrumented task from claiming it is finished."""
+    live = _steps.live((task or {}).get("steps") or [])
+    covered = [(n, s) for n, s in live if has_condition(s)]
+    uncovered = [(n, s) for n, s in live if not has_condition(s)]
+    return {"live": len(live), "covered": len(covered), "uncovered": len(uncovered),
+            "uncovered_open": len([1 for _n, s in uncovered if not _steps.is_done(s)])}
+
+
 def satisfied(task):
-    """True only when the task registers at least one condition and every one of them
-    is MET. The predicate the wave scan gates on — see `state` for why an empty
-    registration can never satisfy it."""
-    return state(task) == MET
+    """True only when the task registers at least one condition, EVERY registered
+    condition is MET, and no live step is left both uncovered and unticked. The
+    predicate the wave scan gates on.
+
+    THE THIRD CLAUSE IS THE ONE WORTH ARGUING ABOUT, and it is the empty-registration
+    rule in weaker form. Without it, a task with eight steps could register one
+    condition, pass it, and report itself finished — releasing every dependent wave on
+    the strength of one eighth of its plan. Partial instrumentation must not buy a
+    green, or the incentive is to instrument the easy step and stop.
+
+    An uncovered step that is TICKED is tolerated rather than fatal: that is a human's
+    assertion, which is exactly what this mechanism is replacing, but refusing to
+    proceed past one would make the whole feature unadoptable on any plan that predates
+    it. So the rule bites on what is genuinely unanswered — uncovered AND unfinished."""
+    return state(task) == MET and not coverage(task)["uncovered_open"]
 
 
 def last_run_ts(task):
