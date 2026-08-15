@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-3.2.1-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.3.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -114,6 +114,7 @@ Each task's detail view (and the HTML board row expansion, and the Desktop `get_
 `/todo board` writes a single-file `board.html` to your data dir and opens it. It is fully self-contained — inline `<script>`/`<style>` only, no server, no dependencies, no external assets:
 
 - **Open / Closed sections** with status · # · task · category · effort · activity.
+- **Families nest.** A child task renders directly under its parent, indented, with a connector column — and the family is placed by its **most recent member**, so recency still orders the board, a family at a time. Each relation kind says what it is: `⤶ 6 children` · `⤷ parent #444` · `⇠ waits on #533`. `group families` in the filter bar switches back to flat activity order and remembers the choice.
 - **Expandable rows** that reveal the full digest — goal, state, steps checklist, decisions, files, PRs and stories (one per line), and repos — plus copy buttons on the open and resume commands.
 - **Search + category/status filters** that live-filter rows with no reload, and a reset that clears everything.
 - **Light / dark / auto theme toggle** — *auto* follows the OS appearance live and re-resolves the moment your system flips. Your choice persists across reloads.

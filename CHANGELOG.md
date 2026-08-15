@@ -3,6 +3,49 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.3.0] — 2026-08-15
+
+The board could not show you that one task owned another. Measured on a real
+board: an orchestrator sat **between two of its own children**, with unrelated
+tasks interleaved among the rest, and the only marker that any of them were
+related read `↳ from #444`.
+
+### Added
+- **Families nest.** A task with a `parent` edge renders directly under its
+  parent, indented, with a connector column (`│  └─ `). The family is placed by
+  its **most recent member**, so recency still orders the board — a family at a
+  time, rather than a child leaping to the top alone and leaving its parent
+  behind. Positions, not timestamps: the row list is already activity-sorted, so
+  a member's index *is* its recency and nothing here parses a date, which is what
+  stops the two orderings from ever disagreeing.
+- **A `group families` toggle** in the filter bar switches back to strict
+  activity order and persists the choice (`ts-board-nest`), like the theme. One
+  render serves both: every row carries `data-nest` and `data-flat`, so the
+  switch re-sorts DOM that is already there.
+
+### Fixed
+- **Relation chips said the same four words for every edge kind.** `↳ from #N`
+  was printed for *parent*, *depends-on*, *spawned-from* and *related* alike, so
+  one track read `↳ from #533, #444` where #533 merely **gated** it and #444
+  **owned** it — two entirely different relationships, rendered identically. A
+  third task read `↳ from #535` and looked like a child while being a
+  **dependent**. Each kind now gets its own word: `⤶ N children` ·
+  `⤷ parent #N` · `⇠ waits on #N`, with the generic `↳ from #N` kept for any
+  kind the table does not know, so a store written by a newer version still
+  renders.
+- **A parent advertised nothing at all.** The chip read only the *outgoing* side
+  of the relation, so a task with six children showed no sign of having any. It
+  now reports them (listing the seqs for a run of three or fewer, a count plus a
+  full tooltip beyond that).
+
+### Changed
+- `BOARD-BEHAVIOR.md` gains **B20**, including the three things the layout pass
+  refuses to do: follow a parent edge into a cycle (single-valued edges *should*
+  make that impossible — that is not a rendering guarantee, and the failure mode
+  is the whole board rather than one row), reach outside the section it is laying
+  out (a closed parent leaves its open child a root, keeping the `parent #N`
+  chip), and move a task that has no family.
+
 ## [3.2.1] — 2026-08-15
 
 ### Fixed
