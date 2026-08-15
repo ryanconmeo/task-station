@@ -330,5 +330,129 @@ class ClaudeMdImportTest(BrainTestCase):
                          bconfig.DEFAULT_ORG_BRAIN() / "team-rules.md")
 
 
+class CustomisedInstallTest(BrainTestCase):
+    """A re-run on an install whose layout is NOT the stock one.
+
+    Both bugs pinned here were found together on 2026-08-15 and share one cause:
+    ``init_home`` read the PRIMARY config file — which is a one-line pointer — and
+    never the config at the far end of it. So a re-run rebuilt from stock defaults
+    (silently repointing `vault`/`memory`/`org_brain_clone` and DROPPING keys it
+    does not know, with no backup of the file it overwrote), and the CLAUDE.md
+    `@import` was emitted from a hardcoded stock path that a customised install
+    does not have. An unresolvable `@import` is inert, so that half failed
+    silently: the team rules simply never loaded.
+    """
+
+    CUSTOM = {
+        "vault": "~/brains/acme/alice-brain-private",
+        "memory": "~/brains/acme/alice-brain-private/memory",
+        "org_brain_clone": "~/brains/acme/acme-brain",
+        "inject_context": True,
+        "auto_distill": False,
+        "inject_keywords": ["Widget", "Sprocket"],
+        "tasks_db": "~/.task-station/store/tasks.db",
+        "publish_mirror": "~/brains/acme/alice-brain-shared",
+    }
+
+    def _seed_customised(self):
+        """Primary = pointer, with a customised config at the far end of it."""
+        (self.home / PRIMARY_CONFIG_REL).parent.mkdir(parents=True, exist_ok=True)
+        (self.home / PRIMARY_CONFIG_REL).write_text(
+            json.dumps({"config": "~/brains/config.json"}) + "\n")
+        (self.home / "brains").mkdir(parents=True, exist_ok=True)
+        (self.home / "brains/config.json").write_text(
+            json.dumps(self.CUSTOM, indent=2) + "\n")
+
+    def test_rerun_preserves_every_customised_key(self):
+        self._seed_customised()
+        init_home.run()
+        after = json.loads((self.home / "brains/config.json").read_text())
+        for k, v in self.CUSTOM.items():
+            self.assertEqual(after[k], v, f"{k} was not preserved")
+
+    def test_rerun_keeps_keys_init_home_knows_nothing_about(self):
+        self._seed_customised()
+        init_home.run()
+        after = json.loads((self.home / "brains/config.json").read_text())
+        self.assertEqual(after["publish_mirror"], self.CUSTOM["publish_mirror"])
+        self.assertEqual(after["tasks_db"], self.CUSTOM["tasks_db"])
+
+    def test_defaults_still_fill_absent_keys(self):
+        """Preserving must not mean refusing to add — a partial config gets the
+        missing defaults, it just never has its own values overwritten."""
+        (self.home / PRIMARY_CONFIG_REL).parent.mkdir(parents=True, exist_ok=True)
+        (self.home / PRIMARY_CONFIG_REL).write_text(
+            json.dumps({"config": "~/brains/config.json"}) + "\n")
+        (self.home / "brains").mkdir(parents=True, exist_ok=True)
+        (self.home / "brains/config.json").write_text(
+            json.dumps({"vault": "~/brains/only-this"}, indent=2) + "\n")
+        init_home.run()
+        after = json.loads((self.home / "brains/config.json").read_text())
+        self.assertEqual(after["vault"], "~/brains/only-this")     # kept
+        self.assertEqual(after["org_brain_clone"], "~/brains/org-brain")  # filled
+
+    def test_config_is_backed_up_before_any_rewrite(self):
+        self._seed_customised()
+        # force a real change so the write path (not the no-op path) is taken
+        cfg = dict(self.CUSTOM)
+        cfg.pop("inject_context")
+        (self.home / "brains/config.json").write_text(json.dumps(cfg, indent=2) + "\n")
+        init_home.run()
+        bak = self.home / "brains/config.json.bak"
+        self.assertTrue(bak.exists(), "no backup of the config that was rewritten")
+        self.assertEqual(json.loads(bak.read_text())["vault"], self.CUSTOM["vault"])
+
+    def test_unchanged_config_is_not_rewritten_or_backed_up(self):
+        self._seed_customised()
+        init_home.run()                       # normalises the file
+        first = (self.home / "brains/config.json").read_text()
+        (self.home / "brains/config.json.bak").unlink(missing_ok=True)
+        lines, _ = init_home.run()            # second run: nothing to do
+        self.assertEqual((self.home / "brains/config.json").read_text(), first)
+        self.assertFalse((self.home / "brains/config.json.bak").exists())
+        self.assertTrue(any("already correct" in ln for ln in lines))
+
+    def test_team_rules_import_follows_the_configured_clone(self):
+        self._seed_customised()
+        init_home.run()
+        text = (self.home / ".claude/CLAUDE.md").read_text()
+        self.assertIn("@~/brains/acme/acme-brain/team-rules.md", text)
+        self.assertNotIn("@~/brains/org-brain/team-rules.md", text)
+
+    def test_stale_import_block_is_repointed_not_left_alone(self):
+        """The block is declared auto-managed, so 'a block exists' was never
+        enough — a stale path inside it has to be corrected."""
+        cm = self.home / ".claude/CLAUDE.md"
+        cm.parent.mkdir(parents=True, exist_ok=True)
+        cm.write_text("# My own rules\n\n- keep me\n\n"
+                      f"{init_home.TR_MARKER_START}\n<!-- auto -->\n"
+                      f"@~/brains/org-brain/team-rules.md\n"
+                      f"{init_home.TR_MARKER_END}\n")
+        self._seed_customised()
+        init_home.run()
+        text = cm.read_text()
+        self.assertIn("@~/brains/acme/acme-brain/team-rules.md", text)
+        self.assertNotIn("@~/brains/org-brain/team-rules.md", text)
+        self.assertIn("- keep me", text)                       # user content kept
+        self.assertEqual(text.count(init_home.TR_MARKER_START), 1)
+
+    def test_correct_import_block_is_left_untouched(self):
+        self._seed_customised()
+        init_home.run()
+        before = (self.home / ".claude/CLAUDE.md").read_text()
+        lines, _ = init_home.run()
+        self.assertEqual((self.home / ".claude/CLAUDE.md").read_text(), before)
+        self.assertTrue(any("already correct" in ln for ln in lines))
+
+    def test_malformed_block_missing_end_marker_is_not_touched(self):
+        cm = self.home / ".claude/CLAUDE.md"
+        cm.parent.mkdir(parents=True, exist_ok=True)
+        cm.write_text(f"{init_home.TR_MARKER_START}\n@~/brains/org-brain/team-rules.md\n")
+        before = cm.read_text()
+        self._seed_customised()
+        init_home.run()
+        self.assertEqual(cm.read_text(), before)
+
+
 if __name__ == "__main__":
     unittest.main()

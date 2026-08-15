@@ -3,6 +3,31 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.1.2] — 2026-08-15
+
+`brain-init` is documented as safe, idempotent and reversible. On any install
+whose layout is not the stock one, it was none of the three. Both faults below
+share one cause: it read the PRIMARY config file — which is a one-line pointer —
+and never the config at the far end of it.
+
+### Fixed
+- **Re-running `/brain-init` no longer destroys a customised config.** It
+  rebuilt from stock defaults every time, silently repointing `vault`, `memory`
+  and `org_brain_clone` at the stock paths and dropping any key it does not know
+  about (`publish_mirror`, `tasks_db`, …) — while backing up only the pointer,
+  the one file that is trivially reconstructible. Precedence is now defaults →
+  existing config → OrgProfile, so your own values always survive a re-run, and
+  the config is backed up to `config.json.bak` before any rewrite (a run that
+  would change nothing now writes nothing).
+- **The team-rules `@import` follows the configured org-brain clone.** It was a
+  hardcoded stock path, so any install with a clone elsewhere got an `@import`
+  of a file that does not exist — and an unresolvable `@import` is inert, so the
+  team rules simply never loaded and nothing reported it. The path is now derived
+  from `org_brain_clone`, the same key every other reader in the brain plane
+  uses, and a block left pointing somewhere stale is repointed rather than
+  skipped (surrounding CLAUDE.md content is preserved byte-for-byte; a block
+  missing its end marker is left alone).
+
 ## [3.1.1] — 2026-08-14
 
 Packaging only — no behaviour change over 3.1.0's intent.
