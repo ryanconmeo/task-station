@@ -3,6 +3,17 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.1.1] — 2026-08-14
+
+Packaging only — no behaviour change over 3.1.0's intent.
+
+### Fixed
+- Re-publish so the project-MCP pre-approval actually ships. 3.1.0's artifact was
+  cut one commit early, and because the follow-up commit kept the same version
+  string the marketplace refresh had nothing new to pull — the published tree was
+  missing `approve_project_mcp` while `main` had it. Caught by scanning the built
+  artifact rather than trusting the publish.
+
 ## [3.1.0] — 2026-08-14
 
 Worker truth: delegate now judges background workers by what the harness actually
