@@ -128,6 +128,11 @@ _THEME_KEY = "ts-board-theme"
 # change-driven reload (same persistence idea as the theme toggle).
 _OPEN_KEY = "ts-board-open"
 
+# localStorage key for the row ORDERING: families grouped (the default, and the order the
+# server serves) or flat activity order. Persisted like the theme so a reload — including
+# the opt-in change-driven one — cannot silently put the board back.
+_NEST_KEY = "ts-board-nest"
+
 # sessionStorage key for the page scroll position (per-tab) — restored after the opt-in
 # change-driven reload so the full reload no longer jumps the page to the top (1.30.0).
 _SCROLL_KEY = "ts-board-scroll"
@@ -252,6 +257,22 @@ def _css(default_variant, category_css):
   /* WS4: a muted `↳ from #N` relation marker on the collapsed row. flex:none so it
      never disturbs the title's hover auto-scroll layout. */
   .c-task .relfrom{flex:none;font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+  /* the family tree connector (`│  └─ `). Monospaced and pre-spaced so the glyphs line
+     up in a column whatever the proportional title font does; flex:none for the same
+     reason .relfrom is — it must never disturb the title's hover auto-scroll layout. */
+  .c-task .treeline{flex:none;font-family:var(--mono);font-size:12px;color:var(--line2,var(--dim));
+    white-space:pre;opacity:.75;letter-spacing:0}
+  /* the typed relation chips. Each kind gets its own word — see _row_related_chip for
+     why the old single `from #N` was a bug rather than terseness. */
+  .c-task .relchip{flex:none;font-family:var(--mono);font-size:10.5px;color:var(--dim);
+    white-space:nowrap}
+  .c-task .relchip+.relchip,.c-task .relchip+.relfrom{margin-left:8px}
+  .c-task .relkids{color:var(--accent);opacity:.8}
+  /* While the board is NESTING, the indent already says who the parent is, so the chip
+     is redundant — but it is rendered anyway and hidden here, because the flat toggle
+     must reveal it without a re-render. */
+  .board:not(.nestoff) .c-task .relparent{display:none}
+  .board.nestoff .c-task .treeline{display:none}
   /* clickable related-task references (#N). In the collapsed-row chip they stay subtle
      (inherit the dim colour, dotted underline); in the expanded digest they take the
      accent colour like other links. */
@@ -1520,6 +1541,131 @@ def _sessions_line(st):
     return " · ".join(parts)
 
 
+# -- B20: family layout — children nest under their parent ------------------------------
+#
+# WHY THE ROWS MOVE. The board sorts by activity, which is right for a flat list of
+# unrelated work and wrong the moment a task has children: an orchestrator and its six
+# tracks scatter across the table, interleaved with everything else, and the only signal
+# that they belong together is a `#N` in a chip. Measured on one real board, task 444 sat
+# BETWEEN two of its own children with two unrelated tasks in among the rest.
+#
+# So a family renders as a block — parent, then its children indented under it. The
+# ordering rule keeps what the flat sort was for: A FAMILY SITS WHERE ITS MOST RECENT
+# MEMBER WOULD HAVE SAT. A parent last touched an hour ago whose child moved a minute ago
+# rides to the top with that child, as one unit. Recency still drives the board; it just
+# drives it a family at a time.
+#
+# Positions, not timestamps: the incoming list is ALREADY activity-sorted, so a member's
+# index IS its recency and a family's key is the smallest index in its subtree. Nothing
+# here parses a date, so the two orderings can never disagree about what "more recent"
+# means.
+
+
+def _parent_seq(t):
+    """The seq of the task this row stores a `parent` edge to, or None. Only the STORED
+    (outgoing) side counts — the subordinate holds the edge, so this is authoritative and
+    the reverse direction is derived."""
+    for e in ((t.get("related") or {}).get("from") or []):
+        if e.get("kind") == "parent" and e.get("seq") is not None:
+            return e.get("seq")
+    return None
+
+
+def _kind_seqs(t, kind, incoming):
+    """The counterpart seqs of one relation kind, in one direction."""
+    side = ((t.get("related") or {}).get("in" if incoming else "from")) or []
+    return [e.get("seq") for e in side
+            if e.get("kind") == kind and e.get("seq") is not None]
+
+
+def _family_layout(tasks):
+    """`[(task, tree)…]` — the rows in family order, each with its tree position.
+
+    `tree` is `{"depth", "bars", "last", "children", "flat"}`: `bars` carries, for every
+    ANCESTOR level, whether that ancestor still has siblings below it (so the connector
+    can draw `│` through it), `last` says whether this row is its parent's final child,
+    and `flat` is the row's index in the ORIGINAL activity order — which is what the
+    board's "group families" toggle sorts back to without a re-render.
+
+    THREE THINGS IT REFUSES TO DO:
+
+      * follow a parent edge that would make a row its own ancestor. A `parent` edge is
+        single-valued and replaces, so a cycle should be impossible — but "should be
+        impossible" is not a rendering guarantee, and an infinite recursion here would
+        take the whole board down rather than one row;
+      * reach outside this section. A row whose parent is CLOSED while it is open has no
+        parent HERE, so it renders as a root and keeps its `parent #N` chip. Pulling a
+        closed parent into the open table would be a bigger lie than the scattering;
+      * reorder anything with no family. A task with neither parent nor children keeps
+        its exact activity position relative to the family blocks around it."""
+    rows = list(tasks)
+    seq_of = {}
+    for i, t in enumerate(rows):
+        s = t.get("seq")
+        if s is not None and s not in seq_of:
+            seq_of[s] = i
+    parent_of, kids = {}, {}
+    for i, t in enumerate(rows):
+        p = _parent_seq(t)
+        j = seq_of.get(p) if p is not None else None
+        if j is None or j == i:
+            continue
+        anc, hops = j, 0
+        while anc is not None and anc != i and hops <= len(rows):
+            anc = parent_of.get(anc)
+            hops += 1
+        if anc == i or hops > len(rows):
+            continue                       # a cycle — leave this row a root
+        parent_of[i] = j
+        kids.setdefault(j, []).append(i)
+
+    rank = {}
+
+    def _rank(i, guard):
+        """The family key: the smallest (most recent) index in this row's subtree."""
+        if i in rank:
+            return rank[i]
+        if i in guard:
+            return i
+        guard = guard | {i}
+        best = i
+        for c in kids.get(i, ()):
+            best = min(best, _rank(c, guard))
+        rank[i] = best
+        return best
+
+    for i in range(len(rows)):
+        _rank(i, set())
+
+    out = []
+
+    def _emit(i, bars, last, depth):
+        ch = sorted(kids.get(i, ()), key=lambda c: (rank[c], c))
+        out.append((rows[i], {"depth": depth, "bars": list(bars), "last": last,
+                              "children": len(ch), "flat": i}))
+        # A depth-0 row draws no connector column, so its children start with an EMPTY
+        # bar list; deeper levels inherit their parent's bars plus one for the parent.
+        child_bars = [] if depth == 0 else bars + [not last]
+        for k, c in enumerate(ch):
+            _emit(c, child_bars, k == len(ch) - 1, depth + 1)
+
+    for i in sorted((i for i in range(len(rows)) if i not in parent_of),
+                    key=lambda i: (rank[i], i)):
+        _emit(i, [], True, 0)
+    return out
+
+
+def _tree_prefix(tree):
+    """The connector column for one row (`│  └─ `), or '' at depth 0. Rendered as a
+    single monospaced span so the glyphs line up under each other whatever the title
+    font does."""
+    if not tree or not tree.get("depth"):
+        return ""
+    bars = "".join("│  " if b else "   " for b in (tree.get("bars") or []))
+    return ('<span class="treeline" aria-hidden="true">%s%s</span>'
+            % (_e(bars), "└─ " if tree.get("last") else "├─ "))
+
+
 def _rel_link(seq):
     """A clickable `#N` relation reference — opens task N's row (the behavior script
     wires `a.rellink` → openTaskRow + scroll; stopPropagation when it sits in a summary
@@ -1596,15 +1742,60 @@ def _related_line(rel):
     return " · ".join(_rel_group(frm, False) + _rel_group(inn, True))
 
 
+_CHIP_LINK_MAX = 3   # counterparts listed inline before the chip collapses to a count
+
+
+def _chip_refs(seqs):
+    """`#a, #b` for a short run, `N tasks`-style counting left to the caller for a long
+    one. Returns `(html, collapsed)` so the caller can word the collapsed form itself."""
+    if len(seqs) <= _CHIP_LINK_MAX:
+        return ", ".join(_rel_link(s) for s in seqs), False
+    return "", True
+
+
 def _row_related_chip(t):
-    """A muted `↳ from #N` marker on the COLLAPSED row when this task carries outgoing
-    relation edges (spawned-from / related). Each `#N` is a clickable link that opens the
-    counterpart's row. '' when there are none."""
-    frm = (t.get("related") or {}).get("from") or []
-    links = ", ".join(_rel_link(e.get("seq")) for e in frm if e.get("seq") is not None)
-    if not links:
-        return ""
-    return '<span class="relfrom" title="relations">↳ from %s</span>' % links
+    """The relation markers on the COLLAPSED row.
+
+    WHAT THIS USED TO DO, AND WHY IT WAS WRONG: it printed `↳ from #N` for every OUTGOING
+    edge whatever its kind, so a `parent` and a `depends-on` rendered identically — on one
+    real board a track read `↳ from #533, #444` where #533 gated it and #444 owned it, two
+    entirely different relationships in one undifferentiated list. It also read only the
+    outgoing side, so a parent with six children advertised nothing at all.
+
+    Now each kind gets its own word: `N children` (incoming parent edges — the thing that
+    was invisible), `parent #N`, `waits on #N`. Everything else keeps the old generic
+    `from #N`, so a store carrying kinds this table does not know still renders.
+
+    The `parent #N` chip is CSS-hidden while the board is nesting, because the indent
+    already says it; the toggle back to flat order reveals it. That is why it is a
+    separate class rather than something omitted here — one render serves both views."""
+    rel = t.get("related") or {}
+    frm = rel.get("from") or []
+    inn = rel.get("in") or []
+    out = []
+    kids = _kind_seqs(t, "parent", incoming=True)
+    if kids:
+        links, collapsed = _chip_refs(kids)
+        body = ("%d children" % len(kids)) if collapsed else ("children " + links)
+        out.append('<span class="relchip relkids" title="child tasks: %s">⤶ %s</span>'
+                   % (_e(", ".join("#%s" % s for s in kids)), body))
+    par = _kind_seqs(t, "parent", incoming=False)
+    if par:
+        out.append('<span class="relchip relparent" title="parent task">⤷ parent %s</span>'
+                   % _rel_link(par[0]))
+    waits = _kind_seqs(t, "depends-on", incoming=False)
+    if waits:
+        links, collapsed = _chip_refs(waits)
+        body = ("%d tasks" % len(waits)) if collapsed else links
+        out.append('<span class="relchip relwaits" title="must land first: %s">'
+                   '⇠ waits on %s</span>'
+                   % (_e(", ".join("#%s" % s for s in waits)), body))
+    other = [e.get("seq") for e in frm
+             if e.get("kind") not in ("parent", "depends-on") and e.get("seq") is not None]
+    if other:
+        out.append('<span class="relfrom" title="relations">↳ from %s</span>'
+                   % ", ".join(_rel_link(s) for s in other))
+    return "".join(out)
 
 
 def _brief_field(row_label, summary_label, body_html, collapse):
@@ -2402,7 +2593,7 @@ def _foreign_row(t, theme, variant):
            _e(t.get("activity") or ""), detail))
 
 
-def _row(t, theme, variant):
+def _row(t, theme, variant, tree=None):
     if t.get("foreign"):
         return _foreign_row(t, theme, variant)
     color = t.get("color")
@@ -2458,6 +2649,14 @@ def _row(t, theme, variant):
     if t.get("_ib"):
         dattrs += (' data-owner="%s" data-brain="%s"'
                    % (_e(t.get("owner") or ""), _e(t.get("brain") or "")))
+    # The two orderings the "group families" toggle switches between, carried on the row
+    # so the switch is a re-sort of existing DOM rather than a re-render: `data-nest` is
+    # this row's position in family order (the served order), `data-flat` its position in
+    # pure activity order. Absent on a board with no families, which is exactly when the
+    # toggle has nothing to do.
+    if tree is not None:
+        dattrs += (' data-nest="%d" data-flat="%d" data-depth="%d"'
+                   % (tree.get("nest", 0), tree.get("flat", 0), tree.get("depth", 0)))
 
     # WS6: the expanded detail is grouped into FIVE collapsible sections, each with a
     # coloured header (overview/cost/prompts/sessions/history). Overview is open by
@@ -2534,12 +2733,13 @@ def _row(t, theme, variant):
         '<summary class="rowsum">'
         '%s'
         '<span class="c-seq">%s</span>'
-        '<span class="c-task"><span class="disc">▸</span>'
+        '<span class="c-task"><span class="disc">▸</span>%s'
         '<span class="ttl">%s</span>%s</span>'
         '%s%s'
         '<span class="c-act">%s</span></summary>'
         '%s</details>'
         % (closed, statcls, catcls, idattr, stripe, dattrs, _status_cell(t), seqcell,
+           _tree_prefix(tree),
            _e(t.get("title")),
            _row_related_chip(t),
            _tag_cell(t, hi_fb, fg_fb), _effort_cell(t, theme, variant),
@@ -2563,20 +2763,28 @@ def _section(title, tasks, theme, variant, see_more_after=None):
                '<span class="c-seq">#</span><span class="c-task">task</span>'
                '<span class="c-cat">category</span><span class="c-eff">effort</span>'
                '<span class="c-act">activity</span></div>')
+    # FAMILY ORDER IS THE SERVED ORDER: children follow their parent, indented, and each
+    # family sits where its most recent member would have. The row carries both indices,
+    # so the toggle back to flat activity order is a client-side re-sort of DOM that is
+    # already there — no second render, and no second definition of either ordering.
+    laid = _family_layout(tasks)
+    for nest, (_t, tree) in enumerate(laid):
+        tree["nest"] = nest
     # req 7: show the first `see_more_after` rows, fold the rest into a native
     # <details> whose summary reads "see more (N more)" (no JS needed). The filter
     # JS force-opens this when a search/filter is active so matches inside it show.
-    if see_more_after is not None and len(tasks) > see_more_after:
-        out.extend(_row(t, theme, variant) for t in tasks[:see_more_after])
-        rest = tasks[see_more_after:]
+    if see_more_after is not None and len(laid) > see_more_after:
+        out.extend(_row(t, theme, variant, tree) for t, tree in laid[:see_more_after])
+        rest = laid[see_more_after:]
         # `data-more` is the collapsed count; the filter JS force-opens this when a
         # search/filter is active (so matching closed rows inside it show) and rewrites
         # the summary to the matching count, restoring "see more (N more)" when cleared.
         out.append('<details class="seemore" id="closed-extra" data-more="%d">'
                    '<summary id="closed-extra-sum">see more (%d more) ▸</summary>%s</details>'
-                   % (len(rest), len(rest), "".join(_row(t, theme, variant) for t in rest)))
+                   % (len(rest), len(rest),
+                      "".join(_row(t, theme, variant, tree) for t, tree in rest)))
     else:
-        out.extend(_row(t, theme, variant) for t in tasks)
+        out.extend(_row(t, theme, variant, tree) for t, tree in laid)
     out.append('</div>')
     return out
 
@@ -2802,6 +3010,12 @@ def _filters(cat_rows):
         '<option value="">all sessions</option><option value="running">running</option>'
         '<option value="resumable">resumable</option><option value="none">no session</option>'
         '</select>'
+        # The family/flat ordering switch. Rendered ON (families grouped) because that is
+        # the served order; the JS flips both the row order and the connector/chip CSS,
+        # and persists the choice like the theme.
+        '<button id="nest-toggle" class="freset nestbtn" type="button" '
+        'aria-pressed="true" title="Group child tasks under their parent, with each '
+        'family placed by its most recent member">✓ group families</button>'
         # req F: a reset that clears the search box + both filters and restores the
         # default view (incl. re-collapsing the closed see-more) — handled in the JS.
         '<button id="filter-reset" class="freset" type="button" '
@@ -3352,6 +3566,33 @@ def _behavior_script(autorefresh=False, rev="", interbrain=False):
         "host.addEventListener('mouseenter',function(){startScroll(el);});"
         "host.addEventListener('mouseleave',function(){stopScroll(el);});"
         "})(ts[i]);}"
+        # --- family / flat row ordering ---
+        # The server serves FAMILY order, so "grouped" needs no work on load; the toggle
+        # re-sorts the rows already in the DOM by their other index. Rows are inserted
+        # BEFORE the `see more` details rather than appended, or a re-sort would shunt
+        # every visible closed row underneath the fold.
+        "var NKEY=%r,nb=document.getElementById('nest-toggle');" % _NEST_KEY +
+        "function nestOn(){try{return localStorage.getItem(NKEY)!=='flat';}catch(e){return true;}}"
+        "function applyNest(on){"
+        "var bs=document.querySelectorAll('.board');"
+        "for(var i=0;i<bs.length;i++){var b=bs[i];"
+        "if(on)b.classList.remove('nestoff');else b.classList.add('nestoff');"
+        "var hosts=[b],sm=null;"
+        "for(var c=0;c<b.children.length;c++){if(b.children[c].classList&&"
+        "b.children[c].classList.contains('seemore')){sm=b.children[c];hosts.push(sm);}}"
+        "for(var h=0;h<hosts.length;h++){var host=hosts[h],rs=[];"
+        "for(var k=0;k<host.children.length;k++){var el=host.children[k];"
+        "if(el.classList&&el.classList.contains('row')&&el.getAttribute('data-nest')!==null)rs.push(el);}"
+        "if(!rs.length)continue;"
+        "rs.sort(function(x,y){var a=+x.getAttribute(on?'data-nest':'data-flat'),"
+        "z=+y.getAttribute(on?'data-nest':'data-flat');return a-z;});"
+        "var anchor=(host===b)?sm:null;"
+        "for(var r=0;r<rs.length;r++)host.insertBefore(rs[r],anchor);}}"
+        "if(nb){nb.setAttribute('aria-pressed',on?'true':'false');"
+        "nb.textContent=(on?'\\u2713 ':'')+'group families';}}"
+        "if(nb)nb.addEventListener('click',function(){var on=!nestOn();"
+        "try{localStorage.setItem(NKEY,on?'nest':'flat');}catch(e){}applyNest(on);});"
+        "applyNest(nestOn());"
         # --- search + category + status filters (req 8) ---
         "var q=document.getElementById('board-search'),"
         "fc=document.getElementById('filter-cat'),fs=document.getElementById('filter-status'),"

@@ -247,6 +247,48 @@ Run: `python3 -m pytest tests/test_board_behavior.py -q`.
   for byte). The canvas interaction itself is the documented no-unit-test carve-out:
   **the visual is manual only.**
 
+## B20 — Families nest; every relation kind says what it is
+
+- **What:** A task with a `parent` edge renders **directly under its parent, indented**,
+  with a connector column (`│  └─ `). A family is placed by its **most recent member**, so
+  recency still orders the board — a family at a time. Each relation kind gets its own
+  word on the collapsed row: `⤶ N children` (or `⤶ children #a, #b` for a run of three or
+  fewer), `⤷ parent #N`, `⇠ waits on #N`; any other kind keeps the generic `↳ from #N`. A
+  `group families` button in the filter bar switches to flat activity order and persists
+  the choice in `localStorage` under `ts-board-nest`.
+- **Why it exists:** the board sorted purely by activity, so an orchestrator scattered
+  across the table — measured on one real board, task 444 sat *between* two of its own
+  children. Worse, the only relation marker printed `↳ from #N` for **every** outgoing
+  kind, so a track read `↳ from #533, #444` where #533 merely gated it and #444 owned it,
+  and one task read `↳ from #535` while being a *dependent*, not a child. The chip was not
+  terse; it was wrong. A parent, meanwhile, advertised nothing at all, because the chip
+  read only the outgoing side.
+- **The three refusals**, each a way a layout pass takes the whole board down rather than
+  one row: a `parent` edge that would make a row its own ancestor is **dropped** (single-
+  valued edges *should* make cycles impossible — that is not a rendering guarantee); a
+  parent outside the section being laid out (a **closed** parent of an open child) leaves
+  the child a **root**, keeping its `parent #N` chip rather than dragging a closed task
+  into the open table; and a task with no family **does not move**.
+- **One render serves both orderings.** Every row carries `data-nest` and `data-flat`, so
+  the toggle re-sorts DOM that is already there. The `parent #N` chip is always emitted
+  and CSS-hidden while nesting, which is why flipping to flat needs no re-render. Rows are
+  re-inserted *before* the closed `see more` block, never appended, so a re-sort cannot
+  shunt visible closed rows under the fold.
+- **Verify:** render a board where a parent and its children exist and the child is the
+  more recently touched. The family block leads with the parent at the child's position;
+  the child indents beneath it. Click `group families` — the rows return to strict
+  activity order, connectors disappear and `parent #N` chips appear; reload and the choice
+  holds. A task related by `depends-on` stays where it is and reads `waits on`.
+- **Assert:** ✅ `tests/test_board_family.py` — ordering (child follows parent, family
+  placed by its most recent member, children by their own recency), the connectors
+  (`├─`/`└─` and the ancestor bar), the three refusals (cycle, out-of-section parent,
+  `depends-on` never nests), the typed chips (children count vs list, parent, waits-on,
+  unknown-kind fallback), and the served HTML (depth + both ordering attributes, the
+  toggle, the storage key, still no external assets). **The DOM re-sort itself is the
+  documented carve-out — the stdlib-only suite runs no headless DOM, so the toggle's
+  reordering is verified manually** (and was driven through a stub DOM in node at
+  authoring time: two clicks, order restored, `head` first and `see more` last).
+
 ---
 
 ## Change protocol
