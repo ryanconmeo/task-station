@@ -106,6 +106,15 @@ def _exit_show_lines(task):
         elif last.get("status") in ("timeout", "error"):
             out.append("            did NOT run (%s) — nothing was proved either way"
                        % last["status"])
+    cover = _exits.coverage(task)
+    if cover["uncovered_open"]:
+        bare = [n for n, s in _steps.live(task.get("steps") or [])
+                if not _exits.has_condition(s) and not _steps.is_done(s)]
+        out.append("  %d live step(s) carry NO condition and are not ticked: %s"
+                   % (cover["uncovered_open"],
+                      ", ".join("step %d" % n for n in bare)))
+        out.append("    → this task cannot report itself finished until each is "
+                   "covered or ticked; partial instrumentation must not buy a green.")
     ran = _exits.last_run_ts(task)
     out.append("  last run: %s" % (rel_time(ran) if ran else
                                    "never — `exit-tick --task %s`" % ref))
@@ -321,12 +330,15 @@ def _scan_lines(report, parent, ran):
 def _scan_row(r):
     """One node's line: status glyph, ref, title, exit rollup, and what holds it."""
     counts = r["exits"]
+    cover = r.get("coverage") or {}
     if r["exit_state"] == _exits.NONE:
         ex = "exits: none registered"
     else:
         ex = "exits: %d/%d met" % (counts[_exits.MET], counts["total"])
         if counts[_exits.UNKNOWN]:
             ex += " (%d unrun)" % counts[_exits.UNKNOWN]
+        if cover.get("uncovered_open"):
+            ex += " +%d uncovered" % cover["uncovered_open"]
     tail = ""
     if r["parked"]:
         tail = "  PARKED: %s" % r["parked"]

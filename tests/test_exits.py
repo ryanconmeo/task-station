@@ -235,6 +235,37 @@ class StateTest(_Base):
         self.assertTrue(exits.satisfied(t))
         self.assertEqual(exits.summary(t), {"total": 2, "met": 2, "unmet": 0, "unknown": 0})
 
+    def test_partial_instrumentation_does_not_buy_a_green(self):
+        """The empty-registration rule in weaker form. Without this, a task with eight
+        steps could register ONE condition, pass it, and report itself finished —
+        releasing every dependent wave on the strength of an eighth of its plan."""
+        t = self._task("instrumented", "not instrumented")
+        exits.set_condition(t["steps"], 1, "one", ["ok"])
+        exits.evaluate(t, run=_runner({"one": ("ok", "ran")}))
+        self.assertEqual(exits.state(t), exits.MET)      # every REGISTERED one passed
+        self.assertFalse(exits.satisfied(t))             # …but step 2 answers nothing
+        self.assertEqual(exits.coverage(t)["uncovered_open"], 1)
+
+    def test_an_uncovered_step_that_is_ticked_is_tolerated(self):
+        """Refusing to proceed past a hand-ticked step would make the feature
+        unadoptable on any plan that predates it. The rule bites on what is genuinely
+        unanswered — uncovered AND unfinished."""
+        t = self._task("instrumented", "hand-ticked")
+        exits.set_condition(t["steps"], 1, "one", ["ok"])
+        steps_mod.set_done(t["steps"], 2, True)
+        exits.evaluate(t, run=_runner({"one": ("ok", "ran")}))
+        self.assertTrue(exits.satisfied(t))
+        self.assertEqual(exits.coverage(t)["uncovered_open"], 0)
+
+    def test_a_superseded_uncovered_step_does_not_block_satisfaction(self):
+        """A retired step is off the active checklist, so it cannot be the reason a task
+        can never report itself done."""
+        t = self._task("instrumented", "dropped from the plan")
+        exits.set_condition(t["steps"], 1, "one", ["ok"])
+        steps_mod.mark_superseded(t["steps"], 2)
+        exits.evaluate(t, run=_runner({"one": ("ok", "ran")}))
+        self.assertTrue(exits.satisfied(t))
+
     def test_one_unmet_beats_one_unknown_in_the_rollup(self):
         """A task with something REFUTED reads `unmet` even when another condition never
         ran: the strongest negative evidence is the honest headline."""

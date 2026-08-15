@@ -3,6 +3,21 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.2.1] — 2026-08-15
+
+### Fixed
+- **Partial instrumentation no longer buys a green.** A task is exit-satisfied
+  only when every registered condition is met **and** no live step is left both
+  uncovered and unticked. Before this, a task with eight steps could register
+  one condition, pass it, and report itself finished — releasing every dependent
+  wave on the strength of an eighth of its plan. It is the empty-registration
+  rule in weaker form, and the same reasoning: the incentive must never be to
+  instrument the easy step and stop. An uncovered step that is **ticked** is
+  tolerated, because refusing to proceed past a hand-ticked one would make the
+  whole feature unadoptable on any plan that predates it; the rule bites on what
+  is genuinely unanswered. `exit-show` names the uncovered steps and `scan`
+  marks them `+N uncovered`.
+
 ## [3.2.0] — 2026-08-15
 
 A plan's items used to *assert* they were done. They can now **prove** it — and

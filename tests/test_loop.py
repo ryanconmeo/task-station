@@ -232,6 +232,16 @@ class WaveTest(unittest.TestCase):
         plan = loop.waves([a, b], _resolver([a, b]))
         self.assertEqual(plan["depth"]["b"], 2)
 
+    def test_a_partially_instrumented_predecessor_still_blocks(self):
+        """A predecessor that passed its one condition while seven steps answer nothing
+        has not shown it is finished, so it must not release the wave behind it."""
+        a = _t("a", 1, conditions={1: "met"})
+        a["steps"].append({"text": "nothing checks this", "done": False})
+        b = _t("b", 2, deps=["a"])
+        self.assertFalse(loop.settled(a))
+        plan = loop.waves([a, b], _resolver([a, b]))
+        self.assertEqual(plan["depth"]["b"], 2)
+
     def test_one_unmet_condition_blocks_even_when_the_rest_passed(self):
         a = _t("a", 1, conditions={1: "met", 2: "unmet"})
         b = _t("b", 2, deps=["a"])

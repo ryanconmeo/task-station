@@ -391,13 +391,14 @@ def node_report(task, plan):
     ready, and what is holding it if not."""
     tid = task.get("id")
     counts = _exits.summary(task)
+    cover = _exits.coverage(task)
     blocking = [b for b in plan["blockers"].get(tid, []) if not settled(b)]
     in_cycle = any(tid in cyc for cyc in plan["cycles"])
     is_settled = settled(task)
     return {
         "seq": task.get("seq"), "id": tid, "title": task.get("title"),
         "status": task.get("status"), "wave": plan["depth"].get(tid),
-        "exit_state": _exits.state(task), "exits": counts,
+        "exit_state": _exits.state(task), "exits": counts, "coverage": cover,
         "exits_run_ts": _exits.last_run_ts(task),
         "settled": is_settled,
         "ready": bool(not is_settled and not blocking and not in_cycle),
