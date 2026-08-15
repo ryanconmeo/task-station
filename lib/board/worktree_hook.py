@@ -213,6 +213,57 @@ def add_trust_entry(worktree, path=None):
     return True
 
 
+def approve_project_mcp(worktree, path=None):
+    """Settle the worktree's OWN `.mcp.json` approval so a headless worker never
+    parks on the "approve 1 new project MCP server — attach to respond" dialog
+    (the 444-17 blocked-launch class, root-caused 2026-08-14 via the job record's
+    `needs` field). Returns the list of server names covered ([] when nothing to
+    do).
+
+    Mechanism — measured, not assumed: `enableAllProjectMcpServers: true` in the
+    worktree's `.claude/settings.local.json` is what actually clears the dialog;
+    writing `enabledMcpjsonServers`/`disabledMcpjsonServers` on the ~/.claude.json
+    project entry does NOT (both variants spawn-tested 2026-08-14, still parked).
+    The flag is scoped to this worktree and to what its own .mcp.json declares —
+    spawning a worker in the repo IS the approval intent. An EXISTING
+    enableAllProjectMcpServers value (true or false) is respected untouched: false
+    is the user's explicit refusal. `path` overrides the settings file location
+    for tests. Any surprise (odd schema, unreadable file) returns [] silently."""
+    mp = os.path.join(worktree, ".mcp.json")
+    try:
+        with open(mp, encoding="utf-8") as f:
+            doc = json.load(f)
+        names = sorted((doc.get("mcpServers") or {}).keys()) \
+            if isinstance(doc, dict) else []
+    except Exception:
+        return []
+    if not names:
+        return []
+    sp = path or os.path.join(worktree, LOCAL_SETTINGS)
+    settings = {}
+    if os.path.exists(sp):
+        try:
+            with open(sp, encoding="utf-8") as f:
+                settings = json.load(f)
+        except Exception:
+            return []
+        if not isinstance(settings, dict):
+            return []
+    if "enableAllProjectMcpServers" in settings:
+        return []                       # an explicit choice, either way — respected
+    settings["enableAllProjectMcpServers"] = True
+    try:
+        os.makedirs(os.path.dirname(sp), exist_ok=True)
+        tmp = "%s.ts-tmp.%d" % (sp, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, sp)
+    except Exception:
+        return []
+    return names
+
+
 def provision(worktree, main, claude_json=None):
     """Everything the new worktree needs that git does not give it. Returns the
     human notes for the hook-health record.
@@ -238,6 +289,14 @@ def provision(worktree, main, claude_json=None):
             notes.append("added the trust entry")
     except Exception as e:
         notes.append("trust entry failed (%s)" % e.__class__.__name__)
+    # (c) the repo's own .mcp.json servers, so a headless worker never parks on
+    # the one-time "approve project MCP server" dialog it cannot answer.
+    try:
+        approved = approve_project_mcp(worktree, path=claude_json)
+        if approved:
+            notes.append("approved project MCP server(s): %s" % ", ".join(approved))
+    except Exception as e:
+        notes.append("mcp approval failed (%s)" % e.__class__.__name__)
     return notes
 
 
