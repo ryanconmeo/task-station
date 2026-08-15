@@ -3,6 +3,81 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.2.0] — 2026-08-15
+
+A plan's items used to *assert* they were done. They can now **prove** it — and
+once items settle themselves, "what can start next" becomes a computation rather
+than a list somebody maintains.
+
+The evidence this is built on came from one document that carried both kinds of
+statement at once. Its seventeen registered **claims** stayed honest for a year,
+because something *ran* them. Its prose **steps** drifted: thirteen silently
+became true and nobody noticed for weeks. `heal` cannot close that gap — it
+reconciles the record against itself, never against reality.
+
+### Added
+- **Exit conditions on a checklist step** — `exit-add` / `exit-rm` /
+  `exit-show` / `exit-tick`. A step carries the shell command that settles it
+  plus every substring that must appear in the output, in the shape `claims`
+  already uses. `exit-tick` **runs** them and ticks what passed, so DONE is
+  computed rather than asserted, and it **exits 1 when anything is not met** so
+  it can gate a release rather than only inform a reader. Three rules make that
+  safe: a condition with no `--expect` is refused (it would pass forever
+  whatever the command printed); a condition that did **not run** — timeout or
+  launch failure — is `unknown`, refutes nothing, and moves no tick in either
+  direction; and a failing condition on already-ticked work is reported as a
+  **regression** and left alone unless `--untick` is passed, because a real
+  regression and a moved file present identically.
+- **`scan` — the zero-token wave planner.** Computes waves over the
+  `depends-on` edges that shipped in 2.24.0 and that nothing had ever computed
+  over, rolls up each node's exit conditions, and prints the stopping
+  condition (`ready` · `complete` · `blocked` · `empty` — four values, because
+  "nothing to do" and "nothing I *can* do" are opposite situations). Calls no
+  model, and without `--run` no shell either: it reads the verdicts `exit-tick`
+  stored. A predecessor releases its dependents when it is **closed** or when
+  **every exit condition it registered is met** — and a task registering *none*
+  is never settled, so an empty checklist cannot release work by having checked
+  nothing. Cycles are reported, never traversed; a dependency on a deleted task
+  does not deadlock but is named. `--json` emits the same object the text view
+  renders.
+- **`invoke` — spawn a child pre-attached to its own task.** The child's
+  session is linked before it launches, so SessionStart injects *that task's*
+  digest and the ask carries the **request only**. This removes the lossy-brief
+  boundary by construction rather than by discipline — there is no brief to get
+  wrong. `--role` (scout · implementer · reviewer · judge) sets the child's
+  model and permission mode from a small role table; models are named by alias,
+  never by a pinned id.
+- **`grade` + the `judge` skill — the graded acceptance gate.** One pass scores
+  six rubric dimensions and accepts only at `A-` on **every** one: acceptance is
+  per-dimension, never an average, because an average lets a failed
+  gate-integrity dimension hide behind five strong ones. A dimension nobody
+  graded is not a pass either. Exit codes let a driver branch — `0` accepted ·
+  `1` rejected with retries left · `3` retry budget spent · `4` parked · `2` bad
+  command — and a **parked child is never retried**, which is how a human gate
+  halts the loop cleanly instead of being re-asked with a better prompt. The
+  engine owns the arithmetic and the recording; the skill owns the judgment and
+  runs the mechanical gate *first*, because a report is not evidence.
+- **The orchestrator flag** — `update --task <n> --orchestrator on`. A task
+  flagged orchestrator-only plans and grades; it does not hold work.
+  `delegate run --seq <it>` now **refuses and names the ready child** that
+  should own the work, with the exact command to run there. Explicit rather
+  than inferred from "has children": plenty of parents legitimately hold their
+  own work, and a guard that fires on every parent is switched off within a day
+  — while a disabled guard still reads like a guarantee. `delegate run --force`
+  overrides it deliberately and writes the override onto the task.
+- Five config keys, all in `RESET_KEYS`: `exit_command_timeout` (120s — a fifth
+  of the claim timeout, since a claim runs a suite and an exit condition settles
+  one item), `loop_accept_threshold` (`A-`), `loop_retry_max` (2),
+  `loop_children_max` (3) and `loop_builds_max` (1, **machine-wide** — two
+  orchestrators must share it, because this machine OOMs on concurrent builds).
+
+### Changed
+- `guidance` (the model-facing command reference) documents all seven new
+  subcommands and the `--orchestrator` flag.
+- `checker` exposes its command runner and output-tail helpers under public
+  names, so exit conditions share one definition of what `ran` / `timeout` /
+  `error` mean instead of growing a second copy that could drift.
+
 ## [3.1.2] — 2026-08-15
 
 `brain-init` is documented as safe, idempotent and reversible. On any install
