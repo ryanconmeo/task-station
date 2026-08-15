@@ -184,6 +184,22 @@ def _apply_profile(cfg, profile):
 
 
 def _build_config(old_full, profile=None):
+    """The config to write: defaults, overlaid with the user's EXISTING config,
+    overlaid with the OrgProfile.
+
+    Precedence is deliberate and in this order:
+
+    * **defaults** — only ever fill a key nobody has set.
+    * **existing** — every key already in the user's effective config WINS over a
+      default, and keys this module knows nothing about (``publish_mirror``,
+      ``tasks_db``, …) are carried through untouched. Re-running init on a
+      customised install used to reset `vault`/`memory`/`org_brain_clone` to the
+      stock paths and DROP the unknown keys outright — with no backup of the file
+      it rewrote — which made a "safe, idempotent" setup command destructive for
+      anyone whose layout is not the stock one.
+    * **profile** — an explicitly-passed OrgProfile wins over both, because
+      applying a profile is a deliberate act of adopting org settings.
+    """
     cfg = {
         "vault": "~/brains/brain",
         "memory": "~/brains/brain/memory",
@@ -193,9 +209,8 @@ def _build_config(old_full, profile=None):
         "inject_keywords": list(ORG_KEYWORDS),
     }
     if isinstance(old_full, dict):
-        for k in ("inject_context", "auto_distill", "inject_keywords"):
-            if k in old_full:
-                cfg[k] = old_full[k]
+        for k, v in old_full.items():
+            cfg[k] = v
     if profile:
         _apply_profile(cfg, profile)
     return cfg
@@ -272,29 +287,63 @@ def _migrate_memory(home, vault_memory, lines, conflicts, dry_run):
                      f"{sorted(p.name for p in native.iterdir())} — resolve conflicts, then re-run")
 
 
-TEAM_RULES_IMPORT = "~/brains/org-brain/team-rules.md"
+TEAM_RULES_IMPORT = "~/brains/org-brain/team-rules.md"   # fallback only; see _team_rules_import
 TR_MARKER_START = "<!-- brain-station:team-rules -->"
 TR_MARKER_END = "<!-- /brain-station:team-rules -->"
 
 
-def _team_rules_block():
+def _team_rules_import(org_brain_clone=None):
+    """The path the CLAUDE.md `@import` should point at — derived from the config's
+    ``org_brain_clone``, which is where every other reader in the brain plane looks
+    for the clone. It used to be a hardcoded stock path, so any install whose clone
+    sits elsewhere got an import of a file that does not exist — and a missing
+    `@import` is silently inert, so the team rules simply never loaded and nothing
+    said so."""
+    base = str(org_brain_clone or "~/brains/org-brain").rstrip("/")
+    return f"{base}/team-rules.md"
+
+
+def _team_rules_block(org_brain_clone=None):
     return (f"{TR_MARKER_START}\n"
             "<!-- Auto-managed by /brain-init. Org team-rules live in the org-brain clone; "
             "edit them there (via /brain-promote), not here. Inert until org brain is linked. -->\n"
-            f"@{TEAM_RULES_IMPORT}\n"
+            f"@{_team_rules_import(org_brain_clone)}\n"
             f"{TR_MARKER_END}\n")
 
 
-def _ensure_claude_md_import(home, lines, dry_run, no_claude_md):
-    """Idempotently add a marker-guarded @import of the team-rules file to the
-    user-level ~/.claude/CLAUDE.md. Never duplicates; respects --no-claude-md."""
+def _ensure_claude_md_import(home, lines, dry_run, no_claude_md, org_brain_clone=None):
+    """Idempotently keep a marker-guarded @import of the team-rules file in the
+    user-level ~/.claude/CLAUDE.md. Never duplicates.
+
+    The block is declared auto-managed, so when it is present but points somewhere
+    other than the configured clone it is REWRITTEN rather than left alone — a
+    stale path here fails silently (an unresolvable `@import` is simply inert), so
+    "already present" was never enough to be correct. Only the marked block is
+    touched; the rest of the file is preserved byte-for-byte."""
     claude_md = home / ".claude/CLAUDE.md"
     if no_claude_md:
         lines.append("skip ~/.claude/CLAUDE.md team-rules @import (--no-claude-md)")
         return
     existing = claude_md.read_text(errors="ignore") if claude_md.exists() else ""
+    block = _team_rules_block(org_brain_clone)
+    want_import = f"@{_team_rules_import(org_brain_clone)}"
     if TR_MARKER_START in existing:
-        lines.append(f"team-rules @import already present in {claude_md}")
+        start = existing.index(TR_MARKER_START)
+        end = existing.find(TR_MARKER_END)
+        if end == -1:                       # truncated/hand-mangled block
+            lines.append(f"team-rules @import block in {claude_md} is missing its "
+                         f"end marker — leaving it alone")
+            return
+        end += len(TR_MARKER_END)
+        current = existing[start:end]
+        if want_import in current:
+            lines.append(f"team-rules @import already correct in {claude_md}")
+            return
+        lines.append(f"repoint team-rules @import in {claude_md} -> {want_import}")
+        if dry_run:
+            return
+        tail = existing[end:].lstrip("\n")
+        claude_md.write_text(existing[:start] + block + (("\n" + tail) if tail else ""))
         return
     lines.append(f"add team-rules @import block to {claude_md}")
     if dry_run:
@@ -305,7 +354,7 @@ def _ensure_claude_md_import(home, lines, dry_run, no_claude_md):
         prefix += "\n"
     if prefix and not prefix.endswith("\n\n"):
         prefix += "\n"
-    claude_md.write_text(prefix + _team_rules_block())
+    claude_md.write_text(prefix + block)
 
 
 def _onboarding_checklist(home, no_claude_md=False):
@@ -367,6 +416,17 @@ def run(dry_run=False, no_claude_md=False, profile=None):
             old_raw = None
         if isinstance(old_raw, dict) and isinstance(old_raw.get("config"), str):
             old_is_pointer = True
+            # FOLLOW the pointer. The primary file is a one-line redirect, so the
+            # config actually in force lives at the far end of it — reading only
+            # the pointer meant every re-run rebuilt from stock defaults and
+            # silently discarded the real settings.
+            try:
+                pointed = Path(os.path.expanduser(old_raw["config"]))
+                loaded = json.loads(pointed.read_text())
+                if isinstance(loaded, dict):
+                    old_full = loaded
+            except (json.JSONDecodeError, OSError):
+                old_full = None
         elif isinstance(old_raw, dict):
             old_full = old_raw
 
@@ -394,11 +454,23 @@ def run(dry_run=False, no_claude_md=False, profile=None):
     if profile:
         lines.append("apply OrgProfile: labels/forge/keywords from --profile")
     config_path = root / "config.json"
-    desired = json.dumps(_build_config(old_full, profile), indent=2) + "\n"
-    lines.append(f"write config: {config_path}")
-    if not dry_run:
-        root.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(desired)
+    new_cfg = _build_config(old_full, profile)
+    desired = json.dumps(new_cfg, indent=2) + "\n"
+    if config_path.exists() and config_path.read_text() == desired:
+        lines.append(f"config already correct: {config_path}")
+    else:
+        # Back it up before rewriting. This file holds the paths everything else
+        # resolves through, and until now the only backup taken was of the
+        # POINTER — the one file that is trivially reconstructible.
+        if config_path.exists():
+            bak = config_path.parent / (config_path.name + ".bak")
+            lines.append(f"back up existing config: {config_path} -> {bak}")
+            if not dry_run:
+                shutil.copy2(config_path, bak)
+        lines.append(f"write config: {config_path}")
+        if not dry_run:
+            root.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(desired)
 
     # 3. rewrite primary as the one-line pointer (back up a full config)
     if old_is_pointer and old_raw == POINTER:
@@ -418,7 +490,8 @@ def run(dry_run=False, no_claude_md=False, profile=None):
     _migrate_memory(home, vault_memory, lines, conflicts, dry_run)
 
     # 5. wire the team-rules @import into the user-level CLAUDE.md (idempotent)
-    _ensure_claude_md_import(home, lines, dry_run, no_claude_md)
+    _ensure_claude_md_import(home, lines, dry_run, no_claude_md,
+                             org_brain_clone=new_cfg.get("org_brain_clone"))
 
     return lines, conflicts
 
