@@ -453,7 +453,7 @@ def cmd_invoke(a):
     digest that already exists.
 
     `--role` picks the child's model and permission mode from the role table (scout /
-    implementer / reviewer / judge); `--model` and `--permission-mode` override it. With
+    implementer / reviewer / grader); `--model` and `--permission-mode` override it. With
     neither, the child inherits the harness defaults."""
     child, err = _loop_target(a, "invoke")
     if err:
@@ -550,7 +550,7 @@ def cmd_grade(a):
     ACCEPTANCE IS PER-DIMENSION, not an average. A rubric averaged
     into one number lets a failed gate-integrity dimension hide behind five strong ones,
     which is the exact failure six separate dimensions exist to prevent. An UNGRADED
-    dimension is not a pass either — it is work the judge has not done.
+    dimension is not a pass either — it is work the grader has not done.
 
     EXIT CODES, so a driver can branch without parsing prose: 0 accepted · 1 rejected
     with retries left · 3 rejected with the retry budget spent (park it) · 4 parked ·

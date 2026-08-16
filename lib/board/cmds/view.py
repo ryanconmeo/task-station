@@ -14,6 +14,7 @@ import os
 import sys
 
 import decisions as _dec
+import loop as _loop
 import save as _save
 import steps as _steps
 
@@ -22,6 +23,7 @@ from board import nudges as _nudges
 g, set_g = _shared.g, _shared.set_g
 
 __all__ = [
+    "_children_recap", "CHILDREN_RECAP_MAX",
     "_format_detail", "_replaced_suffix", "_format_history",
     "_open_jump_window", "_format_detail_session",
     "_hub_ordinals", "_hub_sid_for_ordinal", "_ordinal_resume",
@@ -33,6 +35,79 @@ __all__ = [
     "_auto_track_provisional", "_fold_candidate_lines",
     "cmd_prompt_context", "cmd_guidance",
 ]
+
+
+# How many child rows the recap prints before folding the rest into a count. A parent
+# with forty children is telling you something, but not in a resume digest.
+CHILDREN_RECAP_MAX = 12
+
+
+def _children_recap(task):
+    """The computed plan for a task that HAS children — waves over `depends-on`, what is
+    ready, and what is holding the rest. `[]` for a leaf, so a task with no children
+    renders exactly as it always did.
+
+    WHY THIS IS IN THE RECAP AND NOT A COMMAND YOU RUN. An orchestrator's digest used to
+    describe its goal and its own checklist and say NOTHING about its children's state —
+    so opening it told you what the plan WAS and never what it currently IS. You had to
+    know to ask. That is the same failure the whole exit-condition design exists to
+    remove, one surface up: a record that has the answer and does not volunteer it is a
+    record somebody has to remember to interrogate, and the thing nobody remembers is
+    exactly the thing that goes stale.
+
+    It costs one store scan and NO model call — the same `scan` computation, rendered
+    tighter. A closed task is skipped: its plan is history, not a next step."""
+    if is_closed(task):
+        return []
+    try:
+        every = all_tasks()
+        tree = _loop.descendants(task, every)
+        if not tree:
+            return []
+        by_id = {t.get("id"): t for t in every}
+        depths = {t.get("id"): d for t, d in tree}
+        report = _loop.scan([t for t, _d in tree], by_id.get,
+                            is_settled=_loop.settled_fn(every), depths=depths)
+    except Exception:              # a recap must never be the reason a resume fails
+        return []
+    totals = report["totals"]
+    out = ["", "Children (%d%s) — the computed plan, STOP: %s:"
+           % (totals["total"],
+              ", %d settled" % totals["settled"] if totals["settled"] else "",
+              report["stop"].upper())]
+    shown = 0
+    for wave, rows in report["waves"].items():
+        for r in rows:
+            if shown >= CHILDREN_RECAP_MAX:
+                break
+            depth = r.get("tree_depth") or 1
+            if r.get("orchestrator"):
+                tail = "orchestrator"
+            elif r["settled"]:
+                tail = "settled"
+            elif r["parked"]:
+                tail = "PARKED: %s" % r["parked"]
+            elif r["ready"]:
+                tail = "READY"
+            elif r["blocked_by"]:
+                tail = "blocked by %s" % ", ".join("#%s" % b["seq"]
+                                                   for b in r["blocked_by"])
+            else:
+                tail = "in a cycle"
+            out.append("  w%-2d %s#%-5s %-38s %s"
+                       % (wave, "· " * (depth - 1), r["seq"],
+                          (r["title"] or "")[:38 - 2 * (depth - 1)], tail))
+            shown += 1
+    if totals["total"] > shown:
+        out.append("  (+%d more — full report: `task-station scan --task %s`)"
+                   % (totals["total"] - shown, task.get("seq", task["id"][:8])))
+    if report["stop"] == _loop.READY and report["ready"]:
+        out.append("  READY NOW: %s" % ", ".join("#%s" % s for s in report["ready"]))
+    unreg = report["exits"]["unregistered"]
+    if unreg:
+        out.append("  %d of %d register NO exit condition, so they cannot report "
+                   "themselves done." % (len(unreg), totals["total"]))
+    return out
 
 
 def _format_detail(task, session, attached=True):
@@ -99,6 +174,10 @@ def _format_detail(task, session, attached=True):
         out.append("")
         out.append("State (next):")
         out.append("  %s" % state)
+    # The computed plan, for a task that has children — deliberately ABOVE the checklist,
+    # because for an orchestrator the children ARE the outstanding work and its own steps
+    # are the part it already finished or handed away.
+    out.extend(_children_recap(task))
     # The ACTIVE checklist only. A SUPERSEDED step has left it — it is not outstanding
     # work — and it counts in neither side of the n/m. Numbers stay the ORIGINAL
     # indices (so `--step-done 4` keeps meaning step 4 after step 2 was retired), which
@@ -1322,13 +1401,13 @@ def cmd_guidance(a):
         "registered is MET; a task registering NONE is never settled, so an empty checklist "
         "cannot release work by having checked nothing. Cycles are reported, never traversed",
         "  invoke  --task <child> [--from <orch>] --ask '<the request>' [--role scout|"
-        "implementer|reviewer|judge] [--model M] [--permission-mode P] [--cwd D] "
+        "implementer|reviewer|grader] [--model M] [--permission-mode P] [--cwd D] "
         "[--print-command]   — spawn a child session ALREADY ATTACHED to its own task, so its "
         "SessionStart injects that task's digest and the ask carries the REQUEST ONLY. There "
         "is no brief to get wrong; an ask long enough to be context is warned about",
         "  grade  --task <child> --dim G1=A --dim G2=A- … [--threshold G] [--note '…'] "
         "[--park human-gate|blocked-external|retries-exhausted --why '…'] [--no-decision] "
-        "[--json]   — one pass of the graded acceptance gate. PREFER the `judge` SKILL, which "
+        "[--json]   — one pass of the graded acceptance gate. PREFER the `grade` SKILL, which "
         "runs the mechanical gate FIRST and supplies the judgment this command cannot. "
         "Acceptance is PER-DIMENSION (default A-), never an average, and an ungraded "
         "dimension is not a pass. Exit codes: 0 accepted · 1 rejected with retries left · 3 "

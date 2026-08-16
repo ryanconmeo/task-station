@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-3.4.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.5.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -245,11 +245,11 @@ task-station invoke --task 17 --from 12 --ask '<the request>' [--role implemente
 task-station grade  --task 17 --dim G1=A --dim G2=A- … [--park human-gate --why '…']
 ```
 
-`invoke` spawns a session **already attached to the child's own task**, so its SessionStart injects that task's digest and the ask carries the request only — there is no brief to get wrong. `--role` (scout · implementer · reviewer · judge) sets the child's model and permission mode from a small role table.
+`invoke` spawns a session **already attached to the child's own task**, so its SessionStart injects that task's digest and the ask carries the request only — there is no brief to get wrong. `--role` (scout · implementer · reviewer · grader) sets the child's model and permission mode from a small role table.
 
 `grade` records one pass of the acceptance gate against six rubric dimensions. **Acceptance is per-dimension** (default `A-`), never an average — an average lets a failed gate-integrity dimension hide behind five strong ones — and an ungraded dimension is not a pass. Exit codes let a driver branch: `0` accepted · `1` rejected with retries left · `3` retry budget spent · `4` parked · `2` bad command. **A parked child is never retried**, which is how a human gate halts the loop cleanly instead of being re-asked with a better prompt.
 
-The **judgment** — what grade each dimension earns — is the `judge` skill's, not a flag's. The engine owns only what is deterministic.
+The **judgment** — what grade each dimension earns — is the `grade` skill's, not a flag's. The engine owns only what is deterministic.
 
 ### The orchestrator flag
 

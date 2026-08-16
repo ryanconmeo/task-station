@@ -739,5 +739,70 @@ class CliTest(unittest.TestCase):
         self.assertFalse(loop.is_orchestrator(ts.load_task(parent["id"])))
 
 
+# -- (7) the orchestrator recap ---------------------------------------------------
+
+class RecapTest(CliTest):
+    """Opening an orchestrator must REPORT its children's computed state, not make you
+    know to ask for it. A record that has the answer and does not volunteer it is one
+    somebody has to remember to interrogate — and the thing nobody remembers is exactly
+    the thing that goes stale."""
+
+    def _family(self):
+        parent = self._task("The orchestrator")
+        a = self._task("Child A", "do a thing")
+        b = self._task("Child B", "do another")
+        self._out(ts.cmd_update, _update_args(task=str(a["seq"]), parent=str(parent["seq"])))
+        self._out(ts.cmd_update, _update_args(task=str(b["seq"]), parent=str(parent["seq"])))
+        self._out(ts.cmd_update, _update_args(task=str(b["seq"]),
+                                              depends_on=[str(a["seq"])]))
+        return ts.load_task(parent["id"]), a, b
+
+    def test_a_leaf_task_renders_exactly_as_before(self):
+        """Parity: a task with no children must gain nothing, or every existing digest
+        grows a section about a plan that does not exist."""
+        lone = self._task("No children here")
+        self.assertEqual(ts._children_recap(lone), [])
+
+    def test_a_parent_reports_its_waves_and_what_is_ready(self):
+        parent, a, b = self._family()
+        block = "\n".join(ts._children_recap(parent))
+        self.assertIn("Children (2)", block)
+        self.assertIn("STOP: READY", block)
+        self.assertIn("READY NOW: #%s" % a["seq"], block)
+        self.assertIn("blocked by #%s" % a["seq"], block)
+
+    def test_it_names_children_that_cannot_report_themselves_done(self):
+        parent, _a, _b = self._family()
+        self.assertIn("register NO exit condition", "\n".join(ts._children_recap(parent)))
+
+    def test_a_closed_parent_gets_no_plan_block(self):
+        """Its plan is history, not a next step."""
+        parent, _a, _b = self._family()
+        parent["status"] = "closed"
+        ts.save_task(parent)
+        self.assertEqual(ts._children_recap(ts.load_task(parent["id"])), [])
+
+    def test_the_block_reaches_the_rendered_detail(self):
+        parent, _a, _b = self._family()
+        detail = ts._format_detail(ts.load_task(parent["id"]), None)
+        self.assertIn("the computed plan", detail)
+
+    def test_a_broken_scan_never_takes_the_recap_down(self):
+        """A resume digest must never fail because a derived section raised."""
+        parent, _a, _b = self._family()
+        real = loop.descendants
+        try:
+            loop.descendants = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+            self.assertEqual(ts._children_recap(parent), [])
+        finally:
+            loop.descendants = real
+
+
+class RoleNameTest(unittest.TestCase):
+    def test_the_grading_role_is_named_grader(self):
+        self.assertIn("grader", loop.ROLES)
+        self.assertNotIn("judge", loop.ROLES)
+
+
 if __name__ == "__main__":
     unittest.main()
