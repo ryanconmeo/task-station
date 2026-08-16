@@ -1416,9 +1416,18 @@ def cmd_guidance(a):
         "cannot release work by having checked nothing. Cycles are reported, never traversed",
         "  invoke  --task <child> [--from <orch>] --ask '<the request>' [--role scout|"
         "implementer|reviewer|grader] [--model M] [--permission-mode P] [--cwd D] "
-        "[--print-command]   — spawn a child session ALREADY ATTACHED to its own task, so its "
-        "SessionStart injects that task's digest and the ask carries the REQUEST ONLY. There "
-        "is no brief to get wrong; an ask long enough to be context is warned about",
+        "[--print-command] [--dry-run]   — spawn a child session ALREADY ATTACHED to its own "
+        "task, so its SessionStart injects that task's digest and the ask carries the "
+        "REQUEST ONLY. There is no brief to get wrong; an ask long enough to be context is "
+        "warned about. A ROLE MAY RESTRICT AND MAY NEVER REPLACE: it names a permission mode "
+        "only when that mode NARROWS what the child may do (silence inherits your default), "
+        "and its bare model alias reclaims the parent's [1m] window when both name the same "
+        "family — an explicit --model/--permission-mode always wins. A fresh git worktree is "
+        "pre-trusted (and its own .mcp.json servers pre-approved) ONLY by inheritance from a "
+        "main checkout you already trust; anything else is refused with the reason and the "
+        "invoke still runs. --print-command is a REAL launch you finish by hand: the session "
+        "is pre-attached and the trail records a MANUAL LAUNCH. --dry-run is the one that "
+        "costs NOTHING — it prints the command it would run and writes nothing at all",
         "  grade  --task <child> --dim G1=A --dim G2=A- … [--threshold G] [--note '…'] "
         "[--park human-gate|blocked-external|retries-exhausted --why '…'] [--no-decision] "
         "[--json]   — one pass of the graded acceptance gate. PREFER the `grade` SKILL, which "

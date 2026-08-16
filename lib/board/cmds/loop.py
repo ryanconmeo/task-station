@@ -22,12 +22,14 @@ import config as _config
 import exits as _exits
 import loop as _loop
 import steps as _steps
+from board import workspace as _workspace
 
 g, set_g = _shared.g, _shared.set_g
 
 __all__ = [
     "_loop_target", "_exit_step_arg", "_exit_show_lines", "_scan_population",
     "_scan_lines", "_invoke_command", "ASK_CONTEXT_HINT",
+    "DRY_RUN_SID", "MANUAL_LAUNCH", "_record_launch",
     "cmd_exit_add", "cmd_exit_rm", "cmd_exit_show", "cmd_exit_tick",
     "cmd_scan", "cmd_invoke", "cmd_grade", "cmd_orchestrator_check",
     "cmd_decompose",
@@ -458,24 +460,82 @@ def cmd_scan(a):
 # names the reason, which is the part that changes behaviour.
 ASK_CONTEXT_HINT = 800
 
+# The session id a `--dry-run` prints. A PREVIEW COSTS NOTHING, so it cannot mint a real
+# one: a minted id is registered against the child and, for a preview nobody launches,
+# becomes a phantom session that will never exist. An all-zero uuid is obviously a
+# placeholder to a reader and is never linked to anything.
+DRY_RUN_SID = "00000000-0000-0000-0000-000000000000"
+
+# The trail marker for a launch handed to a human rather than opened by the loop. The
+# parent's RUNNING column (3.6.0) exists to stop a double-invoke, and it cannot do that
+# on a log where a preview and a launch wrote the identical line.
+MANUAL_LAUNCH = "MANUAL LAUNCH"
+
 
 def _invoke_command(base, role, model, permission_mode, ask):
     """Assemble the child's launch command from the pre-bound `cd … && claude
     --session-id <sid>` base.
+
+    A ROLE MAY RESTRICT AND MAY NEVER REPLACE, which shapes both flags here:
+
+    * The permission mode is emitted only when the role's mode genuinely NARROWS what
+      the child may do (`workspace.restricts`). Otherwise the flag is omitted, and its
+      absence inherits the human's configured default — `acceptEdits` is not a
+      restriction of an `auto` default, it is a strictly less autonomous replacement of
+      one, and no role should hand a child that without being asked.
+    * The model keeps the role's alias but reclaims the parent's `[1m]` window when the
+      two name the same family, because a bare alias is a 200k window and silently
+      giving a child one fifth of the context is the same unasked-for downgrade.
+
+    Either can be overridden explicitly, and an explicit value always wins — a human
+    passing the flag has made the decision the role was only guessing at.
 
     The ask is `shlex.quote`d rather than wrapped in quotes by hand — an ask containing
     an apostrophe is the common case, not an edge one, and a hand-quoted one would
     truncate at it."""
     parts = [base]
     spec = _loop.role_spec(role) if role else None
-    chosen_model = model or (spec or {}).get("model")
-    chosen_mode = permission_mode or (spec or {}).get("permission_mode")
+    role_mode = (spec or {}).get("permission_mode")
+    chosen_model = model or _workspace.inherited_model(
+        (spec or {}).get("model"), g("claude_code_model_selection")())
+    chosen_mode = permission_mode or (role_mode if _workspace.restricts(role_mode)
+                                      else None)
     if chosen_model:
         parts.append("--model %s" % shlex.quote(chosen_model))
     if chosen_mode:
         parts.append("--permission-mode %s" % shlex.quote(chosen_mode))
     parts.append(shlex.quote(ask))
     return " ".join(parts)
+
+
+def _record_launch(child, orch, role, ask, manual, session=None):
+    """Write the invoke's trail entries — AFTER the launch decision, never before it.
+
+    Both halves of this used to run before the code knew whether a window had opened, so
+    a preview and a real launch wrote the same line and one child read as two invokes.
+    The kind of launch is therefore part of the record: only a window that actually
+    opened is an `invoked #…`, and everything else — `--print-command`, or a window
+    opener that failed and fell back to printing — is a MANUAL LAUNCH, because in both
+    cases the thing that happens next is a human running the line by hand."""
+    child = load_task(child["id"]) or child
+    who = orch.get("seq") if orch else "?"
+    as_role = " as %s" % role if role else ""
+    if manual:
+        detail = "%s — handed to a human by #%s%s" % (MANUAL_LAUNCH, who, as_role)
+    else:
+        detail = "invoked by #%s%s" % (who, as_role)
+    add_event(child, "child", "%s: %s" % (detail, ask[:160]), session=session)
+    child["updated_ts"] = _now()
+    save_task(child)
+    if not orch:
+        return
+    orch = load_task(orch["id"]) or orch
+    head = "%s #%s" % (MANUAL_LAUNCH, child.get("seq")) if manual \
+        else "invoked #%s" % child.get("seq")
+    add_event(orch, "child", "%s (%s) — %s" % (head, role or "no role", ask[:160]),
+              session=session)
+    orch["updated_ts"] = _now()
+    save_task(orch)
 
 
 def cmd_invoke(a):
@@ -486,9 +546,15 @@ def cmd_invoke(a):
     orchestrator writes no brief, which is the point — every brief is a lossy copy of a
     digest that already exists.
 
-    `--role` picks the child's model and permission mode from the role table (scout /
-    implementer / reviewer / grader); `--model` and `--permission-mode` override it. With
-    neither, the child inherits the harness defaults."""
+    `--role` picks the child's model from the role table (scout / implementer / reviewer
+    / grader) and its permission mode only when that mode RESTRICTS; `--model` and
+    `--permission-mode` override it. With neither, the child inherits the harness
+    defaults.
+
+    `--dry-run` prints the command it WOULD run and writes nothing at all — no session,
+    no event, no trust file. `--print-command` is not that: it is a real launch the
+    human completes by hand, so it pre-attaches the session and records itself as a
+    MANUAL LAUNCH."""
     child, err = _loop_target(a, "invoke")
     if err:
         print(err)
@@ -532,44 +598,63 @@ def cmd_invoke(a):
                         "request — the child already gets its own task digest at "
                         "session start, so anything restating it is a lossy copy."
                         % len(ask))
-    sid, base = fresh_resume_command(child, preborn=True)
+    model = getattr(a, "model", None)
+    permission_mode = getattr(a, "permission_mode", None)
     cwd = getattr(a, "cwd", None)
+    header = "Invoke — #%s %s%s" % (child.get("seq"), child.get("title"),
+                                    ("  ← #%s" % orch.get("seq")) if orch else "")
+    # The workspace verdict is reached BEFORE anything is written, so the preview and
+    # the real run report the same finding — one of them just stops here.
+    verdict = _workspace.assess(cwd)
+
+    if getattr(a, "dry_run", False):
+        # A PREVIEW MUST COST NOTHING. No session minted, no event on either task, no
+        # trust file touched, no window. `--print-command` is a REAL launch path (the
+        # human runs the printed line, so it legitimately pre-attaches a session); this
+        # is the path for merely LOOKING, which previously did not exist.
+        where = os.path.expanduser(cwd) if cwd \
+            else _fresh_session_cwd(child.get("session_meta"))
+        base = "cd %s && claude --session-id %s" % (shlex.quote(where), DRY_RUN_SID)
+        cmd = _invoke_command(base, role, model, permission_mode, ask)
+        print(header)
+        print("  DRY RUN — nothing was written: no session minted, no event recorded, "
+              "no window opened. That session id is a placeholder, not a real one.")
+        for w in warnings:
+            print("  note: %s" % w)
+        for line in _workspace.lines(verdict, dry=True):
+            print(line)
+        print("  it would run:")
+        print("    %s" % cmd)
+        return
+
+    sid, base = fresh_resume_command(child, preborn=True)
     if cwd:
         base = "cd %s && claude --session-id %s" % (shlex.quote(os.path.expanduser(cwd)),
                                                     sid)
-    cmd = _invoke_command(base, role, getattr(a, "model", None),
-                          getattr(a, "permission_mode", None), ask)
-    child = load_task(child["id"]) or child
-    detail = "invoked by #%s%s" % (orch.get("seq") if orch else "?",
-                                   " as %s" % role if role else "")
-    add_event(child, "child", "%s: %s" % (detail, ask[:160]),
-              session=getattr(a, "session", None))
-    child["updated_ts"] = _now()
-    save_task(child)
-    if orch:
-        orch = load_task(orch["id"]) or orch
-        add_event(orch, "child", "invoked #%s (%s) — %s"
-                  % (child.get("seq"), role or "no role", ask[:160]),
-                  session=getattr(a, "session", None))
-        orch["updated_ts"] = _now()
-        save_task(orch)
-    print("Invoke — #%s %s%s"
-          % (child.get("seq"), child.get("title"),
-             ("  ← #%s" % orch.get("seq")) if orch else ""))
+    done = _workspace.apply(verdict)
+    cmd = _invoke_command(base, role, model, permission_mode, ask)
+    print(header)
     print("  session %s is pre-attached: its SessionStart injects THIS task's digest, "
           "so the ask carries the request only." % sid[:8])
     for w in warnings:
         print("  note: %s" % w)
+    for line in _workspace.lines(verdict, done):
+        print(line)
+    # A hand-off to a human is a MANUAL LAUNCH — including the fallback below, which is
+    # one in every respect that matters. The trail is written from what actually
+    # happened, so the events come after this decision rather than before it.
+    manual = True
     if getattr(a, "print_command", False):
         print("  run it yourself:")
         print("    %s" % cmd)
-        return
-    if _open_jump_window(cmd):
+    elif g("_open_jump_window")(cmd):
+        manual = False
         print("  opened a new window running it (this one is untouched):")
         print("    %s" % cmd)
-        return
-    print("  could not open a window (macOS/Terminal only) — run it yourself:")
-    print("    %s" % cmd)
+    else:
+        print("  could not open a window (macOS/Terminal only) — run it yourself:")
+        print("    %s" % cmd)
+    _record_launch(child, orch, role, ask, manual, session=getattr(a, "session", None))
 
 
 # ------------------------------------------------------------------- the grade ----
