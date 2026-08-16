@@ -522,5 +522,61 @@ class HooksRegistration(unittest.TestCase):
         self.assertIn("on_post_compact.sh", cmds)
 
 
+def _save_mod():
+    """The `save` module the gate actually calls — reached through the function's own
+    globals. The facade purges and re-imports its seams per copy, so a `sys.modules`
+    lookup by name can hand back a different generation than the `ts` under test."""
+    return ts._worth_checkpointing.__globals__["_save"]
+
+
+class PressureNudgeWorthSaying(_StoreBase):
+    """THE PRESSURE NUDGE MUST HAVE SOMETHING TO SAY.
+
+    Its trigger is a context percentage, and a percentage only ever goes UP. The one-shot
+    flag is cleared the moment the `/todo save` block is READ — correctly, the nudge was
+    delivered — but reading a block does not lower the percentage, so a session that
+    crossed the threshold and kept working re-armed and re-fired every Stop. Observed
+    three times running on one task whose gap report said `+0 decisions, +0 steps,
+    +0 log entries` since a checkpoint seconds old.
+
+    A nag that fires with nothing to do is the cry-wolf failure `heal` has paid for four
+    times, and it costs the same thing: the next real one gets skipped."""
+
+    def test_a_task_nobody_has_checkpointed_is_always_worth_it(self):
+        t = self._task()
+        self.assertTrue(ts._worth_checkpointing(t))
+
+    def test_a_fresh_checkpoint_with_nothing_since_says_nothing(self):
+        t = self._task()
+        _save_mod().stamp_checkpoint(t)
+        ts.save_task(t)
+        self.assertFalse(ts._worth_checkpointing(ts.load_task(t["id"])))
+
+    def test_work_landing_after_the_checkpoint_makes_it_worth_it_again(self):
+        t = self._task()
+        _save_mod().stamp_checkpoint(t)
+        ts.save_task(t)
+        self.assertFalse(ts._worth_checkpointing(ts.load_task(t["id"])))
+        t = ts.load_task(t["id"])
+        ts.append_decision(t, "something new happened")
+        ts.save_task(t)
+        self.assertTrue(ts._worth_checkpointing(ts.load_task(t["id"])))
+
+    def test_an_unreadable_stamp_speaks_up_rather_than_staying_silent(self):
+        """Fail-open on the noisy side: a missed checkpoint costs more than a redundant
+        line, which is the opposite of how most guards here fail and is deliberate."""
+        t = self._task()
+        t["last_full_save_ts"] = "not-a-number"
+        self.assertTrue(ts._worth_checkpointing(t))
+
+    def test_a_stamp_with_no_recorded_baseline_speaks_up(self):
+        """A stamp written by an older version carries no counts, so nothing can be
+        subtracted from it — that is 'cannot tell', and cannot-tell is never silence."""
+        t = self._task()
+        t["last_full_save_ts"] = 1.0
+        t.pop("saved_counts", None)
+        self.assertTrue(ts._worth_checkpointing(t))
+
+
 if __name__ == "__main__":
     unittest.main()

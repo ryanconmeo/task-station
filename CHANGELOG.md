@@ -3,6 +3,30 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.6.1] — 2026-08-16
+
+### Fixed
+- **The proactive checkpoint nudge no longer nags when there is nothing to
+  capture.** Its trigger is a context percentage, and a percentage only ever goes
+  UP. The one-shot flag is cleared the moment the `/todo save` block is *read* —
+  correctly, because the nudge was delivered — but reading a block does not lower
+  the percentage, so a session that crossed the threshold and kept working
+  re-armed and re-fired on **every** subsequent Stop. Observed three times running
+  on one task whose own gap report said `+0 decisions, +0 steps, +0 log entries`
+  since a checkpoint seconds old.
+
+  The fix is on the FIRE side, not the clear side: the nudge now asks what the
+  clear cannot — has anything accrued since the stamp? It reads the **same**
+  accrual numbers the save block's gap report prints, so the nudge and the report
+  can never disagree about whether there is work to capture. Never checkpointed at
+  all still always fires (that is the case it exists for), and it **fails open** —
+  an unreadable or baseline-less stamp speaks up rather than staying silent,
+  because a missed checkpoint costs more than a redundant line.
+
+  A nag that fires with nothing to do is the cry-wolf failure `heal` has already
+  paid for four separate times, and it costs the same thing: the next real one
+  gets skipped.
+
 ## [3.6.0] — 2026-08-16
 
 Three of the four gaps that kept the loop from running on its own. What is left
