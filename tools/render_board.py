@@ -1546,8 +1546,8 @@ def _sessions_line(st):
 # WHY THE ROWS MOVE. The board sorts by activity, which is right for a flat list of
 # unrelated work and wrong the moment a task has children: an orchestrator and its six
 # tracks scatter across the table, interleaved with everything else, and the only signal
-# that they belong together is a `#N` in a chip. Measured on one real board, task 444 sat
-# BETWEEN two of its own children with two unrelated tasks in among the rest.
+# that they belong together is a `#N` in a chip. Measured on one real board, a parent sat
+# BETWEEN two of its own children, with unrelated tasks in among the rest.
 #
 # So a family renders as a block — parent, then its children indented under it. The
 # ordering rule keeps what the flat sort was for: A FAMILY SITS WHERE ITS MOST RECENT
@@ -1758,7 +1758,7 @@ def _row_related_chip(t):
 
     WHAT THIS USED TO DO, AND WHY IT WAS WRONG: it printed `↳ from #N` for every OUTGOING
     edge whatever its kind, so a `parent` and a `depends-on` rendered identically — on one
-    real board a track read `↳ from #533, #444` where #533 gated it and #444 owned it, two
+    real board one task read `↳ from #a, #b` where #a merely GATED it and #b OWNED it — two
     entirely different relationships in one undifferentiated list. It also read only the
     outgoing side, so a parent with six children advertised nothing at all.
 

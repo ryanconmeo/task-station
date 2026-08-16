@@ -257,20 +257,31 @@ def cmd_exit_tick(a):
 # -------------------------------------------------------------------- the scan ----
 
 def _scan_population(a):
-    """`(nodes, parent_task, all_tasks_list)` — what this scan is planning over.
+    """`(nodes, parent_task, depths)` — what this scan is planning over.
 
-    `--task <ref>` plans that task's CHILDREN (the orchestrator reading); `--all` plans
-    every open/active task on the board. Naming a task with no children falls back to
-    planning the task ITSELF, so `scan --task <n>` on a leaf is a useful answer ("here
-    is your own exit state") rather than an empty report that looks like a bug."""
+    `--task <ref>` plans that task's WHOLE SUBTREE, not just its child row: an
+    orchestrator whose child has itself become an orchestrator would otherwise report
+    that child as the startable unit, when the thing anybody can actually pick up is two
+    levels down. A scan that stops at depth one is the silo Open tail again — correct,
+    current, and not where the work is. `--depth N` caps it for a very deep tree.
+
+    `--all` plans every open/active task on the board. Naming a task with no descendants
+    falls back to planning the task ITSELF, so `scan --task <n>` on a leaf is a useful
+    answer ("here is your own exit state") rather than an empty report that looks like a
+    bug."""
     every = all_tasks()
     if getattr(a, "all", False):
-        return [t for t in sorted_tasks() if not _loop.is_closed(t)], None, every
+        return [t for t in sorted_tasks() if not _loop.is_closed(t)], None, {}
     task, err = _loop_target(a, "scan")
     if err:
-        return None, err, every
-    kids = _loop.children(task, every)
-    return (kids or [task]), task, every
+        return None, err, {}
+    tree = _loop.descendants(task, every)
+    cap = getattr(a, "depth", None)
+    if cap:
+        tree = [(t, d) for t, d in tree if d <= int(cap)]
+    if not tree:
+        return [task], task, {}
+    return [t for t, _d in tree], task, {t.get("id"): d for t, d in tree}
 
 
 def _scan_lines(report, parent, ran):
@@ -340,7 +351,9 @@ def _scan_row(r):
         if cover.get("uncovered_open"):
             ex += " +%d uncovered" % cover["uncovered_open"]
     tail = ""
-    if r["parked"]:
+    if r.get("orchestrator"):
+        tail = "  orchestrator"
+    elif r["parked"]:
         tail = "  PARKED: %s" % r["parked"]
     elif r["settled"]:
         tail = "  settled"
@@ -352,7 +365,11 @@ def _scan_row(r):
         tail = "  in a cycle"
     if r["dangling"]:
         tail += "  (depends on %d task(s) that no longer exist)" % len(r["dangling"])
-    return "%-6s %-42s %-28s%s" % ("#%s" % r["seq"], (r["title"] or "")[:42], ex, tail)
+    # A node deeper than a direct child says WHOSE it is — the wave column groups by
+    # readiness, not by family, so without this a grandchild reads as a sibling.
+    depth = r.get("tree_depth") or 0
+    label = ("· " * (depth - 1)) + ((r["title"] or "")[:42 - 2 * max(0, depth - 1)])
+    return "%-6s %-42s %-28s%s" % ("#%s" % r["seq"], label, ex, tail)
 
 
 def cmd_scan(a):
@@ -367,7 +384,7 @@ def cmd_scan(a):
     enough that nobody would run it often, and a planner nobody runs is the silo Open
     tail all over again. `--run` is there for the moment a parent actually needs a fresh
     verdict — the gate before releasing a wave."""
-    nodes, parent, every = _scan_population(a)
+    nodes, parent, depths = _scan_population(a)
     if nodes is None:
         print(parent)      # the resolution error line
         return
@@ -379,11 +396,14 @@ def cmd_scan(a):
                 _exits.apply_results(t, results)
                 t["updated_ts"] = _now()
                 save_task(t)
-        every = all_tasks()
+    every = all_tasks()
     by_id = {t.get("id"): t for t in every}
-    fresh = {t.get("id"): by_id.get(t.get("id"), t) for t in nodes}
-    nodes = [fresh[i] for i in [t.get("id") for t in nodes] if fresh.get(i)]
-    report = _loop.scan(nodes, by_id.get)
+    nodes = [by_id.get(t.get("id"), t) for t in nodes]
+    # The DEEP settled rule — a parent whose children are unbuilt is not settled, however
+    # green its own checklist is. Built over the WHOLE store, not just the scanned nodes,
+    # so a child sitting outside the scanned subtree still counts.
+    report = _loop.scan(nodes, by_id.get, is_settled=_loop.settled_fn(every),
+                        depths=depths)
     if getattr(a, "as_json", False):
         print(json.dumps(report, indent=2, sort_keys=True, default=str))
         return
@@ -527,7 +547,7 @@ def cmd_grade(a):
     arithmetic and the recording; the JUDGMENT — what grade each dimension earns — is
     the skill's, and no flag here can supply it.
 
-    ACCEPTANCE IS PER-DIMENSION, not an average (Ryan, 2026-08-14). A rubric averaged
+    ACCEPTANCE IS PER-DIMENSION, not an average. A rubric averaged
     into one number lets a failed gate-integrity dimension hide behind five strong ones,
     which is the exact failure six separate dimensions exist to prevent. An UNGRADED
     dimension is not a pass either — it is work the judge has not done.

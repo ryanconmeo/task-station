@@ -7,7 +7,7 @@ description: Run the graded acceptance gate on a child task — verify mechanica
 
 A child task reports that it is done. **A report is not evidence.** This skill is what stands between that report and the plan believing it.
 
-Measured, on the work this gate was distilled from: all thirteen worker sessions in the 3.0.0 migration shipped **unverified** (`python3` was denied in every one of them), and the hub's own gate caught breakage no worker could see — one chunk reported clean and the suite found 236 errors. A memo asserting a fact was refuted **within the hour**. That is the whole reason step 1 below is non-negotiable and comes first.
+Measured, on the migration this gate was distilled from: all thirteen worker sessions shipped **unverified** (`python3` was denied in every one of them), and the hub's own gate caught breakage no worker could see — one chunk reported clean and the suite found 236 errors. A reported fact was refuted **within the hour**. That is the whole reason step 1 below is non-negotiable and comes first.
 
 The split you are working inside: **the engine owns everything deterministic** (waves, exit conditions, grade arithmetic, recording), **you own the judgment** (what grade each dimension earns, and what the rejection should say). No flag can supply the second half, which is why this is a skill and not a subcommand.
 
@@ -50,7 +50,7 @@ A report with **no `unverified` section at all** is itself a G4 finding. Nobody'
 Scale, best to worst: `A A- B+ B B- C+ C C- D+ D F`.
 **A** exemplary, nothing unrecorded · **B** gate met, minor recorded gaps · **C** gate met but a material miss cost real time or a stale number shipped · **D** gate weakened or partly skipped · **F** gate failed or the work is invalidated.
 
-The full rubric, with the evidence that set each grade on the migration itself, is the vault note `migration-rubric-improvement-loop` §2–3. Read it when a grade is close; it is the calibration set.
+Keep your own calibration set — a short record of what each grade actually earned on past work — and read it when a grade is close. Grades recorded by `grade` accumulate on each child task, so the board itself becomes that record over time.
 
 ### 4. Record it
 
@@ -60,7 +60,7 @@ python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" grade --task <child> \
   --note '<one line of judgment — what set the lowest grade>'
 ```
 
-**Acceptance is per-dimension at `A-` (Ryan, 2026-08-14), never an average.** An average lets a failed gate-integrity dimension hide behind five strong ones, which is exactly what six separate dimensions exist to prevent. A dimension you did not grade is **not** a pass — it is work you have not done, and the command will say so.
+**Acceptance is per-dimension at the configured threshold (`loop_accept_threshold`, default `A-`), never an average.** An average lets a failed gate-integrity dimension hide behind five strong ones, which is exactly what six separate dimensions exist to prevent. A dimension you did not grade is **not** a pass — it is work you have not done, and the command will say so.
 
 Exit codes, so you can branch without parsing prose:
 
@@ -125,4 +125,4 @@ Concurrency: at most `loop_children_max` (default 3) children open at once, and 
 
 ## Where the pieces live
 
-`lib/exits.py` — exit conditions (why DONE must be computed, at length) · `lib/loop.py` — waves, the rubric constants, grade arithmetic, the orchestrator guard · `lib/board/cmds/loop.py` — the command surface · the vault note `migration-rubric-improvement-loop` — the rubric and the calibration grades · `open-work-register` §0 — why every plan item carries a runnable exit condition.
+`lib/exits.py` — exit conditions (why DONE must be computed, at length) · `lib/loop.py` — waves, the rubric constants, grade arithmetic, the orchestrator guard · `lib/board/cmds/loop.py` — the command surface.

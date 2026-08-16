@@ -3,12 +3,68 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.4.0] — 2026-08-15
+
+The loop went one level deep the first time a track was decomposed, and both
+halves of "how deep does this go" turned out to be wrong.
+
+### Fixed
+- **A parent whose children are unbuilt is no longer "settled".** `settled()`
+  asked only whether the task's *own* exit conditions were met — so a task that
+  finished its five steps, retired the three that had become child tasks, and
+  registered nothing further read as **satisfied while three children sat
+  unbuilt**. It would have released every dependent wave on the strength of work
+  it had handed to somebody else. That is the empty-registration failure one
+  level up: a parent's own checklist stops being evidence the moment the work
+  moves to its children. `settled_fn` now walks the subtree — own conditions met
+  **and** every child settled, recursively. **Closing still wins outright**,
+  because closing is a human's assertion and is allowed to end the argument, and
+  a childless task is unchanged (an `all()` over no children is True), so this
+  costs nothing on a flat board.
+- **`scan` walks the whole subtree, not the child row.** An orchestrator whose
+  child had itself become an orchestrator reported *that child* as the startable
+  unit — when the thing anybody could actually pick up was two levels down. A
+  scan stopping at depth one is the unread-Open-tail problem again: correct,
+  current, and not where the work is. `--depth N` caps the walk; rows print their
+  distance from the scanned root.
+- **An orchestrator is never offered as READY.** It plans and grades and holds no
+  work, so naming it as the next thing to start sent you to the one task that
+  then *refuses* to do any — `delegate run` would reject it. A loop with no exit.
+
+### Changed
+- **Shipped files no longer cite documents the plugin does not ship.** The `judge`
+  skill named a private note as its calibration set: a reader following the skill
+  would look for a document that cannot be obtained, in the middle of a procedure
+  whose whole point is that judgement must be calibrated. Worse than omitting the
+  sentence, because it reads like a resource. Removed there and everywhere else
+  it had crept in, along with private board numbers used as user-facing examples
+  and a by-name attribution — README examples now use neutral task numbers, and
+  the evidence behind each design note is kept while the unresolvable identifier
+  is dropped ("measured on one real board, a parent sat between two of its own
+  children").
+
+### Added
+- `tests/test_oss_fingerprints.py` — a guard so that class cannot recur: no
+  shipped file may cite a document the plugin does not ship, and none may hardcode
+  somebody's home directory. Deliberately narrow, and it says so: `CHANGELOG.md`'s
+  `task #N` provenance refs are this repo's own convention, test fixtures are data
+  rather than references, and the demo peers are named fake people on purpose.
+  **It carries no organisation-identifier rule, and that omission is the point** —
+  that class belongs to a pre-push hook which lives in `.git/hooks` and never in
+  the tree, because the pattern list *is itself* the fingerprint. Restating those
+  patterns here would publish the thing they exist to keep out, and would not even
+  work: the hook scans every pushed blob including this one, so a literal list
+  blocks its own push. Assembling the needles from fragments to slip past it is an
+  exemption in disguise, and exempting the scanner is how a guard quietly stops
+  guarding. The hook owns the identifiers; this file owns what is safe to state in
+  the open.
+
 ## [3.3.0] — 2026-08-15
 
 The board could not show you that one task owned another. Measured on a real
 board: an orchestrator sat **between two of its own children**, with unrelated
 tasks interleaved among the rest, and the only marker that any of them were
-related read `↳ from #444`.
+related read `↳ from #N`.
 
 ### Added
 - **Families nest.** A task with a `parent` edge renders directly under its
@@ -26,10 +82,9 @@ related read `↳ from #444`.
 ### Fixed
 - **Relation chips said the same four words for every edge kind.** `↳ from #N`
   was printed for *parent*, *depends-on*, *spawned-from* and *related* alike, so
-  one track read `↳ from #533, #444` where #533 merely **gated** it and #444
-  **owned** it — two entirely different relationships, rendered identically. A
-  third task read `↳ from #535` and looked like a child while being a
-  **dependent**. Each kind now gets its own word: `⤶ N children` ·
+  one task read `↳ from #a, #b` where #a merely **gated** it and #b **owned** it —
+  two entirely different relationships, rendered identically. Another read
+  `↳ from #c` and looked like a child while being a **dependent**. Each kind now gets its own word: `⤶ N children` ·
   `⤷ parent #N` · `⇠ waits on #N`, with the generic `↳ from #N` kept for any
   kind the table does not know, so a store written by a newer version still
   renders.

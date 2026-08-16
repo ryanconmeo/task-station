@@ -289,6 +289,77 @@ class WaveTest(unittest.TestCase):
         self.assertEqual(plan["dangling"]["b"], ["ghost"])
 
 
+# -- (3b) settled once a task has CHILDREN ---------------------------------------
+
+class DeepSettledTest(unittest.TestCase):
+    """The leaf rule is not enough the moment work moves to children — found the first
+    time a track was decomposed. Task 531 finished its own five steps, retired the three
+    that had become child tasks, and immediately read as *satisfied* while three children
+    sat unbuilt. It would have released every dependent wave on the strength of work it
+    had handed to somebody else."""
+
+    def test_a_parent_with_an_unbuilt_child_is_not_settled(self):
+        parent = _t("p", 1, conditions={1: "met"})
+        kid = _t("k", 2, parent="p")
+        self.assertTrue(loop.settled(parent))               # its OWN checklist is green
+        deep = loop.settled_fn([parent, kid])
+        self.assertFalse(deep(parent))                      # …and that is not enough
+
+    def test_a_parent_becomes_settled_once_every_child_is(self):
+        parent = _t("p", 1, conditions={1: "met"})
+        kid = _t("k", 2, parent="p", conditions={1: "met"})
+        self.assertTrue(loop.settled_fn([parent, kid])(parent))
+
+    def test_closing_a_parent_still_wins_outright(self):
+        """Closing is a human's assertion and it is allowed to end the argument —
+        otherwise a task could never be closed while any child stayed open."""
+        parent = _t("p", 1, status="closed")
+        kid = _t("k", 2, parent="p")
+        self.assertTrue(loop.settled_fn([parent, kid])(parent))
+
+    def test_a_childless_task_is_unchanged(self):
+        lone = _t("a", 1, conditions={1: "met"})
+        self.assertEqual(loop.settled_fn([lone])(lone), loop.settled(lone))
+
+    def test_the_rule_reaches_grandchildren(self):
+        p = _t("p", 1, conditions={1: "met"})
+        c = _t("c", 2, parent="p", conditions={1: "met"})
+        g = _t("g", 3, parent="c")
+        self.assertFalse(loop.settled_fn([p, c, g])(p))
+
+    def test_a_parent_cycle_does_not_hang(self):
+        a = _t("a", 1, parent="b", conditions={1: "met"})
+        b = _t("b", 2, parent="a", conditions={1: "met"})
+        self.assertIsInstance(loop.settled_fn([a, b])(a), bool)
+
+    def test_an_unsettled_parent_still_blocks_its_dependents(self):
+        p = _t("p", 1, conditions={1: "met"})
+        kid = _t("k", 2, parent="p")
+        dep = _t("d", 3, deps=["p"])
+        plan = loop.waves([p, kid, dep], _resolver([p, kid, dep]),
+                          is_settled=loop.settled_fn([p, kid, dep]))
+        self.assertEqual(plan["depth"]["d"], 2)
+
+
+class DescendantsTest(unittest.TestCase):
+    def test_the_whole_subtree_comes_back_with_its_depth(self):
+        root = _t("r", 1)
+        c = _t("c", 2, parent="r")
+        g = _t("g", 3, parent="c")
+        got = loop.descendants(root, [root, c, g])
+        self.assertEqual([(t["seq"], d) for t, d in got], [(2, 1), (3, 2)])
+
+    def test_the_root_is_never_in_its_own_subtree(self):
+        root = _t("r", 1)
+        self.assertEqual(loop.descendants(root, [root]), [])
+
+    def test_a_cycle_cannot_produce_an_infinite_walk(self):
+        a = _t("a", 1, parent="b")
+        b = _t("b", 2, parent="a")
+        got = loop.descendants(a, [a, b])
+        self.assertEqual([t["seq"] for t, _d in got], [2])
+
+
 # -- (4) the scan report ---------------------------------------------------------
 
 class ScanTest(unittest.TestCase):
@@ -326,6 +397,36 @@ class ScanTest(unittest.TestCase):
         report = loop.scan([a, b], _resolver([a, b]))
         self.assertEqual(report["exits"]["unregistered"], [1])
         self.assertEqual(report["exits"]["registered"], 1)
+
+    def test_an_orchestrator_is_never_offered_as_ready(self):
+        """It plans and grades; it holds no work. Offering it as the next thing to start
+        would send somebody to the one task that refuses to do any — and `delegate run`
+        would then refuse them, which is a loop with no exit."""
+        orch = _t("o", 1, conditions={1: "unmet"})
+        orch[loop.ORCHESTRATOR_FIELD] = True
+        kid = _t("k", 2, parent="o")
+        report = loop.scan([orch, kid], _resolver([orch, kid]))
+        self.assertEqual(report["ready"], [2])
+        row = [r for r in report["rows"] if r["seq"] == 1][0]
+        self.assertTrue(row["orchestrator"])
+        self.assertFalse(row["ready"])
+
+    def test_a_grandchild_carries_its_distance_from_the_scanned_root(self):
+        root, c, g = _t("r", 1), _t("c", 2, parent="r"), _t("g", 3, parent="c")
+        every = [root, c, g]
+        tree = loop.descendants(root, every)
+        report = loop.scan([t for t, _d in tree], _resolver(every),
+                           depths={t.get("id"): d for t, d in tree})
+        depths = {r["seq"]: r["tree_depth"] for r in report["rows"]}
+        self.assertEqual(depths, {2: 1, 3: 2})
+
+    def test_a_parent_whose_child_is_unbuilt_keeps_the_scan_incomplete(self):
+        p = _t("p", 1, conditions={1: "met"})
+        kid = _t("k", 2, parent="p")
+        report = loop.scan([p, kid], _resolver([p, kid]),
+                           is_settled=loop.settled_fn([p, kid]))
+        self.assertNotEqual(report["stop"], loop.COMPLETE)
+        self.assertEqual(report["totals"]["settled"], 0)
 
     def test_a_blocked_row_names_what_holds_it(self):
         a = _t("a", 1, title="first")
