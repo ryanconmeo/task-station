@@ -268,6 +268,10 @@ def _css(default_variant, category_css):
     white-space:nowrap}
   .c-task .relchip+.relchip,.c-task .relchip+.relfrom{margin-left:8px}
   .c-task .relkids{color:var(--accent);opacity:.8}
+  /* a settled-but-visible gate reads differently from an active wait — same neutral
+     base as .relwaits, tinted toward .relkids' accent so "satisfied" doesn't look
+     like "still blocking". */
+  .c-task .relgates{color:var(--accent);opacity:.65}
   /* While the board is NESTING, the indent already says who the parent is, so the chip
      is redundant — but it is rendered anyway and hidden here, because the flat toggle
      must reveal it without a re-render. */
@@ -1768,7 +1772,16 @@ def _row_related_chip(t):
 
     The `parent #N` chip is CSS-hidden while the board is nesting, because the indent
     already says it; the toggle back to flat order reveals it. That is why it is a
-    separate class rather than something omitted here — one render serves both views."""
+    separate class rather than something omitted here — one render serves both views.
+
+    `waits on` makes a CLAIM — this predecessor is still in the way — so it must agree
+    with the scan, which releases a dependency once it is SETTLED (closed or every exit
+    condition met), not merely once it is closed. `_board_related` carries that verdict
+    as `settled` on each depends-on entry (see its docstring); a settled dependency is
+    partitioned OUT of `waits on` into its own `gates met` chip instead — still visible
+    (you can see what the gate was), never a waiting claim. A settled entry missing the
+    key entirely (an older caller that never threaded `is_settled`) reads as unsettled,
+    which is exactly the old always-waiting behavior."""
     rel = t.get("related") or {}
     frm = rel.get("from") or []
     inn = rel.get("in") or []
@@ -1783,13 +1796,26 @@ def _row_related_chip(t):
     if par:
         out.append('<span class="relchip relparent" title="parent task">⤷ parent %s</span>'
                    % _rel_link(par[0]))
-    waits = _kind_seqs(t, "depends-on", incoming=False)
-    if waits:
-        links, collapsed = _chip_refs(waits)
-        body = ("%d tasks" % len(waits)) if collapsed else links
+    deps = [e for e in frm if e.get("kind") == "depends-on" and e.get("seq") is not None]
+    unsettled = [e.get("seq") for e in deps if not e.get("settled")]
+    gated = [e for e in deps if e.get("settled")]
+    if unsettled:
+        links, collapsed = _chip_refs(unsettled)
+        body = ("%d tasks" % len(unsettled)) if collapsed else links
         out.append('<span class="relchip relwaits" title="must land first: %s">'
                    '⇠ waits on %s</span>'
-                   % (_e(", ".join("#%s" % s for s in waits)), body))
+                   % (_e(", ".join("#%s" % s for s in unsettled)), body))
+    if gated:
+        gseqs = [e.get("seq") for e in gated]
+        marks = {e.get("seq"): (" ✕" if e.get("status") == "closed" else "") for e in gated}
+        if len(gseqs) <= _CHIP_LINK_MAX:
+            glinks, gcollapsed = ", ".join(_rel_link(s) + marks[s] for s in gseqs), False
+        else:
+            glinks, gcollapsed = "", True
+        gbody = ("%d tasks" % len(gseqs)) if gcollapsed else glinks
+        out.append('<span class="relchip relgates" title="gates met: %s">'
+                   '⇠ gates met %s</span>'
+                   % (_e(", ".join("#%s%s" % (s, marks[s]) for s in gseqs)), gbody))
     other = [e.get("seq") for e in frm
              if e.get("kind") not in ("parent", "depends-on") and e.get("seq") is not None]
     if other:

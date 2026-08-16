@@ -1359,10 +1359,10 @@ def _board_session_counts(task, live_sids=None):
             "running": running, "resumable": resumable}
 
 
-def _board_related(task, tasks=None, rev_map=None):
+def _board_related(task, tasks=None, rev_map=None, is_settled=None, tasks_by_id=None):
     """WS4: relation edges for the board card —
-        {"from": [{"seq","kind","id"}…],           # edges stored ON this task
-         "in":   [{"seq","kind","status","id"}…]}  # edges pointing AT this task
+        {"from": [{"seq","kind","id"[,"settled","status"]}…],  # edges stored ON this task
+         "in":   [{"seq","kind","status","id"}…]}               # edges pointing AT this task
 
     ONE entry per counterpart across BOTH lists: this is a second, independent
     derivation of the same data the detail line shows, so it routes through
@@ -1375,7 +1375,22 @@ def _board_related(task, tasks=None, rev_map=None):
     write_board so each card's reverse edges are an O(1) lookup and the board stays
     O(N) — never an N² per-task scan. When `rev_map` is absent (detail path / tests)
     the reverse edges are derived by scanning `tasks` (or `all_tasks()`). Empty lists
-    when the task has no relations, so the renderer omits the row."""
+    when the task has no relations, so the renderer omits the row.
+
+    `is_settled` (`loop.settled_fn(tasks)`, built ONCE by write_board and threaded
+    through `_board_view_model`) adds `"settled"` and `"status"` to each OUT-side
+    entry — the fix for the board's `waits on` chip claiming a SETTLED dependency
+    still blocks forever. `settled` answers the scan's actual question (closed OR
+    every exit condition met, recursively over the subtree — the 3.4.0 orchestrator
+    rule); `status` alone would collapse that back to "closed" and reintroduce the
+    bug in a narrower form, so both keys ride together. Reused, never re-derived: a
+    hand-rolled `status == closed` here would silently diverge from the scan again.
+    `tasks_by_id` (task id → task blob, built ONCE by write_board alongside
+    `is_settled`) resolves each out-edge's counterpart in O(1); when absent it falls
+    back to indexing `tasks` here, which only matters for direct callers (tests /
+    the detail path) that don't already have the index. Left off both `is_settled`
+    and every OUT entry, this method is byte-identical to before — additive only
+    when the caller opts in."""
     tid = task.get("id")
     if rev_map is not None:
         rev = list(rev_map.get(tid) or [])
@@ -1395,15 +1410,29 @@ def _board_related(task, tasks=None, rev_map=None):
     # rev is always a list (never None), so the resolver reuses the O(1) reverse
     # index / the scan just done and never re-scans the store itself.
     rels = canonical_relations(task, rev=rev)
-    out = [{"seq": r["seq"], "kind": r["kind"], "id": r["id"]}
-           for r in rels if r["dir"] == "out"]
+    if is_settled is None:
+        out = [{"seq": r["seq"], "kind": r["kind"], "id": r["id"]}
+               for r in rels if r["dir"] == "out"]
+    else:
+        by_id = tasks_by_id
+        if by_id is None:
+            by_id = {t.get("id"): t for t in (tasks or [])
+                     if isinstance(t, dict) and t.get("id")}
+        out = []
+        for r in rels:
+            if r["dir"] != "out":
+                continue
+            other = by_id.get(r["id"])
+            out.append({"seq": r["seq"], "kind": r["kind"], "id": r["id"],
+                        "settled": bool(is_settled(other)) if other is not None else False,
+                        "status": task_status(other) if other is not None else r.get("status")})
     inn = [{"seq": r["seq"], "kind": r["kind"], "status": r["status"], "id": r["id"]}
            for r in rels if r["dir"] == "in"]
     return {"from": out, "in": inn}
 
 
 def _board_view_model(task, live_sids=None, tasks=None, rev_map=None, knowledge=False,
-                      live_seqs=None):
+                      live_seqs=None, is_settled=None, tasks_by_id=None):
     """Flatten a task into the plain dict the HTML board renders — every field the
     card shows, including the derived briefing + the resume one-liner. Decouples
     rendering (tools/render_board.py, stdlib + categories only) from the store.
@@ -1414,7 +1443,11 @@ def _board_view_model(task, live_sids=None, tasks=None, rev_map=None, knowledge=
     `knowledge` (SECOND-BRAIN-GATED, default off) adds the `"knowledge"` key — the
     task's cited `[[notes]]` — for the board's per-card "Related knowledge" panel.
     Left None when off, so the renderer omits the panel and a public user sees no
-    change."""
+    change.
+
+    `is_settled` / `tasks_by_id` (`loop.settled_fn(tasks)` + an id→task index, both
+    built ONCE by `write_board`) pass straight through to `_board_related`, which adds
+    `"settled"`/`"status"` to each outgoing relation — see that function's docstring."""
     cur = task_status(task)
     glyph = STATUS_GLYPH_CLOSED if cur == STATUS_CLOSED else STATUS_GLYPH.get(cur, "○")
     # The BOARD's 4-state display status folds the live-session signal into the stored
@@ -1559,7 +1592,8 @@ def _board_view_model(task, live_sids=None, tasks=None, rev_map=None, knowledge=
         # (NOT `sessions`, which is TAKEN by the per-session usage rows above) holds the
         # hub/worker/live counts; `related` holds outgoing + derived incoming edges.
         "session_tree": _board_session_counts(task, live_sids),
-        "related": _board_related(task, tasks=tasks, rev_map=rev_map),
+        "related": _board_related(task, tasks=tasks, rev_map=rev_map,
+                                  is_settled=is_settled, tasks_by_id=tasks_by_id),
         # WS-D second-brain-gated: the cited [[notes]] for the "Related knowledge"
         # panel. None (not []) when the knowledge tier is off, so the renderer's
         # `if t.get("knowledge")` omits the panel and bare tasks are unchanged.
