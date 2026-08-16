@@ -3,6 +3,44 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.6.0] — 2026-08-16
+
+Three of the four gaps that kept the loop from running on its own. What is left
+after this is the turn itself.
+
+### Added
+- **The scan reports what is RUNNING, not only what is ready.** A node with a
+  live Claude session attached reads `RUNNING` and is **excluded from `ready`** —
+  because "ready" answers *what should I start*, and something already under way
+  is not an answer to it. A planner that keeps offering work in flight is how the
+  same child gets invoked twice. Liveness is process state (the derivation the
+  HTML board already used), and it is **fail-open**: a sessions-dir hiccup
+  degrades the scan to "nothing reported running" rather than refusing to answer.
+- **A fifth stopping condition, `working`.** Without it, a wave whose children
+  are *all running* and nothing else startable reported `blocked` — which reads
+  as "somebody must intervene" when the honest answer is "the loop is working,
+  wait". Telling those apart is the difference between a planner you trust and
+  one you learn to ignore.
+- **A child reports upward when it reaches a terminal state.** Closing it, or the
+  `exit-tick` that crosses into fully-satisfied, writes one memo onto its parent —
+  so the parent is told at the top of its next turn instead of learning only when
+  somebody thought to run a scan. The channel is the existing memo ledger and its
+  ack rail, not a new mechanism: nothing new to learn, nothing new to keep alive,
+  and the notice is a durable record rather than a notification that scrolls away.
+  Only on the **transition**, never on every green tick — a memo per run would
+  train the reader to ignore the rail, which costs more than the signal is worth.
+- **`decompose`** — split a task into children, parent them, optionally `--chain`
+  them with `depends-on`, and flag the task orchestrator-only, in one command
+  instead of four. Four commands is enough friction that the honest move loses to
+  carrying on, and carrying on is how a flat list of steps drifts. A task that
+  already has children is **refused** without `--add`: decomposing twice by
+  accident is quiet, and surfaces only as duplicated work in the scan.
+- **`too-large` joins the park reasons.** The gate is where the judgement already
+  is — somebody is looking hard at the work at exactly that moment, which is
+  cheaper and more accurate than a heuristic on effort or step count that fires on
+  plenty of tasks that are merely detailed. Parking rather than rejecting is the
+  point: iterating will not help, so the loop must stop asking.
+
 ## [3.5.0] — 2026-08-16
 
 Opening an orchestrator described its goal and its own checklist, and said

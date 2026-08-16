@@ -804,5 +804,140 @@ class RoleNameTest(unittest.TestCase):
         self.assertNotIn("judge", loop.ROLES)
 
 
+# -- (8) liveness, the upward report, and decompose --------------------------------
+
+class LivenessTest(unittest.TestCase):
+    """A planner that keeps offering work already in flight is how the same child gets
+    invoked twice — and a wave whose children are ALL running used to report `blocked`,
+    which reads as "intervene" when the honest answer is "the loop is working, wait"."""
+
+    def test_a_running_node_is_not_offered_as_ready(self):
+        a = _t("a", 1)
+        report = loop.scan([a], _resolver([a]), live={1})
+        self.assertEqual(report["ready"], [])
+        self.assertEqual(report["running"], [1])
+
+    def test_everything_running_reads_working_not_blocked(self):
+        a = _t("a", 1)
+        self.assertEqual(loop.scan([a], _resolver([a]), live={1})["stop"], loop.WORKING)
+        self.assertEqual(loop.scan([a], _resolver([a]))["stop"], loop.READY)
+
+    def test_a_blocked_wave_with_nothing_running_still_reads_blocked(self):
+        a = _t("a", 1, deps=["b"])
+        b = _t("b", 2, deps=["a"])
+        self.assertEqual(loop.scan([a, b], _resolver([a, b]), live=set())["stop"],
+                         loop.BLOCKED)
+
+    def test_no_live_information_changes_nothing(self):
+        """Fail-open: the scan must answer with this column missing, not refuse."""
+        a = _t("a", 1)
+        self.assertEqual(loop.scan([a], _resolver([a]), live=None)["ready"], [1])
+
+    def test_settled_still_beats_running(self):
+        a = _t("a", 1, status="closed")
+        row = [r for r in loop.scan([a], _resolver([a]), live={1})["rows"]][0]
+        self.assertTrue(row["settled"])
+        self.assertFalse(row["ready"])
+
+
+class ParkReasonTest(unittest.TestCase):
+    def test_too_large_is_a_park_reason(self):
+        """The gate is where the judgement already is — cheaper than a heuristic on
+        effort or step count, which fires on plenty of tasks that are merely detailed."""
+        self.assertIn("too-large", loop.PARK_REASONS)
+
+
+class DecomposeTest(CliTest):
+    def _args(self, **over):
+        ns = dict(task=None, session=None, into=None, chain=False, add=False)
+        ns.update(over)
+        return _Args(**ns)
+
+    def test_it_creates_children_parents_them_and_flags_the_orchestrator(self):
+        t = self._task("Big work")
+        out, code = self._out(ts.cmd_decompose,
+                              self._args(task=str(t["seq"]), into=["One", "Two"]))
+        self.assertIsNone(code)
+        parent = ts.load_task(t["id"])
+        self.assertTrue(loop.is_orchestrator(parent))
+        kids = loop.children(parent, ts.all_tasks())
+        self.assertEqual([k["title"] for k in kids], ["One", "Two"])
+        self.assertIn("ORCHESTRATOR-ONLY", out)
+
+    def test_chain_orders_them_one_wave_at_a_time(self):
+        t = self._task("Big work")
+        self._out(ts.cmd_decompose,
+                  self._args(task=str(t["seq"]), into=["One", "Two", "Three"], chain=True))
+        parent = ts.load_task(t["id"])
+        kids = loop.children(parent, ts.all_tasks())
+        self.assertEqual(loop.dependencies(kids[0]), [])
+        self.assertEqual(loop.dependencies(kids[1]), [kids[0]["id"]])
+        self.assertEqual(loop.dependencies(kids[2]), [kids[1]["id"]])
+
+    def test_decomposing_twice_is_refused_unless_asked_for(self):
+        """Quiet when it goes wrong: the scan simply starts reporting duplicated work."""
+        t = self._task("Big work")
+        self._out(ts.cmd_decompose, self._args(task=str(t["seq"]), into=["One"]))
+        out, code = self._out(ts.cmd_decompose, self._args(task=str(t["seq"]), into=["Two"]))
+        self.assertEqual(code, 2)
+        self.assertIn("already has", out)
+        out, code = self._out(ts.cmd_decompose,
+                              self._args(task=str(t["seq"]), into=["Two"], add=True))
+        self.assertIsNone(code)
+        self.assertEqual(len(loop.children(ts.load_task(t["id"]), ts.all_tasks())), 2)
+
+    def test_it_refuses_with_nothing_to_decompose_into(self):
+        t = self._task("Big work")
+        out, code = self._out(ts.cmd_decompose, self._args(task=str(t["seq"])))
+        self.assertEqual(code, 2)
+        self.assertIn("--into", out)
+
+
+class UpwardReportTest(CliTest):
+    def _child_of(self, parent):
+        c = self._task("The child", "do a thing")
+        self._out(ts.cmd_update, _update_args(task=str(c["seq"]),
+                                              parent=str(parent["seq"])))
+        return ts.load_task(c["id"])
+
+    def test_closing_a_child_tells_its_parent(self):
+        """The push that replaces 'run a scan and find out'."""
+        parent = self._task("The orchestrator")
+        child = self._child_of(parent)
+        seq = ts.report_to_parent(child, "CLOSED — ready for the gate")
+        self.assertEqual(seq, parent["seq"])
+        memos = ts.load_task(parent["id"]).get("memos") or []
+        self.assertEqual(len(memos), 1)
+        self.assertIn("CHILD #%s" % child["seq"], memos[0]["text"])
+
+    def test_a_task_with_no_parent_reports_nothing(self):
+        lone = self._task("No parent")
+        self.assertIsNone(ts.report_to_parent(lone, "done"))
+
+    def test_a_closed_parent_is_not_told(self):
+        """Its plan is history; a memo there would nag a record nobody is working."""
+        parent = self._task("The orchestrator")
+        child = self._child_of(parent)
+        parent["status"] = "closed"
+        ts.save_task(parent)
+        self.assertIsNone(ts.report_to_parent(child, "done"))
+
+    def test_the_report_never_breaks_the_verb_that_called_it(self):
+        parent = self._task("The orchestrator")
+        child = self._child_of(parent)
+        # Patch the EXACT namespace the call resolves in — the function's own globals.
+        # Neither the facade's star-imported copy nor `sys.modules["board.memos"]` is
+        # right: the facade purges and re-imports its seams per copy, so the module
+        # under that key can be a different generation from the one this `ts` is bound
+        # to, and `__module__` is only a string. `__globals__` is the binding itself.
+        glb = ts.report_to_parent.__globals__
+        real = glb["memo_send"]
+        try:
+            glb["memo_send"] = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+            self.assertIsNone(ts.report_to_parent(child, "done"))
+        finally:
+            glb["memo_send"] = real
+
+
 if __name__ == "__main__":
     unittest.main()

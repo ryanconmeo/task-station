@@ -66,8 +66,15 @@ def _children_recap(task):
             return []
         by_id = {t.get("id"): t for t in every}
         depths = {t.get("id"): d for t, d in tree}
+        live = set()
+        try:
+            import live_sessions
+            live = {r.get("task_seq") for r in live_sessions.running()
+                    if r.get("task_seq") is not None}
+        except Exception:
+            live = set()
         report = _loop.scan([t for t, _d in tree], by_id.get,
-                            is_settled=_loop.settled_fn(every), depths=depths)
+                            is_settled=_loop.settled_fn(every), depths=depths, live=live)
     except Exception:              # a recap must never be the reason a resume fails
         return []
     totals = report["totals"]
@@ -83,6 +90,8 @@ def _children_recap(task):
             depth = r.get("tree_depth") or 1
             if r.get("orchestrator"):
                 tail = "orchestrator"
+            elif r.get("running"):
+                tail = "RUNNING"
             elif r["settled"]:
                 tail = "settled"
             elif r["parked"]:
@@ -101,6 +110,8 @@ def _children_recap(task):
     if totals["total"] > shown:
         out.append("  (+%d more — full report: `task-station scan --task %s`)"
                    % (totals["total"] - shown, task.get("seq", task["id"][:8])))
+    if report.get("running"):
+        out.append("  RUNNING NOW: %s" % ", ".join("#%s" % s for s in report["running"]))
     if report["stop"] == _loop.READY and report["ready"]:
         out.append("  READY NOW: %s" % ", ".join("#%s" % s for s in report["ready"]))
     unreg = report["exits"]["unregistered"]
@@ -1396,7 +1407,10 @@ def cmd_guidance(a):
         "unless --untick",
         "  scan  [--task <ref>] [--all] [--run] [--json]   — the ZERO-TOKEN loop driver: waves "
         "over depends-on, each node's exit-condition rollup, and the stopping condition "
-        "(ready|complete|blocked|empty). Calls no model and — without --run — no shell. A "
+        "(ready|working|complete|blocked|empty — WORKING means children are already "
+        "running and nothing else is startable, which is the loop functioning rather "
+        "than a stall). A node with a LIVE session reads RUNNING and is excluded from "
+        "`ready`, because `ready` answers what to START. Calls no model and — without --run — no shell. A "
         "predecessor releases its dependents when CLOSED or when every exit condition it "
         "registered is MET; a task registering NONE is never settled, so an empty checklist "
         "cannot release work by having checked nothing. Cycles are reported, never traversed",
@@ -1412,6 +1426,14 @@ def cmd_guidance(a):
         "Acceptance is PER-DIMENSION (default A-), never an average, and an ungraded "
         "dimension is not a pass. Exit codes: 0 accepted · 1 rejected with retries left · 3 "
         "retry budget spent · 4 parked · 2 bad command. A PARKED child is NEVER retried",
+        "  decompose  --task <ref> --into '<title>' [--into …] [--chain] [--add]   — split "
+        "a task into CHILD tasks and flag it orchestrator-only, in one move instead of "
+        "four. A task holds WORK or holds CHILDREN, never both, and this is the verb that "
+        "turns the first into the second. --chain also makes each child depend-on the "
+        "previous, so the scan releases them one wave at a time. A task that already has "
+        "children is REFUSED without --add: decomposing twice by accident is quiet, and "
+        "surfaces only as duplicated work in the scan. It is PULL — a child decomposes "
+        "ITSELF and the parent's scan sees the new generation on its next read",
         "  orchestrator-check  --task <ref>   — silent + exit 0 when delegating from this task "
         "is allowed; the refusal + exit 3 when it is flagged orchestrator-only "
         "(`update --orchestrator on`). delegate run consults it before spawning anything",

@@ -30,10 +30,28 @@ __all__ = [
     "_scan_lines", "_invoke_command", "ASK_CONTEXT_HINT",
     "cmd_exit_add", "cmd_exit_rm", "cmd_exit_show", "cmd_exit_tick",
     "cmd_scan", "cmd_invoke", "cmd_grade", "cmd_orchestrator_check",
+    "cmd_decompose",
+    "_live_seqs",
 ]
 
 
 # ------------------------------------------------------------------ resolution ----
+
+def _live_seqs():
+    """The task seqs with a Claude session RUNNING right now, or an empty set.
+
+    Same derivation the HTML board already uses (`write_board`'s `live_seqs`) — process
+    liveness, not a transcript flag that survives a crash. Fail-open: a sessions-dir
+    hiccup must degrade the scan to "nothing reported running", never break it, because
+    a planner that refuses to answer is worse than one that answers without this column.
+    """
+    try:
+        import live_sessions
+        return {r.get("task_seq") for r in live_sessions.running()
+                if r.get("task_seq") is not None}
+    except Exception:
+        return set()
+
 
 def _loop_target(a, flag):
     """The ONE task this invocation acts on, as `(task, error_line)` — `--task <ref>` by
@@ -205,6 +223,7 @@ def cmd_exit_tick(a):
         print(err)
         return
     only = getattr(a, "step", None)
+    was_satisfied = _exits.satisfied(task)
     results = _exits.evaluate(task, only=[only] if only else None,
                               timeout=getattr(a, "timeout", None) or None)
     ref = task.get("seq") or task["id"][:8]
@@ -250,6 +269,13 @@ def cmd_exit_tick(a):
         print("  unticked: %s" % ", ".join("step %d" % n for n in moved["unticked"]))
     done, total = _steps.progress(task.get("steps") or [])
     print("  checklist: %d/%d" % (done, total))
+    # THE TRANSITION, not the state: only the run that CROSSES into fully-satisfied
+    # reports upward. A memo on every green tick would train the reader to skip the rail.
+    if not dry and not was_satisfied and _exits.satisfied(task):
+        pseq = report_to_parent(task, "every exit condition is now MET — ready for the "
+                                      "gate (`/grade`)", getattr(a, "session", None))
+        if pseq:
+            print("  told #%s: this child reports ready for the gate." % pseq)
     if len(met) != len(results):
         sys.exit(1)
 
@@ -321,6 +347,8 @@ def _scan_lines(report, parent, ran):
     if ex["unregistered"]:
         out.append("    NO CONDITIONS (so they can never report themselves done): %s"
                    % ", ".join("#%s" % s for s in ex["unregistered"]))
+    if report.get("running"):
+        out.append("  RUNNING NOW: %s" % ", ".join("#%s" % s for s in report["running"]))
     if report["stop"] == _loop.READY:
         out.append("  READY NOW: %s" % ", ".join("#%s" % s for s in report["ready"]))
         first = report["ready"][0]
@@ -328,6 +356,10 @@ def _scan_lines(report, parent, ran):
                    % (first, (parent.get("seq") if parent else "<orchestrator>")))
     elif report["stop"] == _loop.COMPLETE:
         out.append("  COMPLETE — every node is closed or has every exit condition met.")
+    elif report["stop"] == _loop.WORKING:
+        out.append("  WORKING — %s already running and nothing else is startable. "
+                   "Nothing to do but wait; this is the loop functioning, not a stall."
+                   % (", ".join("#%s" % s for s in report["running"]) or "children"))
     elif report["stop"] == _loop.BLOCKED:
         out.append("  BLOCKED — work remains and none of it is startable. The blockers "
                    "are named above; a park needs a human, not a retry.")
@@ -353,6 +385,8 @@ def _scan_row(r):
     tail = ""
     if r.get("orchestrator"):
         tail = "  orchestrator"
+    elif r.get("running"):
+        tail = "  RUNNING"
     elif r["parked"]:
         tail = "  PARKED: %s" % r["parked"]
     elif r["settled"]:
@@ -403,7 +437,7 @@ def cmd_scan(a):
     # green its own checklist is. Built over the WHOLE store, not just the scanned nodes,
     # so a child sitting outside the scanned subtree still counts.
     report = _loop.scan(nodes, by_id.get, is_settled=_loop.settled_fn(every),
-                        depths=depths)
+                        depths=depths, live=_live_seqs())
     if getattr(a, "as_json", False):
         print(json.dumps(report, indent=2, sort_keys=True, default=str))
         return
@@ -646,3 +680,73 @@ def cmd_orchestrator_check(a):
         return
     print(refusal)
     sys.exit(3)
+
+
+# ---------------------------------------------------------------- decompose ----
+#
+# THE RULE THIS EXISTS TO MAKE CHEAP: a task holds WORK or holds CHILDREN, never both.
+# When a child finds its work is bigger than one session, it splits itself — and until
+# now that took four commands typed in the right order (create ×N, --parent each, chain
+# --depends-on, --orchestrator on). Four commands is enough friction that the honest move
+# loses to carrying on, and carrying on is how a flat list of steps drifts.
+#
+# It is PULL, not push: nothing travels down the tree telling a child to decompose. The
+# child runs this on itself, and the parent's scan sees the grandchildren on its next
+# read because the scan walks the subtree.
+
+def cmd_decompose(a):
+    """`task-station decompose --task <n> --into 'Title' --into 'Title' [--chain]`
+
+    Split a task into children in one move: create each, parent it here, optionally chain
+    them with `depends-on` in the order given, and flag this task orchestrator-only so
+    `delegate run` from it is refused.
+
+    REFUSES A TASK THAT ALREADY HAS CHILDREN unless `--add` is passed. Decomposing twice
+    by accident produces a second generation nobody intended, and the failure is quiet —
+    the scan simply starts reporting work that duplicates work."""
+    task, err = _loop_target(a, "decompose")
+    if err:
+        print(err)
+        sys.exit(2)
+    titles = [str(t).strip() for t in (getattr(a, "into", None) or []) if str(t).strip()]
+    if not titles:
+        print("decompose needs at least one --into '<child title>'. A task with no "
+              "children to hand its work to has nothing to decompose INTO.")
+        sys.exit(2)
+    every = all_tasks()
+    existing = _loop.children(task, every)
+    if existing and not getattr(a, "add", False):
+        print("decompose: task #%s already has %d child task(s): %s.\n"
+              "  Pass --add to append to them, or name a different task. Decomposing "
+              "twice by accident is quiet — the scan just starts reporting duplicated "
+              "work." % (task.get("seq"), len(existing),
+                         ", ".join("#%s" % c.get("seq") for c in existing)))
+        sys.exit(2)
+    made = []
+    for title in titles:
+        child = new_task(title, "", color=task.get("color"), effort=task.get("effort"))
+        create_with_seq(child)
+        child = load_task(child["id"])
+        append_related(child, task, "parent")
+        if getattr(a, "chain", False) and made:
+            append_related(child, made[-1], "depends-on")
+        child["updated_ts"] = _now()
+        save_task(child)
+        made.append(child)
+    parent = load_task(task["id"]) or task
+    parent[_loop.ORCHESTRATOR_FIELD] = True
+    add_event(parent, "child", "decomposed into %s"
+              % ", ".join("#%s" % c.get("seq") for c in made),
+              session=getattr(a, "session", None))
+    parent["updated_ts"] = _now()
+    save_task(parent)
+    ref = parent.get("seq") or parent["id"][:8]
+    print("Decomposed #%s into %d child task(s)%s:"
+          % (ref, len(made), " (chained)" if getattr(a, "chain", False) else ""))
+    for c in made:
+        print("  #%-5s %s" % (c.get("seq"), c.get("title")))
+    print("  #%s is now ORCHESTRATOR-ONLY — it plans and grades; `delegate run --seq %s` "
+          "will refuse and name a child." % (ref, ref))
+    print("  Each child still needs its own goal and exit conditions — a child that "
+          "registers none can never report itself done.")
+    print("  next: task-station scan --task %s" % ref)

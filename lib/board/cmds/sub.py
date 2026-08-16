@@ -691,6 +691,9 @@ def _close_one(ref, session):
             clear_count(sess)
             clear_edit_markers(sess)   # closing is a deliberate wrap-up — don't let the gate block
     line = "Closed task [%s] %s. Reopen later with /todo." % (task["id"][:8], task["title"])
+    pseq = report_to_parent(task, "CLOSED — ready for the gate (`/grade`)", session)
+    if pseq:
+        line += "\n  told #%s: this child is closed." % pseq
     return (line + "\n" + gate) if gate else line
 
 
@@ -774,6 +777,9 @@ def cmd_done(a):
     _maybe_close_session_window(a.session)   # opt-in; no-op unless enabled
     print("Closed task [%s] %s and detached this session. Reopen later with /todo."
           % (task["id"][:8], task["title"]))
+    pseq = report_to_parent(task, "CLOSED — ready for the gate (`/grade`)", a.session)
+    if pseq:
+        print("  told #%s: this child is closed." % pseq)
     if gate:
         print(gate)
 

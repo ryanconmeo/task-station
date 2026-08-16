@@ -86,7 +86,12 @@ _MINUS_FORMS = ("−", "–", "—")
 # A parked child is one the loop must NOT retry. The taxonomy is deliberately tiny —
 # these are the three reasons a retry is the wrong move, and everything else is a
 # reject-and-iterate.
-PARK_REASONS = ("human-gate", "blocked-external", "retries-exhausted")
+# `too-large` is the fourth because the gate is WHERE THE JUDGEMENT ALREADY IS. Somebody
+# is looking hard at the work at exactly that moment, which makes it the cheapest place
+# to notice that a child is not one session's worth — cheaper than a heuristic on effort
+# or step count, which fires on plenty of tasks that are simply detailed. Parking rather
+# than rejecting is deliberate: iterating will not help, so the loop must stop asking.
+PARK_REASONS = ("human-gate", "blocked-external", "retries-exhausted", "too-large")
 
 
 def normalize_grade(raw):
@@ -456,9 +461,14 @@ def waves(nodes, resolve, is_settled=None):
 # ------------------------------------------------------------------ the scan ----
 
 COMPLETE, READY, BLOCKED, EMPTY = "complete", "ready", "blocked", "empty"
+# A fifth value, and it is not a nicety. Without it a wave with three children ALREADY
+# RUNNING and nothing else startable reports `blocked` — which reads as "somebody must
+# intervene" when the honest answer is "the loop is working, wait." Telling those two
+# apart is the difference between a planner you trust and one you learn to ignore.
+WORKING = "working"
 
 
-def node_report(task, plan, is_settled=None, tree_depth=None):
+def node_report(task, plan, is_settled=None, tree_depth=None, live=None):
     """One node's row in the scan: its wave, its exit-condition rollup, whether it is
     ready, and what is holding it if not."""
     is_settled = settled if is_settled is None else is_settled
@@ -469,16 +479,24 @@ def node_report(task, plan, is_settled=None, tree_depth=None):
     in_cycle = any(tid in cyc for cyc in plan["cycles"])
     done = is_settled(task)
     orch = is_orchestrator(task)
+    # A node is RUNNING when a live Claude session is attached to it right now.
+    running = bool(live and task.get("seq") in live)
     return {
         "seq": task.get("seq"), "id": tid, "title": task.get("title"),
         "status": task.get("status"), "wave": plan["depth"].get(tid),
         "exit_state": _exits.state(task), "exits": counts, "coverage": cover,
         "exits_run_ts": _exits.last_run_ts(task),
         "settled": done, "orchestrator": orch, "tree_depth": tree_depth,
+        "running": running,
         # AN ORCHESTRATOR IS NEVER "READY". It plans and grades; it holds no work, so
         # offering it as the next thing to start would send somebody to the one task that
         # refuses to do any. Its children carry the work and appear on their own rows.
-        "ready": bool(not done and not blocking and not in_cycle and not orch),
+        # RUNNING EXCLUDES A NODE FROM `ready`, and that is the point of knowing. "Ready"
+        # answers "what should I START", and something already under way is not an answer
+        # to it — a planner that keeps offering work in flight is how the same child gets
+        # invoked twice.
+        "ready": bool(not done and not blocking and not in_cycle and not orch
+                      and not running),
         "in_cycle": in_cycle,
         "blocked_by": [{"seq": b.get("seq"), "title": b.get("title")} for b in blocking],
         "dangling": list(plan["dangling"].get(tid, [])),
@@ -486,7 +504,7 @@ def node_report(task, plan, is_settled=None, tree_depth=None):
     }
 
 
-def scan(nodes, resolve, now=None, is_settled=None, depths=None):
+def scan(nodes, resolve, now=None, is_settled=None, depths=None, live=None):
     """The whole deterministic answer, as one structured report.
 
     `nodes` is the population being planned (an orchestrator's children, or the open
@@ -504,7 +522,7 @@ def scan(nodes, resolve, now=None, is_settled=None, depths=None):
     depths = depths or {}
     plan = waves(nodes, resolve, is_settled=is_settled)
     rows = [node_report(t, plan, is_settled=is_settled,
-                        tree_depth=depths.get(t.get("id"))) for t in nodes]
+                        tree_depth=depths.get(t.get("id")), live=live) for t in nodes]
     ready = [r for r in rows if r["ready"]]
     unsettled = [r for r in rows if not r["settled"]]
     if not rows:
@@ -513,10 +531,13 @@ def scan(nodes, resolve, now=None, is_settled=None, depths=None):
         stop = COMPLETE
     elif ready:
         stop = READY
+    elif any(r["running"] for r in rows):
+        stop = WORKING
     else:
         stop = BLOCKED
     totals = {"total": len(rows), "settled": len(rows) - len(unsettled),
-              "ready": len(ready), "parked": len([r for r in rows if r["parked"]])}
+              "ready": len(ready), "parked": len([r for r in rows if r["parked"]]),
+              "running": len([r for r in rows if r["running"]])}
     exits_roll = {"registered": sum(1 for r in rows if r["exit_state"] != _exits.NONE),
                   "unregistered": [r["seq"] for r in rows
                                    if r["exit_state"] == _exits.NONE],
@@ -529,6 +550,7 @@ def scan(nodes, resolve, now=None, is_settled=None, depths=None):
             wave_rows.setdefault(r["wave"], []).append(r)
     return {"generated_ts": time.time() if now is None else now,
             "stop": stop, "totals": totals, "exits": exits_roll,
+            "running": [r["seq"] for r in rows if r["running"]],
             "waves": {n: wave_rows[n] for n in sorted(wave_rows)},
             "cycles": plan["cycles"], "rows": rows,
             "ready": [r["seq"] for r in ready]}

@@ -292,6 +292,24 @@ def main(argv=None):
     sp.add_argument("--json", dest="as_json", action="store_true")
     sp.set_defaults(fn=cmd_grade)
 
+    # decompose — a task holds WORK or holds CHILDREN, never both. This is the one move
+    # that turns the first into the second, in one command instead of four.
+    sp = sub.add_parser("decompose",
+                        help="split a task into child tasks and flag it orchestrator-only")
+    sp.add_argument("--task", default=None)
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--into", action="append", default=None, metavar="TITLE",
+                    help="a child task to create (repeatable, in order)")
+    sp.add_argument("--chain", action="store_true",
+                    help="also make each child depend-on the previous one, so the scan "
+                         "releases them one wave at a time")
+    sp.add_argument("--add", action="store_true",
+                    help="append to children this task already has. Without it a task "
+                         "that already has children is REFUSED — decomposing twice by "
+                         "accident is quiet, and shows up only as duplicated work in "
+                         "the scan.")
+    sp.set_defaults(fn=cmd_decompose)
+
     # orchestrator-check — the guard delegate.py consults before it spawns anything.
     # Silent + exit 0 when delegation is allowed; the refusal + exit 3 when it is not.
     sp = sub.add_parser("orchestrator-check",
