@@ -3,6 +3,38 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.7.1] — 2026-08-16
+
+### Fixed
+- **Two surfaces computed "still blocked" independently, and only one of them was
+  right.** `scan` gates on `loop.settled_fn` — closed, or every exit condition met,
+  recursively over the subtree — so a finished child reads READY the moment its own
+  work (and its children's) is done, whether or not anyone closes the record. The
+  HTML board's `waits on` chip never asked that question at all: `_board_related`
+  built the out side of a relation from the raw stored edge and nothing else, so a
+  depends-on target read as blocking for as long as the edge existed — closed or
+  not, settled or not. A predecessor could satisfy every exit condition an
+  orchestrator will ever check, and the board would still swear it was in the way.
+
+  `status == closed` is not the fix, because it is not the scan's actual question:
+  a predecessor that is open with every exit condition met is the ordinary shape of
+  a finished child here, and gating the chip on `status` alone would just rebuild
+  the same divergence one level narrower. So `_board_related` now carries BOTH
+  `settled` (the scan's own verdict, via a `loop.settled_fn(tasks)` built ONCE by
+  `write_board` and threaded down — reused, never re-derived, which is what
+  inherits the 3.4.0 rule that an orchestrator with an unbuilt child is not settled
+  even once its own checklist is green) and `status` (so a closed target keeps its
+  `✕`). Both are additive — a caller that never threads `is_settled` sees the exact
+  same dict it always did.
+
+  The `waits on` chip partitions on `settled` instead of listing every depends-on
+  edge: an unsettled predecessor still reads `⇠ waits on #N`, title `must land
+  first: #N`; a settled one moves to its own `⇠ gates met #N` chip (title `gates
+  met: #N`, class `relgates`) so the gate stays visible — you can still see what
+  satisfied it — without making a waiting claim nobody can act on. A settled
+  predecessor that is also closed keeps its `✕`. A row with nothing left unsettled
+  emits no `waits on` chip at all.
+
 ## [3.7.0] — 2026-08-16
 
 ### Added
