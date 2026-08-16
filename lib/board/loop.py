@@ -337,6 +337,20 @@ def settled_fn(tasks):
             kids.setdefault(p, []).append(t)
     memo = {}
 
+    def _own_work_done(task):
+        """Is THIS task's own checklist finished — ignoring its children?
+
+        Not the same question as `exits.satisfied`, and the difference is the whole
+        point: an orchestrator registers no conditions because it HOLDS NO WORK, and
+        `satisfied` correctly refuses to call an empty registration met. Here the
+        children are what stand in for the evidence, so the own-work test asks only
+        that nothing is outstanding: no condition refuted or unrun, and no live step
+        left both uncovered and unticked."""
+        st = _exits.state(task)
+        if st in (_exits.UNMET, _exits.UNKNOWN):
+            return False
+        return not _exits.coverage(task)["uncovered_open"]
+
     def _settled(task, guard=frozenset()):
         tid = (task or {}).get("id")
         if tid in memo:
@@ -346,10 +360,18 @@ def settled_fn(tasks):
         if is_closed(task):
             memo[tid] = True
             return True
-        if not _exits.satisfied(task):
-            memo[tid] = False
-            return False
-        ok = all(_settled(c, guard | {tid}) for c in kids.get(tid, ()))
+        children_of = kids.get(tid, ())
+        if not children_of:
+            # LEAF — unchanged: an empty registration is never met, so a task with
+            # nothing checked and nothing under it can only be finished by closing it.
+            memo[tid] = _exits.satisfied(task)
+            return memo[tid]
+        # HAS CHILDREN — the children ARE the evidence. Requiring an orchestrator to
+        # also register conditions of its own made it permanently unsettled: it holds
+        # no work, so it registers nothing, and `none` is not `met`. The loop could
+        # therefore never terminate at ANY orchestrator node — a whole programme could
+        # finish and the node above it would still read unfinished forever.
+        ok = _own_work_done(task) and all(_settled(c, guard | {tid}) for c in children_of)
         memo[tid] = ok
         return ok
 
