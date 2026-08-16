@@ -19,6 +19,7 @@ import checker as _checker
 import config_change as _config_change
 import decisions as _dec
 import heal as _heal
+import save as _save
 import hook_health
 import paths
 import steps as _steps
@@ -27,6 +28,7 @@ import worktree_hook as _worktree_hook
 g, set_g = _shared.g, _shared.set_g
 
 __all__ = [
+    "_worth_checkpointing",
     "_is_substantive_tracked", "cmd_create", "cmd_attach", "cmd_bump", "cmd_skip",
     "cmd_detach", "_open_tasks_brief", "cmd_mark_edited", "cmd_touch_file",
     "cmd_stop_gate", "cmd_post_compact", "cmd_stop_nudge",
@@ -429,6 +431,39 @@ def cmd_post_compact(a):
     g("mutate")(task["id"], _apply)
 
 
+def _worth_checkpointing(task):
+    """Is there anything for a checkpoint to CAPTURE? Gates the pressure nudge.
+
+    WHY THE NUDGE NEEDED THIS. The trigger is a context percentage, and a context
+    percentage only ever goes UP. The one-shot `pressure_nudged` flag is cleared the
+    moment the `/todo save` block is read — correctly, because the nudge WAS delivered —
+    but reading a block does not lower the percentage. So a session that crosses the
+    threshold and keeps working re-armed and re-fired on EVERY subsequent Stop, telling
+    the user to checkpoint a task whose checkpoint was seconds old. Observed three times
+    in a row on one task with `+0 decisions, +0 steps, +0 log entries` since the stamp.
+
+    A nag that fires when there is nothing to do is the cry-wolf failure this codebase
+    has paid for four times over in `heal`, and it costs the same thing: the next real
+    one gets skipped.
+
+    So the fire side asks what the clear side cannot: has anything accrued? Never
+    checkpointed at all → always worth it (that is the case the nudge exists for).
+    Otherwise it takes the SAME accrual numbers the save block's own gap report prints,
+    so the nudge and the report can never disagree about whether there is work to
+    capture. Fail-open: an unreadable stamp nudges rather than staying silent, because a
+    missed checkpoint costs more than a redundant line."""
+    try:
+        if not float(task.get("last_full_save_ts") or 0):
+            return True
+        since = _save.since_checkpoint(task)
+        counts = (since.get("decisions"), since.get("steps"), since.get("log"))
+        if all(c is None for c in counts):
+            return True          # no baseline recorded — cannot tell, so speak up
+        return any((c or 0) > 0 for c in counts) or bool(digest_stale(task))
+    except Exception:
+        return True
+
+
 def cmd_stop_nudge(a):
     """Stop hook (opt-in auto-checkpoint): print at most ONE non-blocking Stop
     additionalContext line, with precedence:
@@ -477,7 +512,8 @@ def cmd_stop_nudge(a):
     pct_hit = pct > 0 and window > 0 and measured >= (pct * window) // 100
     est = estimate_session_tokens(a.session) if thresh_abs > 0 else 0
     abs_hit = thresh_abs > 0 and est >= thresh_abs
-    if (pct_hit or abs_hit) and not task.get("pressure_nudged"):
+    if (pct_hit or abs_hit) and not task.get("pressure_nudged") \
+            and _worth_checkpointing(task):
         seq = task.get("seq", task["id"][:8])
         # Prefer the real measurement in the copy (percent + tokens); fall back to the
         # byte-size estimate's token count when only the absolute trigger fired.
