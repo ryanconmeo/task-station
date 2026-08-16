@@ -3,6 +3,79 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.7.0] — 2026-08-16
+
+### Added
+- **`invoke --dry-run` — a preview that costs nothing.** It prints the command it
+  *would* run and writes nothing at all: no session minted, no event on either
+  task, no trust file touched, no window. The session id it shows is an all-zero
+  placeholder, never a registered one. This is the flag that did not exist, and
+  its absence is why previewing was being done with `--print-command`.
+
+### Fixed
+- **A launch now records which kind it was.** `--print-command` is a *real*
+  launch — the human runs the printed line, so it legitimately pre-attaches the
+  session — but it wrote the identical trail entry as a window launch. One child
+  previewed once and launched once therefore read as **two invokes**, and the
+  3.6.0 RUNNING column exists precisely to stop a double-invoke: it cannot do
+  that on a log that already double-counts. A hand-off to a human is now a
+  `MANUAL LAUNCH` on both tasks, and only a window that actually opened is an
+  `invoked #…`. That includes the fallback path — a window opener that **fails**
+  is a manual launch in every respect that matters, so the trail no longer claims
+  a window nobody got. The events are also written *after* the launch decision
+  rather than before it, which is what makes the record match what happened.
+
+- **A fresh worktree no longer stalls the loop on first-run paperwork.** A
+  worktree created moments ago is a stranger to Claude Code: the child opens onto
+  the **trust dialog** and waits at a keystroke that is not a decision — and it
+  waits *invisibly*, because liveness is derived from SessionStart and
+  SessionStart has not fired yet. Clearing only that one stops again on the
+  project-scoped **MCP approval** for the workspace's own `.mcp.json`, so both
+  gates are cleared together, enumerated from the workspace itself rather than
+  patched one at a time.
+
+  **The guard matters more than the fix.** Pre-seeding trust for any `--cwd`
+  would turn a safety prompt into a no-op for arbitrary directories — a security
+  regression wearing a convenience costume. So trust is only ever **inherited**:
+  a linked git worktree may be pre-trusted when its *own* main checkout is
+  already a trusted project on this machine, and nothing else may be, ever.
+  Known is not trusted; a main checkout has no parent to inherit from; a missing
+  `~/.claude.json` is reported, never invented. Every refusal prints its reason
+  and the invoke **continues** — the human answers one dialog, which is what a
+  safety prompt is for.
+
+- **`invoke`'s window opener is reachable by the test that stubs it — and the
+  guard now says so.** `cmd_invoke` called `_open_jump_window(cmd)` as a bare
+  module-local name (star-imported from `cmds/view.py`), while the suite patches
+  the FACADE (`ts._open_jump_window`). The stub therefore never bound, and the
+  routed-name guard in `tests/test_patch_surface.py` could not catch it because
+  `cmds/loop.py` was missing from its `SEAM_FILES` list. This is the failure that
+  list exists to prevent, in its own words: *"the test would pass while testing
+  nothing."* It failed OPEN, into the real macOS window opener — so running the
+  suite spawned live `claude` sessions into the developer's own worktree, each
+  carrying the test fixture's ask. The call now goes through
+  `g("_open_jump_window")`, and `cmds/loop.py` is in `SEAM_FILES`, so a future
+  seam that reads a patchable name bare fails loudly here instead.
+
+### Changed
+- **A role may restrict and may never replace.** `--role` no longer emits
+  `--permission-mode` unless that mode genuinely *narrows* what the child may do
+  (`plan`, and only `plan` — a closed list, never a guess). `acceptEdits` is not
+  a restriction of an `auto` default, it is a strictly less autonomous
+  replacement of one, and no role should hand a child that unasked. Omitting the
+  flag inherits the human's configured default for free. An explicit
+  `--permission-mode` always wins, widening as well as narrowing.
+
+- **A child no longer silently loses four fifths of its context.** Roles name
+  models by bare alias (`opus`) so they follow the current generation rather than
+  freezing one release — but a bare alias is also a 200k window, and Claude Code
+  carries the 1M marker in the *selection* string (`opus[1m]`). An orchestrator
+  running at 1M was handing its implementer a fifth of its own context. The
+  marker is now inherited, and only the marker: same family, strictly larger
+  window. A `sonnet` scout under an `opus[1m]` parent stays a 200k sonnet,
+  because a window belongs to the model actually chosen and borrowing one across
+  families would invent a variant that may not exist.
+
 ## [3.6.2] — 2026-08-16
 
 ### Fixed
