@@ -14,6 +14,7 @@ import re
 import sys
 from datetime import datetime
 
+import loop as _loop
 import paths
 
 g, set_g = _shared.g, _shared.set_g
@@ -977,6 +978,13 @@ def write_board(guard_downgrade=False):
                 rev_map.setdefault(tgt, []).append(
                     {"seq": t.get("seq"), "id": t.get("id"),
                      "kind": r.get("kind"), "status": st})
+    # The scan's own answer to "is this predecessor out of the way" — CLOSED or every
+    # exit condition met, recursively over the subtree (an orchestrator with an unbuilt
+    # child is NOT settled even once its own checklist is green). Built ONCE here, same
+    # reason as rev_map: a `depends-on` chip that reused only `status` would rebuild the
+    # "closed dependency still blocks" bug in a narrower form (see `_board_related`).
+    is_settled = _loop.settled_fn(raw)
+    tasks_by_id = {t.get("id"): t for t in raw if t.get("id")}
     # WS-D: the knowledge (co-citation) tier is SECOND-BRAIN-GATED — active only when
     # the opt-in flag is on AND a consumer (an Obsidian vault) is configured. Off by
     # default, so the graph below carries only the UNIVERSAL edges (lineage + semantic).
@@ -1001,7 +1009,8 @@ def write_board(guard_downgrade=False):
     # in-progress task with none displays as `paused` (yellow). Derived once here.
     live_seqs = {r.get("task_seq") for r in live if r.get("task_seq") is not None}
     vms = [_board_view_model(t, live_sids=live_sids, rev_map=rev_map,
-                             knowledge=knowledge_on, live_seqs=live_seqs)
+                             knowledge=knowledge_on, live_seqs=live_seqs,
+                             is_settled=is_settled, tasks_by_id=tasks_by_id)
            for t in raw]
     # F1/F2: Interbrain gate. When OFF (the default) nothing below runs — no foreign VMs,
     # no owner/handle/brain stamping, no focus strip — so the render is byte-parity with the

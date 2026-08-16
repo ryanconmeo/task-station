@@ -39,11 +39,33 @@ sys.path.insert(0, LIB)
 sys.path.insert(0, os.path.join(_ROOT, "tools"))
 
 import render_board as rb      # noqa: E402
+import loop                    # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "task_station", os.path.join(LIB, "task-station.py"))
 ts = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ts)
+
+
+def _task(tid, seq, status="open", related=(), conditions=None):
+    """A hand-built task blob — pure, no store needed (mirrors test_loop.py's `_t`)."""
+    steps = []
+    for n in sorted((conditions or {})):
+        verdict = conditions[n]
+        block = {"cmd": "check-%s" % n, "expect": ["OK"]}
+        if verdict is not None:
+            block["last"] = {"ts": 1000.0, "ok": verdict == "met", "status": "ran",
+                             "missing": [] if verdict == "met" else ["OK"], "got": ""}
+        steps.append({"text": "step %d" % n, "done": False, "exit": block})
+    return {"id": tid, "seq": seq, "title": "T", "status": status,
+            "related": list(related), "steps": steps}
+
+
+def _dep_vm(seq, deps):
+    """A board-row stub carrying just the `related.from` entries `_row_related_chip`
+    reads, each free to carry `settled`/`status` alongside the usual `seq`/`kind`/`id`."""
+    return {"seq": seq, "title": "T", "status": "open",
+            "related": {"from": list(deps), "in": []}}
 
 
 def vm(seq, title="T", out=(), inn=()):
@@ -221,6 +243,81 @@ class ChipTest(unittest.TestCase):
         """One render serves both orderings: the chip is always emitted and CSS-hidden
         in family order, so the flat toggle reveals it with no re-render."""
         self.assertIn("relparent", rb._row_related_chip(vm(1, out=[(2, "parent")])))
+
+
+class SettledRelatedTest(unittest.TestCase):
+    """The HTML board's `_board_related` must agree with the scan about which
+    depends-on edges still block — see loop.settled_fn. A CLOSED gate and a merely
+    SETTLED one (open, but every exit condition met) both read `settled=True`; only
+    `status` tells them apart."""
+
+    def test_board_related_out_side_carries_settled(self):
+        closed_gate = _task("p", 1, status="closed")
+        open_but_met = _task("o", 2, conditions={1: "met"})
+        dependent = _task("d", 3, related=[
+            {"id": "p", "seq": 1, "kind": "depends-on"},
+            {"id": "o", "seq": 2, "kind": "depends-on"},
+        ])
+        tasks = [closed_gate, open_but_met, dependent]
+        is_settled = loop.settled_fn(tasks)
+
+        rel = ts._board_related(dependent, tasks=tasks, is_settled=is_settled)
+        by_seq = {e["seq"]: e for e in rel["from"]}
+        self.assertTrue(by_seq[1]["settled"])
+        self.assertEqual(by_seq[1]["status"], "closed")
+        # settled but NOT closed — the whole point of carrying both keys separately.
+        self.assertTrue(by_seq[2]["settled"])
+        self.assertEqual(by_seq[2]["status"], "open")
+
+    def test_orchestrator_blocker_with_unbuilt_children_not_settled(self):
+        """The 3.4.0 rule, reused rather than re-derived: an orchestrator whose own
+        checklist is green is NOT settled while it still has an unbuilt child."""
+        orch = _task("p", 1, conditions={1: "met"})       # its OWN checklist is green
+        unbuilt_kid = _task("k", 2, related=[{"id": "p", "seq": 1, "kind": "parent"}])
+        dependent = _task("d", 3, related=[{"id": "p", "seq": 1, "kind": "depends-on"}])
+        tasks = [orch, unbuilt_kid, dependent]
+        is_settled = loop.settled_fn(tasks)
+
+        self.assertTrue(loop.settled(orch))                # the LEAF rule alone says yes
+        rel = ts._board_related(dependent, tasks=tasks, is_settled=is_settled)
+        self.assertFalse(rel["from"][0]["settled"])         # …and the board must not agree
+
+
+class WaitsChipSettledTest(unittest.TestCase):
+    """The board's `waits on` chip must stop claiming a SETTLED dependency still
+    blocks — the surface divergence this task closes."""
+
+    def test_waits_chip_omits_settled_dependency(self):
+        mixed = _dep_vm(9, [
+            {"seq": 5, "kind": "depends-on", "id": "a", "settled": True, "status": "open"},
+            {"seq": 6, "kind": "depends-on", "id": "b", "settled": False, "status": "open"},
+        ])
+        chip = rb._row_related_chip(mixed)
+        waits = re.search(r'<span class="relchip relwaits"[^>]*>(.*?)</span>', chip)
+        self.assertIsNotNone(waits)
+        self.assertIn("#6", waits.group(1))
+        self.assertNotIn("#5", waits.group(1))          # the settled one makes no claim
+
+        all_settled = _dep_vm(9, [
+            {"seq": 5, "kind": "depends-on", "id": "a", "settled": True, "status": "open"},
+        ])
+        chip2 = rb._row_related_chip(all_settled)
+        self.assertNotIn("relwaits", chip2)              # nothing left to wait on at all
+        self.assertNotIn("waits on", chip2)
+
+    def test_waits_chip_marks_settled_gate_positively(self):
+        t = _dep_vm(9, [
+            {"seq": 5, "kind": "depends-on", "id": "a", "settled": True, "status": "open"},
+            {"seq": 6, "kind": "depends-on", "id": "b", "settled": True, "status": "closed"},
+        ])
+        chip = rb._row_related_chip(t)
+        self.assertNotIn("relwaits", chip)
+        gate = re.search(r'<span class="relchip relgates"[^>]*>(.*?)</span>', chip)
+        self.assertIsNotNone(gate)
+        gate_text = re.sub(r"<[^>]+>", "", gate.group(1))     # visible text, tags stripped
+        self.assertIn("#5", gate_text)
+        self.assertIn("#6 ✕", gate_text)                      # closed keeps the CLI's ✕ mark
+        self.assertIn('title="gates met: #5, #6 ✕"', chip)
 
 
 class RenderedBoardTest(unittest.TestCase):
