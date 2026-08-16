@@ -939,5 +939,63 @@ class UpwardReportTest(CliTest):
             glb["memo_send"] = real
 
 
+class OrchestratorCanFinishTest(unittest.TestCase):
+    """AN ORCHESTRATOR MUST BE ABLE TO FINISH. It registers no exit conditions because
+    it HOLDS NO WORK — and `exits.satisfied` correctly refuses to call an empty
+    registration met. Requiring its own conditions therefore made it permanently
+    unsettled: a whole programme could complete and the node above it would still read
+    unfinished, forever. The loop could never terminate at any orchestrator node.
+
+    The children ARE the evidence. So a task with children is settled when every child
+    is settled and nothing of its OWN is outstanding — no condition refuted or unrun, no
+    live step left both uncovered and unticked. A LEAF is unchanged: nothing checked and
+    nothing underneath can only be finished by closing it."""
+
+    def _orch(self, **kw):
+        o = _t("o", 1, **kw)
+        o[loop.ORCHESTRATOR_FIELD] = True
+        return o
+
+    def test_an_orchestrator_with_every_child_settled_is_settled(self):
+        o = self._orch()
+        kids = [_t("a", 2, parent="o", conditions={1: "met"}),
+                _t("b", 3, parent="o", conditions={1: "met"})]
+        self.assertTrue(loop.settled_fn([o] + kids)(o))
+
+    def test_one_unbuilt_child_still_holds_it_open(self):
+        o = self._orch()
+        kids = [_t("a", 2, parent="o", conditions={1: "met"}), _t("b", 3, parent="o")]
+        self.assertFalse(loop.settled_fn([o] + kids)(o))
+
+    def test_a_parent_still_holding_unfinished_work_of_its_own_is_not_settled(self):
+        o = self._orch()
+        o["steps"] = [{"text": "not done, not covered", "done": False}]
+        kids = [_t("a", 2, parent="o", conditions={1: "met"})]
+        self.assertFalse(loop.settled_fn([o] + kids)(o))
+
+    def test_a_parent_whose_own_condition_is_unmet_is_not_settled(self):
+        o = self._orch()
+        o["steps"] = _t("x", 9, conditions={1: "unmet"})["steps"]
+        kids = [_t("a", 2, parent="o", conditions={1: "met"})]
+        self.assertFalse(loop.settled_fn([o] + kids)(o))
+
+    def test_a_leaf_is_unchanged(self):
+        """The empty-registration rule still holds where it was aimed: a task with
+        nothing checked and nothing underneath is not finished."""
+        leaf = _t("x", 9)
+        self.assertFalse(loop.settled_fn([leaf])(leaf))
+
+    def test_a_settled_orchestrator_releases_what_depended_on_it(self):
+        """The point of the fix: the loop can now terminate at an orchestrator, so work
+        queued behind a whole track is actually released."""
+        o = self._orch()
+        kids = [_t("a", 2, parent="o", conditions={1: "met"})]
+        dep = _t("d", 4, deps=["o"])
+        every = [o] + kids + [dep]
+        plan = loop.waves([o, dep] + kids, _resolver(every),
+                          is_settled=loop.settled_fn(every))
+        self.assertEqual(plan["depth"]["d"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

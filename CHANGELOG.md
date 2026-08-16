@@ -3,6 +3,22 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.6.2] — 2026-08-16
+
+### Fixed
+- **An orchestrator can now finish.** It registers no exit conditions because it
+  **holds no work**, and `exits.satisfied` correctly refuses to call an empty
+  registration met — so requiring its own conditions left it permanently
+  unsettled. A whole programme could complete and the node above it would still
+  read unfinished, forever: **the loop could never terminate at any orchestrator
+  node**, and nothing queued behind a finished track would ever be released.
+
+  The children **are** the evidence. A task with children is settled when every
+  child is settled and nothing of its OWN is outstanding — no condition refuted or
+  unrun, no live step left both uncovered and unticked. A **leaf is unchanged**:
+  the empty-registration rule still holds exactly where it was aimed, so a task
+  with nothing checked and nothing underneath can only be finished by closing it.
+
 ## [3.6.1] — 2026-08-16
 
 ### Fixed
