@@ -122,7 +122,7 @@ class FingerprintTest(unittest.TestCase):
         every check in this codebase is written against."""
         rels = [rel for rel, _p in _shipped_files()]
         self.assertGreater(len(rels), 50)
-        for expect in ("README.md", os.path.join("skills", "judge", "SKILL.md")):
+        for expect in ("README.md", os.path.join("skills", "grade", "SKILL.md")):
             self.assertIn(expect, rels)
 
 

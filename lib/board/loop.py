@@ -609,8 +609,8 @@ ROLES = {
                     "why": "the worktree worker — one per task+repo"},
     "reviewer": {"model": "opus", "permission_mode": "plan", "effort": "high",
                  "why": "FRESH context, adversarial, never the implementer's session"},
-    "judge": {"model": "opus", "permission_mode": "default", "effort": "high",
-              "why": "grades G1-G6; judgment quality bounds the whole loop"},
+    "grader": {"model": "opus", "permission_mode": "default", "effort": "high",
+               "why": "grades G1-G6; the quality of this call bounds the whole loop"},
 }
 
 

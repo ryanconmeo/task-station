@@ -3,6 +3,28 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.5.0] — 2026-08-16
+
+Opening an orchestrator described its goal and its own checklist, and said
+nothing about its children's state. It had the answer and did not volunteer it.
+
+### Added
+- **The task detail reports the computed plan for any task that has children** —
+  waves over `depends-on`, what is READY, what is blocking the rest, and which
+  children register no exit condition and therefore cannot report themselves
+  done. It sits directly under `State (next)`, because for an orchestrator the
+  children *are* the outstanding work and its own steps are the part it already
+  finished or handed away. One store scan, **no model call** — the same
+  computation `scan` prints, rendered tighter. A task with no children renders
+  exactly as before; a closed one is skipped, since its plan is history rather
+  than a next step. The block is fail-open: a derived section must never be the
+  reason a resume digest fails.
+
+### Changed
+- **The `judge` skill is now `grade`, and the `judge` role is `grader`** — the
+  engine verb has always been `grade`, and one word for one thing beats two.
+  `heal` and its subcommand already coexist this way.
+
 ## [3.4.0] — 2026-08-15
 
 The loop went one level deep the first time a track was decomposed, and both

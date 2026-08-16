@@ -1,9 +1,9 @@
 ---
-name: judge
+name: grade
 description: Run the graded acceptance gate on a child task — verify mechanically FIRST, then score the six rubric dimensions G1-G6 and accept only at A- on every one, rejecting with the failed dimension named. Use when a child task reports done, on "grade this", "run the gate", "accept or reject the child's work", or when `scan` says a wave is ready to release. Also drives one turn of the loop: scan → invoke → gate → grade → release.
 ---
 
-# The judge — the graded acceptance gate
+# Grade — the acceptance gate
 
 A child task reports that it is done. **A report is not evidence.** This skill is what stands between that report and the plan believing it.
 

@@ -249,7 +249,7 @@ def main(argv=None):
                          "context from its own task record at session start, so "
                          "anything here restating that context is a lossy copy of it.")
     sp.add_argument("--role", default=None,
-                    help="scout | implementer | reviewer | judge — sets the child's "
+                    help="scout | implementer | reviewer | grader — sets the child's "
                          "model and permission mode from the role table")
     sp.add_argument("--model", default=None,
                     help="override the role's model (an alias like opus/sonnet/haiku, "
