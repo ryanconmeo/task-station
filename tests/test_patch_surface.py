@@ -99,7 +99,7 @@ _PATCH_RE = re.compile(r"\bts\.([A-Za-z_]+) *=")
 SEAM_FILES = ["_shared.py", "state.py", "model.py", "memos.py", "sessions.py",
               "render.py", "graph.py", "boardio.py", "cli.py",
               "cmds/__init__.py", "cmds/maintain.py", "cmds/manage.py",
-              "cmds/view.py", "cmds/sub.py", "cmds/surface.py"]
+              "cmds/view.py", "cmds/sub.py", "cmds/surface.py", "cmds/loop.py"]
 
 
 def _py_files(root):
