@@ -6,6 +6,7 @@ from board.model import *
 import hashlib
 import json
 import os
+import loop as _loop
 
 import decisions as _dec
 import heal as _heal
@@ -14,6 +15,7 @@ import paths
 g, set_g = _shared.g, _shared.set_g
 
 __all__ = [
+    "report_to_parent",
     "_memo_src_label", "_memo_pending_for", "MEMO_QUIET_AFTER",
     "_memo_dispositioned_by", "memo_settled", "memo_pending", "_trim_memos",
     "memo_corrections", "memo_send",
@@ -535,3 +537,43 @@ def _subs_throttled():
     except Exception:
         pass
     return False
+
+# ------------------------------------------------- the child reports upward ----
+#
+# GAP: nothing PUSHED. A child could finish, and its parent learned only when somebody
+# thought to run a scan. That is the same failure the exit conditions exist to remove —
+# a record holding the answer and waiting to be interrogated — and it is the one that
+# makes an orchestrator session something you have to babysit.
+#
+# The channel is the MEMO, not a new mechanism: memos already carry an ack ledger, and
+# the prompt rail already surfaces "N memo(s) awaiting YOUR ack" at the top of the
+# parent's next turn. So a child reaching a terminal state writes one memo onto its
+# parent, and the parent is told the next time it is used. Nothing new to learn, nothing
+# new to keep alive, and the notice is a durable record rather than a notification that
+# scrolls away.
+#
+# ONLY TERMINAL STATES, and only on a TRANSITION. A memo per exit-tick would train the
+# reader to ignore the rail, which costs more than the signal is worth.
+
+def report_to_parent(task, headline, session=None):
+    """Write one memo onto `task`'s parent saying a terminal state was reached. Returns
+    the parent's seq (or None when there is no parent, or the send failed).
+
+    FAIL-OPEN AND SILENT. This runs on the tail of `done` and `exit-tick`; a memo that
+    cannot be written must never turn a successful close into an error, so every failure
+    returns None and the caller says nothing."""
+    try:
+        pid = _loop.parent_id(task)
+        if not pid:
+            return None
+        parent = load_task(pid)
+        if not parent or is_closed(parent):
+            return None
+        memo_send(parent, "CHILD #%s — %s" % (task.get("seq"), headline),
+                  from_sid=session)
+        parent["updated_ts"] = _now()
+        save_task(parent)
+        return parent.get("seq")
+    except Exception:              # noqa: BLE001 — a report must never break the verb
+        return None
+
