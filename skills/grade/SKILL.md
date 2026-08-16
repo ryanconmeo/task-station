@@ -111,6 +111,10 @@ python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" invoke --task <child> --from <
 
 The child spawns **already attached to its own task**, so its SessionStart injects its own digest. That is why the ask carries the request only: anything you write restating the child's context is a lossy copy of a record it is already reading. If your ask is running past a few sentences, you are writing a brief, and the brief is the thing this design removes.
 
+Add `--cwd <path>` when the child belongs in a worktree, and `invoke` clears the first-run gates you cannot answer for it — the trust dialog and the workspace's own `.mcp.json` approval. It does so **only for a worktree whose main checkout is already trusted**; anything else is refused with the reason printed and the launch proceeds anyway, so the child stops at one dialog instead of stalling invisibly (a session waiting on the trust prompt has not fired SessionStart, so the scan cannot see it at all).
+
+**To preview, use `--dry-run` — never `--print-command`.** The dry run prints the command and writes nothing. `--print-command` is a *real* launch you finish by hand: it mints the child's session and records a `MANUAL LAUNCH` on both tasks. That distinction is what the RUNNING column counts, so previewing with the wrong flag makes one child read as two invokes and the double-invoke guard stops working.
+
 Concurrency: at most `loop_children_max` (default 3) children open at once, and `loop_builds_max` (default 1) build or full-suite run **machine-wide** — two orchestrators share that one, because the machine OOMs on concurrent builds and this repo's flakes are load-dependent.
 
 ---

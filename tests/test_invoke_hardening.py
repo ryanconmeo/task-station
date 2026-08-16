@@ -46,6 +46,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -60,6 +61,7 @@ sys.path.insert(0, LIB)
 _TMP_HOME = tempfile.mkdtemp(prefix="ts-invoke-")
 os.environ["TASK_STATION_HOME"] = _TMP_HOME
 
+import pricing                                                          # noqa: E402
 import store                                                            # noqa: E402
 from board import workspace as ws                                       # noqa: E402
 
@@ -117,12 +119,20 @@ class _InvokeTest(unittest.TestCase):
         self._orig_cfg = os.environ.get("CLAUDE_CONFIG_DIR")
         os.environ["CLAUDE_CONFIG_DIR"] = self.cfg
         self.claude_json = os.path.join(self.cfg, ".claude.json")
+        # The parent's model SELECTION, pinned to "nothing configured" for every test
+        # that is not about it. It is read from the real `~/.claude/settings.json`, so a
+        # developer running an `opus[1m]` session would otherwise see their own window
+        # marker appear in the child's `--model` and fail the role tests. Class (7)
+        # sets it deliberately; everyone else states that they do not depend on it.
+        self._orig_sel = ts.claude_code_model_selection
+        ts.claude_code_model_selection = lambda: ""
         self.opened = []
         self._orig_open = ts._open_jump_window
         ts._open_jump_window = lambda cmd: (self.opened.append(cmd) or True)
 
     def tearDown(self):
         ts._open_jump_window = self._orig_open
+        ts.claude_code_model_selection = self._orig_sel
         store.reset_cache()
         os.environ.pop("TASK_STATION_HOME", None)
         if self._orig_cfg is None:
@@ -580,6 +590,99 @@ class PermissionInheritance(_InvokeTest):
         self.assertTrue(ws.restricts("plan"))
         for mode in ("acceptEdits", "default", "bypassPermissions", "", None, "nonsense"):
             self.assertFalse(ws.restricts(mode))
+
+
+# -- (7) and the parent's context window -----------------------------------------
+
+class ContextWindowInheritance(_InvokeTest):
+    """The same rule as (6), applied to the other flag the role table sets.
+
+    Roles name models by BARE ALIAS (`opus`) on purpose, so a role follows the current
+    generation instead of freezing one release's id into the store. But a bare alias is
+    also a 200k context window, and Claude Code carries the 1M marker in the SELECTION
+    string (`opus[1m]`) — never in the transcript's model id, which it strips before
+    calling the API. So an orchestrator running at 1M that invokes an implementer hands
+    it one fifth of its own context without anyone asking for that.
+
+    The fix inherits the marker and only the marker: same family, strictly larger
+    window. A `sonnet` scout under an `opus[1m]` parent stays a 200k sonnet, because a
+    context window belongs to the model actually chosen and borrowing one across
+    families would invent a variant that may not exist.
+    """
+
+    ONE_M = "claude-opus-5[1m]"
+
+    def _sel(self, value):
+        """Pin what the parent session is running. The base class pins this to "" for
+        every other test in this file; here it is the input under test."""
+        ts.claude_code_model_selection = lambda: value
+
+    def _cmd(self, **kw):
+        parent, child = self._pair()
+        out, _ = self._invoke(parent=parent, child=child, print_command=True, **kw)
+        return out
+
+    def _flag(self, model):
+        """`--model X` as the command line actually spells it — a `[1m]` marker makes
+        shlex quote the value, so asserting the bare string would test the wrong thing."""
+        return "--model %s" % shlex.quote(model)
+
+    def test_a_role_alias_inherits_the_parents_1m_window(self):
+        self._sel(self.ONE_M)
+        self.assertIn(self._flag(self.ONE_M), self._cmd(role="implementer"))
+
+    def test_a_parent_without_the_marker_leaves_the_role_alias_alone(self):
+        """The alias is the DEFAULT and stays it — this only ever adds back a window the
+        parent already had."""
+        self._sel("claude-opus-5")
+        self.assertIn("--model opus", self._cmd(role="implementer"))
+
+    def test_a_different_family_is_never_inflated(self):
+        """A scout is cheap on purpose. Handing it a 1M opus window because its parent
+        had one would quietly undo the reason the role picks sonnet."""
+        self._sel(self.ONE_M)
+        out = self._cmd(role="scout")
+        self.assertIn("--model sonnet", out)
+        self.assertNotIn(self._flag(self.ONE_M), out)
+
+    def test_an_unrecognizable_selection_is_not_treated_as_a_match(self):
+        """No family token means no evidence of a match, and no evidence is a refusal to
+        inherit — never a coin flip."""
+        self._sel("some-internal-build[1m]")
+        self.assertIn("--model opus", self._cmd(role="implementer"))
+
+    def test_a_model_the_human_named_is_emitted_verbatim(self):
+        self._sel(self.ONE_M)
+        out = self._cmd(role="implementer", model="haiku")
+        self.assertIn("--model haiku", out)
+        self.assertNotIn(self._flag(self.ONE_M), out)
+
+    def test_no_role_and_no_model_still_emits_no_model_flag(self):
+        """The cheapest inheritance there is: say nothing and the child gets the human's
+        own default, 1M marker included. Naming it here would be this command deciding
+        something it was never asked to decide."""
+        self._sel(self.ONE_M)
+        self.assertNotIn("--model", self._cmd())
+
+    def test_the_rule_is_same_family_and_strictly_larger(self):
+        """The helper directly, including the cases the command line cannot show."""
+        self.assertEqual(ws.inherited_model("opus", self.ONE_M), self.ONE_M)
+        self.assertEqual(ws.inherited_model("opus", "opus[1m]"), "opus[1m]")
+        # different family, unknown family, nothing configured, nothing chosen
+        self.assertEqual(ws.inherited_model("sonnet", self.ONE_M), "sonnet")
+        self.assertEqual(ws.inherited_model("opus", "mystery[1m]"), "opus")
+        self.assertEqual(ws.inherited_model("opus", ""), "opus")
+        self.assertIsNone(ws.inherited_model(None, self.ONE_M))
+        # never SHRINKS: a 200k parent cannot downgrade a child already at 1M
+        self.assertEqual(ws.inherited_model(self.ONE_M, "claude-opus-5"), self.ONE_M)
+
+    def test_the_window_it_inherits_is_the_one_the_marker_means(self):
+        """Pins the inheritance to the actual number rather than to the spelling of the
+        marker, so a future id that carries 1M differently still has to be right."""
+        self.assertEqual(pricing.context_window_for(ws.inherited_model("opus", self.ONE_M)),
+                         pricing.LARGE_CONTEXT_WINDOW)
+        self.assertEqual(pricing.context_window_for(ws.inherited_model("sonnet", self.ONE_M)),
+                         pricing.DEFAULT_CONTEXT_WINDOW)
 
 
 if __name__ == "__main__":

@@ -261,7 +261,12 @@ def main(argv=None):
                     help="directory the child starts in (default: where the task's most "
                          "recent session ran)")
     sp.add_argument("--print-command", dest="print_command", action="store_true",
-                    help="print the launch command instead of opening a window")
+                    help="hand the launch to a human instead of opening a window: the "
+                         "session is still pre-attached, and the trail records a MANUAL "
+                         "LAUNCH rather than an invoke")
+    sp.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="print the command this WOULD run and write nothing at all — "
+                         "no session minted, no event recorded, no workspace touched")
     sp.add_argument("--session", default=None)
     sp.set_defaults(fn=cmd_invoke)
 
