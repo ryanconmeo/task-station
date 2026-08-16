@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-3.3.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.4.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -114,7 +114,7 @@ Each task's detail view (and the HTML board row expansion, and the Desktop `get_
 `/todo board` writes a single-file `board.html` to your data dir and opens it. It is fully self-contained — inline `<script>`/`<style>` only, no server, no dependencies, no external assets:
 
 - **Open / Closed sections** with status · # · task · category · effort · activity.
-- **Families nest.** A child task renders directly under its parent, indented, with a connector column — and the family is placed by its **most recent member**, so recency still orders the board, a family at a time. Each relation kind says what it is: `⤶ 6 children` · `⤷ parent #444` · `⇠ waits on #533`. `group families` in the filter bar switches back to flat activity order and remembers the choice.
+- **Families nest.** A child task renders directly under its parent, indented, with a connector column — and the family is placed by its **most recent member**, so recency still orders the board, a family at a time. Each relation kind says what it is: `⤶ 6 children` · `⤷ parent #12` · `⇠ waits on #19`. `group families` in the filter bar switches back to flat activity order and remembers the choice.
 - **Expandable rows** that reveal the full digest — goal, state, steps checklist, decisions, files, PRs and stories (one per line), and repos — plus copy buttons on the open and resume commands.
 - **Search + category/status filters** that live-filter rows with no reload, and a reset that clears everything.
 - **Light / dark / auto theme toggle** — *auto* follows the OS appearance live and re-resolves the moment your system flips. Your choice persists across reloads.
@@ -232,8 +232,8 @@ task-station exit-tick --task 12                 # RUNS them; ticks what passed;
 Once items can settle themselves, "what can start?" becomes a computation over the `depends-on` edges you already store:
 
 ```text
-task-station scan --task 444          # waves over depends-on + the stopping condition
-task-station scan --task 444 --json   # the same object, for a driver
+task-station scan --task 12          # waves over depends-on + the stopping condition
+task-station scan --task 12 --json   # the same object, for a driver
 ```
 
 `scan` calls **no model** and — without `--run` — **no shell**: it reads the verdicts `exit-tick` stored. A predecessor releases its dependents when it is **closed** or **every exit condition it registered is met**; a task registering *no* conditions is never settled, so an empty checklist can't release work by having checked nothing. Cycles are reported, never traversed; a dependency on a deleted task doesn't deadlock but is named. The stopping condition is four values — `ready` · `complete` · `blocked` · `empty` — because "nothing to do" and "nothing I *can* do" are opposite situations.
@@ -241,8 +241,8 @@ task-station scan --task 444 --json   # the same object, for a driver
 ### Children, and the gate
 
 ```text
-task-station invoke --task 531 --from 444 --ask '<the request>' [--role implementer]
-task-station grade  --task 531 --dim G1=A --dim G2=A- … [--park human-gate --why '…']
+task-station invoke --task 17 --from 12 --ask '<the request>' [--role implementer]
+task-station grade  --task 17 --dim G1=A --dim G2=A- … [--park human-gate --why '…']
 ```
 
 `invoke` spawns a session **already attached to the child's own task**, so its SessionStart injects that task's digest and the ask carries the request only — there is no brief to get wrong. `--role` (scout · implementer · reviewer · judge) sets the child's model and permission mode from a small role table.
@@ -254,10 +254,10 @@ The **judgment** — what grade each dimension earns — is the `judge` skill's,
 ### The orchestrator flag
 
 ```text
-task-station update --task 444 --orchestrator on
+task-station update --task 12 --orchestrator on
 ```
 
-A task flagged orchestrator-only plans and grades; it does not hold work. `delegate run --seq 444` then **refuses and names the child that should own the work**, with the exact command to run there. Explicit rather than inferred from "has children" — plenty of parents legitimately hold their own work, and a guard that fires on every parent gets switched off. `delegate run --force` overrides it deliberately and writes the override onto the task.
+A task flagged orchestrator-only plans and grades; it does not hold work. `delegate run --seq 12` then **refuses and names the child that should own the work**, with the exact command to run there. Explicit rather than inferred from "has children" — plenty of parents legitimately hold their own work, and a guard that fires on every parent gets switched off. `delegate run --force` overrides it deliberately and writes the override onto the task.
 
 Tunables (config.json keys / env, no board row): `exit_command_timeout` (120s) · `loop_accept_threshold` (`A-`) · `loop_retry_max` (2) · `loop_children_max` (3) · `loop_builds_max` (1, **machine-wide** — two orchestrators share it).
 

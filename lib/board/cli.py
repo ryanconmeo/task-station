@@ -218,8 +218,14 @@ def main(argv=None):
     sp = sub.add_parser("scan",
                         help="compute waves over depends-on and print what is unblocked")
     sp.add_argument("--task", default=None,
-                    help="plan this task's CHILDREN (default: the attached task)")
+                    help="plan this task's WHOLE SUBTREE — every descendant, not just "
+                         "the child row (default: the attached task). A child that has "
+                         "become an orchestrator itself holds no work; the startable "
+                         "unit is below it, and a scan stopping at depth one would "
+                         "never say so.")
     sp.add_argument("--session", default=None)
+    sp.add_argument("--depth", type=int, default=None, metavar="N",
+                    help="cap the subtree walk at N levels (1 = direct children only)")
     sp.add_argument("--all", dest="all", action="store_true",
                     help="plan every open/active task on the board instead")
     sp.add_argument("--run", action="store_true",

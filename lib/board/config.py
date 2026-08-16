@@ -837,8 +837,7 @@ def exit_command_timeout():
 
 def loop_accept_threshold():
     """The minimum grade a child's work must reach on EVERY rubric dimension for the
-    graded gate to accept it. Default `A-`, ruled by Ryan 2026-08-14 (it supersedes the
-    earlier `B` default), and PER-DIMENSION rather than an average: a rubric averaged
+    graded gate to accept it. Default `A-`, and PER-DIMENSION rather than an average: a rubric averaged
     into one number lets a failed gate-integrity dimension hide behind five strong ones,
     which is the exact failure the six dimensions exist to separate.
 

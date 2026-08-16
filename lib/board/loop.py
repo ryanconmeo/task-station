@@ -19,8 +19,8 @@ and judged would have to call a model to answer "what is unblocked", and that qu
 has an exact answer that costs nothing.
 
 WHY WAVES AND NOT A QUEUE. `depends-on` is already a typed edge in the store (shipped
-2.24.0), and nothing had ever computed over it — task 503 was an orchestrator by TITLE,
-with no edges at all. A wave is just the honest reading of that graph: wave 1 is
+2.24.0), and nothing had ever computed over it — on one real board an orchestrator had
+the title and none of the edges. A wave is just the honest reading of that graph: wave 1 is
 everything with no unsettled predecessor, wave N is everything whose predecessors all
 finished in earlier waves. It is not a schedule and it does not start anything; it
 answers "what could start now", which is the question a parent has to answer before it
@@ -37,8 +37,8 @@ nothing behind it is the failure this design is built against.
 THE RUBRIC IS DATA HERE, NOT DOCTRINE. The six dimensions and the grade scale live in
 this module so the arithmetic (is B+ above the threshold? is any dimension missing?) is
 mechanical and testable; what each dimension MEANS lives in the vault note the skill
-reads. The threshold is a config key (`loop_accept_threshold`, default `A-`) because
-Ryan ruled per-dimension A− and a future track may tune it.
+reads. The threshold is a config key (`loop_accept_threshold`, default `A-`) and is applied
+per-dimension, so an installation can tune it without touching this module.
 
 Stdlib only, and PURE: every function takes the tasks it needs and returns a value.
 Nothing here loads the store, spawns a session or prints — the command seam does that,
@@ -51,9 +51,9 @@ import exits as _exits
 # ---------------------------------------------------------------- the rubric ----
 #
 # Six dimensions, graded per unit of work. The text is the QUESTION each one answers —
-# short on purpose, because the full rubric (with the evidence that set each grade on
-# the 3.0.0 migration) lives in the vault note `migration-rubric-improvement-loop`, and
-# duplicating it here would give it two owners and one of them would go stale.
+# short on purpose. The engine needs only the arithmetic — is this grade above the
+# threshold, is any dimension missing — and what each dimension MEANS belongs with
+# whoever maintains the rubric, not in two places that can drift apart.
 
 DIMENSIONS = (
     ("G1", "Gate integrity",
@@ -294,17 +294,88 @@ def is_closed(task):
 
 
 def settled(task):
-    """True when this task no longer blocks its dependents: it is CLOSED, or every exit
-    condition it registered is MET.
+    """The LEAF rule: this task alone no longer blocks its dependents — it is CLOSED, or
+    every exit condition it registered is MET.
 
     THE EMPTY-REGISTRATION CASE IS THE WHOLE POINT — `exits.satisfied` is False for a
     task with no conditions, so an unfinished task with an empty checklist blocks its
     dependents exactly as it should, instead of releasing them because there was nothing
-    to check."""
+    to check.
+
+    This rule is not enough on its own once a task has CHILDREN — see `settled_fn`, which
+    is what every scan actually gates on."""
     return is_closed(task) or _exits.satisfied(task)
 
 
-def waves(nodes, resolve):
+def settled_fn(tasks):
+    """A memoized `settled(task)` that accounts for the whole SUBTREE.
+
+    WHY THE LEAF RULE IS NOT ENOUGH, found the first time a track was decomposed. Task
+    531 finished its own five steps, retired the three that had become child tasks, and
+    immediately read as *satisfied* — every condition it registered was met — while three
+    children sat unbuilt. It would have released every dependent wave on the strength of
+    work it had handed to somebody else. That is the empty-registration failure again,
+    one level up: a parent's own checklist stops being evidence the moment the work moves
+    to its children.
+
+    So: CLOSED still wins outright (closing is a human's assertion and it is allowed to
+    end an argument), and otherwise a task is settled only when its own conditions are met
+    AND every child is settled, recursively. A task with no children is unchanged — the
+    `all()` over an empty list is True — so this costs nothing on a flat board.
+
+    A parent cycle (impossible by construction, not by guarantee) returns True for the
+    revisited node rather than recursing forever: a hang here takes the whole scan down."""
+    kids = {}
+    for t in (tasks or []):
+        p = parent_id(t)
+        if p:
+            kids.setdefault(p, []).append(t)
+    memo = {}
+
+    def _settled(task, guard=frozenset()):
+        tid = (task or {}).get("id")
+        if tid in memo:
+            return memo[tid]
+        if tid in guard:
+            return True
+        if is_closed(task):
+            memo[tid] = True
+            return True
+        if not _exits.satisfied(task):
+            memo[tid] = False
+            return False
+        ok = all(_settled(c, guard | {tid}) for c in kids.get(tid, ()))
+        memo[tid] = ok
+        return ok
+
+    return _settled
+
+
+def descendants(task, tasks):
+    """`[(task, depth)…]` for every task in this one's subtree, breadth-first, depth 1 for
+    a direct child.
+
+    THE SCAN WALKS THE SUBTREE, NOT THE CHILD ROW. An orchestrator whose child has become
+    an orchestrator itself would otherwise report that child as the startable unit, when
+    the thing anybody can actually pick up is two levels down. A scan that stops at depth
+    one is the silo Open tail again: correct, current, and not where the work is."""
+    seen = {(task or {}).get("id")}
+    out, frontier, depth = [], [task], 0
+    while frontier:
+        depth += 1
+        nxt = []
+        for node in frontier:
+            for kid in children(node, tasks):
+                if kid.get("id") in seen:
+                    continue
+                seen.add(kid.get("id"))
+                out.append((kid, depth))
+                nxt.append(kid)
+        frontier = nxt
+    return out
+
+
+def waves(nodes, resolve, is_settled=None):
     """Assign each node a wave number over the `depends-on` graph.
 
     Returns `{"waves": {n: [task…]}, "depth": {id: n}, "cycles": [[id…]],
@@ -326,6 +397,7 @@ def waves(nodes, resolve):
         (nothing can ever settle a deleted task, so blocking would be a permanent
         deadlock nobody can clear), and it is REPORTED, because silently releasing work
         whose stated prerequisite has vanished is how a plan lies."""
+    is_settled = settled if is_settled is None else is_settled
     depth, cycles, blockers, dangling = {}, [], {}, {}
     on_stack, no_wave = [], set()
 
@@ -351,7 +423,7 @@ def waves(nodes, resolve):
             if dep is None:
                 dangling.setdefault(tid, []).append(dep_id)
                 continue
-            if settled(dep):
+            if is_settled(dep):
                 continue
             blocking.append(dep)
             d = visit(dep)
@@ -386,22 +458,27 @@ def waves(nodes, resolve):
 COMPLETE, READY, BLOCKED, EMPTY = "complete", "ready", "blocked", "empty"
 
 
-def node_report(task, plan):
+def node_report(task, plan, is_settled=None, tree_depth=None):
     """One node's row in the scan: its wave, its exit-condition rollup, whether it is
     ready, and what is holding it if not."""
+    is_settled = settled if is_settled is None else is_settled
     tid = task.get("id")
     counts = _exits.summary(task)
     cover = _exits.coverage(task)
-    blocking = [b for b in plan["blockers"].get(tid, []) if not settled(b)]
+    blocking = [b for b in plan["blockers"].get(tid, []) if not is_settled(b)]
     in_cycle = any(tid in cyc for cyc in plan["cycles"])
-    is_settled = settled(task)
+    done = is_settled(task)
+    orch = is_orchestrator(task)
     return {
         "seq": task.get("seq"), "id": tid, "title": task.get("title"),
         "status": task.get("status"), "wave": plan["depth"].get(tid),
         "exit_state": _exits.state(task), "exits": counts, "coverage": cover,
         "exits_run_ts": _exits.last_run_ts(task),
-        "settled": is_settled,
-        "ready": bool(not is_settled and not blocking and not in_cycle),
+        "settled": done, "orchestrator": orch, "tree_depth": tree_depth,
+        # AN ORCHESTRATOR IS NEVER "READY". It plans and grades; it holds no work, so
+        # offering it as the next thing to start would send somebody to the one task that
+        # refuses to do any. Its children carry the work and appear on their own rows.
+        "ready": bool(not done and not blocking and not in_cycle and not orch),
         "in_cycle": in_cycle,
         "blocked_by": [{"seq": b.get("seq"), "title": b.get("title")} for b in blocking],
         "dangling": list(plan["dangling"].get(tid, [])),
@@ -409,7 +486,7 @@ def node_report(task, plan):
     }
 
 
-def scan(nodes, resolve, now=None):
+def scan(nodes, resolve, now=None, is_settled=None, depths=None):
     """The whole deterministic answer, as one structured report.
 
     `nodes` is the population being planned (an orchestrator's children, or the open
@@ -424,8 +501,10 @@ def scan(nodes, resolve, now=None):
     blocker, or a park, and the report names which), `empty` (no nodes at all — an
     orchestrator with no children, which is a plan that has not been built yet)."""
     nodes = list(nodes or [])
-    plan = waves(nodes, resolve)
-    rows = [node_report(t, plan) for t in nodes]
+    depths = depths or {}
+    plan = waves(nodes, resolve, is_settled=is_settled)
+    rows = [node_report(t, plan, is_settled=is_settled,
+                        tree_depth=depths.get(t.get("id"))) for t in nodes]
     ready = [r for r in rows if r["ready"]]
     unsettled = [r for r in rows if not r["settled"]]
     if not rows:
@@ -481,7 +560,7 @@ def orchestrator_refusal(task, tasks, verb="delegate run"):
 
     NAMES THE CHILD THAT SHOULD OWN THE WORK, which is the whole difference between a
     guard and an obstacle: "refused" makes somebody go read the rule, while "refused —
-    #531 and #533 are ready, run it there" makes the right thing the easy thing. Ready
+    these two children are ready, run it there" makes the right thing the easy thing. Ready
     children come from the same wave computation the scan prints, so the two can never
     recommend different work."""
     if not is_orchestrator(task):

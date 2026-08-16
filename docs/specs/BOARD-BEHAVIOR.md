@@ -257,10 +257,10 @@ Run: `python3 -m pytest tests/test_board_behavior.py -q`.
   `group families` button in the filter bar switches to flat activity order and persists
   the choice in `localStorage` under `ts-board-nest`.
 - **Why it exists:** the board sorted purely by activity, so an orchestrator scattered
-  across the table — measured on one real board, task 444 sat *between* two of its own
+  across the table — measured on one real board, a parent sat *between* two of its own
   children. Worse, the only relation marker printed `↳ from #N` for **every** outgoing
-  kind, so a track read `↳ from #533, #444` where #533 merely gated it and #444 owned it,
-  and one task read `↳ from #535` while being a *dependent*, not a child. The chip was not
+  kind, so one task read `↳ from #a, #b` where #a merely gated it and #b owned it, and
+  another read `↳ from #c` while being a *dependent*, not a child. The chip was not
   terse; it was wrong. A parent, meanwhile, advertised nothing at all, because the chip
   read only the outgoing side.
 - **The three refusals**, each a way a layout pass takes the whole board down rather than
