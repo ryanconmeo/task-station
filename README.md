@@ -271,6 +271,53 @@ The policy is **two numbers, both printed**. A **trigger** — a share of the wi
 The successor is attached to **the same task** — no child, no new record — and runs the predecessor's own model selection, `[1m]` marker included. Its prompt is generated from the **record**, never the transcript, and carries the request only: the digest it is about to read already holds the goal, the summary, the decisions and the checklist, so restating them would be a second copy that can drift.
 
 Every handoff lands on a ledger the parent grades **through the same `grade` verb and the same six dimensions** as any other child work (`grade --task 12 --handoff 1 --dim G1=A …`), carrying the mechanical evidence — who handed to whom, at what occupancy, against which window, and whether it was forced. A relay is internal to one task's life and creates no child, so without that ledger a thin handoff was invisible to every surface an orchestrator looks at; the scan row now carries the count and how many are still ungraded.
+### Reaching a running child
+
+`invoke` starts a child and `scan` watches one. Neither can say a word to one that is
+already going: a memo lands on the record and is surfaced when somebody **types**, and an
+invoked child is handed exactly one prompt and then works. So every mid-flight fact — main
+moved, the spec changed, stop and hand back what you have — used to be undeliverable.
+
+```text
+task-station channel reach      --task 17                       # who is running, and by which source
+task-station channel stand-down --task 17 --why 'main moved under you'
+task-station channel orders     --task 17                       # the queue: pending · delivered · settled
+task-station channel settle     --task 17 --id ab12cd34 --session <sid> --report '<what you wrote>'
+task-station channel deny       --session <sid> --action 'kill -9 40311 40312' --by 'permission classifier'
+```
+
+**The transport is the turn boundary.** The end of a turn is the one moment a running
+session arrives at by itself, with no human in the loop, and the Stop hook can refuse to
+let it pass — so an order is read at the child's next Stop and the turn does not end until
+it is settled. A memo to a task with a live session now rides the same rail automatically;
+a task nobody is working on queues nothing and behaves exactly as before. Editing an exit
+condition mid-flight is pushed too, because **done here is computed** from those
+conditions and a child working to the old checklist would finish something that no longer
+counts. An order blocks at most three times, then stays pending and visible without
+holding the turn hostage.
+
+**A stand-down is not a kill.** Settling one *requires* `--report`, and the report goes
+back to whoever ordered it as a memo — the point of standing a child down is getting its
+own account of where it got to, and a stand-down that needs nothing back discards
+everything the child had not yet written down.
+
+**Liveness comes from process state, not from a hook.** A row is built from the harness's
+own per-process record — a live pid, plus the control socket the harness opened for that
+session — and joined to the task through the roster the **launch** wrote, not through the
+session→task link an *attach* writes. A child that has been launched but has not reached
+its hooks yet is exactly the child a parent most needs to reach. The link store stays as a
+second source, so a session that walked in and attached itself is still found; every row
+says which one found it.
+
+**The permission boundary is enforced at the channel.** Permissions in Claude Code are
+per-session, and a control channel is exactly where that breaks: the moment a parent can
+send work to a child, a session denied an action has an obvious workaround. So a session
+that was **denied** an action may not ask a peer to perform it — refused at the channel,
+naming the denial, never left to the receiver. `channel deny` is how a refusal the harness
+handed down becomes durable, and it binds the session **and its task**, so a successor
+session inherits the refusal instead of having to rediscover it. Note what the rule is
+not: a plan-mode reviewer handing findings to an implementer is the loop working — it was
+never *denied* an edit, it was never granted one.
 
 ### The orchestrator flag
 
