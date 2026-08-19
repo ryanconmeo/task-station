@@ -539,8 +539,10 @@ def cmd_stop_nudge(a):
         line = ("[task-station] %s context is %s and nearing auto-compaction. "
                 "Run `/todo save` NOW to capture a STRUCTURED checkpoint of task %s from "
                 "full context — it is a better, task-shaped compaction than the generic "
-                "auto-summary. Then continue, or open a fresh session and `/todo %s` to "
-                "resume from the digest." % (who, amount, seq, seq))
+                "auto-summary. Then continue, or hand off: `task-station relay --task %s` "
+                "says whether a relay is due and what a handoff would still lose, and "
+                "`--spawn` opens the successor on this same task."
+                % (who, amount, seq, seq))
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "Stop", "additionalContext": line}}))
         return
