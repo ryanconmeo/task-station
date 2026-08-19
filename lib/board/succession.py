@@ -38,6 +38,14 @@ what it costs: authoring a summary and a continuation prompt is the same job on 
 window as on a 1M one, and 20% of the former is 4% of the latter. Percentages would make
 the affordable band mean two different things on two models.
 
+3.9.0 gave that choice a second job nobody designed it for, and it is worth knowing about
+before anyone converts the reserve to a percentage. The control channel's STAND-DOWN
+cannot be settled without a report, and a session that has hit the relay trigger is by
+definition the one with least room left to write one. So the absolute reserve is also what
+guarantees a stand-down can be ANSWERED rather than dying mid-report — and it guarantees
+the same number of tokens for that on every model, which a percentage would not. The two
+mechanisms compose here by accident, and the accident is load-bearing.
+
 So three verdicts. Below the trigger, KEEP_GOING — nothing is due, and relaying at 30%
 throws away warm context to buy nothing. At or above it with the reserve intact, RELAY.
 At or above it with the reserve spent, COMPACT — the relay window was missed, so let the

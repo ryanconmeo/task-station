@@ -32,6 +32,12 @@ Five properties, one per class, each the thing that was missing:
      perform it. Refused at the channel, from a durable denial record, so it does not
      depend on each session choosing to be honest about it.
 
+`StandDown` also carries the PRECEDENCE ruling against 3.8.0's relay: a pending
+stand-down silences the relay nudge for that turn. A stand-down is an order from the
+parent; a relay is a self-assessment about context. If both fire and the relay proceeds,
+the child spawns a successor to continue work the parent just cancelled — a child
+disobeying a stop by proxy, and burning a fresh full-window session to do it.
+
 The fixture fakes two things and nothing else: which pids are alive, and the harness's
 sessions directory. Both are real files/real process state in production, and both are
 exactly what a test cannot have.
@@ -165,6 +171,31 @@ class _ChannelBase(unittest.TestCase):
 
     def _memos(self, task_id):
         return [m.get("text", "") for m in (ts.load_task(task_id).get("memos") or [])]
+
+    def _pressure(self, sid, used=700_000, window=1_000_000):
+        """Put `sid` genuinely over the relay/checkpoint trigger: a real transcript
+        carrying a `usage` block, and a hud snapshot naming the window. No engine name is
+        patched — the nudge measures what the files say, exactly as it does in production."""
+        import hud
+        self._proj = os.path.join(self.tmp, "projects")
+        ts.PROJECTS_ROOT = self._proj
+        bucket = os.path.join(self._proj, "-fake-bucket")
+        os.makedirs(bucket, exist_ok=True)
+        line = {"type": "assistant", "message": {"role": "assistant",
+                "model": "claude-opus-4-8", "usage": {"input_tokens": used}}}
+        with open(os.path.join(bucket, sid + ".jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps(line) + "\n")
+        hud._write_snap(sid, {"context_window_size": window})
+        import config as _cfg
+        _cfg.set("auto_checkpoint", True)
+
+    def _nudge(self, sid):
+        """Run the Stop nudge and return its emitted document (or None)."""
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ts.cmd_stop_nudge(_Args(session=sid))
+        out = buf.getvalue().strip()
+        return json.loads(out) if out else None
 
     def _scan_spy(self):
         """Count whole-store scans inside the Stop gate. Returns the call list."""
@@ -372,6 +403,59 @@ class StandDown(_ChannelBase):
         out = self._stand_down(child)
         self.assertIn("no live session", out)
         self.assertEqual(channel.orders(ts.load_task(child["id"])), [])
+
+    # -- precedence against 3.8.0's relay ------------------------------------------
+
+    def test_the_relay_nudge_fires_without_a_stand_down(self):
+        """The control: this session IS over the trigger, so the nudge must speak. Without
+        this, the suppression test below would pass on a nudge that never fired at all."""
+        parent, child = self._pair()
+        child = self._launch(child, "child-a", 4207, link=True)
+        self._pressure("child-a")
+        doc = self._nudge("child-a")
+        self.assertIsNotNone(doc)
+        self.assertIn("relay", doc["hookSpecificOutput"]["additionalContext"])
+
+    def test_a_pending_stand_down_silences_the_relay_nudge(self):
+        """A relay proceeding under a stand-down would spawn a successor to continue work
+        the parent just cancelled — a child disobeying a stop by proxy."""
+        parent, child = self._pair()
+        child = self._launch(child, "child-a", 4208, link=True)
+        self._pressure("child-a")
+        ts.set_link("parent-sid", parent["id"])
+        self._stand_down(child)
+        self.assertIsNone(self._nudge("child-a"))
+
+    def test_suppressed_is_not_consumed(self):
+        """The one-shot `pressure_nudged` flag must NOT be spent by the suppression: a
+        session genuinely out of room has to hear about it once the order is settled."""
+        parent, child = self._pair()
+        child = self._launch(child, "child-a", 4209, link=True)
+        self._pressure("child-a")
+        ts.set_link("parent-sid", parent["id"])
+        self._stand_down(child)
+        self.assertIsNone(self._nudge("child-a"))
+        self.assertFalse(ts.load_task(child["id"]).get("pressure_nudged"))
+        # Settle the order → the deferred nudge speaks on the next Stop.
+        order = channel.orders_for(ts.load_task(child["id"]), "child-a")[0]
+        with redirect_stdout(io.StringIO()):
+            ts.cmd_channel(_Args(sub="settle", task=str(child["seq"]),
+                                 id=order["id"][:8], session="child-a",
+                                 report="handed back: two files, rebase unfinished",
+                                 why=None, as_json=False, action=None, by=None))
+        doc = self._nudge("child-a")
+        self.assertIsNotNone(doc, "the nudge was consumed by the suppression, not deferred")
+        self.assertTrue(ts.load_task(child["id"]).get("pressure_nudged"))
+
+    def test_a_memo_order_does_not_silence_the_relay(self):
+        """Only a STAND-DOWN outranks the nudge. A memo order is information, not a stop —
+        suppressing on any pending order would let a stray memo mute a real relay."""
+        parent, child = self._pair()
+        child = self._launch(child, "child-a", 4210, link=True)
+        self._pressure("child-a")
+        ts.memo_send(child, "fyi the branch moved", from_sid="parent-sid")
+        ts.save_task(child)
+        self.assertIsNotNone(self._nudge("child-a"))
 
 
 # ------------------------------------------------------------- (3) a moved spec ----

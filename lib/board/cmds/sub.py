@@ -34,6 +34,7 @@ __all__ = [
     "cmd_detach", "_open_tasks_brief", "cmd_mark_edited", "cmd_touch_file",
     "cmd_stop_gate", "cmd_post_compact", "cmd_stop_nudge",
     "_channel_task_for", "_channel_block", "_stop_gate_edit_reason",
+    "_stand_down_pending",
     "cmd_config_change", "cmd_file_changed", "cmd_worktree_create",
     "_done_gate_line", "_close_one", "_maybe_close_session_window",
     "cmd_done", "cmd_delete",
@@ -418,6 +419,21 @@ def _channel_block(session):
         return None
 
 
+def _stand_down_pending(task, session):
+    """True when a STAND-DOWN order is waiting for `session` on `task`.
+
+    Gates the relay nudge — see the precedence note in `cmd_stop_nudge`. Fail-CLOSED on
+    an exception, unusually for this file: every other channel path fails open because
+    the cost of being wrong is an undelivered message, but here the cost of being wrong is
+    a child spawning a successor to continue work its parent just cancelled. Staying
+    silent for one turn is the cheap error."""
+    try:
+        return any(o.get("kind") == _channel.ORDER_STAND_DOWN
+                   for o in _channel.orders_for(task, session))
+    except Exception:                                   # noqa: BLE001
+        return True
+
+
 def cmd_stop_gate(a):
     """Stop hook: the turn-end gate. Two independent reasons to refuse, in this order.
 
@@ -557,6 +573,25 @@ def cmd_stop_nudge(a):
            real measurement isn't available.
        Fires ONCE per pressure episode: `pressure_nudged` is set when emitted and held
        until a `/todo save` clears it, so an ignored nudge is NOT re-spammed every turn.
+    0. A PENDING STAND-DOWN SILENCES BOTH OF THEM, and that ordering is a ruling rather
+       than a tidy-up. A stand-down is an ORDER FROM THE PARENT — external authority the
+       child does not get to weigh against its own housekeeping — while a relay is a SELF
+       assessment about context. If both fire and the relay proceeds, the child spawns a
+       successor to carry on work the parent has just cancelled: not a confusing pair of
+       messages but a child disobeying a stop BY PROXY, and burning a fresh full-window
+       session to do it. So: stand-down pending → silent, no exceptions. The reverse needs
+       no rule; a relay with no stand-down pending proceeds as normal.
+
+       SUPPRESSED IS NOT CONSUMED. The check returns BEFORE `pressure_nudged` is set, so
+       the nudge is merely deferred — it fires on the next Stop once the order is settled.
+       A suppression that silently spent the one-shot flag would mean a session that was
+       genuinely out of room never heard about it.
+
+       Only the pressure limb carries the disobedience risk; the staleness limb is
+       suppressed for a smaller reason — the gate is already BLOCKING this turn with
+       explicit instructions, and a nudge printed alongside a block is noise on top of an
+       order.
+
     2. LIGHT staleness nudge — only when the pressure trigger did NOT fire and the digest
        is stale. Activity-gated by checkpoint_milestone_edits: it holds until N meaningful
        events (edits / promotions) have accrued since the last refresh (default 5), so a
@@ -571,6 +606,8 @@ def cmd_stop_nudge(a):
     task = _session_task(a.session)
     if not task:
         return
+    if _stand_down_pending(task, a.session):
+        return                      # limb 0 above — the parent's order outranks both nudges
     try:
         import config
         pct = config.checkpoint_pct()
