@@ -270,6 +270,38 @@ def main(argv=None):
     sp.add_argument("--session", default=None)
     sp.set_defaults(fn=cmd_invoke)
 
+    # relay — session succession. Bare it REPORTS (occupancy, verdict, what blocks a
+    # handoff) and writes nothing; --spawn hands the task to a fresh session pre-attached
+    # to THE SAME record. See lib/succession.py for the two-number policy and why
+    # "unknown" is not "keep going".
+    sp = sub.add_parser("relay",
+                        help="report this session's context pressure, and hand off to a "
+                             "successor on the same task")
+    sp.add_argument("--task", default=None,
+                    help="task by seq/id (default: the attached task)")
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--spawn", action="store_true",
+                    help="actually hand off: mint a session pre-attached to THIS task, "
+                         "launch it with the generated continuation prompt, and record "
+                         "the handoff for the gate. Without it this verb only reports, "
+                         "and writes nothing at all.")
+    sp.add_argument("--force", action="store_true",
+                    help="hand off despite a keep-going/unknown verdict or an incomplete "
+                         "record. Recorded as FORCED with the gaps it overrode — a "
+                         "degraded handoff is sometimes right, an invisible one never is.")
+    sp.add_argument("--model", default=None,
+                    help="override the successor's model (default: the predecessor's own "
+                         "selection, `[1m]` marker and all)")
+    sp.add_argument("--cwd", default=None,
+                    help="directory the successor starts in (default: where this task's "
+                         "most recent session ran)")
+    sp.add_argument("--print-command", dest="print_command", action="store_true",
+                    help="hand the launch to a human: the session is still pre-attached, "
+                         "and the trail records a MANUAL LAUNCH rather than a window")
+    sp.add_argument("--json", dest="as_json", action="store_true",
+                    help="the structured report — the same object the text view renders")
+    sp.set_defaults(fn=cmd_relay)
+
     # grade — record one pass of the graded acceptance gate on a child task. The engine
     # does the arithmetic; the SKILL supplies the judgment.
     sp = sub.add_parser("grade",
@@ -284,6 +316,10 @@ def main(argv=None):
     sp.add_argument("--threshold", default=None, metavar="GRADE",
                     help="override the configured accept threshold for this grading "
                          "(default: loop_accept_threshold, A-)")
+    sp.add_argument("--handoff", type=int, default=None, metavar="N",
+                    help="grade session HANDOFF N (as `relay` numbered it) instead of the "
+                         "task's work — same rubric, same threshold, linked so a task "
+                         "that relayed more than once keeps its verdicts separate")
     sp.add_argument("--note", default=None, help="one line of judgment, stored with the grade")
     sp.add_argument("--park", default=None, metavar="REASON",
                     help="record that this child does NOT come back to the loop: "

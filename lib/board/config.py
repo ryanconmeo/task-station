@@ -872,6 +872,36 @@ def loop_builds_max():
     return _positive_number("TASK_STATION_LOOP_BUILDS_MAX", "loop_builds_max", 1)
 
 
+# -- session succession's two tunables (lib/succession.py) ----------------------
+
+def succession_pct():
+    """The share of the context window at which a session should consider handing off to
+    a successor, 1–95. Default 65 — the same threshold `checkpoint_pct` fires the
+    structured-checkpoint nudge at, deliberately: the moment to write a real checkpoint is
+    the moment to consider relaying, and two defaults for one threshold would be two
+    answers to one question.
+
+    NO OFF SWITCH, unlike `checkpoint_pct`. That one gates a NAG, which interrupts and so
+    must be silenceable; this gates a report somebody asked for, where "off" could only
+    mean "always answer keep-going" — a lie at 99%. `TASK_STATION_SUCCESSION_PCT`
+    overrides; anything unparseable or <= 0 falls back to the default, and anything above
+    95 is clamped (a 100% trigger fires only after the window is already gone)."""
+    return min(95, _positive_number("TASK_STATION_SUCCESSION_PCT", "succession_pct", 65))
+
+
+def succession_reserve():
+    """The tokens a handoff itself needs, ABSOLUTE rather than a second percentage.
+    Default 40,000.
+
+    Reconciling the record, writing the checkpoint from full context, closing the gaps its
+    cold-read names and generating the continuation prompt is real work done inside the
+    session that is running out of room — and it costs the same on a 200k window as on a
+    1M one, which is why a percentage would make the affordable band mean two different
+    things on two models. `TASK_STATION_SUCCESSION_RESERVE` overrides."""
+    return _positive_number("TASK_STATION_SUCCESSION_RESERVE", "succession_reserve",
+                            40000)
+
+
 # -- heal's one tunable (lib/heal.py) -------------------------------------------
 
 def heal_goal_review_due():

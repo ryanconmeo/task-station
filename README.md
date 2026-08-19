@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-3.7.1-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.8.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -253,6 +253,25 @@ task-station grade  --task 17 --dim G1=A --dim G2=A- … [--park human-gate --wh
 
 The **judgment** — what grade each dimension earns — is the `grade` skill's, not a flag's. The engine owns only what is deterministic.
 
+### Session succession — the relay
+
+A long session fills up, and the default outcome is the harness's own auto-compaction: a model-authored summary nobody audited, landing when the window says so rather than when the work has a clean seam. `relay` is the alternative — stop deliberately, and hand the task to a fresh session that reads the digest.
+
+```text
+task-station relay --task 12            # the report: where this session stands (writes nothing)
+task-station relay --task 12 --spawn    # hand off — a successor on THIS task
+```
+
+**Bare `relay` is the report, and the report is free.** No session minted, no event, no field touched — `invoke` needed a `--dry-run` flag to offer that; here the preview is the default and the flag is what opens a window, which is the right way round for a verb whose job is to end the session that typed it.
+
+The policy is **two numbers, both printed**. A **trigger** — a share of the window (`succession_pct`, default 65, the same point the checkpoint nudge fires at) — and a **reserve** in absolute tokens (`succession_reserve`, default 40,000): what the handoff sequence itself costs, since reconciling the record, checkpointing from full context and generating the prompt is real work done inside the session that is running out of room. So three verdicts: **keep-going** below the trigger, **relay** above it with the reserve intact, **compact** above it with the reserve spent — a checkpoint written with no headroom is thinner than the compaction it was meant to beat. A fourth value, **unknown**, is what an unmeasurable session reports; it is deliberately *not* keep-going, because a policy that never ran has not decided anything.
+
+**Due and ready are separate facts.** The verdict says whether this session should hand off; `ready` says whether its record can survive one — every named slot filled, a state line leading with `NEXT:`, and a checkpoint both taken and current. Gaps don't make the relay less due, they make it lossy, so both are reported and `--spawn` refuses until they close. `--force` overrides that (at 95% a degraded handoff beats none) and the gaps then travel **inside the continuation prompt**, so the successor knows what it is missing.
+
+The successor is attached to **the same task** — no child, no new record — and runs the predecessor's own model selection, `[1m]` marker included. Its prompt is generated from the **record**, never the transcript, and carries the request only: the digest it is about to read already holds the goal, the summary, the decisions and the checklist, so restating them would be a second copy that can drift.
+
+Every handoff lands on a ledger the parent grades **through the same `grade` verb and the same six dimensions** as any other child work (`grade --task 12 --handoff 1 --dim G1=A …`), carrying the mechanical evidence — who handed to whom, at what occupancy, against which window, and whether it was forced. A relay is internal to one task's life and creates no child, so without that ledger a thin handoff was invisible to every surface an orchestrator looks at; the scan row now carries the count and how many are still ungraded.
+
 ### The orchestrator flag
 
 ```text
@@ -261,7 +280,7 @@ task-station update --task 12 --orchestrator on
 
 A task flagged orchestrator-only plans and grades; it does not hold work. `delegate run --seq 12` then **refuses and names the child that should own the work**, with the exact command to run there. Explicit rather than inferred from "has children" — plenty of parents legitimately hold their own work, and a guard that fires on every parent gets switched off. `delegate run --force` overrides it deliberately and writes the override onto the task.
 
-Tunables (config.json keys / env, no board row): `exit_command_timeout` (120s) · `loop_accept_threshold` (`A-`) · `loop_retry_max` (2) · `loop_children_max` (3) · `loop_builds_max` (1, **machine-wide** — two orchestrators share it).
+Tunables (config.json keys / env, no board row): `exit_command_timeout` (120s) · `loop_accept_threshold` (`A-`) · `loop_retry_max` (2) · `loop_children_max` (3) · `loop_builds_max` (1, **machine-wide** — two orchestrators share it) · `succession_pct` (65) · `succession_reserve` (40,000 tokens).
 
 ## Fan-out hints (ultracode)
 

@@ -22,6 +22,7 @@ import config as _config
 import exits as _exits
 import loop as _loop
 import steps as _steps
+import succession as _succ
 from board import workspace as _workspace
 
 g, set_g = _shared.g, _shared.set_g
@@ -32,7 +33,7 @@ __all__ = [
     "DRY_RUN_SID", "MANUAL_LAUNCH", "_record_launch",
     "cmd_exit_add", "cmd_exit_rm", "cmd_exit_show", "cmd_exit_tick",
     "cmd_scan", "cmd_invoke", "cmd_grade", "cmd_orchestrator_check",
-    "cmd_decompose",
+    "cmd_decompose", "cmd_relay",
     "_live_seqs",
 ]
 
@@ -401,6 +402,13 @@ def _scan_row(r):
         tail = "  in a cycle"
     if r["dangling"]:
         tail += "  (depends on %d task(s) that no longer exist)" % len(r["dangling"])
+    # An UNGRADED SESSION HANDOFF is appended rather than replacing the tail, because it is
+    # orthogonal to why the node is or is not startable — a settled child can still owe
+    # the gate a handoff verdict, and a tail that showed one instead of the other would
+    # hide whichever it dropped. Only the ungraded count is shown: a handoff already graded
+    # is history, and history belongs in the trail.
+    if r.get("handoffs_ungraded"):
+        tail += "  +%d ungraded handoff(s)" % r["handoffs_ungraded"]
     # A node deeper than a direct child says WHOSE it is — the wave column groups by
     # readiness, not by family, so without this a grandchild reads as a sibling.
     depth = r.get("tree_depth") or 0
@@ -657,6 +665,136 @@ def cmd_invoke(a):
     _record_launch(child, orch, role, ask, manual, session=getattr(a, "session", None))
 
 
+# ------------------------------------------------------------------- the relay ----
+#
+# THE ONE LINE THAT SEPARATES THIS FROM `invoke`: the successor is pre-attached to the
+# SAME task. Everything else is the same substrate on purpose — `fresh_resume_command`'s
+# pre-bound session id, the workspace trust pass, the window opener, and the MANUAL LAUNCH
+# distinction — because a second spawner would be a second set of the bugs 3.7.0 just
+# finished fixing in the first one.
+#
+# NO ORCHESTRATOR REFUSAL HERE, deliberately. `invoke` and `delegate` refuse to run work
+# from an orchestrator-only task because the WORK belongs to a child. A relay moves no
+# work anywhere: an orchestrator's own planning session fills up like any other, and
+# telling it to hand its planning to a child would be the guard firing on the one case it
+# was never about.
+
+
+def cmd_relay(a):
+    """`task-station relay [--task REF] [--spawn]`
+
+    Bare, this is the REPORT: where this session stands, what the policy says to do, and
+    what still blocks a handoff. It writes nothing at all — no session minted, no event,
+    no field touched. `invoke` needed a `--dry-run` flag to offer that; here the preview
+    is the DEFAULT and the flag is what opens a window, which is the right way round for a
+    verb whose whole job is to end the session that typed it.
+
+    `--spawn` performs the handoff: mint a session pre-attached to THIS task, launch it
+    with the generated continuation prompt, record the handoff on the ledger the gate
+    grades. It REFUSES a verdict of keep-going or unknown, and refuses a record that
+    cannot carry a handoff, naming the gaps. `--force` overrides both — sometimes the
+    right call at 95% — and is recorded as forced with its blockers, because a forced
+    handoff that nobody could see afterwards makes G1 ungradeable.
+
+    EXIT CODES: 0 done (or reported) · 2 the command was wrong · 3 refused, with the
+    reason printed."""
+    task, err = _loop_target(a, "relay")
+    if err:
+        print(err)
+        sys.exit(2)
+    session = getattr(a, "session", None)
+    spawn = bool(getattr(a, "spawn", False))
+    # The report is a READ and never refuses; only a spawn needs a live task to hand to.
+    if spawn and is_closed(task):
+        print("relay: task #%s is closed. There is nothing to hand off — reopen it first "
+              "(`/todo %s`)." % (task.get("seq"), task.get("seq")))
+        sys.exit(2)
+    rep = _succ.report(task, measure_context_tokens(session),
+                       effective_context_window(session), session=session)
+    ref = task.get("seq") or task["id"][:8]
+    if getattr(a, "as_json", False) and not spawn:
+        print(json.dumps(rep, indent=2, sort_keys=True, default=str))
+        return
+    print("Relay — #%s %s" % (ref, task.get("title")))
+    for line in _succ.report_lines(rep):
+        print(line)
+    if not spawn:
+        print("  nothing was written — this is the report. `relay --spawn` hands off.")
+        return
+
+    force = bool(getattr(a, "force", False))
+    if rep["verdict"] not in (_succ.RELAY,) and not force:
+        print("  REFUSED: the verdict is %s, not %s. %s"
+              % (rep["verdict"], _succ.RELAY,
+                 "Pass --force if you have a reason the numbers cannot see."))
+        sys.exit(3)
+    if not rep["ready"] and not force:
+        print("  REFUSED: the record cannot carry a handoff yet — the successor would "
+              "lose the items above. Close them (`/todo save`), or --force and accept a "
+              "degraded handoff that says so in its own prompt.")
+        sys.exit(3)
+    # `forced` is narrower than the FLAG: passing --force on a relay that needed nothing
+    # overridden is not a forced handoff, and recording it as one would put a finding in
+    # front of a grader that has nothing behind it.
+    blockers = list(rep["blockers"])
+    forced = force and (rep["verdict"] != _succ.RELAY or bool(blockers))
+
+    predecessor = ordinal_label(task, session) or (session or "?")[:8]
+    # Mint FIRST: the successor's own ordinal is assigned here, and the prompt names it.
+    sid, base = fresh_resume_command(task, preborn=True)
+    task = load_task(task["id"]) or task
+    successor = ordinal_label(task, sid) or sid[:8]
+    cwd = getattr(a, "cwd", None)
+    if cwd:
+        base = "cd %s && claude --session-id %s" % (shlex.quote(os.path.expanduser(cwd)),
+                                                    sid)
+    verdict = _workspace.assess(cwd)
+    done = _workspace.apply(verdict)
+    prompt = _succ.continuation_prompt(task, rep=rep,
+                                       blockers=blockers if force else None,
+                                       predecessor=predecessor, successor=successor)
+    # THE SUCCESSOR RUNS THE SAME MODEL, full selection string and all. A relay continues
+    # one piece of work, so there is no role to consult and nothing to choose — and the
+    # `[1m]` marker has to survive, because handing a successor a 200k window to finish
+    # work started in a 1M one is the same unasked-for downgrade `invoke` refuses to make.
+    model = getattr(a, "model", None) or g("claude_code_model_selection")()
+    parts = [base]
+    if model:
+        parts.append("--model %s" % shlex.quote(model))
+    parts.append(shlex.quote(prompt))
+    cmd = " ".join(parts)
+    print("  session %s (%s) is pre-attached to THIS task — no child, no new record: its "
+          "SessionStart injects the same digest you have been working from."
+          % (sid[:8], successor))
+    for line in _workspace.lines(verdict, done):
+        print(line)
+    manual = True
+    if getattr(a, "print_command", False):
+        print("  run it yourself:")
+        print("    %s" % cmd)
+    elif g("_open_jump_window")(cmd):
+        manual = False
+        print("  opened the successor's window (this one is untouched):")
+        print("    %s" % cmd)
+    else:
+        print("  could not open a window (macOS/Terminal only) — run it yourself:")
+        print("    %s" % cmd)
+    entry, index1 = _succ.record_handoff(task, session, sid, rep, forced=forced,
+                                         blockers=blockers)
+    head = "%s — relay %s → %s" % (MANUAL_LAUNCH, predecessor, successor) if manual \
+        else "relay %s → %s" % (predecessor, successor)
+    add_event(task, "child", "%s (session %s) — ~%d%% of a %dk window%s"
+              % (head, sid[:8], rep["used_pct"], rep["window"] // 1000,
+                 ", FORCED past %d gap(s)" % len(blockers) if forced else ""),
+              session=session)
+    task["updated_ts"] = _now()
+    save_task(task)
+    print("  handoff #%d recorded — the parent grades it like any other child work "
+          "(`grade --task %s --handoff %d --dim G1=… …`)." % (index1, ref, index1))
+    if forced:
+        print("  FORCED, and the record says so — the grader sees the gaps you overrode.")
+
+
 # ------------------------------------------------------------------- the grade ----
 
 def cmd_grade(a):
@@ -701,9 +839,27 @@ def cmd_grade(a):
             print("  %s  %-28s %s" % (key, _loop.DIMENSION_TITLES[key],
                                       _loop.DIMENSION_QUESTIONS[key]))
         sys.exit(2)
+    # `--handoff N` grades a SESSION HANDOFF rather than the task's work. Same rubric,
+    # same threshold, same verb — the link is only so a task that relayed three times can
+    # say which verdict judged which handoff. Validated BEFORE anything is recorded: a
+    # grading filed against a handoff that does not exist would be a verdict about
+    # nothing, and it would still burn an attempt.
+    handoff = getattr(a, "handoff", None)
+    if handoff is not None:
+        ledger = _succ.handoffs(task)
+        if not ledger:
+            print("grade --handoff %s: task #%s has recorded no session handoff. "
+                  "A handoff is written by `relay --spawn`; there is nothing here to "
+                  "grade." % (handoff, task.get("seq")))
+            sys.exit(2)
+        if not 1 <= int(handoff) <= len(ledger):
+            print("grade --handoff %s: task #%s has %d handoff(s), numbered 1-%d."
+                  % (handoff, task.get("seq"), len(ledger), len(ledger)))
+            sys.exit(2)
     note = getattr(a, "note", None) or getattr(a, "why", None)
     entry, v = _loop.record(task, dims, threshold, note=note,
-                            session=getattr(a, "session", None), park=park)
+                            session=getattr(a, "session", None), park=park,
+                            handoff=handoff)
     retry_max = _config.loop_retry_max()
     left = _loop.retries_left(task, retry_max)
     ref = task.get("seq") or task["id"][:8]
@@ -721,7 +877,17 @@ def cmd_grade(a):
                           "retries_left": left}, indent=2, sort_keys=True,
                          default=str))
     else:
-        print("Gate — task #%s %s" % (ref, task.get("title")))
+        print("Gate — task #%s %s%s" % (ref, task.get("title"),
+                                        ("  · handoff #%s" % handoff)
+                                        if handoff is not None else ""))
+        # The handoff's mechanical evidence is printed WITH the verdict, so the record of
+        # what was graded and the grade itself are one artefact. Otherwise "G1=A" on a
+        # forced handoff is a claim with nothing beside it. `evidence`, not `line` — the
+        # verdict line is already bound above and shadowing it here printed the last
+        # evidence row where the verdict belonged.
+        if handoff is not None:
+            for evidence in _succ.handoff_evidence_lines(task, handoff):
+                print(evidence)
         for key in _loop.DIMENSION_KEYS:
             grade = dims.get(key)
             mark = ("  " if grade is None else

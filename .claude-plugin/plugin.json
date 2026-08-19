@@ -2,7 +2,7 @@
   "name": "task-station",
   "displayName": "Task Station",
   "description": "Never lose your place in Claude Code — every task on one durable board, each wired to the session that holds its context, so you pick up exactly where you left off. A persistent, cross-session task hub: auto-categorised, terminal-tinted, with a structured per-task digest and in-project worker delegation, alongside Claude's native Tasks.",
-  "version": "3.7.1",
+  "version": "3.8.0",
   "author": { "name": "Ryan Nguyen", "url": "https://github.com/ryanconmeo" },
   "homepage": "https://github.com/ryanconmeo/task-station",
   "repository": "https://github.com/ryanconmeo/task-station",

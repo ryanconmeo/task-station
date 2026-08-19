@@ -228,17 +228,29 @@ def parked(task):
     return (ledger[-1].get("park") or None) if ledger else None
 
 
-def record(task, dims, threshold, note=None, session=None, park=None, now=None):
+def record(task, dims, threshold, note=None, session=None, park=None, now=None,
+           handoff=None):
     """Append one grading to the ledger and return `(entry, verdict)`.
 
     A PARK IS RECORDED WITH ITS REASON AND NO ACCEPTANCE: parking is the loop saying
     "this does not come back to me", which is a different statement from a failing
-    grade and must not read as one later. Does NOT save; the caller persists."""
+    grade and must not read as one later. Does NOT save; the caller persists.
+
+    `handoff` is the 1-based index of the session HANDOFF this grading judged
+    (lib/succession.py), when it judged one. Purely additive and written only when
+    supplied — a grade of ordinary work must not carry a key claiming it graded a relay.
+    Without the link a task that relayed three times could not say which verdict belonged
+    to which handoff, so the second one would inherit the first one's grade for free."""
     v = verdict(dims or {}, threshold)
     entry = {"ts": time.time() if now is None else now,
              "dims": dict(dims or {}), "threshold": threshold,
              "accepted": bool(v["accepted"]) and not park,
              "verdict": verdict_line(v)}
+    if handoff is not None:
+        try:
+            entry["handoff"] = int(handoff)
+        except (TypeError, ValueError):
+            pass
     if park:
         entry["park"] = park
         entry["accepted"] = False
@@ -483,6 +495,18 @@ def waves(nodes, resolve, is_settled=None):
 # ------------------------------------------------------------------ the scan ----
 
 COMPLETE, READY, BLOCKED, EMPTY = "complete", "ready", "blocked", "empty"
+def _succession():
+    """`lib/succession.py`, imported at call time rather than at module scope.
+
+    Succession is DOWNSTREAM of this module: it scores a handoff against this rubric and
+    reads this grade ledger, so `succession → loop` is the honest direction and a
+    top-level import here would close the ring. Deferred, there is no ring at all — by
+    the time any row is built, whichever module was imported first is fully loaded, and
+    `sys.modules` makes every call after the first a dict lookup."""
+    import succession
+    return succession
+
+
 # A fifth value, and it is not a nicety. Without it a wave with three children ALREADY
 # RUNNING and nothing else startable reports `blocked` — which reads as "somebody must
 # intervene" when the honest answer is "the loop is working, wait." Telling those two
@@ -523,6 +547,15 @@ def node_report(task, plan, is_settled=None, tree_depth=None, live=None):
         "blocked_by": [{"seq": b.get("seq"), "title": b.get("title")} for b in blocking],
         "dangling": list(plan["dangling"].get(tid, [])),
         "grades": len(grades(task)), "parked": parked(task),
+        # SESSION HANDOFFS, because "graded BY THE PARENT" needs the parent to know one
+        # happened. A relay is internal to a child's own life and creates no new task, so
+        # without these two counts an orchestrator's only view of a handoff was no view at
+        # all — and an ungraded handoff is precisely the kind of skipped gate the scan
+        # exists to surface. The import is LOCAL: succession reads this module's rubric
+        # (the natural direction — it is downstream of the grade ledger), so importing it
+        # at the top here would close the loop. Deferred to call time, it cannot.
+        "handoffs": len(_succession().handoffs(task)),
+        "handoffs_ungraded": len(_succession().ungraded_handoffs(task)),
     }
 
 
