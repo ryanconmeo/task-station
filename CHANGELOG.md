@@ -3,6 +3,106 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.8.0] — 2026-08-19
+
+### Added
+- **`relay` — a long session hands itself off before it degrades, and the successor
+  loses nothing.** What happens today when a session fills up is the harness's own
+  auto-compaction: a model-authored summary nobody audited, landing when the window says
+  so rather than when the work has a clean seam. That is a reasonable default for a chat
+  and a poor one for a task with a durable, task-shaped record sitting right beside it.
+  The 3.0.0 migration did the alternative by hand once per phase — stop deliberately,
+  write the record properly, hand off to a fresh session carrying a self-written
+  HANDOFF-PROMPT. This is that move made mechanical, and most of it is substrate that
+  already existed: occupancy measured from the transcript's own `usage` block, a
+  harness-authoritative 1M-aware window, the gap report and the mechanical cold-read, and
+  `invoke`'s pre-attached session. Three things are new — the decision, the prompt, and
+  the ledger the gate grades.
+
+  **The policy is two numbers, and both of them are printed.** A TRIGGER, as a share of
+  the window (`succession_pct`, default 65 — the same point the checkpoint nudge fires
+  at, deliberately: the moment to write a real checkpoint is the moment to consider
+  relaying, and two defaults for one threshold would be two answers to one question). And
+  a RESERVE, in absolute tokens (`succession_reserve`, default 40,000): what the handoff
+  sequence itself costs, since reconciling the record, checkpointing from full context,
+  closing the gaps that names and generating the prompt is real work done inside the
+  session that is running out of room. The reserve is absolute rather than a second
+  percentage because that work costs what it costs — 20% of a 200k window is 4% of a 1M
+  one, and a percentage would make the affordable band mean two different things on two
+  models.
+
+  So three verdicts: `keep-going` below the trigger, `relay` above it with the reserve
+  intact, and `compact` above it with the reserve spent — a checkpoint written with no
+  headroom left is thinner than the compaction it was meant to beat, so the honest answer
+  there is to let the generic one land and take the seam on the far side of it. THE ORDER
+  OF THE TWO TESTS IS THE WHOLE POLICY: the trigger is asked first and the reserve only
+  afterwards, because reversed, any window smaller than the reserve would report
+  `compact` from its very first token — a session at 12% told to compact.
+
+  **And a fourth value that is not a decision.** `unknown` is what a session with no
+  transcript, or no usage block in it yet, reports — and it is deliberately NOT
+  `keep-going`. `keep-going` on an unmeasured session is indistinguishable from
+  `keep-going` on a measured one with room to spare, so a caller cannot tell the policy
+  never ran. `lib/exits.py` draws the same line between UNMET and UNKNOWN for the same
+  reason: a check that did not execute has not passed. `--spawn` refuses on it.
+
+  **Due and ready are separate facts, and are reported separately.** The verdict answers
+  "should this session hand off". `ready` / `blockers` answer "can its record survive
+  one" — every named slot filled, a state line leading with `NEXT:`, and a checkpoint
+  both TAKEN and CURRENT, the last from the same `save.since_checkpoint` numbers the
+  `[SAVE]` block already prints, so the two can never disagree about how much has landed
+  since. A record with gaps does not make the relay less due; it makes it lossy. `--spawn`
+  refuses until they close, and `--force` overrides — at 95% a degraded handoff beats no
+  handoff — with the gaps then travelling INSIDE the continuation prompt, because a
+  successor that cannot tell what it is missing is the one version of this that is worse
+  than compacting.
+
+  **Bare `relay` is the report, and the report costs nothing:** no session minted, no
+  event recorded, no field touched. 3.7.0 had to add a `--dry-run` flag to give `invoke`
+  that; here the preview is the DEFAULT and the flag is what opens a window, which is the
+  right way round for a verb whose job is to end the session that typed it.
+
+  **The continuation prompt is generated from the RECORD, never from the transcript** —
+  structurally, not by convention: the generator takes a task dict and no session, so the
+  predecessor's conversation is not reachable from it and the rule cannot rot. The
+  successor's SessionStart already injects the task's digest, so the prompt carries the
+  request only, which is the rule `invoke --ask` is built on. It is bounded to 1,600
+  characters with every variable section capped, because an unbounded generator would
+  reintroduce the context dump this design exists to remove.
+
+  **The successor is attached to the SAME task.** That one line is the entire difference
+  from `invoke`, which spawns a child onto a different record; everything else is
+  deliberately the same substrate — the pre-bound session id, the workspace trust pass,
+  the window opener, the MANUAL LAUNCH distinction — because a second spawner would be a
+  second set of the bugs 3.7.0 has just finished fixing in the first one. It runs the
+  predecessor's own model selection, `[1m]` marker and all: handing a successor a 200k
+  window to finish work started in a 1M one is the same unasked-for downgrade `invoke`
+  already refuses to make.
+
+  **And the handoff is graded by the parent like any other child work.** A relay happens
+  inside one task's life and creates no child, which is exactly why nothing about it had
+  ever reached the gate — a thin handoff was invisible to every surface an orchestrator
+  looks at. Each one is now a ledger entry carrying only measurements: who handed to
+  whom, at what occupancy, against which window, under which verdict, and whether it was
+  FORCED past a failed cold-read. It is graded through the same `grade` verb, the same
+  six dimensions and the same per-dimension threshold, via `grade --handoff N`. The link
+  is what makes the claim checkable: without it a task that relayed three times could not
+  say which verdict judged which handoff, so the second would inherit the first one's
+  grade for free. The evidence prints WITH the grade, so a forced handoff cannot be
+  scored without being seen — and the engine deliberately does NOT auto-fail one, because
+  that would be the engine making the judgement call the whole loop keeps on the other
+  side of the line. The scan row carries the handoff count and how many are still
+  ungraded, APPENDED rather than replacing the tail: owing the gate a verdict is
+  orthogonal to being startable, and a tail showing one instead of the other would hide
+  whichever it dropped.
+
+### Changed
+- **The proactive checkpoint nudge now names `relay` instead of describing it.** Its
+  closing line already told you to "open a fresh session and `/todo <n>` to resume from
+  the digest" — which is the manual version of exactly this command, minus the verdict,
+  the readiness check and the generated prompt. It now points at `relay --task <n>`, so
+  the moment the nudge fires is the moment the mechanism is reachable.
+
 ## [3.7.1] — 2026-08-16
 
 ### Fixed
