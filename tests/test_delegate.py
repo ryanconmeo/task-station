@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(
     "lib", "delegate"
 ))
 import delegate as _delegate_mod
+import harness
 
 
 class WorkspaceRootsTest(unittest.TestCase):
@@ -178,21 +179,54 @@ class SelectSlotTest(unittest.TestCase):
 
 
 class BuildWorkerCmdTest(unittest.TestCase):
-    """_build_worker_cmd is the pure base of the worker command — model goes here."""
+    """_build_worker_cmd is the pure base of the worker command — model goes here.
+
+    Model and permission mode now come back from `board.workspace.resolve_spawn`, the
+    same resolver `invoke` asks, so the pair this file used to pin by hand
+    (`acceptEdits` + a bare alias) is gone. The rule itself is tested in
+    tests/test_spawn_resolver.py; what is pinned HERE is the argv delegate assembles
+    from the resolver's answer.
+
+    ANTHROPIC_MODEL is pinned because the resolver inherits the parent's `[1m]` window,
+    and the parent selection falls through to the developer's real
+    ~/.claude/settings.json — so without this the expected argv would differ between a
+    machine set to `opus[1m]` and one set to plain `opus`."""
+
+    def setUp(self):
+        self._saved_model = os.environ.get("ANTHROPIC_MODEL")
+        os.environ["ANTHROPIC_MODEL"] = "sonnet"
+
+    def tearDown(self):
+        if self._saved_model is None:
+            os.environ.pop("ANTHROPIC_MODEL", None)
+        else:
+            os.environ["ANTHROPIC_MODEL"] = self._saved_model
 
     def test_defaults_to_sonnet_streaming(self):
         # Streaming mode: stream-json + --verbose (CLI requires --verbose for
         # stream-json print mode) replace the old plain --output-format json.
+        # dontAsk replaces acceptEdits — an unattended worker must fail closed rather
+        # than park on the first non-edit prompt — and so the author-only toolset is
+        # granted by name, exactly as harness.ClaudeAdapter.spawn_cmd does under --bg.
         cmd = _delegate_mod._build_worker_cmd("do the thing")
         self.assertEqual(cmd, ["claude", "-p", "do the thing",
                                "--output-format", "stream-json", "--verbose",
-                               "--permission-mode", "acceptEdits",
+                               "--permission-mode", "dontAsk",
+                               "--allowedTools",
+                               *harness.ClaudeAdapter.DONTASK_ALLOW,
                                "--model", "sonnet"])
 
     def test_explicit_opus_overrides(self):
         cmd = _delegate_mod._build_worker_cmd("hard work", model="opus")
         self.assertEqual(cmd[-2:], ["--model", "opus"])
         self.assertIn("opus", cmd)
+
+    def test_an_explicit_model_reclaims_the_parents_window(self):
+        # A same-family parent lends its `[1m]` marker: handing a worker one fifth of
+        # the parent's context is the downgrade nobody asked for.
+        os.environ["ANTHROPIC_MODEL"] = "claude-opus-5[1m]"
+        cmd = _delegate_mod._build_worker_cmd("hard work", model="opus")
+        self.assertEqual(cmd[-2:], ["--model", "claude-opus-5[1m]"])
 
     def test_empty_model_omits_flag(self):
         # Falsy model → no --model, so the worker inherits the account default.

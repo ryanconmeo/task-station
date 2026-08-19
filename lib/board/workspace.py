@@ -15,16 +15,25 @@ pre-trusted when its OWN main checkout is already a trusted project on this mach
 nothing else may be, ever. Every refusal prints its reason and the invoke continues —
 the human answers one dialog, which is what a safety prompt is for.
 
+It is also where the SPAWN RESOLVER lives — the one function that answers model,
+context window and permission mode for every path that starts a session, plus the env
+hygiene that keeps a child from inheriting the parent's identity. Those belong beside
+the trust gates because they answer the same question from the other side: the gates
+settle what a new workspace may do, and the resolver settles what the session opening
+into it is actually given.
+
 This module is a STANDALONE seam, not a split-engine one: it owns its imports and reads
-no patchable facade globals, so `tests/test_patch_surface.py` does not scan it. The one
-thing it borrows from another seam — `_same_model_family` — is a pure predicate over two
-strings, so binding it at import time can never miss a patch that mattered.
+no patchable facade globals, so `tests/test_patch_surface.py` does not scan it. What it
+borrows from other seams it binds at import time — `_same_model_family` is a pure
+predicate over two strings, and `role_spec` is a lookup in a literal table — so neither
+binding can miss a patch that mattered.
 """
 import json
 import os
 import subprocess
 
 import pricing
+from board.loop import role_spec
 from board.sessions import _same_model_family
 
 # The one permission mode that genuinely NARROWS what a child may do. Everything else
@@ -83,6 +92,177 @@ def inherited_model(chosen, selection):
     if pricing.context_window_for(selection) <= pricing.context_window_for(chosen):
         return chosen
     return selection
+
+
+# ------------------------------------------------------------ the spawn resolver ----
+#
+# ONE function answers model, context window and permission mode for EVERY path that
+# starts a session. There used to be two answers: `invoke` grew the rule above in 3.7.0,
+# and `delegate` kept a hardcoded `acceptEdits` and a bare `sonnet` from before that rule
+# existed. Two copies of one rule is not a tidiness complaint — the copies had already
+# drifted, and the mode delegate was handing its workers is the one its OWN `--bg` design
+# had ruled out as unsafe unattended. So the rule lives here once and both paths ask it.
+
+SPAWN_WINDOW = "window"   # an interactive session in a new terminal window
+SPAWN_BG = "bg"           # an unattended background worker with nobody at the keyboard
+
+# THE UNATTENDED MODES, and why the role table does not get a vote on them. `dontAsk`
+# fails CLOSED: a tool outside the granted allowlist is DENIED rather than queued behind
+# a prompt, so a worker with nobody watching finishes or stops instead of parking
+# forever. `acceptEdits` — which the implementer role names — auto-approves edits and
+# then hangs on the first non-edit prompt; `plan` — which scout and reviewer name — ends
+# at ExitPlanMode, which is also a prompt. Both are correct for a human-facing window and
+# wrong here, so a bg spawn takes neither.
+BG_DEFAULT_MODE = "dontAsk"
+# The one widening, and it is doubly gated: the human has to have turned it on once
+# (config.delegate_bypass_permissions, which carries the disclaimer) AND the target has
+# to be inside a `-worktrees/` sandbox. Either gate alone is not enough.
+BG_BYPASS_MODE = "bypassPermissions"
+
+
+def under_worktrees(path):
+    """True when `path` is inside a `<repo>-worktrees/` sandbox tree (any path segment
+    ending in '-worktrees'). The worktree half of the bypass gate: a mode that can write
+    anything is tolerable only where the whole tree is disposable.
+
+    AN EMPTY PATH IS FALSE, not "the current directory". `os.path.abspath("")` resolves
+    to the process cwd, so the permissive reading would satisfy this gate from the hub's
+    own location whenever the hub is itself running inside a worktree — granting
+    `bypassPermissions` to a spawn whose directory nobody named. A gate with no input
+    fails closed."""
+    if not path:
+        return False
+    parts = os.path.abspath(path).split(os.sep)
+    return any(p.endswith("-worktrees") for p in parts)
+
+
+def resolve_spawn(kind, role=None, model=None, permission_mode=None,
+                  parent_selection=None, cwd=None, bypass_allowed=False):
+    """What a `kind` spawn should actually run: `{kind, role, model, window,
+    permission_mode, notes}`.
+
+    `model` and `permission_mode` are the EXPLICIT overrides, and an explicit value
+    always wins — a human passing the flag has made the decision the role was only
+    guessing at. Everything else is derived:
+
+    * MODEL — the role's alias, then `inherited_model` to reclaim the parent's `[1m]`
+      window when the two name the same family. `None` means emit no `--model` at all,
+      which inherits the account default; the resolver never invents one.
+    * WINDOW — the context window of the model actually chosen, reported so a caller can
+      state it rather than imply it. `None` when the model is inherited, because a
+      window nobody resolved is not a number this can honestly report.
+    * PERMISSION MODE — for a window spawn, the role's mode only when it RESTRICTS, else
+      None so the human's configured default inherits. For a bg spawn the role table
+      does not apply at all (see BG_DEFAULT_MODE): the answer is the bg policy, and a
+      role mode that was discarded is named in `notes` rather than dropped silently.
+
+    `notes` exists so the override can be REPORTED. A design that quietly throws away a
+    role's stated mode is indistinguishable from a bug the first time somebody wonders
+    why their scout was not in plan mode."""
+    spec = role_spec(role) if role else None
+    notes = []
+
+    chosen_model = inherited_model(model or (spec or {}).get("model"),
+                                   parent_selection) or None
+
+    role_mode = (spec or {}).get("permission_mode")
+    if permission_mode:
+        chosen_mode = permission_mode
+    elif kind == SPAWN_BG:
+        chosen_mode = (BG_BYPASS_MODE if (bypass_allowed and under_worktrees(cwd))
+                       else BG_DEFAULT_MODE)
+        if role_mode and role_mode != chosen_mode:
+            notes.append("role %s asks for %s, which stops an unattended worker at a "
+                         "prompt nobody is there to answer — a %s spawn runs %s instead"
+                         % (role, role_mode, kind, chosen_mode))
+    else:
+        chosen_mode = role_mode if restricts(role_mode) else None
+        if role_mode and not chosen_mode:
+            notes.append("role %s asks for %s, which REPLACES the human's default rather "
+                         "than narrowing it — the flag is omitted so the default inherits"
+                         % (role, role_mode))
+
+    return {"kind": kind, "role": role, "model": chosen_model,
+            "window": pricing.context_window_for(chosen_model) if chosen_model else None,
+            "permission_mode": chosen_mode, "notes": notes}
+
+
+# ------------------------------------------------------------------ env hygiene ----
+#
+# MEASURED 2026-08-18 (task 549). A window opened by the Apple Event inherits the parent
+# session's whole CLAUDE_* set. `CLAUDE_CODE_CHILD_SESSION` turns transcript saving OFF,
+# and the parent's session id and messaging socket come along with it, so the child
+# answers to the PARENT's identity: it never appears in `sessions --task`, never appears
+# in ListAgents, and the memo ledger is the only channel left to it. The trigger is
+# conditional — it fires only when Terminal.app is COLD and the Apple Event is what
+# launches it, which inherits the launching process's environment — which is why it
+# stayed latent for anyone whose daily driver is iTerm.
+#
+# THE DETAIL THAT DECIDES THE FIX: `env=` on `subprocess.Popen` sets the environment of
+# the `osascript` PROCESS, and Terminal.app is not that process — it receives an Apple
+# Event. So for that transport the unset must live INSIDE the do-script string, which is
+# what `scrubbed_command` is for. `delegate`'s worker is a direct child, where `env=`
+# does reach the process, so that path scrubs the mapping instead. One list, one rule,
+# two transports.
+#
+# FORCE_SESSION_PERSISTENCE=1 treats the symptom: the transcript comes back and the
+# stale ids stay, so the child still answers to the wrong session.
+
+# CLOSED LIST — the session's IDENTITY and TRANSPORT, which is the damage that was
+# actually measured. Everything else observed in a live session was left, deliberately,
+# and is written down here so the next reader can tell "classified and excluded" from
+# "never looked":
+#
+#   CLAUDE_CONFIG_DIR            the human's own config choice. Unsetting it would
+#                                silently repoint the child at a different store — a
+#                                worse bug than the one being fixed.
+#   CLAUDE_TTY, CLAUDE_WIN_THEME exported by the user's shell rc, so the new window's
+#                                own shell sets them correctly for itself.
+#   CLAUDE_PID, CLAUDE_EFFORT    harness-set (neither the shell rc nor this repo writes
+#                                them) but NOT session identity or transport, so neither
+#                                is part of the measured failure. Unsetting CLAUDE_EFFORT
+#                                in particular would silently re-rate the child's
+#                                reasoning — the same unasked-for downgrade the model
+#                                rule above exists to refuse. Left until something
+#                                measures a harm, on this file's own standing rule that
+#                                an unclassified name is not a finding.
+LEAKED_SESSION_ENV = (
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+)
+
+
+def scrub_prefix():
+    """The shell prefix that clears the inherited set — `unset A B C; `.
+
+    Plain `unset`, which succeeds on a name that was never set, so this is a no-op on a
+    clean environment rather than an error on one."""
+    return "unset %s; " % " ".join(LEAKED_SESSION_ENV)
+
+
+def scrubbed_command(cmd):
+    """`cmd` with the parent's session env unset FIRST, for a command that will be run
+    by something this process does not spawn directly — the Apple Event path, where an
+    `env=` mapping would land on the wrong process entirely.
+
+    An empty command is returned untouched: prefixing nothing would hand the window
+    opener a line that only unsets things."""
+    if not cmd:
+        return cmd
+    return scrub_prefix() + cmd
+
+
+def scrubbed_env(env=None):
+    """A COPY of `env` (default `os.environ`) with the inherited set removed, for a
+    direct child where `env=` genuinely reaches the process. Never mutates its
+    argument — the caller's own environment is not this function's to edit."""
+    src = os.environ if env is None else env
+    return {k: v for k, v in src.items() if k not in LEAKED_SESSION_ENV}
 
 
 # ------------------------------------------------------------ Claude Code's config ----
