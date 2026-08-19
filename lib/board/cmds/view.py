@@ -19,6 +19,7 @@ import save as _save
 import steps as _steps
 
 from board import nudges as _nudges
+from board import workspace as _workspace   # the spawn resolver — env hygiene at spawn
 
 g, set_g = _shared.g, _shared.set_g
 
@@ -467,6 +468,15 @@ def _open_jump_window(cmd):
     bring it to the front, via open-session-window.sh. The current window — the
     one /todo was typed in — is left untouched.
 
+    THE ENV SCRUB LIVES HERE because the leak is a property of THIS TRANSPORT, not of
+    the command. Measured 2026-08-18: when Terminal.app is cold, the Apple Event is what
+    launches it, so it inherits this process's environment — the parent session's whole
+    CLAUDE_* set, which turns the child's transcript off and leaves it answering to the
+    parent's session id and messaging socket. `env=` on the subprocess below would set
+    the environment of `bash`/`osascript` and never of Terminal.app, so the unset has to
+    ride INSIDE the string that becomes `do script`. Putting it at the transport rather
+    than in each caller's command builder means a new caller cannot forget it.
+
     Best-effort and macOS/Terminal.app-only: any failure (not darwin, osascript
     missing, AppleScript error, script absent) returns False so the caller falls
     back to just printing the command for the user to run by hand. Never raises."""
@@ -476,7 +486,7 @@ def _open_jump_window(cmd):
     if not os.path.exists(script):
         return False
     try:
-        r = g("subprocess").run(["bash", script, cmd],
+        r = g("subprocess").run(["bash", script, _workspace.scrubbed_command(cmd)],
                                 capture_output=True, text=True, timeout=15)
         return r.returncode == 0
     except Exception:

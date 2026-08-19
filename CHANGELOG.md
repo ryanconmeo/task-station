@@ -3,6 +3,75 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.11.0] — 2026-08-19
+
+### Added
+- **Both spawn paths now resolve model, context window and permission mode through ONE
+  function.** There were two spawners and two answers. `invoke` grew a considered rule in
+  3.7.0 — a role may RESTRICT and may never REPLACE, so a mode that merely *replaces* the
+  human's default is omitted instead; and a bare alias reclaims the parent's `[1m]` window,
+  because handing a child one fifth of the context is a downgrade nobody asked for.
+  `delegate` never heard about any of it and kept its own hardcoded pair from before that
+  rule existed: `--permission-mode acceptEdits` and a bare `sonnet`.
+
+  This is not a tidiness complaint. The copies had **already drifted**, and the copy that
+  drifted was handing unattended workers `acceptEdits` — the exact mode `delegate`'s own
+  `--bg` design had ruled out, because it auto-approves edits and then stops dead on the
+  first non-edit prompt with nobody there to answer it. One rule in two places is a
+  correctness bug with a clock on it.
+
+  So the rule moves into `board.workspace.resolve_spawn`, beside the two halves 3.7.0
+  already shipped there, and both paths ask it. It answers model, window and mode
+  together, and reports in `notes` when it discarded what a role asked for — a design that
+  silently throws away a role's stated mode is indistinguishable from a bug the first time
+  somebody wonders why their scout was not in plan mode.
+
+- **The `--bg` design WINS where it and the role table disagree, and the disagreement is
+  now enumerated rather than accidental.** The ROLES table says an implementer runs
+  `acceptEdits` and a scout runs `plan`. Both are right for a human-facing window and
+  wrong for an unattended worker, because both end at a prompt: `acceptEdits` on the first
+  non-edit tool, `plan` at ExitPlanMode. A bg spawn therefore runs `dontAsk` — fail-closed,
+  so a non-allowlisted tool is DENIED rather than queued behind a prompt nobody will
+  answer — and `bypassPermissions` only when the human turned it on once (carrying the
+  disclaimer) **and** the target is inside a `-worktrees/` sandbox.
+
+### Changed
+- **A delegated worker no longer inherits the parent session's identity.** Measured
+  2026-08-18: a window opened by the Apple Event inherits the parent's whole `CLAUDE_*`
+  set. `CLAUDE_CODE_CHILD_SESSION` turns transcript saving **off**, and the parent's
+  session id and messaging socket come along with it — so the child answers to the
+  parent's identity, never appears in `sessions --task`, never appears in ListAgents, and
+  the memo ledger is the only channel it has left. It fires only when Terminal.app is
+  **cold** and the Apple Event is what launches it, which is why it stayed latent for
+  anyone whose daily driver is iTerm.
+
+  The fix is transport-shaped, because the leak is a property of the transport rather
+  than of the command. `env=` on `subprocess.Popen` sets the environment of the
+  `osascript` *process*, and Terminal.app is not that process — it receives an Apple
+  Event — so for the window path the unset has to ride **inside** the `do script` string.
+  A delegated worker is a direct child, where `env=` does reach it, so that path scrubs
+  the mapping instead. One closed list, two transports, and the scrub sits at the window
+  opener itself so a new caller cannot forget it.
+
+  The list names only session **identity and transport**. `CLAUDE_CONFIG_DIR` is
+  deliberately untouched — unsetting it would silently repoint the child at a different
+  store, which is a worse bug than the one being fixed — and every other `CLAUDE_*` name
+  observed in a live session is written down in the module with the reason it was left,
+  so a later reader can tell "classified and excluded" from "never looked".
+
+- **A delegated worker's `--allowedTools` now rides with `dontAsk` on the print-mode path
+  too**, matching what `harness.ClaudeAdapter.spawn_cmd` already did under `--bg`.
+  `dontAsk`, unlike `acceptEdits`, does not auto-approve edits, so the author-only toolset
+  has to be granted by name or the worker cannot do the one job it has. git, network and
+  arbitrary Bash stay absent and therefore denied.
+
+### Fixed
+- **`bypassPermissions` could be granted for a directory nobody named.** The worktree half
+  of the gate resolved an empty path through `os.path.abspath("")`, which is the *process*
+  working directory — so with the opt-in on, a spawn given no directory inherited the
+  hub's own location, and the hub is usually itself inside a worktree. A gate with no
+  input now fails closed.
+
 ## [3.9.0] — 2026-08-19
 
 ### Added

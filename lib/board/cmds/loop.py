@@ -496,34 +496,28 @@ def _invoke_command(base, role, model, permission_mode, ask):
     """Assemble the child's launch command from the pre-bound `cd … && claude
     --session-id <sid>` base.
 
-    A ROLE MAY RESTRICT AND MAY NEVER REPLACE, which shapes both flags here:
+    BOTH FLAGS COME BACK FROM `workspace.resolve_spawn`, which `delegate` also asks —
+    the rule about what a child is given lives in exactly one place, because when it
+    lived in two they drifted, and the copy that drifted was handing unattended workers
+    a mode that hangs them. This function's remaining job is assembling a shell line.
 
-    * The permission mode is emitted only when the role's mode genuinely NARROWS what
-      the child may do (`workspace.restricts`). Otherwise the flag is omitted, and its
-      absence inherits the human's configured default — `acceptEdits` is not a
-      restriction of an `auto` default, it is a strictly less autonomous replacement of
-      one, and no role should hand a child that without being asked.
-    * The model keeps the role's alias but reclaims the parent's `[1m]` window when the
-      two name the same family, because a bare alias is a 200k window and silently
-      giving a child one fifth of the context is the same unasked-for downgrade.
-
-    Either can be overridden explicitly, and an explicit value always wins — a human
-    passing the flag has made the decision the role was only guessing at.
+    What the resolver decides, in short: a role may RESTRICT and may never REPLACE, so
+    the permission mode is emitted only when it narrows what the child may do and is
+    otherwise omitted to inherit the human's default; and the model keeps the role's
+    alias but reclaims the parent's `[1m]` window when the two name the same family.
+    Either can be overridden explicitly, and an explicit value always wins.
 
     The ask is `shlex.quote`d rather than wrapped in quotes by hand — an ask containing
     an apostrophe is the common case, not an edge one, and a hand-quoted one would
     truncate at it."""
+    r = _workspace.resolve_spawn(_workspace.SPAWN_WINDOW, role=role, model=model,
+                                 permission_mode=permission_mode,
+                                 parent_selection=g("claude_code_model_selection")())
     parts = [base]
-    spec = _loop.role_spec(role) if role else None
-    role_mode = (spec or {}).get("permission_mode")
-    chosen_model = model or _workspace.inherited_model(
-        (spec or {}).get("model"), g("claude_code_model_selection")())
-    chosen_mode = permission_mode or (role_mode if _workspace.restricts(role_mode)
-                                      else None)
-    if chosen_model:
-        parts.append("--model %s" % shlex.quote(chosen_model))
-    if chosen_mode:
-        parts.append("--permission-mode %s" % shlex.quote(chosen_mode))
+    if r["model"]:
+        parts.append("--model %s" % shlex.quote(r["model"]))
+    if r["permission_mode"]:
+        parts.append("--permission-mode %s" % shlex.quote(r["permission_mode"]))
     parts.append(shlex.quote(ask))
     return " ".join(parts)
 
