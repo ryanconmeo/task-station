@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-3.8.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.8.1-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -308,6 +308,18 @@ session→task link an *attach* writes. A child that has been launched but has n
 its hooks yet is exactly the child a parent most needs to reach. The link store stays as a
 second source, so a session that walked in and attached itself is still found; every row
 says which one found it.
+
+**What it does not reach — and what that implies.** The transport is the Stop hook, so
+the channel reaches anything whose Stop hook runs: an interactive session, and a child
+`invoke` opened. It does **not** reach a `delegate`-spawned worker, because `on_stop.sh`
+exits immediately on `TASK_STATION_SUPPRESS` — task tracking inside a worker is the hub's
+job, and that predates this. A memo to such a worker's task is still recorded and still
+reaches the hub. This matters more than it sounds: a delegated worker already cannot
+verify its own work, and now it also cannot be reached mid-flight. Those two together are
+the argument for keeping delegation to **mechanical edits** and running anything needing
+judgement as an `invoke`d child instead. Reaching a suppressed worker needs its own
+decision about what a worker's Stop hook may do, and that decision is not smuggled in
+here.
 
 **The permission boundary is enforced at the channel.** Permissions in Claude Code are
 per-session, and a control channel is exactly where that breaks: the moment a parent can

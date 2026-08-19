@@ -3,6 +3,115 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.8.1] — 2026-08-19
+
+### Added
+- **A parent can now REACH a running child, not merely observe one.** `invoke` starts
+  one and `scan` watches one; neither could say a single word to one that was already
+  going. A memo lands on the record and is surfaced by the prompt rail — which fires
+  when somebody **types** — and an invoked child is handed exactly one prompt and then
+  works. Nobody types again. So every mid-flight fact was undeliverable: main moved, the
+  spec changed, stop and hand back what you have. The loop had no control plane at all,
+  and the parent's only option was to sit still until the child stopped on its own.
+
+  **The transport is the turn boundary**, because the end of a turn is the one moment a
+  running session arrives at by itself with no human in the loop — and the Stop hook can
+  refuse to let it pass. An order queued for a session is read at that session's next
+  Stop, and the turn does not end until it is settled. This is a deliberately modest
+  claim: the channel does not interrupt a turn in flight and does not pretend to. What it
+  removes is the human from the delivery path, which was the whole of the gap.
+
+  Four verbs (`task-station channel reach|orders|stand-down|settle|deny`), and three
+  producers that now ride the rail automatically:
+
+  - **A memo to a task with a live session is delivered.** A task nobody is working on
+    queues nothing and behaves exactly as before — the memo is still a memo.
+  - **A stand-down gets back what the child wrote.** Settling one *requires* `--report`,
+    and the report goes back to whoever ordered it as a memo. A stand-down that needs
+    nothing back is a kill wearing a politer name: it discards everything the child had
+    not yet written down, which is the one thing standing it down exists to recover.
+  - **A moved spec reaches the child.** DONE on this board is COMPUTED from the exit
+    conditions, so editing them mid-flight moves the target under a working child — and
+    the child cannot notice, because it read the checklist once at session start. The
+    silence was on both sides: the parent thought it had retargeted the work, the child
+    finished something that no longer counted.
+
+  An order blocks at most three turn-ends. Past that it stays pending and fully visible
+  (`channel orders`, every count, its settle command) and simply stops holding the turn
+  hostage — the same anti-wedge rule the edit gate has always had, for the same reason: a
+  gate that can trap a session is a gate people switch off. Both halves of the Stop gate
+  now ride ONE block document when both fire, because the harness reads a single object
+  from that hook and dropping one of two live reasons to fit the shape would silently
+  lose whichever lost the coin toss.
+
+- **Liveness now comes from process state, not from a hook having fired.** The existing
+  answer joins a running session to its task through `store.links` — and a link is
+  written by an **attach**. So the link-joined view is blind to any running session that
+  has not attached yet, which is precisely the child a parent most needs to reach: the
+  one sitting on a first-run dialog, the one three seconds old, the one whose link a
+  later `detach` cleared. (3.7.0 named this symptom without fixing the derivation: a
+  child at the trust dialog "waits *invisibly*".)
+
+  So the channel's join runs the other way. The **task's own roster** (`session_meta`,
+  which `invoke` writes *before* the child process exists) names the sessions that belong
+  to it, and the harness's per-PID record says which of those are up — a live pid, plus
+  the control socket the harness opened for that session. Neither needs a task-station
+  hook to have run. The link store is kept as a SECOND source, never the only one, so a
+  session that walked in and attached itself is still found: adding a source must never
+  remove one. Every row says which one found it.
+
+  **RUNNING and REACHABLE are reported separately.** Running means the process exists;
+  reachable means it exists *and* its control socket is still there. Orders queue to
+  everything running, because the Stop hook needs no socket — but a live session whose
+  socket has gone is a different fact from a dead one, and `channel reach` says which.
+
+- **The permission boundary is enforced at the channel, and this is the load-bearing
+  part.** Permissions in Claude Code are per-session, and a control channel is exactly
+  where that breaks: the moment a parent can send work to a child, a session denied an
+  action has an obvious workaround — ask the child — and the natural failure mode of the
+  whole loop is that privilege flows to whoever is least constrained. This is not
+  hypothetical. On 2026-08-16 a child session's kill of seven runaway agents was refused
+  by the permission classifier; it recognised that routing the kill through a peer would
+  be LAUNDERING, and it stopped and asked the human. That was the right call, and it must
+  not depend on each session making it.
+
+  So: **a session that was DENIED an action may not ask a peer to perform it.** Refused
+  at the channel, with a line naming the denial and what is actually available instead —
+  never left to the receiver's conscience.
+
+  Note what the rule is **not**. It is not "a restricted session may not order a wider
+  one", which would refuse the review loop: a plan-mode reviewer handing findings to an
+  implementer is the loop working, and that reviewer was never *denied* an edit — it was
+  never granted one, by design. The trigger is a refusal that actually happened.
+
+  `channel deny --action '<what was refused>'` is how a refusal becomes durable, because
+  the harness's classifier refuses the SESSION and task-station cannot observe it.
+  Self-reporting sounds weak until you notice what it buys: the record binds the session
+  **and its task**, so one honest report binds every later session on that task,
+  including the one that would have forgotten. It is a ratchet, not a cage. Matching is
+  deliberately broad — normalized substring, or every token of the denied action present
+  — and the asymmetry is the reason: a false refusal costs one printed line, after which
+  the human does it themselves, which a refused action was always going to require; a
+  false pass costs a laundered privilege, silently. Those are not the same size of
+  mistake.
+
+- **What the channel does NOT reach, said plainly.** The transport is the Stop hook, so
+  it reaches anything whose Stop hook runs: an interactive session, and a child `invoke`
+  opened. It does **not** reach a `delegate`-spawned worker, because `on_stop.sh` exits
+  immediately when `TASK_STATION_SUPPRESS` is set — task tracking there is the hub's job,
+  and that suppression predates this and is not quietly reversed by it. A memo to such a
+  worker's task is still recorded and still surfaced to the hub. Reaching a suppressed
+  worker needs its own decision about what a worker's Stop hook is allowed to do, and
+  making that decision here would be smuggling it in.
+
+  The gate also had to stay cheap: it runs on every turn end of every session, and
+  answering "does this session have orders?" for a session with no link would otherwise
+  mean reading every task in the store, every turn, on machines that never use the
+  channel. So orders keep an addressee index (`<data>/channel-orders.json`) — a CACHE,
+  never the truth: an unused channel costs one absent-file stat, an indexed hit costs one
+  task load, and the full scan survives as the correctness backstop, gated on the index
+  being non-empty so it can only ever cost anything where the channel is in use.
+
 ## [3.8.0] — 2026-08-19
 
 ### Added
