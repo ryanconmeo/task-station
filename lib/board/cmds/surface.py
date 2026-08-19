@@ -18,6 +18,7 @@ import os
 import re
 import sys
 
+import channel as _channel
 import decisions as _dec
 import heal as _heal
 import save as _save
@@ -775,8 +776,29 @@ def cmd_memo(a):
             print("memo: --text is required (the memo body)")
             return
         corrects = [c for c in (getattr(a, "corrects", None) or []) if str(c).strip()]
-        memo = memo_send(task, text, from_sid=getattr(a, "session", None),
-                         corrects=corrects)
+        # THE PERMISSION BOUNDARY, CHECKED BEFORE ANYTHING IS WRITTEN. A memo is now a
+        # delivery — the channel carries it to a running session — so a memo asking a peer
+        # to perform something THIS session was denied is laundering, and it is refused
+        # here rather than left to the receiver. Loud (exit 2) on purpose: every other
+        # error on this path is a best-effort no-op, and a security refusal that returned
+        # 0 would read to a driver exactly like a send that worked.
+        sender_sid = getattr(a, "session", None)
+        reason = _channel.launder_reason(
+            text, from_sid=sender_sid,
+            from_task=(get_link(sender_sid) if sender_sid else None))
+        if reason:
+            print(reason)
+            try:
+                sender = load_task(get_link(sender_sid)) if sender_sid else None
+                if sender:
+                    add_event(sender, "channel",
+                              "refused a memo send — %s" % reason[:120], sender_sid)
+                    sender["updated_ts"] = _now()
+                    save_task(sender)
+            except Exception:                           # noqa: BLE001
+                pass
+            sys.exit(2)
+        memo = memo_send(task, text, from_sid=sender_sid, corrects=corrects)
         task["updated_ts"] = _now()
         save_task(task)
         print("memo %s → task #%s (%s)"

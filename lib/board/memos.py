@@ -8,6 +8,7 @@ import json
 import os
 import loop as _loop
 
+import channel as _channel
 import decisions as _dec
 import heal as _heal
 import paths
@@ -220,6 +221,12 @@ def memo_send(task, text, from_sid=None, corrects=None):
     ev["text"] = ("memo %s from %s: %s" % (ev["id"][:8], src, preview))[:EVENT_TEXT_MAX]
     task.setdefault("memos", []).append(memo)
     _trim_memos(task)
+    # THE MEMO IS NOW DELIVERED, not merely recorded. A running session is reached at its
+    # next turn boundary through the control channel; a task nobody is working on queues
+    # nothing and behaves exactly as it always did. Fail-open and silent by construction
+    # (`channel.on_memo` swallows everything): this is a pure mutator that several
+    # best-effort paths call, and a memo that could not be delivered must still be a memo.
+    _channel.on_memo(task, memo)
     return memo
 
 
