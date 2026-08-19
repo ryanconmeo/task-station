@@ -325,18 +325,40 @@ def resolve_worktree(repo_root, name, branch=None, base=None):
     return wt
 
 
-def _build_worker_cmd(task, model="sonnet"):
+def _build_worker_cmd(task, model="sonnet", role=None, cwd=None,
+                      parent_selection=None):
     """Base headless-worker `claude` command (pure; no session/resume args).
 
-    A worker does author-only mechanical edits, so it defaults to the cheaper
-    `sonnet` model rather than inheriting the account default (opus). An empty/None
-    `model` omits `--model`, falling back to the account default.
-    """
-    cmd = ["claude", "-p", task,
-           "--output-format", "stream-json", "--verbose",
-           "--permission-mode", "acceptEdits"]
-    if model:
-        cmd += ["--model", model]
+    MODEL AND MODE BOTH COME FROM `board.workspace.resolve_spawn`, the same function
+    `invoke` asks. This used to answer for itself — a hardcoded `acceptEdits` and a bare
+    `sonnet` — and the two answers had already drifted from `invoke`'s: `acceptEdits` is
+    precisely the mode this file's own `--bg` design rejected, because it auto-approves
+    edits and then hangs on the first non-edit prompt with nobody there to answer.
+
+    A worker still does author-only mechanical edits, so it still defaults to the
+    cheaper `sonnet` rather than the account default — but as an EXPLICIT override
+    passed to the resolver, which then reclaims the parent's `[1m]` window when the two
+    name the same family. An empty/None `model` with no role omits `--model` entirely
+    and inherits the account default.
+
+    `--allowedTools` rides with `dontAsk` exactly as it does in
+    `harness.ClaudeAdapter.spawn_cmd`: dontAsk fails CLOSED and, unlike acceptEdits,
+    does not auto-approve edits, so the author-only toolset has to be granted by name or
+    the worker cannot do the one job it has. git / network / arbitrary Bash are
+    deliberately absent and stay denied."""
+    ws = _board_workspace()
+    r = ws.resolve_spawn(ws.SPAWN_BG, role=role, model=model, cwd=cwd,
+                         parent_selection=(_parent_model_selection()
+                                           if parent_selection is None
+                                           else parent_selection),
+                         bypass_allowed=_bypass_allowed())
+    cmd = ["claude", "-p", task, "--output-format", "stream-json", "--verbose"]
+    if r["permission_mode"]:
+        cmd += ["--permission-mode", r["permission_mode"]]
+        if r["permission_mode"] == "dontAsk":
+            cmd += ["--allowedTools", *harness.ClaudeAdapter.DONTASK_ALLOW]
+    if r["model"]:
+        cmd += ["--model", r["model"]]
     return cmd
 
 
@@ -528,9 +550,9 @@ def run_worker(dirpath, task, session_id=None, resume=False, timeout=None, name=
                 cmd += ["-n", name]
         elif name:
             cmd += ["-n", name]
-    # Workers are headless children: silence the /todo hooks so each worker turn
-    # doesn't get nudged to track its own task (that's the hub's job).
-    env = dict(os.environ, TASK_STATION_SUPPRESS="1")
+    # Workers are headless children: hooks silenced, and the parent session's identity
+    # scrubbed so the worker does not report as its own parent (see `_worker_env`).
+    env = _worker_env()
 
     stderr_fh = tempfile.TemporaryFile(mode="w+", errors="replace")
     proc = subprocess.Popen(cmd, cwd=dirpath, stdout=subprocess.PIPE,
@@ -767,7 +789,7 @@ def run_worker_bg(adapter, dirpath, task, session_id=None, resume=False,
     state ('idle' when it completed, 'gone' once unlisted, a stalled state when
     the grace tripped). Raises SystemExit when the launch itself failed (no id
     printed)."""
-    env = dict(os.environ, TASK_STATION_SUPPRESS="1")
+    env = _worker_env()
     sid = adapter.spawn_worker(task, dirpath, model=model, name=name,
                                session_id=session_id, resume=resume, env=env,
                                permission_mode=permission_mode)
@@ -1617,21 +1639,74 @@ def _register_worker(seq, sid, name, model, harness_name, status):
         pass
 
 
-def _bg_permission_mode(dirpath):
-    """The --permission-mode for a `--bg` worker. DEFAULT `dontAsk` — fail-closed:
-    non-allowlisted tools are auto-denied so an unattended worker never hangs on a
-    prompt, with NO --dangerously-skip-permissions (the author-only edit toolset is
-    granted via --allowedTools in harness.ClaudeAdapter.spawn_cmd). `bypassPermissions`
-    is OPT-IN only — config.delegate_bypass_permissions() (default OFF, needs the
-    one-time disclaimer) AND enforced worktree-only. Never `acceptEdits`: under an
-    unattended `--bg` session acceptEdits HANGS on a non-edit permission prompt."""
+def _board_workspace():
+    """Import `board.workspace` — the SPAWN RESOLVER. Unlike `_worktree_hook` below this
+    one does NOT degrade: a delegate that cannot reach the resolver must not guess a
+    permission mode, because guessing is exactly the drift that put `acceptEdits` back
+    into an unattended worker after this file's own design had ruled it out."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from board import workspace
+    return workspace
+
+
+def _bypass_allowed():
+    """Whether the human has turned `bypassPermissions` on for delegated workers —
+    `config.delegate_bypass_permissions()`, default OFF and carrying the one-time
+    disclaimer. Half of the gate; `resolve_spawn` applies the worktree-only half.
+    Unreadable config is NOT an opt-in, so any failure is False."""
     try:
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         import config
-        on = config.delegate_bypass_permissions()
+        return bool(config.delegate_bypass_permissions())
     except Exception:
-        on = False
-    return "bypassPermissions" if (on and _under_worktrees(dirpath)) else "dontAsk"
+        return False
+
+
+def _parent_model_selection():
+    """The spawning session's model SELECTION string, `[1m]` marker and all, so the
+    resolver can pass the parent's context window down to a same-family worker.
+
+    Guarded: a board plane that cannot answer means no inheritance, which degrades to
+    the bare alias this file used to hardcode — the old behaviour, not a wrong one."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from board.sessions import claude_code_model_selection
+        return claude_code_model_selection()
+    except Exception:
+        return ""
+
+
+def _worker_env():
+    """The environment a spawned worker gets: the parent session's identity SCRUBBED,
+    plus the hook silence every worker runs under.
+
+    A worker is a direct child, so `env=` genuinely reaches it — which is why this path
+    scrubs a mapping while the terminal-window path has to put the unset inside the
+    do-script string. Same list, same module, two transports. Without the scrub a worker
+    inherits CLAUDE_CODE_CHILD_SESSION and the parent's session id and messaging socket,
+    and then reports as its own parent.
+
+    TASK_STATION_SUPPRESS silences the /todo hooks: a headless worker's turns must not
+    nudge it to track its own task, which is the hub's job."""
+    env = _board_workspace().scrubbed_env(os.environ)
+    env["TASK_STATION_SUPPRESS"] = "1"
+    return env
+
+
+def _bg_permission_mode(dirpath):
+    """The --permission-mode for a `--bg` worker, from `workspace.resolve_spawn` — the
+    same function `invoke` and `_build_worker_cmd` ask, so there is one copy of the rule.
+
+    What it answers here: DEFAULT `dontAsk` — fail-closed, so non-allowlisted tools are
+    auto-denied and an unattended worker never hangs on a prompt, with NO
+    --dangerously-skip-permissions (the author-only edit toolset is granted via
+    --allowedTools in harness.ClaudeAdapter.spawn_cmd). `bypassPermissions` is OPT-IN
+    only — `delegate_bypass_permissions` (default OFF, needs the one-time disclaimer)
+    AND enforced worktree-only. Never `acceptEdits`: under an unattended `--bg` session
+    acceptEdits HANGS on a non-edit permission prompt."""
+    ws = _board_workspace()
+    return ws.resolve_spawn(ws.SPAWN_BG, cwd=dirpath,
+                            bypass_allowed=_bypass_allowed())["permission_mode"]
 
 
 def _worktree_hook():
@@ -1762,9 +1837,10 @@ def _preflight_launch(dirpath, entry):
 
 def _under_worktrees(dirpath):
     """True when `dirpath` is inside a `<repo>-worktrees/` sandbox tree (any path
-    segment ending in '-worktrees')."""
-    parts = os.path.abspath(dirpath or "").split(os.sep)
-    return any(p.endswith("-worktrees") for p in parts)
+    segment ending in '-worktrees'). The rule itself moved to `board.workspace`, since
+    the resolver needs it to gate `bypassPermissions`; this stays as the name delegate's
+    own callers already use."""
+    return _board_workspace().under_worktrees(dirpath)
 
 
 # ------------------------------------------------------------ notifications ----
