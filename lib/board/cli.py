@@ -584,6 +584,39 @@ def main(argv=None):
                          "MANDATORY and is recorded on the ledger")
     sp.set_defaults(fn=cmd_memo)
 
+    # channel — THE CHILD CONTROL CHANNEL (A5). A memo is recorded; an order is
+    # DELIVERED, at the receiving session's next turn boundary, because that is the one
+    # moment a running session reaches without a human typing. lib/board/channel.py holds
+    # the reasoning, including why the permission boundary is enforced here rather than
+    # in the receiver's conscience.
+    sp = sub.add_parser("channel",
+                        help="reach a RUNNING session on a task (orders, stand-down, "
+                             "and the denial that may never be laundered)")
+    sp.add_argument("sub", choices=["reach", "orders", "stand-down", "settle", "deny"],
+                    help="reach (who is running) | orders (the queue) | stand-down "
+                         "(wrap up + hand back) | settle (answer one) | deny (record a "
+                         "refusal this session was handed)")
+    sp.add_argument("--task", default=None,
+                    help="the task whose channel this is (seq/id; default: the session's "
+                         "attached task)")
+    sp.add_argument("--session", default=None,
+                    help="the acting session id — REQUIRED to settle (an order is "
+                         "addressed to a session) and to deny")
+    sp.add_argument("--id", default=None, metavar="ID8",
+                    help="order id-prefix (settle)")
+    sp.add_argument("--why", default=None,
+                    help="stand-down: why, in one line. The child reads it verbatim.")
+    sp.add_argument("--report", default=None, metavar="TEXT",
+                    help="settle: what this session wrote — MANDATORY for a stand-down, "
+                         "and sent back to whoever ordered it")
+    sp.add_argument("--action", default=None, metavar="TEXT",
+                    help="deny: the action this session was refused, as it was attempted")
+    sp.add_argument("--by", default=None, metavar="WHO",
+                    help="deny: who refused it (e.g. 'permission classifier')")
+    sp.add_argument("--json", dest="as_json", action="store_true",
+                    help="orders: the raw records")
+    sp.set_defaults(fn=cmd_channel)
+
     # F5 correspondence: link a peer pair · fork a peer node into my own task ·
     # subscribe to a peer's feed (mints memos when it advances).
     sp = sub.add_parser("link")

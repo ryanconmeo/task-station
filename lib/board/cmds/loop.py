@@ -18,6 +18,7 @@ import os
 import shlex
 import sys
 
+import channel as _channel
 import config as _config
 import exits as _exits
 import loop as _loop
@@ -34,7 +35,7 @@ __all__ = [
     "cmd_exit_add", "cmd_exit_rm", "cmd_exit_show", "cmd_exit_tick",
     "cmd_scan", "cmd_invoke", "cmd_grade", "cmd_orchestrator_check",
     "cmd_decompose", "cmd_relay",
-    "_live_seqs",
+    "_live_seqs", "_announce_spec_change", "_channel_report_back", "cmd_channel",
 ]
 
 
@@ -175,6 +176,13 @@ def cmd_exit_add(a):
     print("  expects: %s" % " · ".join(str(e).strip() for e in a.expect if str(e).strip()))
     print("  nothing has been run — `exit-tick --task %s --step %d` settles it"
           % (ref, n))
+    _announce_spec_change(
+        task, "exit condition for step %d is now: %s (expects %s). Re-read the checklist "
+              "before you call anything done." % (n, a.cmd.strip(),
+                                                 " · ".join(str(e).strip()
+                                                            for e in a.expect
+                                                            if str(e).strip())),
+        getattr(a, "session", None))
 
 
 def cmd_exit_rm(a):
@@ -196,6 +204,10 @@ def cmd_exit_rm(a):
     save_task(task)
     print("Removed the exit condition on task #%s step %d (the step is unchanged)."
           % (task.get("seq") or task["id"][:8], n))
+    _announce_spec_change(
+        task, "step %d no longer carries an exit condition — it is no longer computed, "
+              "and nothing will tick it for you." % n,
+        getattr(a, "session", None))
 
 
 def cmd_exit_show(a):
@@ -1001,3 +1013,224 @@ def cmd_decompose(a):
     print("  Each child still needs its own goal and exit conditions — a child that "
           "registers none can never report itself done.")
     print("  next: task-station scan --task %s" % ref)
+
+
+# ------------------------------------------------------ the child control channel ----
+#
+# A5 — REACHING A RUNNING CHILD. `invoke` starts one and `scan` watches one; neither of
+# them can say a single word to one that is already going. The mechanism, the reachability
+# derivation and the permission boundary all live in lib/board/channel.py, which explains
+# at length why each is shaped the way it is. This is the surface: four verbs and the
+# refusal that guards them.
+
+def _announce_spec_change(task, text, session=None):
+    """Push a moved exit condition to every session RUNNING on `task`, and record that it
+    was pushed. Best-effort: a channel failure must never turn a successful `exit-add`
+    into an error, so nothing here can raise and nothing here prints on the empty path.
+
+    WHY EXIT-ADD IS A CONTROL EVENT AT ALL. DONE on this board is COMPUTED from the exit
+    conditions, so editing them while a child works moves the target under it — and the
+    child has no way to notice, because it read the checklist once at session start. The
+    silence is on both sides: the parent thinks it retargeted the work, the child finishes
+    something that no longer counts."""
+    try:
+        task = load_task(task["id"]) or task
+        queued, err = _channel.announce_spec(
+            task, text, from_sid=session, from_task=(get_link(session) if session else None))
+        if err:
+            print("  %s" % err)
+            return []
+        if not queued:
+            return []
+        add_event(task, "channel", "spec change pushed to %d live session(s): %s"
+                  % (len(queued), text[:100]), session)
+        task["updated_ts"] = _now()
+        save_task(task)
+        print("  reached %d live session(s) on this task — each must settle the change "
+              "before its turn ends." % len(queued))
+        return queued
+    except Exception:                                   # noqa: BLE001
+        return []
+
+
+def _channel_report_back(order, task, report, session=None):
+    """Hand a settled order's report back to WHOEVER ORDERED IT, as a memo on their task.
+
+    This is the half of a stand-down that makes it not a kill: the parent gets the child's
+    own account of where it got to. The target is the ordering task when the order
+    recorded one, else the child's parent — an order with neither is settled with its
+    report stored on the order itself and nothing else, which is reported rather than
+    silently dropped. Returns the seq it reached, or None."""
+    if not str(report or "").strip():
+        return None
+    target_id = order.get("from_task") or _loop.parent_id(task)
+    target = load_task(target_id) if target_id else None
+    if not target:
+        return None
+    memo_send(target, "CHILD #%s stood down — %s" % (task.get("seq"), report),
+              from_sid=session)
+    target["updated_ts"] = _now()
+    save_task(target)
+    return target.get("seq")
+
+
+def _channel_refuse(reason, task, session=None):
+    """Print a channel refusal, leave a trace on the REQUESTING session's task, and exit
+    2. The trace is the point: a boundary that refuses silently is indistinguishable from
+    one nobody tested, and the next reader of that task needs to know an escalation was
+    attempted here."""
+    print(reason)
+    try:
+        sender = load_task(get_link(session)) if session else None
+        if sender:
+            add_event(sender, "channel", "refused an order — %s" % reason[:120], session)
+            sender["updated_ts"] = _now()
+            save_task(sender)
+    except Exception:                                   # noqa: BLE001
+        pass
+    sys.exit(2)
+
+
+def cmd_channel(a):
+    """`task-station channel reach|orders|stand-down|settle|deny`
+
+    The control channel: what a parent can say to a child that is already running, and
+    the one thing it may never say.
+
+      reach       what the channel can see on this task right now, and by which source
+      orders      the queue — pending, delivered, settled
+      stand-down  wrap up and hand back what you wrote (settling one REQUIRES a report)
+      settle      the receiving session's answer, and where its report went
+      deny        record that this session was REFUSED an action, so the channel will
+                  never carry it to a peer
+
+    `deny` is the verb that makes the boundary durable. The harness's permission
+    classifier refuses the SESSION, not task-station, so a refusal it hands down is
+    invisible here until somebody records it — and once recorded it binds this session
+    AND every later session on the same task."""
+    sub = getattr(a, "sub", None)
+    session = getattr(a, "session", None)
+
+    if sub == "deny":
+        action = str(getattr(a, "action", "") or "").strip()
+        if not session or not action:
+            print("channel deny: --session <yours> and --action '<what was refused>' are "
+                  "both required — a denial with no action names nothing to refuse.")
+            sys.exit(2)
+        task = None
+        ref = getattr(a, "task", None)
+        if ref:
+            task = resolve_ref(ref) or load_task(ref)
+            if not task:
+                print("channel deny: no task matching %r." % ref)
+                sys.exit(2)
+        else:
+            task = _session_task(session)
+        entry = _channel.record_denial(session, action,
+                                       by=getattr(a, "by", None),
+                                       task=(task or {}).get("id"))
+        if not entry:
+            print("channel deny: nothing recorded.")
+            return
+        print("Recorded: this session was denied %r%s."
+              % (entry["action"], (" by %s" % entry["by"]) if entry.get("by") else ""))
+        if task:
+            print("  Bound to task #%s as well as to this session, so a successor session "
+                  "on it inherits the refusal." % (task.get("seq") or task["id"][:8]))
+        print("  The channel will now refuse to carry any order that performs it.")
+        return
+
+    task, err = _loop_target(a, "channel")
+    if err:
+        print(err)
+        sys.exit(2)
+    ref = task.get("seq") or task["id"][:8]
+
+    if sub == "reach":
+        rows = _channel.live(task)
+        print("Control channel — task #%s %s" % (ref, task.get("title")))
+        if not rows:
+            print("  no live session on this task — nothing to reach. A memo still lands "
+                  "on the record and is read whenever somebody next opens it.")
+            return
+        for r in rows:
+            print("  %s  pid %-7s %-8s via %-6s %s"
+                  % ((r["session_id"] or "?")[:8], r["pid"], r.get("status") or "live",
+                     r["via"], "reachable" if r["reachable"] else "no control socket"))
+        pend = sum(len(_channel.orders_for(task, r["session_id"])) for r in rows)
+        print("  %d order(s) pending across them." % pend)
+        return
+
+    if sub == "orders":
+        rows = _channel.orders(task)
+        if getattr(a, "as_json", False):
+            print(json.dumps(rows, indent=2, sort_keys=True, default=str))
+            return
+        if not rows:
+            print("(no orders on task #%s)" % ref)
+            return
+        print("Orders — task #%s %s" % (ref, task.get("title")))
+        for o in rows:
+            state = ("settled %s" % rel_time(o["settled_ts"])) if o.get("settled_ts") \
+                else ("delivered, unsettled" if o.get("delivered_ts") else "queued")
+            print("  %s → %s  [%s]" % (o["id"][:8], (o.get("to_sid") or "?")[:8], state))
+            print("      %s" % o.get("text"))
+            if o.get("report"):
+                print("      report: %s" % o["report"])
+        return
+
+    if sub == "stand-down":
+        why = getattr(a, "why", None)
+        from_task = get_link(session) if session else None
+        queued, err = _channel.stand_down(task, why=why, from_sid=session,
+                                          from_task=from_task)
+        if err:
+            _channel_refuse(err, task, session)
+        if not queued:
+            print("channel stand-down: task #%s has no live session — there is nothing "
+                  "running to stand down. Send a memo instead; it is read whenever the "
+                  "task is next opened." % ref)
+            return
+        add_event(task, "channel", "stood down %d live session(s)%s"
+                  % (len(queued), (" — %s" % why) if why else ""), session)
+        task["updated_ts"] = _now()
+        save_task(task)
+        print("Stood down %d live session(s) on #%s." % (len(queued), ref))
+        for o in queued:
+            print("  %s → %s" % (o["id"][:8], (o["to_sid"] or "?")[:8]))
+        print("  Each cannot end its turn until it settles, and settling REQUIRES a "
+              "report — that report is what comes back to you.")
+        return
+
+    if sub == "settle":
+        if not session:
+            print("channel settle: --session <your-session-id> is required — an order is "
+                  "addressed to a session, and the ledger records which one answered.")
+            sys.exit(2)
+        order, err = _channel.order_by_prefix(task, getattr(a, "id", None))
+        if err:
+            print(err)
+            sys.exit(2)
+        report = getattr(a, "report", None)
+        status, err = _channel.order_settle(order, session, report=report)
+        if err:
+            print(err)
+            sys.exit(2)
+        if status == "already":
+            print("order %s was already settled by %s."
+                  % (order["id"][:8], (order.get("settled_by") or "?")[:8]))
+            return
+        add_event(task, "channel", "order %s settled by %s"
+                  % (order["id"][:8], (session or "?")[:8]), session)
+        task["updated_ts"] = _now()
+        save_task(task)
+        print("order %s settled." % order["id"][:8])
+        reached = _channel_report_back(order, task, report, session)
+        if report and reached:
+            print("  your report went back to #%s as a memo." % reached)
+        elif report:
+            print("  nobody was recorded as having ordered it, so the report is stored on "
+                  "the order and went nowhere else.")
+        return
+
+    print("channel: use `reach`, `orders`, `stand-down`, `settle`, or `deny`.")

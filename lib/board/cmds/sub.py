@@ -15,6 +15,7 @@ import json
 import os
 import sys
 
+import channel as _channel
 import checker as _checker
 import config_change as _config_change
 import decisions as _dec
@@ -32,6 +33,8 @@ __all__ = [
     "_is_substantive_tracked", "cmd_create", "cmd_attach", "cmd_bump", "cmd_skip",
     "cmd_detach", "_open_tasks_brief", "cmd_mark_edited", "cmd_touch_file",
     "cmd_stop_gate", "cmd_post_compact", "cmd_stop_nudge",
+    "_channel_task_for", "_channel_block", "_stop_gate_edit_reason",
+    "_stand_down_pending",
     "cmd_config_change", "cmd_file_changed", "cmd_worktree_create",
     "_done_gate_line", "_close_one", "_maybe_close_session_window",
     "cmd_done", "cmd_delete",
@@ -363,24 +366,116 @@ def cmd_touch_file(a):
         save_task(task)
 
 
+def _channel_task_for(session):
+    """The task whose control channel might hold orders for `session`.
+
+    THREE STEPS, CHEAPEST FIRST, because this runs on EVERY turn end of EVERY session.
+
+    1. THE LINK. For a child that has attached — the overwhelming case at Stop — this is
+       one link read and we are done.
+    2. THE ADDRESSEE INDEX. A session with no link is exactly the one the channel exists
+       to reach, and the index says which tasks have ever addressed it. On a machine that
+       has never used the channel the index file does not exist, so this whole path costs
+       one stat.
+    3. THE FULL SCAN, gated on the index being non-empty. The index is a cache and may
+       have been evicted; the scan is the correctness backstop, and it can only cost
+       anything on a machine actually running the channel.
+
+    Returns None when nothing claims the session."""
+    link = get_link(session)
+    if link and link != SKIP_SENTINEL:
+        return load_task(link)
+    if not session or not _channel.index_active():
+        return None
+    for tid in reversed(_channel.indexed_tasks(session)):
+        t = load_task(tid)
+        if t and _channel.orders_for(t, session):
+            return t
+    for t in all_tasks():
+        if session in _channel.roster(t) and _channel.orders_for(t, session):
+            return t
+    return None
+
+
+def _channel_block(session):
+    """The Stop-hook `reason` for a session with control-channel orders waiting, or None.
+
+    Marks the orders delivered and persists BEFORE returning the text, so the block count
+    advances even if the harness never shows the reason — an order that could re-block
+    forever because nobody recorded the attempt is the wedge the cap exists to prevent.
+    Fail-open: a channel that raises must never stop a turn from ending."""
+    try:
+        task = _channel_task_for(session)
+        if not task:
+            return None
+        pending = _channel.deliverable(task, session)
+        if not pending:
+            return None
+        _channel.mark_delivered(task, pending)
+        task["updated_ts"] = _now()
+        save_task(task)
+        return _channel.block_reason(task, pending, session)
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def _stand_down_pending(task, session):
+    """True when a STAND-DOWN order is waiting for `session` on `task`.
+
+    Gates the relay nudge — see the precedence note in `cmd_stop_nudge`. Fail-CLOSED on
+    an exception, unusually for this file: every other channel path fails open because
+    the cost of being wrong is an undelivered message, but here the cost of being wrong is
+    a child spawning a successor to continue work its parent just cancelled. Staying
+    silent for one turn is the cheap error."""
+    try:
+        return any(o.get("kind") == _channel.ORDER_STAND_DOWN
+                   for o in _channel.orders_for(task, session))
+    except Exception:                                   # noqa: BLE001
+        return True
+
+
 def cmd_stop_gate(a):
-    """Stop hook: refuse to end the turn if this session edited files but never
-    tracked a task. Self-healing — clears its markers the moment a task is
-    attached or the session is skipped — and capped at STOP_GATE_MAX_BLOCKS so a
-    non-complying loop can't wedge the session."""
+    """Stop hook: the turn-end gate. Two independent reasons to refuse, in this order.
+
+    1. CONTROL-CHANNEL ORDERS. A parent reached this session while it was running; the
+       end of a turn is the moment that delivery lands (see lib/board/channel.py). This
+       runs FIRST because it is the only one of the two that carries somebody else's
+       words — a tracking nag can wait a turn; a stand-down cannot.
+    2. UNTRACKED EDITS. This session edited files but never tracked a task. Self-healing
+       — clears its markers the moment a task is attached or the session is skipped — and
+       capped at STOP_GATE_MAX_BLOCKS so a non-complying loop can't wedge the session.
+
+    BOTH reasons ride ONE block document when both fire: the harness reads a single JSON
+    object from this hook, and dropping one of two live reasons to fit that shape would
+    silently lose whichever lost the coin toss."""
     if os.environ.get("TASK_STATION_GATE") == "off":
         return
+    reasons = []
+    ch = _channel_block(a.session)
+    if ch:
+        reasons.append(ch)
+    edit_reason = _stop_gate_edit_reason(a)
+    if edit_reason:
+        reasons.append(edit_reason)
+    if reasons:
+        print(json.dumps({"decision": "block", "reason": "\n\n".join(reasons)}))
+
+
+def _stop_gate_edit_reason(a):
+    """The untracked-edits half of the gate: its reason line, or None when it has nothing
+    to enforce. Split out so the two halves can share one block document without either
+    one deciding for the other whether to speak."""
     if not has_edited(a.session):
-        return                              # no untracked edits → nothing to enforce
+        return None                         # no untracked edits → nothing to enforce
     link = get_link(a.session)
     if link:                                # real task attached, or skipped
         clear_edit_markers(a.session)
-        return
+        return None
     if get_blocked(a.session) >= STOP_GATE_MAX_BLOCKS:
         clear_edit_markers(a.session)       # gave it two tries — don't wedge the session
-        return
+        return None
     bump_blocked(a.session)
-    reason = (
+    return (
         "This session edited files but is not tracking a /todo task. Before you "
         "finish, attach to an existing task or create one — or mark the session "
         "skipped if this edit is genuinely throwaway. Pick exactly one:\n"
@@ -393,7 +488,6 @@ def cmd_stop_gate(a):
         % (a.session, a.session, a.session, _cli_fallback(),
            _open_tasks_brief() or "  (none)")
     )
-    print(json.dumps({"decision": "block", "reason": reason}))
 
 
 def cmd_post_compact(a):
@@ -479,6 +573,25 @@ def cmd_stop_nudge(a):
            real measurement isn't available.
        Fires ONCE per pressure episode: `pressure_nudged` is set when emitted and held
        until a `/todo save` clears it, so an ignored nudge is NOT re-spammed every turn.
+    0. A PENDING STAND-DOWN SILENCES BOTH OF THEM, and that ordering is a ruling rather
+       than a tidy-up. A stand-down is an ORDER FROM THE PARENT — external authority the
+       child does not get to weigh against its own housekeeping — while a relay is a SELF
+       assessment about context. If both fire and the relay proceeds, the child spawns a
+       successor to carry on work the parent has just cancelled: not a confusing pair of
+       messages but a child disobeying a stop BY PROXY, and burning a fresh full-window
+       session to do it. So: stand-down pending → silent, no exceptions. The reverse needs
+       no rule; a relay with no stand-down pending proceeds as normal.
+
+       SUPPRESSED IS NOT CONSUMED. The check returns BEFORE `pressure_nudged` is set, so
+       the nudge is merely deferred — it fires on the next Stop once the order is settled.
+       A suppression that silently spent the one-shot flag would mean a session that was
+       genuinely out of room never heard about it.
+
+       Only the pressure limb carries the disobedience risk; the staleness limb is
+       suppressed for a smaller reason — the gate is already BLOCKING this turn with
+       explicit instructions, and a nudge printed alongside a block is noise on top of an
+       order.
+
     2. LIGHT staleness nudge — only when the pressure trigger did NOT fire and the digest
        is stale. Activity-gated by checkpoint_milestone_edits: it holds until N meaningful
        events (edits / promotions) have accrued since the last refresh (default 5), so a
@@ -493,6 +606,8 @@ def cmd_stop_nudge(a):
     task = _session_task(a.session)
     if not task:
         return
+    if _stand_down_pending(task, a.session):
+        return                      # limb 0 above — the parent's order outranks both nudges
     try:
         import config
         pct = config.checkpoint_pct()
