@@ -3,6 +3,91 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.12.0] — 2026-08-19
+
+### Added
+- **The role table is CONFIGURATION, and it now carries what a role is actually for.**
+  3.2.0 shipped the four roles as data in `lib/loop.py` and taught `invoke --role` to read
+  them. Data in a source file is not configuration: a station could not retune a role, and
+  nobody could see what the roles were without reading Python. `roles()` is now the
+  EFFECTIVE table — the shipped defaults with per-role, per-FIELD overrides from
+  `config.json` merged over them — and it renders on the config board as `--roles`, model,
+  permission mode, effort, grant and contract per role. A station can also declare a role
+  of its own.
+
+  **Per field, not per role**, because retuning one model must not mean restating the
+  grant and the contract; a restatement drifts, and what it drifts on is a child's
+  permissions. **And every override is validated**, for the same reason: a config table
+  that cannot be checked is worse than a constant. A field name that does not exist, a
+  permission mode or effort level Claude Code would reject, a grant that is not a list of
+  tool names — each REFUSES the override whole (the shipped role stands, or a
+  station-declared role is dropped) and each is REPORTED on the board. Half an override
+  applied is the one outcome nobody could debug: `permision_mode: plan` would look
+  applied and change nothing.
+
+- **Each role carries a TOOL GRANT and a REPORT CONTRACT, and both reach the child.** The
+  grant is a DENY list, not an allow list: `--tools` / `--allowed-tools` would REPLACE the
+  human's tool set and drop the MCP servers they configured, while `--disallowed-tools`
+  narrows it. That is 3.7.0's "a role may restrict and may never replace" rule — settled
+  there for the permission mode — applied to the other flag a role sets, so a scout and a
+  reviewer cannot edit while the implementer, which denies nothing, emits no flag at all.
+  The contract is what the child owes back, appended to its prompt: a contract the child is
+  never told about is decoration. The RECORDED ask stays the human's request, so
+  boilerplate can never push the real one out of the event text. The role's `effort` is
+  emitted too — the table has always carried it, `claude --effort` takes it, and a field
+  the config board shows while nothing applies it would be a lie told on every render.
+  `invoke --effort` overrides it, like every other role field.
+
+- **`loop_children_max` is enforced at invoke time.** It was a config key nothing read,
+  which is a comment with a default value. `invoke` now counts the orchestrator's children
+  that hold a RUNNING session — process liveness, the same derivation the scan's RUNNING
+  column uses, so a crashed child never spends a slot forever — and over the cap it
+  refuses. **Exit 3, not 2**: 2 means "you asked wrong" and asking again will not help,
+  3 means the budget is full and this is worth retrying when a child finishes. The refusal
+  happens before a session is minted, an event written or a window opened, so it leaves
+  nothing behind that looks invoked, and `--force` launches over it and records
+  `FORCED over the cap` on the orchestrator — a deliberate override is sometimes right, an
+  invisible one never is.
+
+- **`loop_builds_max` is a real machine-wide lock.** A suite run IS a build, and the
+  default of 1 is not timidity: this machine OOMs on concurrent builds, and this repo's
+  load-dependent flakes made a parallel suite run a source of FALSE RED — a gate that goes
+  red for a reason having nothing to do with the work is worse than no gate. So the lock
+  lives in the DATA DIR, never on a task: two orchestrators share one machine, and a
+  per-task cap would let them sum to a load neither one asked for. Its critical section is
+  an `fcntl.flock` over a dedicated lockfile beside the slot file, the same shape
+  `lib/delegate` already uses for its registry. `exit-tick` and `scan --run` — the two
+  verbs that execute somebody's test command — take a slot and WAIT for it
+  (`--build-wait`, default the exit-command timeout) before refusing, because a contended
+  slot usually frees when the other suite finishes and a slower loop beats a red nobody
+  caused. A refusal names the holder and exits 3: nothing ran, so nothing was refuted and
+  no tick moved. **A holder whose process is gone is reclaimed** — a lock that survives a
+  crash is a machine nobody can build on again.
+
+### Changed
+- **The role's grant, contract and effort are answered by `workspace.resolve_spawn`, not by
+  the spawner.** 3.11.0 moved the model and the permission mode into one resolver because
+  the two copies of that rule had already drifted, and the copy that drifted was handing
+  unattended workers a mode that hangs them. The three fields this release adds are
+  role-derived too, so they are answered in the same place rather than read from the table
+  a second time inside `invoke` — a second reader is exactly how the first pair drifted.
+  `resolve_spawn` now returns `effort`, `deny_tools` and `report` alongside the model and
+  the mode, and takes `effort` as an explicit override like the other two.
+
+  The bg path states a LIMIT rather than keeping a silent gap: it consumes the model and
+  the mode and emits neither the grant nor the contract, because its live caller passes no
+  role and because it is the one path already sending `--allowedTools`, where a deny list
+  arriving beside an allow list raises a precedence question nobody has settled. That is
+  written down in `delegate._build_worker_cmd` and pinned by a test, so the day it changes
+  is a deliberate edit and not a surprise.
+- **`loop.ROLES` is now `loop.ROLE_DEFAULTS`, and callers read `roles()`.** The rename is
+  the point: a module-level dict named `ROLES` that is no longer the table the station
+  runs is a trap, and the invoke refusal that lists the available roles has to list the
+  EFFECTIVE ones or a station's own role would be invisible in the very message that says
+  what the roles are.
+- **A factory reset clears a retuned role table** (`roles` joins `RESET_KEYS`). A role left
+  behind by a reset would keep deciding what every invoked child may DO on a station the
+  user had just cleared back to defaults.
 ## [3.11.0] — 2026-08-19
 
 ### Added

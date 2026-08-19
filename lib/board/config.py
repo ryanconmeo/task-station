@@ -1492,6 +1492,23 @@ def board_rows():
          ["Receives PRIVACY-SAFE aggregates on stdin (counts/ratios/titles — NEVER prompt text);",
           "must print a JSON list of {observation, suggestion, command}. No value clears it."],
          "task-station config --recap-curator-cmd '<cmd>'"),
+        ("--roles", _roles_summary(), None,
+         "The role table `invoke --role` reads — model, permission mode, effort, tool grant, report contract (default: the four shipped roles)",
+         _roles_detail(),
+         'edit "roles" in config.json — per-role, per-FIELD overrides merge over the shipped table'),
+        ("--loop-children-max", str(loop_children_max()), None,
+         "Child sessions one orchestrator may hold open at once, refused at invoke time (default: 3)",
+         ["Counted from PROCESS LIVENESS over that orchestrator's own children, so a",
+          "crashed child never holds a slot. Over the cap, `invoke` exits 3 and writes",
+          "nothing; `invoke --force` launches anyway and records that it did."],
+         'TASK_STATION_LOOP_CHILDREN_MAX=<n>  ·  or "loop_children_max": <n> in config.json'),
+        ("--loop-builds-max", str(loop_builds_max()), None,
+         "Build / full-suite runs allowed on this MACHINE at once — a real lock in the data dir (default: 1)",
+         ["A suite run IS a build. `exit-tick` and `scan --run` take the slot and wait",
+          "(--build-wait) before refusing, because this machine OOMs on concurrent builds",
+          "and a parallel suite run is a source of false red. Two orchestrators contend",
+          "for the SAME slots — the lock is machine-wide, never per-task."],
+         'TASK_STATION_LOOP_BUILDS_MAX=<n>  ·  or "loop_builds_max": <n> in config.json'),
         ("--workspace-dirs", ":".join(get("workspace_dirs") or []) or "unset", None,
          "Repo root folders so 'delegate --project <name>' can find your repos (default: unset)", None, None),
         ("--artifacts-root", artifacts_root(), None,
@@ -1504,6 +1521,47 @@ def board_rows():
          "reset ALL settings above to factory defaults — asks to confirm (default: —)", None,
          "task-station config --reset confirm"),
     ]
+
+def _loop_module():
+    """`lib/loop.py`, imported LAZILY. The loop owns the role table; importing it at
+    module level would close a cycle (loop reads config), and a board that cannot render
+    because one seam failed to import is worse than a board with one row missing."""
+    try:
+        import loop
+        return loop
+    except Exception:
+        return None
+
+
+def _roles_summary():
+    """The row's value: the role names this station actually runs, in table order."""
+    mod = _loop_module()
+    if mod is None:
+        return "(loop unavailable)"
+    return " · ".join(mod.roles())
+
+
+def _roles_detail():
+    """One line per role — model, mode, effort, the tools it denies — plus its report
+    contract, plus every override that was REFUSED. A refused override reported nowhere
+    would look applied, which is the one failure a config table must not have."""
+    mod = _loop_module()
+    if mod is None:
+        return None
+    out = []
+    table = mod.roles()
+    width = max([len(n) for n in table] or [0])
+    for name in table:
+        spec = table[name]
+        deny = ", ".join(spec.get("deny_tools") or []) or "nothing"
+        out.append("%s  %s · %s · %s effort · denies %s"
+                   % (name.ljust(width), spec.get("model"),
+                      spec.get("permission_mode"), spec.get("effort"), deny))
+        out.append("%s  reports: %s" % (" " * width, spec.get("report")))
+    for problem in mod.role_problems():
+        out.append("REFUSED: %s" % problem)
+    return out
+
 
 def render_board():
     """The unified, width-aware `task-station config` board (no-arg view).
@@ -1879,6 +1937,10 @@ RESET_KEYS = [
     # `accept_threshold` in particular decides what gets ACCEPTED.
     "exit_command_timeout", "loop_accept_threshold", "loop_children_max",
     "loop_builds_max", "loop_retry_max",
+    # The role table (A3). Popped for the same reason: a retuned role left behind by a
+    # reset would keep deciding what every invoked child may DO on a station the user
+    # had just cleared back to defaults.
+    "roles",
     # heal's goal-review threshold, popped for the same reason: a hand-tuned window left
     # behind by a reset would keep making heals due on a station the user just cleared.
     "heal_goal_review_due",

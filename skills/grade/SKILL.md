@@ -115,7 +115,9 @@ Add `--cwd <path>` when the child belongs in a worktree, and `invoke` clears the
 
 **To preview, use `--dry-run` — never `--print-command`.** The dry run prints the command and writes nothing. `--print-command` is a *real* launch you finish by hand: it mints the child's session and records a `MANUAL LAUNCH` on both tasks. That distinction is what the RUNNING column counts, so previewing with the wrong flag makes one child read as two invokes and the double-invoke guard stops working.
 
-Concurrency: at most `loop_children_max` (default 3) children open at once, and `loop_builds_max` (default 1) build or full-suite run **machine-wide** — two orchestrators share that one, because the machine OOMs on concurrent builds and this repo's flakes are load-dependent.
+**The two concurrency budgets are enforced, not advisory.** `loop_children_max` (default 3) is refused *at invoke time*: over the cap, `invoke` exits 3, writes nothing, and names the children that are running — counted from process liveness, so a crashed child never holds a slot. `invoke --force` launches over it and records that it did. `loop_builds_max` (default 1) is a real lock in the data dir, so it is **machine-wide**: `exit-tick` and `scan --run` take a slot and wait (`--build-wait`) before refusing, and two orchestrators contend for the same one — because the machine OOMs on concurrent builds and this repo's flakes are load-dependent. Both are on the config board (`--loop-children-max`, `--loop-builds-max`).
+
+**The role table is configuration** (`config --roles` on the board, `"roles"` in `config.json`), and each role carries the model, permission mode, effort, a TOOL GRANT and a REPORT CONTRACT. The grant is a deny list — an allow list would replace the human's tool set instead of narrowing it — and the contract is appended to the child's prompt, so what the child owes you back is stated rather than assumed. A station may retune any field per role, or declare a role of its own; an override naming a field or a mode the CLI would reject is refused and reported on the board rather than half-applied.
 
 ---
 

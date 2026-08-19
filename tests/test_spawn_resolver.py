@@ -12,7 +12,7 @@ it: the copies had ALREADY drifted, and `acceptEdits` is the exact mode delegate
 prompt. So the rule moves into `board.workspace` beside the two halves 3.7.0 already
 shipped there, and both paths ask it.
 
-THE FOUR THINGS PINNED HERE, one class each:
+THE FIVE THINGS PINNED HERE, one class each:
 
   1. DelegateUsesTheResolver — `_build_worker_cmd` no longer holds its own answer. Its
      permission mode and its model both come back from the resolver, which is proved
@@ -20,7 +20,7 @@ THE FOUR THINGS PINNED HERE, one class each:
      output move with it. A test that merely asserts "dontAsk" would still pass against
      a second hardcoded copy that happened to agree today.
 
-  2. BgDesignWins — where the two designs disagree, `--bg`'s wins. The ROLES table says
+  2. BgDesignWins — where the two designs disagree, `--bg`'s wins. The role table says
      an implementer runs `acceptEdits` and a scout runs `plan`; both are wrong for an
      UNATTENDED worker, because both stop and wait for a human who is not there —
      acceptEdits on the first non-edit permission prompt, plan at ExitPlanMode. So a bg
@@ -54,6 +54,16 @@ THE FOUR THINGS PINNED HERE, one class each:
      the human's own config choice and is never touched; scrubbing it would silently
      repoint the child at a different store, which is a worse bug than the one being
      fixed.
+
+  5. TheRoleTableIsReadOnlyHere — 3.12.0 made the role table CONFIG and gave every role
+     two more things that decide what a child is: a TOOL GRANT and a REPORT CONTRACT,
+     plus the effort the table always carried. Those are role-derived, so by this file's
+     own rule they are answered in the resolver and nowhere else — the failure this
+     class exists to catch is a second reader of the table growing back inside a
+     spawner, which is how the model and the mode drifted the first time. It also pins
+     the bg path's STATED LIMIT: it consumes the model and the mode and deliberately
+     emits neither the grant nor the contract, which is a documented boundary in
+     `_build_worker_cmd` rather than a silent omission.
 """
 import importlib.util
 import os
@@ -173,7 +183,7 @@ class DelegateUsesTheResolver(_ResolverTest):
 # ---------------------------------------------------------------------- step 2 ----
 
 class BgDesignWins(_ResolverTest):
-    """`--bg`'s permission design outranks the ROLES table wherever they disagree."""
+    """`--bg`'s permission design outranks the role table wherever they disagree."""
 
     def test_an_implementers_acceptEdits_is_refused_for_a_bg_spawn(self):
         self.assertEqual(_loop.role_spec("implementer")["permission_mode"], "acceptEdits")
@@ -224,7 +234,7 @@ class BgDesignWins(_ResolverTest):
     def test_a_bg_spawn_NEVER_omits_the_mode(self):
         """Silence inherits the human's configured default, which for an unattended
         worker could be anything at all. bg always states its mode."""
-        for role in [None] + sorted(_loop.ROLES):
+        for role in [None] + sorted(_loop.roles()):
             self.assertIn(ws.resolve_spawn(ws.SPAWN_BG, role=role)["permission_mode"],
                           ("dontAsk", "bypassPermissions"))
 
@@ -260,7 +270,7 @@ class BothPathsAgree(_ResolverTest):
         return _flag(argv, "--model"), _flag(argv, "--permission-mode")
 
     def test_every_role_resolves_to_the_same_model_on_both_paths(self):
-        for role in sorted(_loop.ROLES):
+        for role in sorted(_loop.roles()):
             with self.subTest(role=role):
                 self.assertEqual(self._invoke_flags(role)[0],
                                  self._delegate_flags(role)[0])
@@ -268,7 +278,7 @@ class BothPathsAgree(_ResolverTest):
     def test_every_role_resolves_to_the_same_window_on_both_paths(self):
         """The window is what the `[1m]` inheritance is FOR, so it is asserted as a
         number rather than left implied by the model string."""
-        for role in sorted(_loop.ROLES):
+        for role in sorted(_loop.roles()):
             with self.subTest(role=role):
                 inv, dele = self._invoke_flags(role)[0], self._delegate_flags(role)[0]
                 self.assertEqual(pricing.context_window_for(inv),
@@ -277,7 +287,7 @@ class BothPathsAgree(_ResolverTest):
     def test_each_path_emits_exactly_the_resolvers_answer_for_its_own_kind(self):
         """Neither spawner adjusts the answer after asking for it — an adjustment is
         how the two drifted apart the first time."""
-        for role in sorted(_loop.ROLES):
+        for role in sorted(_loop.roles()):
             with self.subTest(role=role):
                 self.assertEqual(
                     self._invoke_flags(role)[1],
@@ -290,7 +300,7 @@ class BothPathsAgree(_ResolverTest):
 
     def test_the_only_mode_disagreement_left_is_the_bg_rule(self):
         """Named explicitly so a future third answer cannot hide as 'they differ'."""
-        for role in sorted(_loop.ROLES):
+        for role in sorted(_loop.roles()):
             with self.subTest(role=role):
                 win = ws.resolve_spawn(ws.SPAWN_WINDOW, role=role)["permission_mode"]
                 bg = ws.resolve_spawn(ws.SPAWN_BG, role=role)["permission_mode"]
@@ -413,6 +423,94 @@ class EnvScrubbedAtSpawn(_ResolverTest):
         prefix is plain shell and must not disturb it."""
         cmd = "cd /w && claude --session-id abc 'don'\"'\"'t break'"
         self.assertTrue(ws.scrubbed_command(cmd).endswith(cmd))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+# ---------------------------------------------------------------------- step 5 ----
+
+class TheRoleTableIsReadOnlyHere(_ResolverTest):
+    """Every role-derived answer comes from `resolve_spawn`, including the three that
+    3.12.0 added. A spawner that re-reads the role table is the drift this file exists
+    to prevent, so these assert the SOURCE, not just the value."""
+
+    def _invoke(self, role, **kw):
+        return ts._invoke_command("cd /w && claude --session-id abc", role,
+                                  kw.get("model"), kw.get("permission_mode"), "go",
+                                  kw.get("effort"))
+
+    def test_the_resolver_answers_all_three_new_fields(self):
+        """A scout is the role that exercises all three: it denies the edit tools, runs
+        cheap on purpose, and owes a read-only report."""
+        r = ws.resolve_spawn(ws.SPAWN_WINDOW, role="scout")
+        self.assertEqual(r["effort"], _loop.roles()["scout"]["effort"])
+        self.assertEqual(r["deny_tools"], _loop.roles()["scout"]["deny_tools"])
+        self.assertIn("no edits", r["report"])
+
+    def test_no_role_answers_none_rather_than_a_default(self):
+        """A spawn with no role emits no `--effort` and no grant. `None`/empty, never an
+        invented default — the resolver never decides what a role did not say."""
+        r = ws.resolve_spawn(ws.SPAWN_WINDOW)
+        self.assertIsNone(r["effort"])
+        self.assertIsNone(r["report"])
+        self.assertEqual(r["deny_tools"], [])
+        self.assertNotIn("--effort", self._invoke(None))
+        self.assertNotIn("--disallowed-tools", self._invoke(None))
+
+    def test_invoke_emits_exactly_the_resolvers_answer(self):
+        """Same rule as `test_each_path_emits_exactly_the_resolvers_answer_for_its_own
+        _kind`, extended to the three new fields: the spawner does not adjust them."""
+        for role in sorted(_loop.roles()):
+            with self.subTest(role=role):
+                r = ws.resolve_spawn(ws.SPAWN_WINDOW, role=role,
+                                     parent_selection=self.PARENT)
+                cmd = self._invoke(role)
+                self.assertEqual(_flag_str(cmd, "--effort"), r["effort"])
+                self.assertEqual(_flag_str(cmd, "--disallowed-tools"),
+                                 ",".join(r["deny_tools"]) or None)
+                self.assertIn(r["report"], cmd)
+
+    def test_moving_the_tables_grant_moves_what_invoke_emits(self):
+        """The SOURCE test — retune the effective table and the emitted flag follows. A
+        spawner holding its own copy of the grant passes every assertion above and fails
+        this one, which is the whole point of writing it this way."""
+        retuned = {name: dict(spec) for name, spec in _loop.roles().items()}
+        retuned["scout"] = dict(retuned["scout"], deny_tools=["Bash"], effort="low")
+        with mock.patch.object(_loop, "roles", return_value=retuned):
+            self.assertEqual(_flag_str(self._invoke("scout"), "--disallowed-tools"),
+                             "Bash")
+            self.assertEqual(_flag_str(self._invoke("scout"), "--effort"), "low")
+
+    def test_an_explicit_effort_beats_the_roles(self):
+        """Same precedence as the model and the mode: a human passing the flag has made
+        the decision the role was only guessing at."""
+        self.assertEqual(_flag_str(self._invoke("scout", effort="max"), "--effort"),
+                         "max")
+
+    def test_the_contract_is_appended_and_never_replaces_the_ask(self):
+        """The ask is the one thing the orchestrator has to say that the child's own
+        record cannot tell it, so a boilerplate sentence must never push it out."""
+        cmd = self._invoke("scout")
+        self.assertIn("go", shlex.split(cmd)[-1])
+        self.assertIn("REPORT BACK", shlex.split(cmd)[-1])
+
+    def test_the_bg_path_consumes_model_and_mode_and_states_its_limit(self):
+        """The bg path's documented boundary. It emits the model and the mode; it emits
+        NEITHER the grant nor the contract, because its live caller passes no role and
+        because it is the one path already sending `--allowedTools`, where a deny list
+        raises a precedence question nobody has settled. Pinned so the day that changes
+        is a deliberate edit to this test rather than a surprise."""
+        argv = dg._build_worker_cmd("go", model=None, role="scout")
+        r = ws.resolve_spawn(ws.SPAWN_BG, role="scout", parent_selection=self.PARENT)
+        self.assertEqual(_flag(argv, "--model"), r["model"])
+        self.assertEqual(_flag(argv, "--permission-mode"), r["permission_mode"])
+        self.assertIsNone(_flag(argv, "--disallowed-tools"))
+        self.assertNotIn("REPORT BACK", " ".join(argv))
+        self.assertIn("deliberately does not emit yet",
+                      ws.resolve_spawn.__doc__ or "")
+        self.assertIn("emits NEITHER", dg._build_worker_cmd.__doc__ or "")
 
 
 if __name__ == "__main__":
