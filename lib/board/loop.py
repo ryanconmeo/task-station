@@ -44,9 +44,20 @@ Stdlib only, and PURE: every function takes the tasks it needs and returns a val
 Nothing here loads the store, spawns a session or prints — the command seam does that,
 which is what lets the whole scan be tested against hand-built task dicts.
 """
+import contextlib
+import json
+import os
 import time
+import uuid
 
+import config as _config
 import exits as _exits
+import paths
+
+try:                      # the machine-wide build lock's critical section
+    import fcntl
+except ImportError:       # pragma: no cover — no fcntl (Windows); see _slots_locked
+    fcntl = None
 
 # ---------------------------------------------------------------- the rubric ----
 #
@@ -671,28 +682,360 @@ def orchestrator_refusal(task, tasks, verb="delegate run"):
 
 # ------------------------------------------------------------------- the roles ----
 #
-# B16, in its cheapest honest form: roles as DATA, never as new architecture. Four of
+# B16 in its cheapest honest form: roles as DATA, never as new architecture. Four of
 # them, deliberately few — every extra role adds another brief boundary, and the brief
-# boundary is what the loop exists to remove. A3 makes this table configurable; today it
-# is the shipped default, and `invoke --role` reads it.
+# boundary is what the loop exists to remove.
+#
+# A3 MAKES THE TABLE CONFIGURATION rather than a constant. `ROLE_DEFAULTS` is what the
+# plugin ships; `roles()` is what a station actually runs — the defaults with per-role,
+# per-FIELD overrides from `config.json` merged over them. Per-field because retuning one
+# model must not mean restating the grant and the contract: a restatement drifts, and the
+# thing it drifts on is a child's permissions.
+#
+# WHICH IS ALSO WHY EVERY OVERRIDE IS VALIDATED. A config table that cannot be checked is
+# worse than a constant, because what it silently gets wrong is what a child is allowed to
+# do. So a field name that does not exist, a permission mode the CLI would reject, an
+# effort outside its vocabulary, or a grant that is not a list of tool names all REFUSE
+# the override — the shipped role stands, or a station-declared role is dropped entirely —
+# and every refusal is REPORTED (`role_problems()`, rendered on the config board). Half an
+# override applied is the one outcome nobody could debug.
 #
 # MODELS ARE NAMED BY ALIAS (`opus`, `sonnet`, `haiku`), never by a pinned id, so a role
 # follows the current generation instead of freezing one release's model into the store.
+# The `[1m]` window the parent is running is added back at invoke time — see
+# `board/workspace.inherited_model`, and #541 for why a bare alias is a 200k child.
+#
+# THE TOOL GRANT IS A DENY LIST, NOT AN ALLOW LIST. `claude --tools` / `--allowed-tools`
+# would REPLACE the human's tool set, dropping the MCP servers they configured; a deny
+# list NARROWS it. That is the same "a role may restrict and may never replace" rule 3.7.0
+# settled for the permission mode, applied to the other flag a role sets.
+#
+# THE REPORT CONTRACT is what the child must hand back. It travels in the child's prompt,
+# because a contract the child is never told about is decoration.
 
-ROLES = {
-    "scout": {"model": "sonnet", "permission_mode": "plan", "effort": "medium",
-              "why": "read-only breadth — cheap and parallel, never edits"},
-    "implementer": {"model": "opus", "permission_mode": "acceptEdits", "effort": "high",
-                    "why": "the worktree worker — one per task+repo"},
-    "reviewer": {"model": "opus", "permission_mode": "plan", "effort": "high",
-                 "why": "FRESH context, adversarial, never the implementer's session"},
-    "grader": {"model": "opus", "permission_mode": "default", "effort": "high",
-               "why": "grades G1-G6; the quality of this call bounds the whole loop"},
+ROLE_FIELDS = ("model", "permission_mode", "effort", "deny_tools", "report", "why")
+
+# Everything a role must name before it may spawn anything. `why` is prose for the board
+# and is optional; the other five decide what the child IS.
+ROLE_REQUIRED_FIELDS = ("model", "permission_mode", "effort", "deny_tools", "report")
+
+# The permission modes Claude Code's `--permission-mode` accepts. A closed list because a
+# mode outside it is not a stricter role, it is a child that fails to launch. The
+# RESTRICTING subset — which of these actually narrows, and so is the only kind `invoke`
+# emits — is `board/workspace.RESTRICTING_MODES`: this list answers "would the CLI take
+# it", that one answers "does it narrow", and they are different questions.
+PERMISSION_MODES = ("plan", "acceptEdits", "default", "bypassPermissions")
+
+# `claude --effort` levels, verbatim.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+ROLE_DEFAULTS = {
+    "scout": {
+        "model": "sonnet", "permission_mode": "plan", "effort": "medium",
+        "deny_tools": ["Edit", "Write", "NotebookEdit"],
+        "report": ("the files and symbols that matter with one line each on why, and "
+                   "the questions reading could not answer — no edits, no plan"),
+        "why": "read-only breadth — cheap and parallel, never edits"},
+    "implementer": {
+        "model": "opus", "permission_mode": "acceptEdits", "effort": "high",
+        "deny_tools": [],
+        "report": ("what changed file by file, the verification you ran with its actual "
+                   "output, and anything you left undone"),
+        "why": "the worktree worker — one per task+repo"},
+    "reviewer": {
+        "model": "opus", "permission_mode": "plan", "effort": "high",
+        "deny_tools": ["Edit", "Write", "NotebookEdit"],
+        "report": ("each finding as file:line with the failure it would cause and a "
+                   "CONFIRMED or PLAUSIBLE verdict — findings only, never a fix"),
+        "why": "FRESH context, adversarial, never the implementer's session"},
+    "grader": {
+        "model": "opus", "permission_mode": "default", "effort": "high",
+        "deny_tools": ["Edit", "Write", "NotebookEdit"],
+        "report": ("a grade for each of G1-G6 with the evidence behind it, then the "
+                   "accept or reject verdict and the dimension that decided it"),
+        "why": "grades G1-G6; the quality of this call bounds the whole loop"},
 }
 
 
+def _role_field_errors(name, over):
+    """Everything wrong with ONE role's override, as reportable sentences. Empty when
+    the override is safe to apply.
+
+    Collected rather than raised on the first: a station fixing its config wants the
+    whole list, and a validator that stops at the first problem trains you to re-run it."""
+    out = []
+    for field in sorted(over):
+        val = over[field]
+        if field not in ROLE_FIELDS:
+            out.append("role %r: `%s` is not a role setting (they are %s) — the override "
+                       "is refused and the shipped role stands."
+                       % (name, field, ", ".join(ROLE_FIELDS)))
+            continue
+        if field == "deny_tools":
+            if not isinstance(val, list) or any(not str(t or "").strip() for t in val):
+                out.append("role %r: `deny_tools` must be a list of tool names (it is the "
+                           "grant, expressed as what the role may NOT use) — got %r."
+                           % (name, val))
+            continue
+        if field == "permission_mode" and val not in PERMISSION_MODES:
+            out.append("role %r: `permission_mode` %r is not one Claude Code accepts (%s)."
+                       % (name, val, ", ".join(PERMISSION_MODES)))
+            continue
+        if field == "effort" and val not in EFFORT_LEVELS:
+            out.append("role %r: `effort` %r is not one Claude Code accepts (%s)."
+                       % (name, val, ", ".join(EFFORT_LEVELS)))
+            continue
+        if field in ("model", "report", "why") and not str(val or "").strip():
+            out.append("role %r: `%s` cannot be empty." % (name, field))
+    return out
+
+
+def _effective_roles():
+    """`(table, problems)` — the role table this station runs, and every override that
+    was refused on the way to it.
+
+    ONE function computes both so a caller can never read the table without the reasons
+    being available beside it. `roles()` and `role_problems()` are the two halves."""
+    table = {name: _copy_role(spec) for name, spec in ROLE_DEFAULTS.items()}
+    problems = []
+    raw = _config.get("roles")
+    if raw is None:
+        return table, problems
+    if not isinstance(raw, dict):
+        problems.append("config `roles` is %s, not a table of role -> settings — the "
+                        "shipped roles stand." % type(raw).__name__)
+        return table, problems
+    for name in sorted(raw):
+        over = raw[name]
+        shipped = ROLE_DEFAULTS.get(name)
+        if not isinstance(over, dict):
+            problems.append("role %r: expected a table of settings, got %s — %s."
+                            % (name, type(over).__name__,
+                               "the shipped role stands" if shipped else "dropped"))
+            continue
+        bad = _role_field_errors(name, over)
+        if bad:
+            problems.extend(bad)
+            if shipped is None:
+                problems.append("role %r is station-declared and its settings are "
+                                "unusable, so it is DROPPED — a role that does not name "
+                                "its own permissions must never be guessed at." % name)
+            continue
+        merged = _copy_role(shipped) if shipped else {}
+        merged.update(over)
+        missing = [f for f in ROLE_REQUIRED_FIELDS if f not in merged]
+        if missing:
+            problems.append("role %r declares no %s — a role that does not name its own "
+                            "model, permissions, effort, grant and report contract is "
+                            "DROPPED rather than half-invented."
+                            % (name, ", ".join(missing)))
+            continue
+        table[name] = merged
+    return table, problems
+
+
+def _copy_role(spec):
+    """A role dict nobody can mutate through — the list field is copied too, so a caller
+    holding a spec cannot edit the shipped table by appending to its grant."""
+    out = dict(spec or {})
+    out["deny_tools"] = list(out.get("deny_tools") or [])
+    return out
+
+
+def roles():
+    """The EFFECTIVE role table: the shipped defaults with this station's validated
+    overrides merged over them. Read on every call rather than cached, so a config edit
+    takes effect in the next command instead of the next process."""
+    return _effective_roles()[0]
+
+
+def role_problems():
+    """Every override `roles()` refused, as sentences a station can act on. Rendered on
+    the config board: a refused override that reported nothing would look applied."""
+    return _effective_roles()[1]
+
+
 def role_spec(name):
-    """The role's `{model, permission_mode, effort, why}`, or None for an unknown name.
-    None rather than a default, so a typo'd role is reported instead of silently
-    spawning a child with the wrong permissions."""
-    return dict(ROLES[name]) if name in ROLES else None
+    """The role's `{model, permission_mode, effort, deny_tools, report, why}`, or None for
+    an unknown name. None rather than a default, so a typo'd role is reported instead of
+    silently spawning a child with the wrong permissions."""
+    table = roles()
+    return _copy_role(table[name]) if name in table else None
+
+
+# ------------------------------------------------------- the concurrency budgets ----
+#
+# Q2, decided 2026-08-14, and A3's job is that both numbers now MEAN something. Each was
+# a config key nothing read, which is a comment with a default value.
+#
+# BOTH ARE MACHINE-SCOPED, not per-task: two orchestrators run on one machine, and a
+# per-task cap would let them sum to a load neither one asked for. They differ in what
+# they count, so they are enforced in different places — children at invoke time, builds
+# through a lock in the data dir.
+
+
+def children_budget(orch, tasks, live=None, cap=None):
+    """`{"max", "running", "over"}` for one orchestrator — how many of its children hold
+    a RUNNING session right now, against `loop_children_max`.
+
+    THE COUNT IS PROCESS LIVENESS, not a stored flag: the same derivation the scan's
+    RUNNING column uses. A record survives a crash, so a cap counting records would let
+    one crashed child spend a slot forever, and a loop that cannot spawn is worse than a
+    loop that spawns one too many.
+
+    No orchestrator means no budget. The cap is a property of a LOOP — with no `--from`
+    there is no sibling set to count, and inventing one would refuse a bare `invoke` for
+    a reason nobody configured."""
+    limit = int(_config.loop_children_max() if cap is None else cap)
+    seqs = set(live or ())
+    running = [k.get("seq") for k in (children(orch, tasks) if orch else [])
+               if k.get("seq") is not None and k.get("seq") in seqs]
+    return {"max": limit, "running": running, "over": len(running) >= limit}
+
+
+# -- the machine-wide build slot --------------------------------------------------
+#
+# `loop_builds_max` (default 1) is the number of build / full-suite runs allowed ON THIS
+# MACHINE. The default is not timidity: this machine OOMs on concurrent builds, and this
+# repo's own load-dependent flakes made a parallel suite run a source of FALSE RED — a
+# gate that reports red for a reason having nothing to do with the work is worse than no
+# gate. A full suite run counts as a build.
+#
+# So the lock lives in the DATA DIR, which is per-machine and shared by every orchestrator
+# on it, and NEVER on a task. Its critical section is an `fcntl.flock` over a dedicated
+# lockfile beside the slot file — the same shape `lib/delegate` already uses for its
+# registry, and a separate lockfile survives the atomic replace of the file it guards.
+#
+# A HOLDER WHOSE PROCESS IS GONE IS RECLAIMED. A lock that outlives a crash is a machine
+# nobody can build on again, and the pid is the one fact that answers "is that build still
+# happening" without trusting the crashed process to have cleaned up after itself.
+
+BUILD_SLOTS_FILE = "build-slots.json"
+
+
+def build_slots_path():
+    """The machine's build-slot file. Under the data dir on purpose: two orchestrators
+    share it, which is the whole point of the cap."""
+    return os.path.join(paths.data_dir(), BUILD_SLOTS_FILE)
+
+
+@contextlib.contextmanager
+def _slots_locked():
+    """Exclusive access to the slot file for a read-modify-write.
+
+    Degrades to an unguarded section where `fcntl` is unavailable rather than refusing to
+    build at all: the accounting still holds for one process, and a machine that cannot
+    flock is not a machine this plugin should render unable to run its tests."""
+    os.makedirs(paths.data_dir(), exist_ok=True)
+    fh = open(build_slots_path() + ".lock", "w")
+    try:
+        if fcntl is not None:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if fcntl is not None:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
+def _read_slots():
+    try:
+        with open(build_slots_path(), encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _write_slots(doc):
+    path = build_slots_path()
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def _pid_alive(pid):
+    """True when a process with `pid` exists. `os.kill(pid, 0)` delivers no signal — it
+    runs the existence check only. A process owned by another user still counts as
+    running (PermissionError); anything unparseable reads as dead, because a slot whose
+    holder cannot be identified must not hold the machine."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _live_slots(doc):
+    return {tok: e for tok, e in (doc or {}).items()
+            if isinstance(e, dict) and _pid_alive(e.get("pid"))}
+
+
+def build_slot_holders():
+    """Who holds a build slot right now, oldest first — `{token, label, pid, started_ts}`.
+    Reclaims dead holders as it reads, so a refusal can never name a process that is
+    already gone."""
+    with _slots_locked():
+        doc = _read_slots()
+        live = _live_slots(doc)
+        if len(live) != len(doc):
+            _write_slots(live)
+    rows = [dict(e, token=tok) for tok, e in live.items()]
+    return sorted(rows, key=lambda r: (r.get("started_ts") or 0, r.get("token") or ""))
+
+
+def acquire_build_slot(label, pid=None, wait=0, poll=0.2):
+    """Take one of the machine's `loop_builds_max` build slots, or None.
+
+    `wait` seconds of polling before giving up — a contended slot usually frees when the
+    other suite finishes, and waiting is the difference between a slower loop and a loop
+    that reports a red nobody caused. `wait=0` asks once.
+
+    The token is what `release_build_slot` needs; hold it in a `finally`."""
+    deadline = time.time() + max(0, wait or 0)
+    holder_pid = int(pid if pid is not None else os.getpid())
+    while True:
+        with _slots_locked():
+            doc = _read_slots()
+            live = _live_slots(doc)
+            reclaimed = len(live) != len(doc)
+            if len(live) < int(_config.loop_builds_max()):
+                token = "%d-%s" % (holder_pid, uuid.uuid4().hex[:8])
+                live[token] = {"label": str(label or "")[:160], "pid": holder_pid,
+                               "started_ts": time.time()}
+                _write_slots(live)
+                return token
+            if reclaimed:
+                _write_slots(live)
+        left = deadline - time.time()
+        if left <= 0:
+            return None
+        time.sleep(min(poll, left))
+
+
+def release_build_slot(token):
+    """Give the slot back. False when nobody held that token — releasing twice, or
+    releasing after a reclaim, is harmless rather than an error, because the caller that
+    has to do this in a `finally` cannot know which."""
+    if not token:
+        return False
+    with _slots_locked():
+        doc = _read_slots()
+        if token not in doc:
+            return False
+        del doc[token]
+        _write_slots(doc)
+    return True

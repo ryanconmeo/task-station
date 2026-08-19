@@ -210,6 +210,12 @@ def main(argv=None):
     sp.add_argument("--timeout", type=int, default=None, metavar="SECONDS",
                     help="per-command timeout for this run (default: the configured "
                          "exit_command_timeout, 120s)")
+    sp.add_argument("--build-wait", dest="build_wait", type=int, default=None,
+                    metavar="SECONDS",
+                    help="how long to wait for the MACHINE-WIDE build slot before "
+                         "refusing (default: the exit_command_timeout). A suite run is "
+                         "a build, and loop_builds_max caps how many run at once on "
+                         "this machine; 0 asks once and refuses.")
     sp.set_defaults(fn=cmd_exit_tick)
 
     # scan — the ZERO-TOKEN half of the loop driver. Waves over `depends-on`, the
@@ -231,6 +237,10 @@ def main(argv=None):
     sp.add_argument("--run", action="store_true",
                     help="re-run every node's exit conditions first, instead of reading "
                          "the stored results. Costs whatever those commands cost.")
+    sp.add_argument("--build-wait", dest="build_wait", type=int, default=None,
+                    metavar="SECONDS",
+                    help="with --run: how long to wait for the MACHINE-WIDE build slot "
+                         "before refusing (default: the exit_command_timeout)")
     sp.add_argument("--json", dest="as_json", action="store_true",
                     help="the structured report — the same object the text view renders")
     sp.set_defaults(fn=cmd_scan)
@@ -257,6 +267,14 @@ def main(argv=None):
     sp.add_argument("--permission-mode", dest="permission_mode", default=None,
                     help="override the role's permission mode (plan | acceptEdits | "
                          "default | bypassPermissions)")
+    sp.add_argument("--effort", default=None,
+                    help="override the role's effort level (low | medium | high | "
+                         "xhigh | max)")
+    sp.add_argument("--force", action="store_true",
+                    help="launch even though the orchestrator is already at "
+                         "loop_children_max. Recorded on the orchestrator as FORCED "
+                         "with the numbers it overrode — a deliberate override is "
+                         "sometimes right, an invisible one never is.")
     sp.add_argument("--cwd", default=None,
                     help="directory the child starts in (default: where the task's most "
                          "recent session ran)")
