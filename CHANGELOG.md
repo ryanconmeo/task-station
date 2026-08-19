@@ -3,7 +3,7 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
-## [3.8.1] — 2026-08-19
+## [3.9.0] — 2026-08-19
 
 ### Added
 - **A parent can now REACH a running child, not merely observe one.** `invoke` starts
@@ -111,6 +111,33 @@ All notable changes to Task Station are documented here. This project adheres to
   never the truth: an unused channel costs one absent-file stat, an indexed hit costs one
   task load, and the full scan survives as the correctness backstop, gated on the index
   being non-empty so it can only ever cost anything where the channel is in use.
+
+### Changed
+- **A pending stand-down now silences 3.8.0's relay nudge, and that ordering is a ruling
+  rather than a tidy-up.** Both fire at a turn end and both are legitimate, so the
+  question is which authority wins. A stand-down is an ORDER FROM THE PARENT — external
+  authority the child does not get to weigh against its own housekeeping. A relay is a
+  SELF-assessment about context. If both speak and the relay proceeds, the child spawns a
+  successor to carry on work the parent has just cancelled: not a confusing pair of
+  messages but a child **disobeying a stop by proxy**, and burning a fresh full-window
+  session to do it. So stand-down pending → the nudge is silent, no exceptions. The
+  reverse needs no rule; a relay with nothing pending proceeds as normal.
+
+  **Suppressed is not consumed.** The check returns before `pressure_nudged` is set, so
+  the nudge is deferred rather than spent — it speaks on the next Stop once the order is
+  settled. A suppression that quietly burned the one-shot flag would mean a session
+  genuinely out of room never heard about it. Only a **stand-down** outranks the nudge; a
+  memo order is information, not a stop, and suppressing on any pending order would let a
+  stray memo mute a real relay. That predicate is also the one channel path that fails
+  **closed** — everywhere else the cost of being wrong is an undelivered message, but here
+  it is a child continuing cancelled work, and one silent turn is the cheap error.
+
+  This also gave `succession_reserve` a second job nobody designed it for, recorded in
+  `succession.py` where the next reader will meet it: a stand-down cannot be settled
+  without a report, and a session at the relay trigger is by definition the one with least
+  room to write one. The reserve being **absolute** rather than a percentage is what
+  guarantees the same room to answer a stand-down on a 200k window as on a 1M one. The two
+  mechanisms compose by accident, and the accident is load-bearing.
 
 ## [3.8.0] — 2026-08-19
 
