@@ -345,7 +345,17 @@ def _build_worker_cmd(task, model="sonnet", role=None, cwd=None,
     `harness.ClaudeAdapter.spawn_cmd`: dontAsk fails CLOSED and, unlike acceptEdits,
     does not auto-approve edits, so the author-only toolset has to be granted by name or
     the worker cannot do the one job it has. git / network / arbitrary Bash are
-    deliberately absent and stay denied."""
+    deliberately absent and stay denied.
+
+    A STATED LIMIT: the resolver also answers `deny_tools` and `report` (3.12.0 made the
+    role table config and gave every role a tool grant and a report contract), and this
+    path emits NEITHER. Two reasons, both worth writing down rather than discovering:
+    the live caller below passes no `role` at all, so there is nothing to emit today; and
+    this is the one path that already sends `--allowedTools`, so a deny list arriving
+    beside an allow list raises a precedence question the CLI's behaviour would have to
+    settle before it is guessed at here. `invoke` emits both, which is what the config
+    board's grant column reflects. When a bg spawn starts taking a role for real, this is
+    the function that has to answer that question — not a silent omission to find."""
     ws = _board_workspace()
     r = ws.resolve_spawn(ws.SPAWN_BG, role=role, model=model, cwd=cwd,
                          parent_selection=(_parent_model_selection()

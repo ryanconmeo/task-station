@@ -25,8 +25,11 @@ into it is actually given.
 This module is a STANDALONE seam, not a split-engine one: it owns its imports and reads
 no patchable facade globals, so `tests/test_patch_surface.py` does not scan it. What it
 borrows from other seams it binds at import time — `_same_model_family` is a pure
-predicate over two strings, and `role_spec` is a lookup in a literal table — so neither
-binding can miss a patch that mattered.
+predicate over two strings, and `role_spec` is a plain lookup function — so neither
+binding can miss a patch that mattered. `role_spec` stopped being a lookup in a *literal*
+table in 3.12.0 (the table is config now, re-read on every call), which does not change
+that: the import binds the FUNCTION, and the function reads the store when it is asked,
+so a station's override lands in the next spawn rather than the next process.
 """
 import json
 import os
@@ -137,9 +140,9 @@ def under_worktrees(path):
 
 
 def resolve_spawn(kind, role=None, model=None, permission_mode=None,
-                  parent_selection=None, cwd=None, bypass_allowed=False):
+                  parent_selection=None, cwd=None, bypass_allowed=False, effort=None):
     """What a `kind` spawn should actually run: `{kind, role, model, window,
-    permission_mode, notes}`.
+    permission_mode, effort, deny_tools, report, notes}`.
 
     `model` and `permission_mode` are the EXPLICIT overrides, and an explicit value
     always wins — a human passing the flag has made the decision the role was only
@@ -155,6 +158,20 @@ def resolve_spawn(kind, role=None, model=None, permission_mode=None,
       None so the human's configured default inherits. For a bg spawn the role table
       does not apply at all (see BG_DEFAULT_MODE): the answer is the bg policy, and a
       role mode that was discarded is named in `notes` rather than dropped silently.
+
+    * EFFORT — the role's own reasoning level (a scout is cheap on purpose), overridable
+      like the other two. `None` emits no `--effort` and inherits the account default.
+    * DENY_TOOLS — the role's TOOL GRANT, always as a deny list. An allow list would
+      REPLACE the human's tool set and drop the MCP servers they configured; a deny list
+      narrows it, which is the `restricts` rule applied to the other flag a role sets.
+    * REPORT — the role's report contract, for the caller to put in the child's PROMPT.
+      It rides in the answer because the role table should be read in exactly one place;
+      it is not a flag, so the caller applies it rather than this function.
+
+    THE LAST THREE ARE ROLE-DERIVED, SO THEY LIVE HERE, but they are not all consumed by
+    both spawners — see the `deny_tools`/`report` note in `delegate._build_worker_cmd`
+    for what the bg path deliberately does not emit yet, and why that is a stated limit
+    rather than a silent drop.
 
     `notes` exists so the override can be REPORTED. A design that quietly throws away a
     role's stated mode is indistinguishable from a bug the first time somebody wonders
@@ -182,9 +199,15 @@ def resolve_spawn(kind, role=None, model=None, permission_mode=None,
                          "than narrowing it — the flag is omitted so the default inherits"
                          % (role, role_mode))
 
+    deny = [str(t).strip() for t in ((spec or {}).get("deny_tools") or [])
+            if str(t or "").strip()]
     return {"kind": kind, "role": role, "model": chosen_model,
             "window": pricing.context_window_for(chosen_model) if chosen_model else None,
-            "permission_mode": chosen_mode, "notes": notes}
+            "permission_mode": chosen_mode,
+            "effort": effort or (spec or {}).get("effort") or None,
+            "deny_tools": deny,
+            "report": str((spec or {}).get("report") or "").strip() or None,
+            "notes": notes}
 
 
 # ------------------------------------------------------------------ env hygiene ----

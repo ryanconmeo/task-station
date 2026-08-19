@@ -485,7 +485,7 @@ class RoleTest(unittest.TestCase):
         self.assertIsNone(loop.role_spec("implementor"))
 
     def test_every_role_carries_a_model_and_a_permission_mode(self):
-        for name in loop.ROLES:
+        for name in loop.roles():
             spec = loop.role_spec(name)
             self.assertTrue(spec["model"])
             self.assertTrue(spec["permission_mode"])
@@ -493,7 +493,7 @@ class RoleTest(unittest.TestCase):
     def test_models_are_aliases_never_pinned_ids(self):
         """A pinned model id freezes one release into the store; an alias follows the
         current generation."""
-        for name in loop.ROLES:
+        for name in loop.roles():
             self.assertNotIn("-", loop.role_spec(name)["model"])
 
 
@@ -800,8 +800,8 @@ class RecapTest(CliTest):
 
 class RoleNameTest(unittest.TestCase):
     def test_the_grading_role_is_named_grader(self):
-        self.assertIn("grader", loop.ROLES)
-        self.assertNotIn("judge", loop.ROLES)
+        self.assertIn("grader", loop.roles())
+        self.assertNotIn("judge", loop.roles())
 
 
 # -- (8) liveness, the upward report, and decompose --------------------------------

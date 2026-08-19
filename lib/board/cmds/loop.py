@@ -143,6 +143,37 @@ def _exit_show_lines(task):
     return out
 
 
+def _build_slot(a, verb, label):
+    """`(token, refused)` — hold the machine's build slot for the run about to happen.
+
+    THE SUITE IS THE BUILD. `exit-tick` and `scan --run` are the two verbs in this
+    codebase that execute somebody's test command, and `loop_builds_max` (default 1) is
+    how many of those may run ON THIS MACHINE at once. The cap is not timidity: this
+    machine OOMs on concurrent builds, and this repo's load-dependent flakes made a
+    parallel suite run a source of FALSE RED — a gate that goes red for a reason having
+    nothing to do with the work is worse than no gate at all.
+
+    It WAITS before it refuses (`--build-wait`, default the exit-command timeout),
+    because a contended slot usually frees when the other suite finishes and a slower
+    loop beats a red nobody caused. When it does refuse, NOTHING RAN — which is why the
+    caller exits 3 rather than 1: an unmet condition was refuted, this one was never
+    asked."""
+    wait = getattr(a, "build_wait", None)
+    wait = _config.exit_command_timeout() if wait is None else wait
+    token = _loop.acquire_build_slot(label, wait=wait)
+    if token:
+        return token, False
+    print("%s: did NOT run — the machine-wide build slot is taken and "
+          "loop_builds_max is %d." % (verb, _config.loop_builds_max()))
+    for h in _loop.build_slot_holders():
+        print("  held by pid %s since %s: %s"
+              % (h.get("pid"), rel_time(int(h.get("started_ts") or 0)),
+                 h.get("label") or "(unlabelled)"))
+    print("  nothing was proved either way, so no tick moved. Retry when it frees, or "
+          "raise loop_builds_max if this machine really can take two.")
+    return None, True
+
+
 def cmd_exit_add(a):
     """`task-station exit-add --task REF --step N --cmd '<shell>' --expect '<substr>'…`
 
@@ -239,9 +270,15 @@ def cmd_exit_tick(a):
         return
     only = getattr(a, "step", None)
     was_satisfied = _exits.satisfied(task)
-    results = _exits.evaluate(task, only=[only] if only else None,
-                              timeout=getattr(a, "timeout", None) or None)
     ref = task.get("seq") or task["id"][:8]
+    token, refused = _build_slot(a, "exit-tick", "exit-tick #%s" % ref)
+    if refused:
+        sys.exit(3)
+    try:
+        results = _exits.evaluate(task, only=[only] if only else None,
+                                  timeout=getattr(a, "timeout", None) or None)
+    finally:
+        _loop.release_build_slot(token)
     if not results:
         if only:
             print("exit-tick: task #%s step %s has no exit condition registered."
@@ -446,12 +483,21 @@ def cmd_scan(a):
         return
     ran = bool(getattr(a, "run", False))
     if ran:
-        for t in nodes:
-            results = _exits.evaluate(t)
-            if results:
-                _exits.apply_results(t, results)
-                t["updated_ts"] = _now()
-                save_task(t)
+        # ONE slot for the whole sweep, not one per node: a sweep is a build. Locking
+        # `exit-tick` and leaving this open would make the cap true only of the verb
+        # somebody happened to remember.
+        token, refused = _build_slot(a, "scan", "scan --run")
+        if refused:
+            sys.exit(3)
+        try:
+            for t in nodes:
+                results = _exits.evaluate(t)
+                if results:
+                    _exits.apply_results(t, results)
+                    t["updated_ts"] = _now()
+                    save_task(t)
+        finally:
+            _loop.release_build_slot(token)
     every = all_tasks()
     by_id = {t.get("id"): t for t in every}
     nodes = [by_id.get(t.get("id"), t) for t in nodes]
@@ -492,37 +538,67 @@ DRY_RUN_SID = "00000000-0000-0000-0000-000000000000"
 MANUAL_LAUNCH = "MANUAL LAUNCH"
 
 
-def _invoke_command(base, role, model, permission_mode, ask):
+def _child_prompt(ask, role, report):
+    """The ask, plus the role's REPORT CONTRACT when it has one.
+
+    The contract travels in the prompt because a contract the child is never told about
+    is decoration — and it is APPENDED, never substituted: the request is the one thing
+    the orchestrator has to say that the child's own record cannot tell it. What gets
+    RECORDED on the trail stays the bare ask (`_record_launch`), so a boilerplate
+    sentence can never push the actual request out of the event text.
+
+    Takes the contract STRING, not the role spec: the role table is read once, by
+    `workspace.resolve_spawn`, and this function only formats what it answered."""
+    report = str(report or "").strip()
+    if not report:
+        return ask
+    return "%s\n\nREPORT BACK — the %s contract: %s" % (ask, role, report)
+
+
+def _invoke_command(base, role, model, permission_mode, ask, effort=None):
     """Assemble the child's launch command from the pre-bound `cd … && claude
     --session-id <sid>` base.
 
-    BOTH FLAGS COME BACK FROM `workspace.resolve_spawn`, which `delegate` also asks —
-    the rule about what a child is given lives in exactly one place, because when it
-    lived in two they drifted, and the copy that drifted was handing unattended workers
-    a mode that hangs them. This function's remaining job is assembling a shell line.
+    EVERY ROLE-DERIVED ANSWER COMES BACK FROM `workspace.resolve_spawn`, which
+    `delegate` also asks — the rule about what a child is given lives in exactly one
+    place, because when it lived in two they drifted, and the copy that drifted was
+    handing unattended workers a mode that hangs them. This function's remaining job is
+    assembling a shell line out of that answer.
 
     What the resolver decides, in short: a role may RESTRICT and may never REPLACE, so
     the permission mode is emitted only when it narrows what the child may do and is
-    otherwise omitted to inherit the human's default; and the model keeps the role's
-    alias but reclaims the parent's `[1m]` window when the two name the same family.
-    Either can be overridden explicitly, and an explicit value always wins.
+    otherwise omitted to inherit the human's default; the model keeps the role's alias
+    but reclaims the parent's `[1m]` window when the two name the same family; the tool
+    grant is a DENY list, never an allow list, so it narrows the human's tool set instead
+    of replacing it and dropping their MCP servers; and the effort is the role's own,
+    emitted because the table carries it and the CLI takes it — a field the config board
+    shows while nothing applies it is a lie told on every render. Any of them can be
+    overridden explicitly, and an explicit value always wins.
 
-    The ask is `shlex.quote`d rather than wrapped in quotes by hand — an ask containing
-    an apostrophe is the common case, not an edge one, and a hand-quoted one would
-    truncate at it."""
+    Read with `.get()`, not `[]`: `test_neither_path_answers_for_itself` stubs the
+    resolver with a partial answer on purpose, and a spawner that only works against a
+    complete dict is a spawner nobody can stub.
+
+    The prompt is `shlex.quote`d rather than wrapped in quotes by hand — an ask
+    containing an apostrophe is the common case, not an edge one, and a hand-quoted one
+    would truncate at it."""
     r = _workspace.resolve_spawn(_workspace.SPAWN_WINDOW, role=role, model=model,
-                                 permission_mode=permission_mode,
+                                 permission_mode=permission_mode, effort=effort,
                                  parent_selection=g("claude_code_model_selection")())
     parts = [base]
-    if r["model"]:
+    if r.get("model"):
         parts.append("--model %s" % shlex.quote(r["model"]))
-    if r["permission_mode"]:
+    if r.get("effort"):
+        parts.append("--effort %s" % shlex.quote(r["effort"]))
+    if r.get("permission_mode"):
         parts.append("--permission-mode %s" % shlex.quote(r["permission_mode"]))
-    parts.append(shlex.quote(ask))
+    if r.get("deny_tools"):
+        parts.append("--disallowed-tools %s" % shlex.quote(",".join(r["deny_tools"])))
+    parts.append(shlex.quote(_child_prompt(ask, role, r.get("report"))))
     return " ".join(parts)
 
 
-def _record_launch(child, orch, role, ask, manual, session=None):
+def _record_launch(child, orch, role, ask, manual, session=None, forced=None):
     """Write the invoke's trail entries — AFTER the launch decision, never before it.
 
     Both halves of this used to run before the code knew whether a window had opened, so
@@ -546,8 +622,11 @@ def _record_launch(child, orch, role, ask, manual, session=None):
     orch = load_task(orch["id"]) or orch
     head = "%s #%s" % (MANUAL_LAUNCH, child.get("seq")) if manual \
         else "invoked #%s" % child.get("seq")
-    add_event(orch, "child", "%s (%s) — %s" % (head, role or "no role", ask[:160]),
-              session=session)
+    # A budget override is recorded on the ORCHESTRATOR, which is where the budget is:
+    # a deliberate override is sometimes right, an invisible one never is.
+    add_event(orch, "child", "%s (%s)%s — %s"
+              % (head, role or "no role", (" %s" % forced) if forced else "",
+                 ask[:160]), session=session)
     orch["updated_ts"] = _now()
     save_task(orch)
 
@@ -599,9 +678,33 @@ def cmd_invoke(a):
     role = getattr(a, "role", None)
     if role and not _loop.role_spec(role):
         print("invoke: %r is not a role. They are %s."
-              % (role, ", ".join(sorted(_loop.ROLES))))
+              % (role, ", ".join(sorted(_loop.roles()))))
         sys.exit(2)
     warnings = []
+    # THE CHILDREN CAP, ENFORCED HERE — before a session is minted, an event written or
+    # a window opened, so a refusal leaves nothing behind that looks invoked. Exit 3
+    # rather than 2, deliberately: 2 means "you asked wrong" and asking again will not
+    # help, 3 means the budget is full and this is worth retrying when a child finishes.
+    budget = _loop.children_budget(orch, all_tasks(), _live_seqs())
+    if budget["over"]:
+        lines = ["invoke: #%s already has %d child session(s) RUNNING (%s) and "
+                 "loop_children_max is %d."
+                 % (orch.get("seq") if orch else "?", len(budget["running"]),
+                    ", ".join("#%s" % s for s in budget["running"]), budget["max"]),
+                 "The cap is machine-scoped, not per-task — two orchestrators share one "
+                 "machine, and a per-task cap would let them sum to a load neither "
+                 "asked for.",
+                 "Wait for one to finish (`task-station scan --task %s` names them), "
+                 "raise it (`loop_children_max` in config.json, or "
+                 "TASK_STATION_LOOP_CHILDREN_MAX), or pass --force to launch over it "
+                 "and have that recorded."
+                 % (orch.get("seq") if orch else "<orch>")]
+        if not getattr(a, "force", False):
+            print("\n".join(lines))
+            sys.exit(3)
+        warnings.append("launched OVER the cap: %d child session(s) already running and "
+                        "loop_children_max is %d." % (len(budget["running"]),
+                                                      budget["max"]))
     if orch and _loop.parent_id(child) != orch.get("id"):
         warnings.append("#%s is not a child of #%s — the roll-up will not count it. "
                         "`update --task %s --parent %s` fixes that."
@@ -614,6 +717,7 @@ def cmd_invoke(a):
                         % len(ask))
     model = getattr(a, "model", None)
     permission_mode = getattr(a, "permission_mode", None)
+    effort = getattr(a, "effort", None)
     cwd = getattr(a, "cwd", None)
     header = "Invoke — #%s %s%s" % (child.get("seq"), child.get("title"),
                                     ("  ← #%s" % orch.get("seq")) if orch else "")
@@ -629,7 +733,7 @@ def cmd_invoke(a):
         where = os.path.expanduser(cwd) if cwd \
             else _fresh_session_cwd(child.get("session_meta"))
         base = "cd %s && claude --session-id %s" % (shlex.quote(where), DRY_RUN_SID)
-        cmd = _invoke_command(base, role, model, permission_mode, ask)
+        cmd = _invoke_command(base, role, model, permission_mode, ask, effort)
         print(header)
         print("  DRY RUN — nothing was written: no session minted, no event recorded, "
               "no window opened. That session id is a placeholder, not a real one.")
@@ -646,7 +750,7 @@ def cmd_invoke(a):
         base = "cd %s && claude --session-id %s" % (shlex.quote(os.path.expanduser(cwd)),
                                                     sid)
     done = _workspace.apply(verdict)
-    cmd = _invoke_command(base, role, model, permission_mode, ask)
+    cmd = _invoke_command(base, role, model, permission_mode, ask, effort)
     print(header)
     print("  session %s is pre-attached: its SessionStart injects THIS task's digest, "
           "so the ask carries the request only." % sid[:8])
@@ -668,7 +772,10 @@ def cmd_invoke(a):
     else:
         print("  could not open a window (macOS/Terminal only) — run it yourself:")
         print("    %s" % cmd)
-    _record_launch(child, orch, role, ask, manual, session=getattr(a, "session", None))
+    forced = ("FORCED over the cap (loop_children_max=%d, %d running)"
+              % (budget["max"], len(budget["running"]))) if budget["over"] else None
+    _record_launch(child, orch, role, ask, manual, session=getattr(a, "session", None),
+                   forced=forced)
 
 
 # ------------------------------------------------------------------- the relay ----
