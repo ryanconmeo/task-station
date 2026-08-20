@@ -121,6 +121,9 @@ import store as store_mod
 ORDER_MEMO, ORDER_STAND_DOWN, ORDER_SPEC = "memo", "stand-down", "spec"
 ORDER_KINDS = (ORDER_MEMO, ORDER_STAND_DOWN, ORDER_SPEC)
 
+# STUB (tests-first): the blocking rail, before finding 7 narrows it.
+BLOCKING_KINDS = ORDER_KINDS
+
 # How many turn-ends one unsettled order may hold. Past this it stays pending and
 # visible but stops blocking — see the anti-wedge note in the module docstring.
 ORDER_MAX_BLOCKS = 3
@@ -434,6 +437,11 @@ def deliverable(task, sid):
     turn."""
     return [o for o in orders_for(task, sid)
             if int(o.get("blocks") or 0) < ORDER_MAX_BLOCKS]
+
+
+def notices(task, sid):
+    """STUB (tests-first)."""
+    return []
 
 
 def mark_delivered(task, orders_):     # noqa: A002 — shadowing is local and obvious

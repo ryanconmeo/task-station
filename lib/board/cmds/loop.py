@@ -30,12 +30,13 @@ g, set_g = _shared.g, _shared.set_g
 
 __all__ = [
     "_loop_target", "_exit_step_arg", "_exit_show_lines", "_scan_population",
-    "_scan_lines", "_invoke_command", "ASK_CONTEXT_HINT",
+    "_scan_lines", "_child_prompt", "_invoke_command", "ASK_CONTEXT_HINT",
     "DRY_RUN_SID", "MANUAL_LAUNCH", "_record_launch",
     "cmd_exit_add", "cmd_exit_rm", "cmd_exit_show", "cmd_exit_tick",
     "cmd_scan", "cmd_invoke", "cmd_grade", "cmd_orchestrator_check",
     "cmd_decompose", "cmd_relay",
     "_live_seqs", "_announce_spec_change", "_channel_report_back", "cmd_channel",
+    "cmd_turn",
 ]
 
 
@@ -538,7 +539,7 @@ DRY_RUN_SID = "00000000-0000-0000-0000-000000000000"
 MANUAL_LAUNCH = "MANUAL LAUNCH"
 
 
-def _child_prompt(ask, role, report):
+def _child_prompt(ask, role, report, ref=None):
     """The ask, plus the role's REPORT CONTRACT when it has one.
 
     The contract travels in the prompt because a contract the child is never told about
@@ -1021,6 +1022,11 @@ def cmd_grade(a):
 
 
 # ---------------------------------------------------- the orchestrator guard ----
+
+def cmd_turn(a):
+    """STUB (tests-first) — the driven turn CLI."""
+    return None
+
 
 def cmd_orchestrator_check(a):
     """`task-station orchestrator-check --task REF` — is delegating FROM this task
