@@ -408,8 +408,22 @@ def _channel_block(session):
         task = _channel_task_for(session)
         if not task:
             return None
+        # ROUTINE NOTICES ARE SETTLED HERE AND NEVER BLOCK. The gate fires at every turn
+        # end, so an order that holds a turn costs a round trip each time — and for a
+        # memo, whose fact is already durable on the task's own ledger and already
+        # surfaced on the next prompt, that is a cost with nothing on the other side.
+        # Settling rather than leaving it pending is what stops the queue growing a
+        # backlog nobody can ever clear: the notice was delivered, to the ledger.
+        quiet = _channel.notices(task, session)
         pending = _channel.deliverable(task, session)
+        if quiet:
+            _channel.mark_delivered(task, quiet)
+            for order in quiet:
+                _channel.order_settle(order, session)
         if not pending:
+            if quiet:
+                task["updated_ts"] = _now()
+                save_task(task)
             return None
         _channel.mark_delivered(task, pending)
         task["updated_ts"] = _now()
@@ -1333,7 +1347,7 @@ def _subscriptions_check(session=None):
             ftask = _feed_task(feed, l.get("uuid8"))
             text = _subscription_memo_text(l, feed, ftask)
             if text:
-                memo_send(t, text, from_sid=None)
+                memo_send(t, text, from_sid=None, routine=True)
                 minted += 1
             s["last_rev"] = rev
             changed = True
