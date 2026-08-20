@@ -3,6 +3,142 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.14.0] — 2026-08-19
+
+### Added
+- **The driven turn: one command that runs a whole pass of the loop with no human between
+  the steps.** `task-station turn --task <orchestrator>` reads the board and answers *what
+  does the loop do now* — as an ORDERED AGENDA, each step carrying the exact command that
+  performs it: gate what came back, grade it or park it, release what was accepted,
+  re-launch a spawn that never came up, invoke one new child, wait on the rest. New engine
+  module `lib/board/turn.py`, pure over task dicts like `loop` and `exits`: no model, no
+  shell, and not one byte written. Halts with exit 3 and one of six named reasons
+  (`complete` · `empty` · `working` · `budget` · `parked` · `blocked`), because "nothing to
+  do" and "nothing I CAN do" call for opposite responses.
+
+  Everything it composes already shipped — the exit-condition gate, the wave `scan`,
+  `invoke`, `grade` with its A--per-dimension threshold and retry/park budget, the role
+  table, the concurrency budgets, the memo ledger, the control channel. WHAT WAS MISSING
+  WAS THE PARENT RUNNING THEM IN ORDER. The Q4 split is unchanged: the engine owns the
+  deterministic primitives, the SKILL owns the judgement, and the commands the turn prints
+  leave exactly those blanks (`--dim G1=?`, `--ask '<the request>'`).
+
+  **THE AGENDA'S ORDER IS LOAD-BEARING.** What came back is gated FIRST, because grading a
+  finished child can release a wave and hands its slot back to the budget — invoking first
+  spends the slot the gate was about to return. And it invokes **one child per pass**: that
+  is a stagger, not just a cap. Two children in flight in this repo means two version bumps
+  and a rebase for whoever lands second; three means a three-way conflict. `loop_children_max`
+  bounds how many may be live, counted from PROCESS LIVENESS rather than records, so a
+  crashed child cannot hold a slot forever.
+
+  **SILENT EXIT IS ITS OWN STATE, because "failed" and "unknown" are both wrong.** A child
+  that finishes and exits saying nothing is the single most common thing that happened while
+  this loop was driven by hand — three of seven children — and it happens for a structural
+  reason: exit conditions run against the MAIN checkout, so a child's own work cannot turn
+  them green until its PR merges. Reading that as failed retries work that may be complete;
+  reading it as unknown stalls the loop. So `silent-exit` sits alongside `reported`,
+  `running`, `spawn-failed`, `manual-pending`, `parked`, `settled` and `unstarted` — eight
+  states, no two of them synonyms, each with a different next action.
+
+  **SPAWN INTENT IS NOT LIVENESS.** A failed window-open still records the invoke and still
+  mints a session, so a child can read as invoked having never taken a turn — and both the
+  RUNNING column and the double-invoke guard can be wrong about it in opposite directions.
+  The turn reconciles the launch trail against process liveness AND against evidence the
+  child actually worked (an event, a memo, a grade, a condition run), so a dead spawn is
+  RE-LAUNCHED and never graded. The `MANUAL LAUNCH` marker now has exactly one definition,
+  in `turn`, read back by the CLI seam — writer and reader of a trail that decides whether a
+  child is re-launched must not be two copies of a string.
+
+- **`docs/specs/LOOP-GATE.md`** — the spec: the turn's shape, the seven findings it was
+  built against, and an answer for every backlog item it owes one (B5/B7/B8/B9/B13/B14,
+  each MECHANISED or DEFERRED *with its reason*). B7 and B9 and B13 are mechanised here; B8
+  and B14 are mechanised in the half the gate needs and deferred in the half that is not the
+  gate's; B5 is deferred because the board stays forge-agnostic — reading an ADO Feature's
+  children belongs to the brain plane's work-item reader, and the dependency only ever
+  points board → brain.
+
+### Changed
+- **A rejection now goes back down the rail the child can actually read.** `grade` sends its
+  verdict to the child as a MEMO on the child's own task, naming the failed dimension, its
+  grade, and the ungraded dimensions separately — because those two call for different work
+  (a low grade is the child's to redo, an ungraded one is the judge's to finish). A park
+  sends its reason and deliberately says nothing about another attempt. `--no-memo` opts
+  out.
+
+  **WHY A MEMO AND NOT THE CHANNEL.** A verdict recorded on the task and nowhere else is a
+  verdict the child never reads: nobody types into an invoked child again, and by gate time
+  it has usually stopped, so the channel has nothing to reach. A memo is durable, survives
+  the window closing, and is on the record the child's own SessionStart reads — a retry
+  therefore starts from the verdict instead of from nothing.
+
+- **The report contract now NAMES the rail, because naming nothing made the compliant
+  behaviour and the useless one identical.** The role contracts asked for a report and said
+  nothing about where to put it, so a child that printed a perfect report to its own terminal
+  was fully compliant and completely invisible: the parent cannot see that window, and the
+  session ends. `invoke` appends the rail — `task-station memo send --task <ref> --text
+  '<the report>'` — to every child's prompt, contract or no contract, and a missing report
+  memo is now a gate FINDING rather than a silence somebody has to notice.
+
+- **A routine notice no longer holds a turn hostage, and the discriminator is AUTHORSHIP
+  rather than kind.** The control channel's Stop gate fires at every turn end, so an
+  unsettled order costs a round trip every single time; holding an orchestrator's turn for
+  "your child closed" — bookkeeping the loop minted itself, already durable on the memo
+  ledger, already on the next prompt's rail — costs more than it delivers.
+
+  So `memo_send(routine=True)` marks the memos a LIFECYCLE HOOK mints (a child reporting
+  closed, a stand-down report handed back, a peer feed advancing, a link forming) and those
+  ride the ledger: the Stop gate marks them delivered, settles them, and lets the turn end.
+  A memo a SESSION WROTE still blocks, and that distinction is the whole fix — "stop
+  rebasing, main moved" and "your child closed" are both memos and are not the same message.
+  A **stand-down** and a **moved exit condition** block whoever wrote them; neither is
+  bookkeeping, and DONE here is computed from those conditions.
+
+- **`exit-add` now refuses to store a condition that cannot run or can be satisfied by
+  something other than the work** (B7). Two checks, both STATIC — registering a condition
+  must not have side effects — run before anything is written: the shell is asked to PARSE
+  the command (`bash -n`, never execute), and the shape is linted for the three ways an
+  assertion lies. `--force` registers anyway and prints what it overrode; a flagged
+  condition stored silently is the one outcome nobody could debug.
+
+  The three shapes, each observed on a real registered condition: a command ending in
+  `tail -N` (one extra line of trailing stdout swallows the line the assertion is about,
+  and the gate goes red for a reason having nothing to do with the work); a BARE COUNT as
+  an expected substring (`5013` is inside `15013` and inside any line that happens to
+  contain it); and an ABSENCE ASSERTION (`no failures`, `0 errors`) which nothing printed
+  at all satisfies — so it passes hardest exactly when the command is broken.
+
+### Fixed
+- **Four ways the gate was reporting something other than the state of the work.** Each was
+  measured while driving the loop by hand, and each now has a mechanism rather than a note:
+  - a FALSE GREEN on unstarted work — a child that was never invoked is `gradeable: false`,
+    because a grade on work nobody did is the cheapest possible lie;
+  - a suite assertion satisfied by the ABSENCE of the test it protects — `unittest discover
+    -k <a name nothing matches>` prints `Ran 0 tests`, then `OK`, and exits 0, and so does a
+    renamed test class. `turn.suite_green` PINS A POSITIVE COUNT: `Ran N tests` with N ≥ 1,
+    no `FAILED`, and an `OK`. Output with no count at all fails with its own reason —
+    uncountable is never zero, and it is never green either;
+  - a FALSE RED from a stale INSTALLED plugin — the suite exercises the repo while the hooks
+    and the MCP server exercise whatever `/plugin update` last cached, and a gate reading the
+    second while grading the first reports red about work that is correct. `turn` names it.
+    (The probe compares versions NUMERICALLY: sixteen versions sit in a real plugin cache
+    and `sorted()` puts 3.9.0 after 3.12.0 — a probe whose job is catching a stale install
+    must not report the wrong version as the installed one);
+  - **TREE, NOT ANCESTRY.** This repo squash-merges everything, so `git merge-base
+    --is-ancestor` reports EVERY landed branch as unmerged. The failure direction is what
+    makes it unacceptable in a driven turn: it re-opens work that already shipped. The probe
+    is an empty `git diff <merge> <branch>`, and unmet conditions on a branch nobody has
+    probed are reported as PRE-MERGE rather than as a failure.
+
+- **A gate number with no command that measures it is now a finding** (B9). Phase 4's count
+  went 58 → 81 in a plan nobody re-ran, and the drift was invisible because the number was
+  prose. Identifiers that merely look numeric — `#444`, a year, a version part — are
+  excluded: a lint that cried wolf on task refs would be switched off within a day, and a
+  disabled lint still reads like a guarantee.
+
+- **Pending-ack debt is now a loop INPUT rather than background noise** (B13). Twenty-two
+  memos sat dispositioned by nobody on the day this was written, and the loop had no idea a
+  fact handed to a task had never been engaged.
+
 ## [3.13.0] — 2026-08-19
 
 ### Fixed

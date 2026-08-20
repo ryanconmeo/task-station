@@ -317,6 +317,14 @@ class DrivenTurn(_CliCase):
         self.assertIn("3.12.0", f["line"])
         self.assertIsNone(turn.stale_install("3.14.0", "3.14.0"))
 
+    def test_the_installed_version_is_picked_numerically_not_alphabetically(self):
+        """Sixteen versions sit in a real plugin cache and `sorted()` puts 3.9.0 after
+        3.12.0. A probe whose job is catching a stale install must not report the wrong
+        version as the installed one."""
+        self.assertEqual(max(["3.12.0", "3.9.0", "3.13.0"], key=turn._version_key),
+                         "3.13.0")
+        self.assertLess(turn._version_key("3.9.0"), turn._version_key("3.12.0"))
+
     # -- B7 / B9 / B13: the gate-machinery items A4 mechanises -------------------
 
     def test_a_condition_that_dies_on_shell_syntax_is_refused_before_it_is_stored(self):
@@ -413,7 +421,8 @@ class DrivenTurn(_CliCase):
     def test_a_full_children_budget_invokes_nothing_and_says_why(self):
         orch = _t("o1", 1)
         kids = [_t("c%d" % n, 10 + n, parent="o1", events=[_launch()])
-                for n in (1, 2, 3, 4)]
+                for n in (1, 2, 3)]
+        kids.append(_t("c4", 14, parent="o1"))          # unblocked, unstarted, refused
         p = turn.plan(orch, kids, live={11, 12, 13}, cap=3)
         self.assertEqual([a for a in p["actions"] if a["action"] == turn.INVOKE], [])
         self.assertEqual(p["halt"], turn.HALT_BUDGET)
@@ -432,11 +441,34 @@ class DrivenTurn(_CliCase):
     def test_a_routine_notice_no_longer_holds_a_turn_hostage(self):
         task = {"id": "t1", "seq": 1, "orders": []}
         order, err = channel.order_queue(task, channel.ORDER_MEMO, "your child closed",
-                                        "sid-1")
+                                         "sid-1", routine=True)
         self.assertIsNone(err)
         self.assertEqual(channel.deliverable(task, "sid-1"), [])
         self.assertIn(order, channel.notices(task, "sid-1"))
         self.assertIn(order, channel.orders_for(task, "sid-1"))
+
+    def test_a_memo_somebody_wrote_still_blocks_a_running_child(self):
+        """The channel exists because nobody types into an invoked child again. Narrowing
+        the rail must not take that away — only the bookkeeping rides the ledger."""
+        task = {"id": "t1", "seq": 1, "orders": []}
+        order, err = channel.order_queue(task, channel.ORDER_MEMO, "main moved, rebase",
+                                         "sid-1")
+        self.assertIsNone(err)
+        self.assertEqual(channel.deliverable(task, "sid-1"), [order])
+
+    def test_a_child_closing_is_routine_by_construction(self):
+        """Finding 7's actual case: the notice the loop mints about another task's
+        lifecycle. It must be routine where it is WRITTEN, not classified by a reader."""
+        parent = self._task("parent")
+        child = self._task("child")
+        child = ts.load_task(child["id"])
+        child["related"] = [{"kind": "parent", "id": parent["id"],
+                             "seq": parent["seq"]}]
+        ts.save_task(child)
+        ts.report_to_parent(ts.load_task(child["id"]), "closed")
+        memos = ts.load_task(parent["id"])["memos"]
+        self.assertEqual(len(memos), 1)
+        self.assertTrue(memos[0].get(channel.ROUTINE_FIELD))
 
     def test_a_stand_down_still_blocks_because_it_is_not_routine(self):
         task = {"id": "t1", "seq": 1, "orders": []}
@@ -452,10 +484,16 @@ class DrivenTurn(_CliCase):
         self.assertIsNone(err)
         self.assertEqual(channel.deliverable(task, "sid-1"), [order])
 
-    def test_only_the_blocking_kinds_are_the_blocking_kinds(self):
-        self.assertEqual(set(channel.BLOCKING_KINDS),
+    def test_a_stand_down_blocks_even_when_the_loop_minted_it(self):
+        """Two kinds hold a turn whoever wrote them: stop, and the target moved. Neither
+        is bookkeeping, so routine authorship does not excuse them."""
+        task = {"id": "t1", "seq": 1, "orders": []}
+        order, err = channel.order_queue(task, channel.ORDER_STAND_DOWN, "wrap up",
+                                         "sid-1", routine=True)
+        self.assertIsNone(err)
+        self.assertEqual(channel.deliverable(task, "sid-1"), [order])
+        self.assertEqual(set(channel.ALWAYS_BLOCKING),
                          {channel.ORDER_STAND_DOWN, channel.ORDER_SPEC})
-        self.assertNotIn(channel.ORDER_MEMO, channel.BLOCKING_KINDS)
 
     # -- the composition itself -------------------------------------------------
 

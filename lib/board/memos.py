@@ -195,10 +195,16 @@ def memo_corrections(memo):
     return [str(c) for c in (memo.get("corrects") or []) if str(c).strip()]
 
 
-def memo_send(task, text, from_sid=None, corrects=None):
+def memo_send(task, text, from_sid=None, corrects=None, routine=False):
     """Post correspondence onto `task`. Creates task["memos"] on first send. Records a
     memo dict + a capped 'memo' preview event whose id is SHARED with the memo, then
     trims. Returns the memo dict. Does NOT save — the caller persists.
+
+    `routine=True` marks a memo the SYSTEM minted about a lifecycle — a child closing, a
+    peer feed advancing, a link forming. It is recorded and surfaced exactly like any
+    other; the one thing it does not do is hold a running session's turn end (see
+    `channel.blocks_turn`). A memo somebody WROTE always may: nobody types into an invoked
+    child again, and that is the gap the channel exists to close.
 
     `corrects` declares what this memo REPLACES — a memory-note slug, `decision:<n>` on
     the target task, or another memo's id8. A memo that declares corrections cannot be
@@ -210,6 +216,8 @@ def memo_send(task, text, from_sid=None, corrects=None):
     from_task = (get_link(from_sid) if from_sid else None)
     memo = {"id": None, "ts": _now(), "from_sid": from_sid, "from_task": from_task,
             "text": text, "acks": []}
+    if routine:
+        memo[_channel.ROUTINE_FIELD] = True
     targets = [str(c).strip() for c in (corrects or []) if str(c).strip()]
     if targets:
         memo["corrects"] = targets
@@ -577,7 +585,7 @@ def report_to_parent(task, headline, session=None):
         if not parent or is_closed(parent):
             return None
         memo_send(parent, "CHILD #%s — %s" % (task.get("seq"), headline),
-                  from_sid=session)
+                  from_sid=session, routine=True)
         parent["updated_ts"] = _now()
         save_task(parent)
         return parent.get("seq")

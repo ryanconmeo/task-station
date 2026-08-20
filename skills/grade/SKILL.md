@@ -15,6 +15,22 @@ The split you are working inside: **the engine owns everything deterministic** (
 
 ## Run it in this order. Do not reorder steps 1 and 3.
 
+### 0. Ask for the turn — it tells you which step you are on
+
+```
+python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" turn --task <orchestrator>          # the agenda
+python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" turn --task <orchestrator> --json   # the same object
+```
+
+`turn` composes the whole pass — gate what came back, grade or park it, release what was accepted, re-launch a spawn that never came up, invoke one new child, wait on the rest — and prints the exact command for each step, in the order to run them. It calls no model, runs no shell and writes nothing, so it is free to ask again after every step. Exit `3` means it halted, and `halt` names which of six reasons: `complete` · `empty` · `working` · `budget` · `parked` · `blocked`.
+
+Two things it decides that you should not re-decide by hand:
+
+- **What came back is gated first.** Grading a finished child can release a wave and hands its slot back to the budget; invoking first spends the slot the gate was about to return.
+- **One invoke per pass.** Two children in flight in one repo means two version bumps and a rebase for whoever lands second; three means a three-way conflict. The turn spends the remaining budget one child at a time.
+
+`--json` carries the mechanical findings per child (`gates`), each tagged with the rubric dimension it lands on — so step 3 starts from evidence rather than from prose.
+
 ### 1. The mechanical gate — RUN IT YOURSELF, before reading the report
 
 Verify from outside the child's own account of itself:
@@ -30,9 +46,18 @@ python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" claims verify --task <child>
 
 If the mechanical gate is red, you already have your G1 answer, and you can stop reading the report for grading purposes — but still read it, because *why* it is red is what the rejection has to say.
 
+**RED IS NOT ALWAYS FAILED, AND FOUR OF THE WAYS IT LIES ARE MECHANISED.** Read the turn's findings before you conclude anything:
+
+- **`pre-merge`** — the child's conditions run against the MAIN checkout, so its own work cannot turn them green until its PR merges. Probe with `git diff --stat <merge-target> <branch>`; **empty output means landed**. Never `git merge-base --is-ancestor`: this repo squash-merges, so ancestry calls every landed branch unmerged and the failure direction makes you re-open work that already shipped.
+- **`unstarted`** — nothing was ever invoked, so there is nothing to grade. A grade here is a false green about work nobody did.
+- **`spawn-unreconciled`** — an invoke is on the trail and no session ever took a turn. A failed window-open still records the invoke and still mints a session, so spawn intent is not liveness: **re-launch, do not grade**.
+- **`stale-install`** — the suite exercises the repo while hooks and the MCP server exercise whatever `/plugin update` last cached. A red from those is the stale install talking.
+
+And when you run a suite yourself, **pin a positive count**: `unittest discover -k <a name nothing matches>` prints `Ran 0 tests`, then `OK`, and exits 0 — so does a renamed test class. Assert `Ran N tests` with N ≥ 1, plus `OK`. Never assert an absence.
+
 ### 2. Read the child's report
 
-In order of preference: the durable report file `delegate` wrote (worktree root, `HANDOFF-*.md` shape), then memos on the task, then the task's own digest (`/todo <n>` — the decisions and the checklist are the record). A report should carry: what changed · the fingerprints/numbers with the commands that produced them · claims registered · **the mandatory `unverified` list** · what the next chunk inherits.
+**Look on the memo ledger of the child's own task first** — that is the rail `invoke` tells the child to use, and the only one that survives its window closing. A child that worked and left **no** report memo is `silent-exit`: it is neither "failed" nor "unknown", and the missing report is itself a G4 finding the turn already raised. Then the durable report file `delegate` wrote (worktree root, `HANDOFF-*.md` shape), then the task's own digest (`/todo <n>` — the decisions and the checklist are the record). A report should carry: what changed · the fingerprints/numbers with the commands that produced them · claims registered · **the mandatory `unverified` list** · what the next chunk inherits.
 
 A report with **no `unverified` section at all** is itself a G4 finding. Nobody's work is fully verified; a report claiming otherwise has not looked.
 
@@ -82,14 +107,14 @@ python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" scan --task <orchestrator>
 
 Anything newly `READY` is the next wave. Invoke it (step 6).
 
-**5b — Rejected, retries left.** Send the failed dimension back **as a memo on the child task**, so the child's own session sees it at its next prompt:
+**5b — Rejected, retries left.** `grade` already sent the verdict back **as a memo on the child task**, naming each failed dimension with its grade and listing the ungraded ones separately. You do not send a second memo; you make the `--note` say the thing that matters, because that note travels in it:
 
 ```
-python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" memo send --task <child> \
-  --text 'GATE REJECTED — G4 (finding capture) at B: <the specific gap, and what would make it A->'
+python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" grade --task <child> --dim … \
+  --note 'the three deviations in the report have no why, and D7 contradicts decision 12 with nothing recording that'
 ```
 
-Name the dimension, the grade, and **the specific thing that would move it**. "Improve finding capture" is not actionable; "the three deviations in the report have no *why*, and D7 contradicts decision 12 with nothing recording that" is.
+Name the dimension, the grade, and **the specific thing that would move it**. "Improve finding capture" is not actionable. (`--no-memo` suppresses the send, for a grading you are only recording.)
 
 **5c — Park it.** A parked child never comes back to the loop:
 
@@ -131,4 +156,4 @@ Add `--cwd <path>` when the child belongs in a worktree, and `invoke` clears the
 
 ## Where the pieces live
 
-`lib/exits.py` — exit conditions (why DONE must be computed, at length) · `lib/loop.py` — waves, the rubric constants, grade arithmetic, the orchestrator guard · `lib/board/cmds/loop.py` — the command surface.
+`lib/exits.py` — exit conditions (why DONE must be computed, at length) · `lib/loop.py` — waves, the rubric constants, grade arithmetic, the orchestrator guard · `lib/turn.py` — the driven turn: child states, the mechanical gate, the retry/park decision · `lib/board/cmds/loop.py` — the command surface · `docs/specs/LOOP-GATE.md` — the turn's spec and the seven findings it was built against.

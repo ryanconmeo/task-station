@@ -1,114 +1,846 @@
 # turn.py
-"""THE DRIVEN TURN — the surface, ahead of the behaviour.
+"""THE DRIVEN TURN — one pass of the loop with no human between the steps.
 
-Tests first: this file exists so `tests/test_turn.py` imports and FAILS ON ITS
-ASSERTIONS rather than on a missing module. Every body here is deliberately empty of
-judgement — the behaviour lands in the next commit.
+Everything this composes already exists and is merged. `scan` says what may start,
+`invoke` spawns a child pre-attached to its own task, `exit-tick` computes done from the
+exit conditions, `grade` scores G1-G6 at A- per dimension with a retry/park budget,
+`memo` carries durable correspondence, `channel` reaches a child that is still running.
+What was missing is the PARENT actually running them in order: scan -> invoke ->
+mechanical gate -> grade -> release, and halting at a human gate rather than retrying it.
+
+WHY THIS IS A MODULE AND NOT A SKILL. Q4 (decided 2026-08-14) split the loop the way
+this house always splits things: the ENGINE owns the deterministic primitives, the SKILL
+owns the judgment. Which child may start, what state a child that stopped is in, whether
+the mechanical gate is clean, whether a rejection may be retried or must park — all of
+that is arithmetic over the record, and arithmetic in a prompt is arithmetic that drifts.
+What grade each dimension earns is judgment, and no function here supplies it: the turn
+emits the `grade` command with its dimensions unfilled.
+
+THE MODULE IS PURE OVER TASK DICTS, exactly like `loop` and `exits`. It is handed the
+population, the liveness set and the evidence; it never loads, never saves, never runs a
+shell. That is what makes a turn cheap enough to run constantly — and it is the reason
+`plan` can be tested against a board that does not exist.
+
+--------------------------------------------------------------------------------------
+THE SEVEN THINGS THAT WENT WRONG DRIVING THIS LOOP BY HAND, across seven children on
+2026-08-19. Every one of them is a lie a turn can act on, so every one has a mechanism
+here rather than a paragraph somewhere.
+
+1. SILENT EXIT (`SILENT_EXIT`). A child finishes its work and exits saying nothing,
+   because its exit conditions run against the MAIN checkout and cannot pass until its
+   own PR merges. Three children did exactly this. Reading that as FAILED retries work
+   that may be complete; reading it as UNKNOWN stalls the loop. It is a third state, and
+   its action is to gate it WITH the missing-report finding.
+
+2. THE HAND-BACK RAIL IS A MEMO (`report_memo`). The role report contract asked for a
+   report and named no channel, so the compliant behaviour and the useless one were
+   identical — a child writes a good report into a window the parent cannot see. A memo
+   is durable, survives the session ending, and lands on the record the gate already
+   loads. So a missing report memo is a GATE FINDING, and `invoke` now names the rail in
+   the child's own prompt.
+
+3. TREE, NOT ANCESTRY (`landed`, `landed_probe`). This repo squash-merges everything, so
+   `git merge-base --is-ancestor` reports EVERY landed branch as unmerged. The failure
+   direction is what makes it dangerous: a driven turn re-opens work already on main.
+   The probe is an empty `git diff` between the branch and the merge target.
+
+4. FOUR WAYS A GATE LIES, and all four are cheap to mechanise:
+     * a false green on UNSTARTED work — nothing ran, so nothing may be graded;
+     * an assertion satisfied by something else — `unittest discover -k <missing>` prints
+       "Ran 0 tests" then "OK" and exits 0; a `tail -3` is swallowed by trailing stdout;
+       a bare count substring-matches a bigger number ("5013" is inside "15013");
+     * a FALSE RED from a stale INSTALLED plugin or a renamed test;
+     * the squash case above.
+   Hence `suite_green` (PIN A POSITIVE COUNT, never an absence), `condition_lint` (the
+   shapes that lie are refused at registration) and `stale_install`.
+
+5. SPAWN INTENT IS NOT LIVENESS (`SPAWN_FAILED`, `MANUAL`). A failed window-open still
+   records the invoke and still mints a session, so a child can be "invoked" and never
+   have taken a turn. Counting it as running stalls the loop; gating it grades nothing.
+   Reconciling the two is what tells a re-launch apart from a wait.
+
+6. CONCURRENCY IS EXPENSIVE HERE SPECIFICALLY (`plan`, one invoke per pass). Two
+   children in flight means two version bumps and a rebase for whoever lands second;
+   three means a three-way conflict. `loop_children_max` caps the total, and the turn
+   spends what is left ONE CHILD AT A TIME — a stagger, not just a cap.
+
+7. A ROUTINE NOTICE MUST NOT HOLD A TURN (see `channel.BLOCKING_KINDS`). The channel's
+   Stop gate fires at every turn end; holding a turn hostage for "your child closed"
+   costs more than it delivers. The blocking rail is reserved for the kinds that change
+   what the child should be doing.
+
+Stdlib only. Imports `config`, `exits` and `loop`; nothing in the engine imports it back
+— the CLI seam is the only caller.
 """
+import json
+import os
+import re
+import subprocess
+import time
 
-UNSTARTED = "unstarted"
-MANUAL = "manual-pending"
-SPAWN_FAILED = "spawn-failed"
-RUNNING = "running"
-REPORTED = "reported"
-SILENT_EXIT = "silent-exit"
-PARKED = "parked"
-SETTLED = "settled"
+import config as _config
+import exits as _exits
+import loop as _loop
+
+# ---------------------------------------------------------------- child states ----
+#
+# What the PARENT can say about one child right now. Eight values, and none of them is a
+# synonym for another: each one has a different next action, which is the only test worth
+# applying to a state vocabulary.
+
+UNSTARTED = "unstarted"          # never invoked — there is nothing to grade
+MANUAL = "manual-pending"        # the launch was handed to a human and is still waiting
+SPAWN_FAILED = "spawn-failed"    # invoked, no process, no turn ever taken
+RUNNING = "running"              # a live session is attached right now
+REPORTED = "reported"            # stopped, and left its report on the memo ledger
+SILENT_EXIT = "silent-exit"      # stopped, did work, said nothing (finding 1)
+PARKED = "parked"                # the loop has stopped asking — never retried
+SETTLED = "settled"              # closed; its dependents are released
 CHILD_STATES = (UNSTARTED, MANUAL, SPAWN_FAILED, RUNNING, REPORTED, SILENT_EXIT,
                 PARKED, SETTLED)
 
-INVOKE = "invoke"
-RELAUNCH = "relaunch"
-WAIT = "wait"
-GATE = "gate"
-GRADE = "grade"
-RETRY = "retry"
-PARK = "park"
-RELEASE = "release"
+# ------------------------------------------------------------------- the actions ----
+#
+# The five steps of the turn, plus the three answers that are not steps. A driver reads
+# `action` and runs `command`; nothing here needs a person to translate it, which is the
+# whole content of "no human between the steps".
+
+INVOKE = "invoke"        # start a child that is unblocked and unstarted
+RELAUNCH = "relaunch"    # spawn intent without liveness — finding 5
+WAIT = "wait"            # a child is running; the loop is working, not stuck
+GATE = "gate"            # the MECHANICAL half: run its conditions, read the findings
+GRADE = "grade"          # the JUDGMENT half: G1-G6 at the configured threshold
+RETRY = "retry"          # rejected with budget left — the child iterates
+PARK = "park"            # this does not come back to the loop
+RELEASE = "release"      # accepted: close it, and its dependents unblock
 ACTIONS = (INVOKE, RELAUNCH, WAIT, GATE, GRADE, RETRY, PARK, RELEASE)
 
-HALT_COMPLETE = "complete"
-HALT_PARKED = "parked"
-HALT_WORKING = "working"
-HALT_EMPTY = "empty"
-HALT_BUDGET = "budget"
+# Actions that MOVE the loop. A `wait` is not progress — it is the honest report that
+# somebody else is making it. Telling those apart is what makes `halt` meaningful.
+PROGRESS = (INVOKE, RELAUNCH, GATE, GRADE, RETRY, PARK, RELEASE)
+
+# ---------------------------------------------------------------------- the halts ----
+#
+# Why the turn stopped, when it emitted no progress action. `scan` already answers four
+# of these for the WAVE; these answer it for the TURN, which is a different question:
+# a wave can be `ready` while the turn can start nothing, because the budget is spent.
+
+HALT_COMPLETE = "complete"   # every child settled — the loop is done
+HALT_PARKED = "parked"       # a parked child waits for a person, not for the loop
+HALT_WORKING = "working"     # children are running; come back
+HALT_EMPTY = "empty"         # no children at all — the plan has not been built
+HALT_BUDGET = "budget"       # work is ready and the children cap refuses it
+HALT_BLOCKED = "blocked"     # unsettled children, none startable (a cycle or a dangler)
+
+# ------------------------------------------------------------ reading the trail ----
+#
+# `invoke` writes the launch onto the CHILD as a `child`-kind event, and it writes the
+# KIND of launch into the text, because a preview and a real launch used to write the
+# identical line and one child read as two invokes. These are the two markers it uses;
+# they live here rather than in the CLI seam so that the writer and the reader cannot
+# drift apart, and the seam reads `MANUAL_MARK` back off this module.
+
+LAUNCH_KIND = "child"
+INVOKED_MARK = "invoked by #"
+MANUAL_MARK = "MANUAL LAUNCH"
+MANUAL_TAIL = "handed to a human"
+
+
+def _events(task):
+    raw = (task or {}).get("events")
+    return [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+
+
+def _memos(task):
+    raw = (task or {}).get("memos")
+    return [m for m in raw if isinstance(m, dict)] if isinstance(raw, list) else []
+
+
+def _ts(rec):
+    try:
+        return float(rec.get("ts") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def launches(task):
-    return []
+    """Every launch recorded on `task`, oldest first, as `{"ts", "manual", "text"}`.
+
+    A MANUAL launch is one a human has to complete by hand (`--print-command`, or a
+    window opener that failed and fell back to printing). It is kept separate from an
+    ordinary invoke because the loop can re-launch its own failed spawn and must not
+    re-launch a line somebody is about to run."""
+    out = []
+    for e in _events(task):
+        if e.get("kind") != LAUNCH_KIND:
+            continue
+        text = str(e.get("text") or "")
+        manual = MANUAL_MARK in text and MANUAL_TAIL in text
+        if not manual and INVOKED_MARK not in text:
+            continue
+        out.append({"ts": _ts(e), "manual": manual, "text": text})
+    return sorted(out, key=lambda r: r["ts"])
 
 
 def last_launch(task):
-    return None
+    """The most recent launch, or None for a child nobody has invoked."""
+    got = launches(task)
+    return got[-1] if got else None
 
 
 def report_memo(task, after=None):
-    return None
+    """The child's OWN hand-back memo on its own task, newest first, or None.
+
+    THE SENDER IS THE DISCRIMINATOR. Every memo lands on the same ledger, including the
+    rejections the PARENT writes — counting one of those as the hand-back would mark
+    every rejected child as having reported, which is the opposite of what the finding
+    is for. A memo is the child's when it came from a session registered on this task,
+    or when it declares this task as its origin."""
+    own = set(str(s) for s in (task.get("sessions") or []))
+    tid = task.get("id")
+    best = None
+    for m in _memos(task):
+        if after is not None and _ts(m) < float(after):
+            continue
+        src, from_task = m.get("from_sid"), m.get("from_task")
+        if from_task and from_task != tid:
+            continue                       # somebody else's task wrote it
+        if not (str(src) in own or (from_task and from_task == tid)):
+            continue
+        if not str(m.get("text") or "").strip():
+            continue
+        if best is None or _ts(m) >= _ts(best):
+            best = m
+    return best
 
 
 def unacked(task):
-    return []
+    """Memos on `task` that NOBODY has dispositioned — B13's pending-ack debt.
+
+    Twenty-two of these were outstanding on the day the loop ran, and the loop had no
+    idea: an unacked memo is a fact somebody handed this task that nothing has engaged.
+    It surfaces as a gate finding rather than as background noise."""
+    return [m for m in _memos(task) if not (m.get("acks") or [])]
 
 
 def worked_since(task, ts):
-    return False
+    """Did this child take a turn after `ts`?
+
+    The evidence is anything the child itself writes: a checkpoint, a note, a memo, a
+    grade, an exit-condition run. It is what separates a SILENT EXIT — worked, said
+    nothing — from a SPAWN that never came up. Launch events are excluded, because the
+    parent wrote those."""
+    ts = float(ts or 0)
+    for e in _events(task):
+        if e.get("kind") == LAUNCH_KIND:
+            continue
+        if _ts(e) > ts:
+            return True
+    for m in _memos(task):
+        if _ts(m) > ts:
+            return True
+    for g in _loop.grades(task):
+        if _ts(g) > ts:
+            return True
+    last = _exits.last_run_ts(task)
+    return bool(last and float(last) > ts)
 
 
 def child_state(task, live=(), worked=None):
-    return UNSTARTED
+    """Which of the eight states this child is in, right now.
+
+    THE ORDER IS THE ARGUMENT. Closed beats everything (its dependents are already
+    released). Liveness beats every stored flag, because a record survives a crash and a
+    process does not. A park beats the launch trail, because a parked child must never be
+    handed back to the loop whatever its trail says. Only then does the trail decide, and
+    the trail decides by RECONCILING INTENT WITH EVIDENCE: a report memo means reported,
+    other evidence means it worked and said nothing, no evidence at all means the spawn
+    never came up."""
+    if _loop.is_closed(task):
+        return SETTLED
+    if live and task.get("seq") in set(live):
+        return RUNNING
+    if _loop.parked(task):
+        return PARKED
+    launch = last_launch(task)
+    if not launch:
+        return UNSTARTED
+    if report_memo(task, after=launch["ts"]):
+        return REPORTED
+    did = worked_since(task, launch["ts"]) if worked is None else bool(worked)
+    if did:
+        return SILENT_EXIT
+    return MANUAL if launch["manual"] else SPAWN_FAILED
+
+
+# ------------------------------------------------------------ the mechanical gate ----
+#
+# Finding 4, in code. Every one of these is a way a gate reports something other than the
+# state of the work, and the shape of the fix is always the same: assert a POSITIVE FACT
+# with a number in it, never the absence of a bad one.
+
+_RAN_RE = re.compile(r"^Ran (\d+) test", re.M)
 
 
 def ran_count(output):
-    return None
+    """The N from unittest's `Ran N tests` line, or None when there is no such line.
+
+    None and 0 are different answers and must stay different: 0 is a suite that ran
+    nothing, None is output that never got as far as saying."""
+    hits = _RAN_RE.findall(str(output or ""))
+    return int(hits[-1]) if hits else None
 
 
 def suite_green(output, minimum=1):
-    return False, ""
+    """`(ok, why)` for a test-suite run — the POSITIVE COUNT assertion.
+
+    `unittest discover -k <a name nothing matches>` prints "Ran 0 tests", then "OK", and
+    exits 0. So does a renamed test class. An assertion on OK alone is therefore
+    satisfied by the ABSENCE of the very test it was written to protect, which is the
+    most expensive lie in this list: it reports green about work nobody did.
+
+    UNCOUNTABLE IS NEVER ZERO, and it is never green either — output with no count at
+    all (an import error, a crashed interpreter) fails with its own reason rather than
+    being read as a pass."""
+    text = str(output or "")
+    n = ran_count(text)
+    if n is None:
+        return False, ("no 'Ran N tests' line in the output — uncountable is never zero, "
+                       "and never green")
+    if n < int(minimum):
+        return False, ("Ran %d tests, and %d is below the %d this gate pins — a count of "
+                       "0 with an OK is what a missing test looks like"
+                       % (n, n, int(minimum)))
+    if "FAILED" in text:
+        return False, "Ran %d tests and the run FAILED" % n
+    if "OK" not in text:
+        return False, "Ran %d tests and the run never said OK" % n
+    return True, "Ran %d tests, OK" % n
 
 
 def landed(diff_output):
-    return False
+    """Has the branch's content reached the merge target? TREE, NOT ANCESTRY.
+
+    An EMPTY tree diff is the whole answer. `git merge-base --is-ancestor` is the
+    intuitive probe and it is wrong here: this repo squash-merges every branch, so the
+    branch commit is never an ancestor of main and the ancestry probe calls EVERY landed
+    branch unmerged. The failure direction is what makes it unacceptable in a driven
+    turn — it re-opens work that already shipped."""
+    return not str(diff_output or "").strip()
 
 
 def landed_probe(branch, merge="origin/main"):
-    return ""
+    """The command whose EMPTY output means `branch` has landed on `merge`."""
+    return "git diff --stat %s %s" % (merge, branch)
+
+
+# The shapes that lie. Each one was observed on a real registered condition, and each is
+# refused at REGISTRATION time (B7) rather than diagnosed months later from a green board.
+_TAIL_RE = re.compile(r"\|\s*tail\b")
+_BARE_COUNT_RE = re.compile(r"^\d[\d,]*$")
+_ABSENCE_RE = re.compile(r"^(no|none|not|zero|nothing|0)\b", re.I)
 
 
 def condition_lint(cmd, expect):
-    return []
+    """The lying shapes in one exit condition, as findings. Empty when it is honest.
+
+    Static: it reads the command, it never runs it. Registering a condition must not have
+    side effects, and the three shapes below are visible without executing anything."""
+    out = []
+    cmd = str(cmd or "")
+    if _TAIL_RE.search(cmd):
+        out.append({"code": "tail-swallow", "dim": "G1",
+                    "line": "the command ends in a `tail` — one extra line of trailing "
+                            "stdout swallows the line the assertion is about, and the "
+                            "gate goes red for a reason having nothing to do with the "
+                            "work. Filter for the line (`rg '^(OK|FAILED|Ran …)'`) "
+                            "instead of taking the last few."})
+    for raw in (expect or []):
+        e = str(raw).strip()
+        if not e:
+            continue
+        if _BARE_COUNT_RE.match(e):
+            out.append({"code": "bare-count", "dim": "G2",
+                        "line": "expects the bare count %r — a substring of every bigger "
+                                "number (%r is inside %r) and of any line that happens to "
+                                "contain it. Pin the count with the words around it "
+                                "(\"Ran %s tests\")." % (e, e, "1" + e, e)})
+        elif _ABSENCE_RE.match(e):
+            out.append({"code": "absence-assertion", "dim": "G1",
+                        "line": "expects %r, which asserts an ABSENCE. Nothing printed at "
+                                "all satisfies it, so it passes hardest exactly when the "
+                                "command is broken. Pin a positive count instead." % e})
+    return out
 
 
 def shell_syntax_error(cmd):
-    return None
+    """The shell's own complaint about `cmd`, or None when it parses. NEVER EXECUTES.
+
+    B7. The P7A registration shipped a command truncated at a quote: it was stored,
+    looked registered, and could not run. `bash -n` reads the script and refuses to
+    execute it, so this costs a parse and has no side effects at all. Fail-OPEN: no bash,
+    or a bash that cannot be launched, is not evidence that a command is broken."""
+    text = str(cmd or "").strip()
+    if not text:
+        return None
+    try:
+        p = subprocess.run(["bash", "-n"], input=text, capture_output=True,
+                           text=True, timeout=10)
+    except Exception:                                   # noqa: BLE001
+        return None
+    if p.returncode == 0:
+        return None
+    return " ".join((p.stderr or p.stdout or "shell syntax error").split()) or None
+
+
+# B9: a recorded number must carry the command that measured it. Three digits or more,
+# because that is what a gate number looks like (5013, 4471, 236) and what a step number,
+# a version part or a phase index does not.
+_NUMBER_RE = re.compile(r"\d{3,}")
+_SKIP_BEFORE = re.compile(r"(#|\btask\s+|\bpr\s+|\bv|\.)$", re.I)
+
+
+def _is_gate_number(text, match):
+    """Is this digit run a MEASUREMENT, or an identifier that happens to be numeric?"""
+    n = match.group(0)
+    before = text[:match.start()]
+    after = text[match.end():]
+    if _SKIP_BEFORE.search(before):
+        return False                       # #444, task 444, v444, 3.444
+    if after[:1] == "." or after[:1] == "-":
+        return False                       # a version or a date
+    if len(n) == 4 and 1900 <= int(n) <= 2099:
+        return False                       # a year
+    return True
 
 
 def number_without_command(steps):
-    return []
+    """Steps carrying a gate NUMBER and no command that measures it (B9).
+
+    Phase 4's count went 58 -> 81 in a plan nobody re-ran, and the drift was invisible
+    because the number was prose. The same number with its measuring command says so the
+    next time anybody looks — which is exactly the difference between the 3.0.0
+    migration's claims (honest for a year) and its steps (thirteen silently became
+    true)."""
+    out = []
+    for i, step in enumerate(steps or [], 1):
+        if not isinstance(step, dict) or _exits.has_condition(step):
+            continue
+        text = str(step.get("text") or "")
+        for m in _NUMBER_RE.finditer(text):
+            if not _is_gate_number(text, m):
+                continue
+            out.append({"code": "number-without-command", "dim": "G2", "step": i,
+                        "line": "step %d records %s and no command that measures it — "
+                                "a number in prose rots silently. `exit-add --task <ref> "
+                                "--step %d --cmd '<the measuring command>' --expect "
+                                "'%s'` makes it recompute."
+                                % (i, m.group(0), i, m.group(0))})
+            break
+    return out
 
 
 def stale_install(repo_version, installed_version):
-    return None
+    """A finding when the INSTALLED plugin is not the version under test (B14's half).
+
+    Finding 4's FALSE RED, and the one that wastes the most time because the diagnosis
+    looks like a real failure: the suite exercises the repo, the hooks and the MCP server
+    exercise whatever `/plugin update` last cached, and a gate reading the second while
+    grading the first reports red about work that is correct."""
+    repo, got = str(repo_version or "").strip(), str(installed_version or "").strip()
+    if not repo or not got or repo == got:
+        return None
+    return {"code": "stale-install", "dim": "G1",
+            "line": "the INSTALLED plugin is %s and the tree under test is %s — a red "
+                    "from a hook or the MCP server is the stale install talking, not the "
+                    "work. `/plugin update` before believing it." % (got, repo)}
+
+
+def repo_version(root=None):
+    """The version in `.claude-plugin/plugin.json`, or None. Fail-open."""
+    root = root or os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    try:
+        with open(os.path.join(root, ".claude-plugin", "plugin.json"),
+                  encoding="utf-8") as f:
+            return str(json.load(f).get("version") or "") or None
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def _version_key(v):
+    """Sort a dotted version NUMERICALLY. `sorted()` on the strings puts 3.9.0 after
+    3.12.0, which would report the wrong installed version — and reporting the wrong one
+    on a probe whose whole job is catching a stale install is worse than not probing."""
+    out = []
+    for part in str(v or "").split("."):
+        digits = "".join(c for c in part if c.isdigit())
+        out.append(int(digits) if digits else 0)
+    return tuple(out)
+
+
+def installed_version(home=None):
+    """The newest task-station version cached under the plugins dir, or None. Fail-open —
+    a machine with no installed copy is not a finding, it is a developer's checkout."""
+    base = os.path.join(os.path.expanduser(
+        home or os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")), "plugins", "cache")
+    try:
+        found = []
+        for owner in os.listdir(base):
+            path = os.path.join(base, owner, "task-station")
+            if os.path.isdir(path):
+                found += [d for d in os.listdir(path)
+                          if os.path.isdir(os.path.join(path, d))]
+        return max(found, key=_version_key) if found else None
+    except Exception:                                   # noqa: BLE001
+        return None
 
 
 def gate(task, live=(), worked=None, landed=None, installed=None, version=None):
-    return {"seq": task.get("seq"), "state": UNSTARTED, "findings": [],
-            "clean": True, "gradeable": True}
+    """THE MECHANICAL HALF, as one structured answer. Runs nothing; reads the record.
+
+    `{"seq", "state", "findings", "clean", "gradeable"}`. Every finding names the rubric
+    dimension it lands on, so the judge is handed the dimension rather than left to map
+    prose onto one.
+
+    GRADEABLE IS NOT THE SAME AS CLEAN. Clean means the gate found nothing; gradeable
+    means there is work to grade at all. Unstarted work is gradeable-false and that is
+    the point — a grade on a child that never ran is the cheapest possible false green.
+
+    `landed` is the answer to `landed_probe` for the child's branch: True (its content is
+    on the merge target), False (it is not), or None (nobody probed). WHEN IT IS NOT
+    TRUE, UNMET CONDITIONS ARE NOT A FAILURE — they are the pre-merge state finding 1
+    describes, because the conditions run against the MAIN checkout and cannot go green
+    until the child's own work lands there. Only a landed branch may be called failed."""
+    state = child_state(task, live=live, worked=worked)
+    findings = []
+    if state == UNSTARTED:
+        findings.append({"code": "unstarted", "dim": "G1",
+                         "line": "nothing has been invoked on this task, so there is "
+                                 "nothing to grade. A gate that scores unstarted work is "
+                                 "a false green about work nobody did."})
+    if state == SILENT_EXIT:
+        findings.append({"code": "no-report", "dim": "G4",
+                         "line": "the child worked and stopped without leaving a report "
+                                 "memo on this task. The hand-back rail is a MEMO — "
+                                 "durable, and on the record the gate loads — so a "
+                                 "report written anywhere else is a report the parent "
+                                 "cannot read. `memo send --task %s --text '<report>'`."
+                                 % (task.get("seq") or "<ref>")})
+    if state in (SPAWN_FAILED, MANUAL):
+        findings.append({"code": "spawn-unreconciled", "dim": "G6",
+                         "line": "an invoke is recorded and no session ever took a turn "
+                                 "— a failed window-open still mints a session and still "
+                                 "writes the event, so intent is not liveness. Re-launch "
+                                 "rather than grade."})
+    ex_state = _exits.state(task)
+    if ex_state == _exits.NONE:
+        findings.append({"code": "conditions-none", "dim": "G1",
+                         "line": "no step carries an exit condition, so DONE here is "
+                                 "asserted rather than computed. A task that has checked "
+                                 "nothing can never settle, and can never release what "
+                                 "depends on it."})
+    elif ex_state == _exits.UNKNOWN:
+        findings.append({"code": "conditions-unknown", "dim": "G1",
+                         "line": "conditions are registered and have never run. A "
+                                 "condition that did not run refutes nothing — "
+                                 "`exit-tick --task %s` is the missing step."
+                                 % (task.get("seq") or "<ref>")})
+    elif ex_state == _exits.UNMET:
+        if landed is True:
+            findings.append({"code": "conditions-unmet", "dim": "G1",
+                             "line": "the branch has landed and conditions are still "
+                                     "unmet — this is a real red."})
+        else:
+            findings.append({"code": "pre-merge", "dim": "G1",
+                             "line": "conditions are unmet, and the branch is %s. They "
+                                     "run against the MAIN checkout, so a child's own "
+                                     "work cannot turn them green until it merges: this "
+                                     "is PRE-MERGE, not failed. Probe with `%s` — empty "
+                                     "output means landed (tree, never ancestry: this "
+                                     "repo squash-merges)."
+                                     % ("not on the merge target" if landed is False
+                                        else "unprobed",
+                                        landed_probe("<branch>"))})
+    for step in (task.get("steps") or []):
+        cond = _exits.condition(step) if isinstance(step, dict) else None
+        if cond:
+            findings += condition_lint(cond["cmd"], cond["expect"])
+    findings += number_without_command(task.get("steps") or [])
+    debt = unacked(task)
+    if debt:
+        findings.append({"code": "pending-acks", "dim": "G4",
+                         "line": "%d memo(s) on this task have been dispositioned by "
+                                 "nobody. A fact handed to a task and never engaged is "
+                                 "the same as one never sent." % len(debt)})
+    stale = stale_install(version, installed)
+    if stale:
+        findings.append(stale)
+    return {"seq": task.get("seq"), "state": state, "findings": findings,
+            "clean": not findings,
+            "gradeable": state in (REPORTED, SILENT_EXIT, PARKED, SETTLED)}
+
+
+# ------------------------------------------------------------- rejection and park ----
+#
+# Finding 2's other half. A verdict recorded on the task and nowhere else is a verdict the
+# child cannot read — and the child is a session that will not be typed into again, so the
+# rail has to be one that survives its window closing.
 
 
 def rejection_memo(v, ref=None, note=None, findings=None):
-    return ""
+    """The rejection, as the memo text the child reads.
+
+    NAMES THE DIMENSION AND ITS GRADE, and keeps the two ways of not passing apart: a
+    dimension BELOW the threshold is the child's work to redo, an UNGRADED one is the
+    judge's work to finish. "Rejected" on its own tells a child nothing it can act on."""
+    head = "GATE REJECTED — task #%s" % (ref if ref is not None else "?")
+    lines_ = [head]
+    for key, grade in (v.get("failed") or []):
+        lines_.append("  below %s — %s %s: %s"
+                      % (v.get("threshold"), key, _loop.DIMENSION_TITLES.get(key, key),
+                         grade))
+    if v.get("missing"):
+        lines_.append("  ungraded (the judge has work left): %s"
+                      % ", ".join("%s %s" % (k, _loop.DIMENSION_TITLES.get(k, k))
+                                  for k in v["missing"]))
+    if note:
+        lines_.append("  %s" % note)
+    for f in (findings or []):
+        lines_.append("  gate finding [%s] %s" % (f.get("dim") or "?", f.get("line")))
+    lines_.append("  Fix the named dimension, then hand back a report AS A MEMO ON THIS "
+                  "TASK — the gate reads this ledger, not your window.")
+    return "\n".join(lines_)
+
+
+def park_memo(reason, why, ref=None):
+    """The park, as the memo text. Deliberately says NOTHING about iterating.
+
+    A park is the loop declining to ask again — most often because the decision is not
+    the loop's to make. Text that hinted at another attempt would invite exactly the one
+    thing a park exists to prevent."""
+    return ("GATE PARKED (%s) — task #%s\n  %s\n  This does not come back to the loop. "
+            "It waits for a person." % (reason, ref if ref is not None else "?", why))
 
 
 def retry_decision(task, v, retry_max=None, park=None):
-    return {"do": WAIT, "reason": None, "left": 0}
+    """`{"do", "reason", "left"}` — may this rejection be handed back, or must it park?
+
+    THE ORDER IS THE POLICY. An explicit park wins, because the judge has just said this
+    is not the loop's to solve. An EXISTING park wins next: a parked child is never
+    retried, whatever its grade history says. Acceptance releases. Only then does the
+    budget decide, and when it is spent the answer is a park with a named reason rather
+    than one more attempt nobody expects to work.
+
+    A HUMAN GATE IS A PARK WITH BUDGET LEFT, and that is the whole reason the taxonomy
+    exists: iterating cannot resolve a decision that was never the loop's to make."""
+    retry_max = _config.loop_retry_max() if retry_max is None else int(retry_max)
+    left = _loop.retries_left(task, retry_max)
+    if park:
+        return {"do": PARK, "reason": park, "left": left}
+    already = _loop.parked(task)
+    if already:
+        return {"do": PARK, "reason": already, "left": left}
+    if (v or {}).get("accepted"):
+        return {"do": RELEASE, "reason": None, "left": left}
+    if left <= 0:
+        return {"do": PARK, "reason": "retries-exhausted", "left": left}
+    return {"do": RETRY, "reason": None, "left": left}
+
+
+# ------------------------------------------------------------------- the turn ----
+
+
+def _ref(task):
+    return task.get("seq") if task.get("seq") is not None else (task.get("id") or "")[:8]
+
+
+def _act(action, task, why, command, **extra):
+    out = {"action": action, "seq": task.get("seq"), "id": task.get("id"),
+           "title": task.get("title"), "why": why, "command": command}
+    out.update(extra)
+    return out
+
+
+def _grade_command(child):
+    dims = " ".join("--dim %s=?" % k for k in _loop.DIMENSION_KEYS)
+    return ("task-station grade --task %s %s --note '<the judgement>'"
+            % (_ref(child), dims))
 
 
 def plan(orch, children, live=(), resolve=None, cap=None, retry_max=None, worked=None,
-         ask=None):
-    return {"scan": {"stop": None, "totals": {}, "rows": []}, "actions": [],
-            "halt": None, "budget": {"max": 0, "running": [], "over": False},
-            "states": {}}
+         ask=None, threshold=None):
+    """ONE TURN, as an ordered agenda. Runs the scan itself; writes nothing.
+
+    THE ORDER OF THE AGENDA IS LOAD-BEARING. What came back is gated FIRST, because
+    grading a finished child can release a wave and hands its slot back to the budget;
+    invoking first spends the slot the gate was about to return. Then the spawns that
+    never came up, then one new child, then the waits.
+
+    ONE INVOKE PER PASS, and this is the stagger rather than the cap. `loop_children_max`
+    bounds how many children may be live at once; spending the whole remaining budget in
+    a single pass is how three children end up rebasing each other's version bump. A wave
+    of three therefore lands one child per turn.
+
+    `halt` is set only when the turn emitted NO PROGRESS — and it says which of the six
+    reasons, because "nothing to do" and "nothing I CAN do" call for opposite responses.
+    """
+    children = [c for c in (children or []) if isinstance(c, dict)]
+    population = children + ([orch] if orch else [])
+    if resolve is None:
+        by_id = {t.get("id"): t for t in population}
+        resolve = by_id.get
+    live = set(live or ())
+    report = _loop.scan(children, resolve, live=live)
+    rows = {r["seq"]: r for r in report["rows"]}
+    budget = _loop.children_budget(orch, population, live=live, cap=cap)
+    retry_max = _config.loop_retry_max() if retry_max is None else int(retry_max)
+    threshold = threshold or _config.loop_accept_threshold()
+
+    states, gates, actions = {}, {}, []
+    back, relaunch, waits, ready = [], [], [], []
+    for child in sorted(children, key=lambda c: (c.get("seq") is None, c.get("seq"))):
+        seq = child.get("seq")
+        st = child_state(child, live=live,
+                         worked=(worked or {}).get(seq) if worked else None)
+        states[seq] = st
+        if st in (REPORTED, SILENT_EXIT):
+            back.append(child)
+        elif st in (SPAWN_FAILED, MANUAL):
+            relaunch.append(child)
+        elif st == RUNNING:
+            waits.append(child)
+        elif st == UNSTARTED and rows.get(seq, {}).get("ready"):
+            ready.append(child)
+
+    # (1) what came back — the mechanical gate, then the judgement it feeds.
+    for child in back:
+        g = gate(child, live=live)
+        gates[child.get("seq")] = g
+        accepted = [e for e in _loop.grades(child) if e.get("accepted")]
+        if accepted:
+            actions.append(_act(
+                RELEASE, child,
+                "accepted at %s and still open — closing it settles it, and a settled "
+                "predecessor releases everything that depends on it" % threshold,
+                "task-station done --task %s" % _ref(child)))
+            continue
+        actions.append(_act(
+            GATE, child,
+            "stopped as %s — run its conditions before reading its report, because a "
+            "report is not evidence" % g["state"],
+            "task-station exit-tick --task %s" % _ref(child),
+            findings=g["findings"], state=g["state"], probe=landed_probe("<branch>")))
+        d = retry_decision(child, {"accepted": False}, retry_max=retry_max)
+        if d["do"] == PARK:
+            actions.append(_act(
+                PARK, child,
+                "the retry budget is spent (%d graded attempt(s), loop_retry_max=%d) — "
+                "one more pass is not a plan"
+                % (_loop.attempts(child), retry_max),
+                "task-station grade --task %s --park %s --why '<what is left and who "
+                "owns it>'" % (_ref(child), d["reason"])))
+        else:
+            actions.append(_act(
+                GRADE, child,
+                "grade G1-G6 at %s per dimension — %d retr%s left before this must park"
+                % (threshold, d["left"], "y" if d["left"] == 1 else "ies"),
+                _grade_command(child), retries_left=d["left"]))
+
+    # (2) spawn intent without liveness — finding 5.
+    for child in relaunch:
+        st = states[child.get("seq")]
+        actions.append(_act(
+            RELAUNCH, child,
+            "an invoke is on the trail and nothing ever ran (%s) — the window-open "
+            "failed or is still in somebody's hands; grading it would grade nothing" % st,
+            "task-station invoke --task %s --from %s --role implementer --ask '%s'"
+            % (_ref(child), _ref(orch) if orch else "<orch>", ask or "<the request>")))
+
+    # (3) one new child, if the budget has room for it.
+    if ready and not budget["over"]:
+        child = ready[0]
+        actions.append(_act(
+            INVOKE, child,
+            "unblocked and unstarted, and %d of %d child slot(s) are in use — one invoke "
+            "per pass, because two children in flight is two version bumps and a rebase"
+            % (len(budget["running"]), budget["max"]),
+            "task-station invoke --task %s --from %s --role implementer --ask '%s'"
+            % (_ref(child), _ref(orch) if orch else "<orch>", ask or "<the request>")))
+
+    # (4) the honest report that somebody else is making progress.
+    for child in waits:
+        actions.append(_act(
+            WAIT, child, "a live session is attached — the loop is working, not stuck",
+            "task-station scan --task %s" % (_ref(orch) if orch else _ref(child))))
+
+    parked = [c for c in children if states.get(c.get("seq")) == PARKED]
+    halt = None
+    if not [a for a in actions if a["action"] in PROGRESS]:
+        if report["stop"] == _loop.EMPTY:
+            halt = HALT_EMPTY
+        elif report["stop"] == _loop.COMPLETE:
+            halt = HALT_COMPLETE
+        elif ready and budget["over"]:
+            halt = HALT_BUDGET
+        elif parked:
+            halt = HALT_PARKED
+        elif waits:
+            halt = HALT_WORKING
+        else:
+            halt = HALT_BLOCKED
+    return {"generated_ts": time.time(), "scan": report, "actions": actions,
+            "halt": halt, "budget": budget, "states": states, "gates": gates,
+            "parked": [{"seq": _ref(c), "reason": _loop.parked(c)} for c in parked],
+            "threshold": threshold,
+            "retry_max": retry_max,
+            "orch": _ref(orch) if orch else None}
+
+
+_HALT_LINE = {
+    HALT_COMPLETE: "COMPLETE — every child is settled. The loop is done.",
+    HALT_EMPTY: "EMPTY — this orchestrator has no children. The plan has not been built "
+                "yet; `decompose` builds it.",
+    HALT_WORKING: "WORKING — children are running. Nothing to start, nothing stuck.",
+    HALT_PARKED: "PARKED — what remains is waiting for a person, not for the loop.",
+    HALT_BLOCKED: "BLOCKED — unsettled children and none startable. The scan names what "
+                  "holds each one.",
+}
 
 
 def lines(p):
-    return []
+    """The text render of a turn — the same object `--json` prints, so the two cannot
+    disagree about what was computed."""
+    out = []
+    scan = p.get("scan") or {}
+    totals = scan.get("totals") or {}
+    out.append("Turn — #%s  ·  %d child(ren): %d settled · %d ready · %d running · "
+               "%d parked"
+               % (p.get("orch"), totals.get("total", 0), totals.get("settled", 0),
+                  totals.get("ready", 0), totals.get("running", 0),
+                  totals.get("parked", 0)))
+    b = p.get("budget") or {}
+    out.append("  budget: %d of %d child slot(s) in use (loop_children_max=%s) · "
+               "threshold %s · loop_retry_max=%s"
+               % (len(b.get("running") or []), b.get("max", 0), b.get("max", 0),
+                  p.get("threshold"), p.get("retry_max")))
+    for a in p.get("actions") or []:
+        out.append("  %-8s #%-4s %s" % (a["action"].upper(), a["seq"], a["title"]))
+        out.append("      why: %s" % a["why"])
+        out.append("      run: %s" % a["command"])
+        for f in (a.get("findings") or []):
+            out.append("      finding [%s] %s: %s"
+                       % (f.get("dim") or "?", f.get("code"), f.get("line")))
+    halt = p.get("halt")
+    if halt == HALT_BUDGET:
+        b = p.get("budget") or {}
+        out.append("  HALT: BUDGET — work is ready and %d of %d child slot(s) are in "
+                   "use. Raise loop_children_max, or wait for one to finish."
+                   % (len(b.get("running") or []), b.get("max", 0)))
+    elif halt:
+        out.append("  HALT: %s" % _HALT_LINE.get(halt, halt))
+    if p.get("parked"):
+        out.append("  parked: %s — a parked child is never handed back to the loop."
+                   % ", ".join("#%s (%s)" % (r["seq"], r["reason"])
+                               for r in p["parked"]))
+    return out
