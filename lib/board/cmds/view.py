@@ -33,7 +33,7 @@ __all__ = [
     "_parse_list_arg", "_print_list_footer",
     "cmd_render",
     "cmd_prompt_tint", "cmd_session_tint", "cmd_prompt_title",
-    "_auto_track_provisional", "_fold_candidate_lines",
+    "_auto_track_provisional", "_fold_candidate_lines", "_stand_down_block",
     "cmd_prompt_context", "cmd_guidance",
 ]
 
@@ -951,6 +951,13 @@ def _auto_track_provisional(a, prompt):
         if _pk and task_identity_keys(dup) and not (_pk & task_identity_keys(dup)):
             dup = None
     if dup:
+        # Stand-down guard: never auto-fold a session onto the PARENT of the task it
+        # just closed. This path attaches with no model in the loop, so it is the one
+        # place the re-homing happens silently; drop to the create path instead, which
+        # at least gives the turn its own (provisional, GC-on-skip) task.
+        if dup.get("id") in stood_down_parents(a.session)[1]:
+            dup = None
+    if dup:
         # Same code path cmd_attach uses to fold a cross-session prompt in: a
         # marker note via touch(), then the prompt itself via add_log() (so the
         # prompt is logged exactly once, not duplicated by touch's own add_log).
@@ -996,7 +1003,7 @@ def _auto_track_provisional(a, prompt):
     ]))
 
 
-def _fold_candidate_lines(prompt, opens, header):
+def _fold_candidate_lines(prompt, opens, header, session=None):
     """Render the open-task candidate block for the fold-in / attach nudge with F9
     identity-keyed filtering.
 
@@ -1008,7 +1015,15 @@ def _fold_candidate_lines(prompt, opens, header):
     open task exactly as before. Each candidate line renders that task's OWN keys
     (when it has any) so a mismatch is glanceable even on a keyless prompt. Keyless
     prompt + keyless tasks ⇒ byte-identical to the pre-F9 block. Returns a list of
-    lines (empty when there is nothing to show)."""
+    lines (empty when there is nothing to show).
+
+    STAND-DOWN EXCLUSION: when `session` is given and it has just closed a task, that
+    task's PARENT is never offered — see `stood_down_parents`. The parent carries the
+    child's key, so identity filtering ALONE would rank it first and re-home a closed
+    child onto the ledger of the task that graded it."""
+    _closed, _stood = stood_down_parents(session)
+    if _stood:
+        opens = [t for t in opens if t.get("id") not in _stood]
     pkeys = extract_identity_keys(prompt)
     if pkeys:
         cands = [t for t in opens if task_identity_keys(t) & pkeys]
@@ -1028,6 +1043,48 @@ def _fold_candidate_lines(prompt, opens, header):
                      % (t.get("seq") or "?", t["id"][:8], t["title"],
                         rel_time(t.get("updated_ts")), suffix))
     return lines
+
+
+def _stand_down_block(session, prompt):
+    """The SKIP-preferring block for a session that has stood down and whose ONLY
+    fold target is the parent of the task it just closed. `None` when it doesn't
+    apply, and the ordinary nudge runs untouched.
+
+    The fix is a PREFERENCE, not a mechanism: `skip` already exists and is already
+    the right answer for a session that has finished its task and is only speaking
+    to hand back. What was missing is the guidance choosing it. The alternative —
+    "a session whose task closed just stays unattached" — was rejected because it
+    leaves the next prompt with no target at all, and the fold rule simply finds the
+    parent again on the turn after that. Excluding the parent is what survives a
+    driven loop, where gate → grade → close → message-the-child is the normal path
+    and every graded child gets this turn.
+
+    Fires only when the exclusion empties the candidate list. A surviving non-parent
+    match is a real fold target, and a keyed prompt that matches nothing on the board
+    is genuinely new work — both keep their existing guidance."""
+    closed, stood = stood_down_parents(session)
+    if not stood:
+        return None
+    opens = [t for t in sorted_tasks() if is_on_board(t)]
+    pkeys = extract_identity_keys(prompt)
+    cands = [t for t in opens if task_identity_keys(t) & pkeys] if pkeys else list(opens)
+    if not cands:
+        return None                       # nothing was going to be offered anyway
+    if any(t.get("id") not in stood for t in cands):
+        return None                       # a real, non-parent target survives
+    pseqs = ", ".join("#%s" % (t.get("seq") or t["id"][:8]) for t in cands)
+    return "\n".join([
+        "[task-station] This session is STANDING DOWN — its task #%s (%s) is CLOSED, and the "
+        "only match left on the board is that task's PARENT (%s)."
+        % (closed.get("seq") or closed["id"][:8], closed["title"], pseqs),
+        "Do NOT fold there. The parent carries this child's PR/story key, so it reads as an "
+        "identity match and is not one: it is the task that GRADED this one, and a closed "
+        "child writing to its parent's ledger takes away that ledger's single owner.",
+        "  Prefer SKIP — a stood-down session stays untracked:",
+        "      task-station skip --session %s" % session,
+        "  Genuinely NEW work instead? Give it its OWN task (`create`) — never attach to %s."
+        % pseqs,
+    ])
 
 
 def cmd_prompt_context(a):
@@ -1067,7 +1124,7 @@ def cmd_prompt_context(a):
             opens = [t for t in sorted_tasks() if is_on_board(t)]
             dlines.extend(_fold_candidate_lines(
                 os.environ.get("TASK_STATION_PROMPT", ""), opens,
-                "Open tasks you can attach to:"))
+                "Open tasks you can attach to:", session=a.session))
         print("\n".join(dlines))
         # The directive IS the message. Keep an attached task's activity fresh as
         # usual, but don't also dump the standard nudge after a hard directive.
@@ -1156,6 +1213,17 @@ def cmd_prompt_context(a):
     # Not attached: count the miss, surface open tasks, and nudge Claude.
     n = bump_count(a.session)
 
+    # STAND-DOWN FIRST — before auto-track and before the collapsed intermediate line.
+    # A child whose task just closed is detached, so every remaining turn lands here,
+    # and the fold rule's identity match is its own PARENT. Ahead of auto-track because
+    # that path folds with no model in the loop; ahead of the collapsed nudge because a
+    # standing-down child speaks for several turns (#543's wrote four acks), and the
+    # guidance has to hold for all of them, not just the first miss.
+    stand_down = _stand_down_block(a.session, os.environ.get("TASK_STATION_PROMPT", ""))
+    if stand_down:
+        print(stand_down)
+        return
+
     # Guaranteed-tracking (opt-in, default OFF): on the FIRST miss of a fresh,
     # unattached, non-skipped, no-explicit-intent session, the hook itself
     # deterministically creates+attaches a provisional task (fold-don't-fork) and
@@ -1188,7 +1256,7 @@ def cmd_prompt_context(a):
     lines = ["[task-station] This session is not attached to a tracked task yet."]
     lines.extend(_fold_candidate_lines(
         os.environ.get("TASK_STATION_PROMPT", ""), opens,
-        "Open tasks that may match what the user wants:"))
+        "Open tasks that may match what the user wants:", session=a.session))
     lines.append("")
 
     if n >= NUDGE_ESCALATE_AFTER:
