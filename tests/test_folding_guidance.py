@@ -95,7 +95,7 @@ class _Base(unittest.TestCase):
         return ("  - #%s [%s]" % (task.get("seq"), task["id"][:8])) in out
 
 
-class StandDownIsNotOfferedItsParent(_Base):
+class ParentIsNotAFoldTarget(_Base):
     """Exit condition 2 — a session on a just-closed child, prompted again, is not
     offered its parent as a fold target."""
 
@@ -141,7 +141,7 @@ class StandDownIsNotOfferedItsParent(_Base):
                         "an OPEN child suppressed its parent:\n%s" % out)
 
 
-class PrefersSkip(_Base):
+class ClosedChildPrefersSkip(_Base):
     """Exit condition 1 — the folding guidance prefers SKIP when the only identity
     match is the PARENT of the task this session just closed."""
 
