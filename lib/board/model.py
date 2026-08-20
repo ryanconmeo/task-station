@@ -32,7 +32,7 @@ __all__ = [
     "append_step", "set_step_done", "step_progress",
     "append_decision", "append_history", "append_related",
     "_looks_foreign_ref", "_resolve_edge_ref", "_relation_cycle_path",
-    "_parent_children", "remove_related",
+    "_parent_children", "remove_related", "stood_down_parents",
     "mark_digest_dirty", "clear_digest_dirty", "bump_digest_events",
     "digest_events", "digest_stale",
     "mark_obsidian_dirty", "clear_obsidian_dirty", "obsidian_dirty",
@@ -858,6 +858,42 @@ def _parent_children(task, tasks=None):
             and any(r.get("kind") == "parent" and r.get("id") == tid
                     for r in (t.get("related") or []))]
     return sorted(kids, key=lambda t: t.get("seq") if t.get("seq") is not None else 1 << 30)
+
+
+def stood_down_parents(session, tasks=None):
+    """`(just_closed_task, {parent_id, …})` for a session that has STOOD DOWN — the
+    task it most recently closed, and that task's parent(s). `(None, set())` for a
+    session that has never closed one, or whose latest closed task is a root.
+
+    WHY THIS EXISTS. Closing a task DETACHES its session, so the child's very next
+    prompt arrives unattached and meets the fold-don't-fork rule: fold into an
+    existing task rather than fork a sibling, and — FOLD ON IDENTITY, NOT FLAVOR —
+    when the prompt names a PR or work item, fold only into a task carrying that SAME
+    key. The parent carries the child's PR as one of its own keys, so the PARENT is
+    the identity match, and the rule points a standing-down child straight at its
+    parent's ledger. That is not a near-miss the rule should tolerate: the parent is
+    the task that GRADED this one, and a child writing there stops the ledger having
+    one owner. Driven by an orchestrator the sequence — gate, grade, close, then
+    message the child in band — makes it the standard case rather than a rarity.
+
+    DERIVED, NOT STORED. `task["sessions"]` already records every session that worked
+    a task and `closed_ts` already records when it closed, so the standing-down set
+    needs no new state and no new lifecycle hook — only a read of what close already
+    wrote. Ties on the stamp fall back to `updated_ts`.
+
+    Latest-only, deliberately: once this session closes some LATER task, that task's
+    parent is the one it is standing down from, and the older exclusion lapses."""
+    if not session:
+        return None, set()
+    pool = tasks if tasks is not None else all_tasks()
+    mine = [t for t in pool
+            if is_closed(t) and session in (t.get("sessions") or [])]
+    if not mine:
+        return None, set()
+    last = max(mine, key=lambda t: (t.get("closed_ts") or 0, t.get("updated_ts") or 0))
+    pids = {r.get("id") for r in (last.get("related") or [])
+            if r.get("kind") == "parent" and r.get("id")}
+    return last, pids
 
 
 def remove_related(task, other_id):

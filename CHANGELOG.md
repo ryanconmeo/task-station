@@ -3,6 +3,45 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.13.0] — 2026-08-19
+
+### Fixed
+- **A child that has stood down is no longer pointed back at its parent's task.** Closing a
+  task DETACHES its session, so the child's very next prompt arrives unattached and meets
+  the fold-don't-fork rule: fold into an existing task rather than fork a sibling, and —
+  FOLD ON IDENTITY, NOT FLAVOR — when the prompt names a PR or work item, fold only into a
+  task carrying that SAME key. The parent carries the child's PR as one of its own keys, so
+  the PARENT was the identity match, listed first. The hook was routing every standing-down
+  child straight onto its parent's ledger, by design.
+
+  **Why it read as a one-off and is not.** Only one child was ever seen doing it, but the
+  rule is unconditional — the other child of that wave simply never took a turn after its
+  task closed. Human-driven, that gap is rare: a child finishes, goes quiet, the window
+  closes. DRIVEN it is the standard case, because an orchestrator gates, grades, closes,
+  and *then* messages the child in band — which is exactly the sequence that produced the
+  four stray acks. The first driven run would have had every graded child writing to its
+  parent's ledger, with nobody watching to notice that ledger had stopped having one owner.
+
+  **The fix is a preference, not a mechanism.** `skip` already exists and is already the
+  right answer for a session that has finished its task and is only speaking to hand back —
+  what was missing is the guidance choosing it. So the parent of a task this session just
+  closed is dropped from the fold candidates, and when that exclusion empties the list, the
+  guidance prefers SKIP over both attaching and forking. The alternative — "a session whose
+  task closed just stays unattached" — was REJECTED: it leaves the next prompt with no
+  target at all, and the fold rule finds the parent again on the turn after that. Excluding
+  the parent is what survives a driven loop.
+
+  **Derived, not stored**: `task["sessions"]` already records every session that worked a
+  task and `closed_ts` already records when it closed, so `stood_down_parents()` reads what
+  close already wrote — no new state, no new lifecycle hook. It is latest-only, so once a
+  session closes some later task, the older exclusion lapses. The guard holds on EVERY
+  remaining turn, not just the first miss, because a standing-down child speaks for several
+  (the incident was four acks); and it runs ahead of opt-in guaranteed-tracking, the one
+  path that folds with no model in the loop. Precision is pinned: a non-parent task
+  carrying the same key is still a fold target, another session sees the board unchanged,
+  an OPEN child excludes nothing, and a keyed prompt matching nothing on the board still
+  gets the ordinary create-bias.
+
 ## [3.12.0] — 2026-08-19
 
 ### Added
