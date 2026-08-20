@@ -23,6 +23,7 @@ import config as _config
 import exits as _exits
 import loop as _loop
 import steps as _steps
+import turn as _turn
 import succession as _succ
 from board import workspace as _workspace
 
@@ -30,12 +31,13 @@ g, set_g = _shared.g, _shared.set_g
 
 __all__ = [
     "_loop_target", "_exit_step_arg", "_exit_show_lines", "_scan_population",
-    "_scan_lines", "_invoke_command", "ASK_CONTEXT_HINT",
+    "_scan_lines", "_child_prompt", "_invoke_command", "ASK_CONTEXT_HINT",
     "DRY_RUN_SID", "MANUAL_LAUNCH", "_record_launch",
     "cmd_exit_add", "cmd_exit_rm", "cmd_exit_show", "cmd_exit_tick",
     "cmd_scan", "cmd_invoke", "cmd_grade", "cmd_orchestrator_check",
     "cmd_decompose", "cmd_relay",
     "_live_seqs", "_announce_spec_change", "_channel_report_back", "cmd_channel",
+    "cmd_turn",
 ]
 
 
@@ -194,8 +196,32 @@ def cmd_exit_add(a):
         print(err)
         sys.exit(2)
     steps_list = task.setdefault("steps", [])
-    ok, err = _exits.set_condition(steps_list, n, getattr(a, "cmd", None),
-                                   getattr(a, "expect", None))
+    # THE SELF-CHECK, BEFORE ANYTHING IS STORED (B7). A registered condition that cannot
+    # run, or that can be satisfied by something other than the work, is worse than no
+    # condition: it reports on the board as a computed gate. Both checks are STATIC — the
+    # shell is asked to PARSE the command, never to run it, because registering a
+    # condition must not have side effects.
+    cmd_raw = getattr(a, "cmd", None)
+    expect_raw = getattr(a, "expect", None)
+    problems = []
+    syntax = _turn.shell_syntax_error(cmd_raw)
+    if syntax:
+        problems.append({"code": "shell-syntax", "line":
+                         "the shell cannot parse it: %s. A command stored broken looks "
+                         "registered and can never run." % syntax})
+    problems += _turn.condition_lint(cmd_raw, expect_raw)
+    forced = bool(getattr(a, "force", False))
+    if problems:
+        print("Exit condition — task #%s step %s: %d problem(s) found before storing it"
+              % (task.get("seq") or task["id"][:8], n, len(problems)))
+        for pr in problems:
+            print("  %-18s %s" % (pr["code"], pr["line"]))
+        if not forced:
+            print("  nothing was stored. Fix the shape, or pass --force to register it "
+                  "anyway and have that recorded.")
+            sys.exit(2)
+        print("  --force: registering it anyway.")
+    ok, err = _exits.set_condition(steps_list, n, cmd_raw, expect_raw)
     if not ok:
         print(err)
         sys.exit(2)
@@ -535,11 +561,16 @@ DRY_RUN_SID = "00000000-0000-0000-0000-000000000000"
 # The trail marker for a launch handed to a human rather than opened by the loop. The
 # parent's RUNNING column (3.6.0) exists to stop a double-invoke, and it cannot do that
 # on a log where a preview and a launch wrote the identical line.
-MANUAL_LAUNCH = "MANUAL LAUNCH"
+#
+# DEFINED IN `turn`, READ HERE. The turn RECONCILES this trail against liveness (finding
+# 5: a failed window-open still writes the event and still mints a session), so the writer
+# and the reader must be the same string — two copies of it drift, and what drifts is
+# whether a child gets re-launched or silently waited on forever.
+MANUAL_LAUNCH = _turn.MANUAL_MARK
 
 
-def _child_prompt(ask, role, report):
-    """The ask, plus the role's REPORT CONTRACT when it has one.
+def _child_prompt(ask, role, report, ref=None):
+    """The ask, plus the role's REPORT CONTRACT, plus THE RAIL THE REPORT TRAVELS ON.
 
     The contract travels in the prompt because a contract the child is never told about
     is decoration — and it is APPENDED, never substituted: the request is the one thing
@@ -547,15 +578,29 @@ def _child_prompt(ask, role, report):
     RECORDED on the trail stays the bare ask (`_record_launch`), so a boilerplate
     sentence can never push the actual request out of the event text.
 
+    THE RAIL IS NAMED BECAUSE NAMING NOTHING MADE THE TWO BEHAVIOURS IDENTICAL. The
+    contract asked for a report and said nothing about where to put it, so a child that
+    printed a perfect report to its own terminal was fully compliant and completely
+    useless — the parent cannot see that window, and the session ends. Three children out
+    of seven did exactly that on 2026-08-19. A memo is durable, survives the window
+    closing, and lands on the record the gate already loads, so the rail is a memo and the
+    prompt says so with the command. Added whenever a `ref` is known, contract or not: a
+    role with no contract still has to hand something back.
+
     Takes the contract STRING, not the role spec: the role table is read once, by
     `workspace.resolve_spawn`, and this function only formats what it answered."""
     report = str(report or "").strip()
-    if not report:
-        return ask
-    return "%s\n\nREPORT BACK — the %s contract: %s" % (ask, role, report)
+    out = ask
+    if report:
+        out = "%s\n\nREPORT BACK — the %s contract: %s" % (ask, role or "role", report)
+    if ref is None:
+        return out
+    return ("%s\n\nHAND IT BACK AS A MEMO ON YOUR OWN TASK — `task-station memo send "
+            "--task %s --text '<the report>'`. That is where the gate reads it; a report "
+            "in this window dies with the session." % (out, ref))
 
 
-def _invoke_command(base, role, model, permission_mode, ask, effort=None):
+def _invoke_command(base, role, model, permission_mode, ask, effort=None, ref=None):
     """Assemble the child's launch command from the pre-bound `cd … && claude
     --session-id <sid>` base.
 
@@ -594,7 +639,7 @@ def _invoke_command(base, role, model, permission_mode, ask, effort=None):
         parts.append("--permission-mode %s" % shlex.quote(r["permission_mode"]))
     if r.get("deny_tools"):
         parts.append("--disallowed-tools %s" % shlex.quote(",".join(r["deny_tools"])))
-    parts.append(shlex.quote(_child_prompt(ask, role, r.get("report"))))
+    parts.append(shlex.quote(_child_prompt(ask, role, r.get("report"), ref=ref)))
     return " ".join(parts)
 
 
@@ -733,7 +778,8 @@ def cmd_invoke(a):
         where = os.path.expanduser(cwd) if cwd \
             else _fresh_session_cwd(child.get("session_meta"))
         base = "cd %s && claude --session-id %s" % (shlex.quote(where), DRY_RUN_SID)
-        cmd = _invoke_command(base, role, model, permission_mode, ask, effort)
+        cmd = _invoke_command(base, role, model, permission_mode, ask, effort,
+                              ref=child.get("seq"))
         print(header)
         print("  DRY RUN — nothing was written: no session minted, no event recorded, "
               "no window opened. That session id is a placeholder, not a real one.")
@@ -750,7 +796,8 @@ def cmd_invoke(a):
         base = "cd %s && claude --session-id %s" % (shlex.quote(os.path.expanduser(cwd)),
                                                     sid)
     done = _workspace.apply(verdict)
-    cmd = _invoke_command(base, role, model, permission_mode, ask, effort)
+    cmd = _invoke_command(base, role, model, permission_mode, ask, effort,
+                          ref=child.get("seq"))
     print(header)
     print("  session %s is pre-attached: its SessionStart injects THIS task's digest, "
           "so the ask carries the request only." % sid[:8])
@@ -982,11 +1029,26 @@ def cmd_grade(a):
                         % (ref, line,
                            (" — %s" % note) if note and not park else ""),
                         session=getattr(a, "session", None))
+    # THE VERDICT GOES BACK DOWN THE RAIL, not just into the ledger. A rejection recorded
+    # on the task and nowhere else is a rejection the child never reads: the child is a
+    # session nobody types into again, and by gate time it has usually stopped. A memo is
+    # durable, it survives the window closing, and it is on the record the child's own
+    # SessionStart reads — so a retry starts from the verdict instead of from nothing.
+    # ROUTINE=FALSE deliberately: this is a judgement aimed at that session, not
+    # bookkeeping, so it may hold a running child's turn end.
+    memo = None
+    if not getattr(a, "no_memo", False):
+        text = (_turn.park_memo(park, note, ref=ref) if park
+                else (None if v["accepted"]
+                      else _turn.rejection_memo(v, ref=ref, note=note)))
+        if text:
+            memo = memo_send(task, text, from_sid=getattr(a, "session", None))
     task["updated_ts"] = _now()
     save_task(task)
     if getattr(a, "as_json", False):
         print(json.dumps({"task": ref, "entry": entry, "verdict": v,
                           "attempts": _loop.attempts(task),
+                          "memo": (memo or {}).get("id"),
                           "retries_left": left}, indent=2, sort_keys=True,
                          default=str))
     else:
@@ -1013,6 +1075,10 @@ def cmd_grade(a):
         if park:
             print("  parked children are NEVER retried; a human-gate park waits for a "
                   "person, not for the loop.")
+        if memo:
+            print("  sent as memo %s on task #%s — the child reads the verdict off its "
+                  "own record, not off a window that has closed."
+                  % ((memo.get("id") or "")[:8], ref))
     if park:
         sys.exit(4)
     if v["accepted"]:
@@ -1021,6 +1087,54 @@ def cmd_grade(a):
 
 
 # ---------------------------------------------------- the orchestrator guard ----
+
+def cmd_turn(a):
+    """`task-station turn [--task ORCH] [--ask '<request>'] [--json]`
+
+    ONE PASS OF THE LOOP, as an ordered agenda: scan -> invoke -> mechanical gate ->
+    grade -> release, with the command that performs each step. This is the composition
+    A4 exists for — every piece of it already shipped, and what was missing was the
+    parent running them in order without a person deciding what comes next.
+
+    ZERO-TOKEN AND ZERO-WRITE, exactly like `scan`, and for the same reason: a driver
+    that has to be afraid of its own planner is a driver nobody leaves running. It reads
+    the stored condition results rather than re-running them (`exit-tick` is one of the
+    steps it EMITS), it touches nothing, and it calls no model. The judgement — what
+    grade each dimension earns, what to ask a child for — is the skill's, and the
+    commands it prints leave exactly those blanks.
+
+    Exit codes so a driver can branch without parsing prose: 0 there is work to do · 3
+    the turn halted (`halt` says which of the six reasons) · 2 the command was wrong."""
+    task, err = _loop_target(a, "turn")
+    if err:
+        print(err)
+        sys.exit(2)
+    every = all_tasks()
+    tree = _loop.descendants(task, every)
+    cap = getattr(a, "depth", None)
+    if cap:
+        tree = [(t, d) for t, d in tree if d <= int(cap)]
+    children = [t for t, _d in tree]
+    p = _turn.plan(task, children, live=_live_seqs(),
+                   resolve={t.get("id"): t for t in every}.get,
+                   ask=getattr(a, "ask", None))
+    # The stale-install probe is a MACHINE fact, so it is read here rather than in the
+    # pure planner: a gate run against a plugin cache older than the tree under test
+    # reports red about work that is correct (finding 4's FALSE RED).
+    stale = _turn.stale_install(_turn.repo_version(), _turn.installed_version())
+    if stale:
+        p["stale_install"] = stale
+    if getattr(a, "as_json", False):
+        print(json.dumps(p, indent=2, sort_keys=True, default=str))
+    else:
+        print("\n".join(_turn.lines(p)))
+        if stale:
+            print("  note [%s] %s" % (stale["dim"], stale["line"]))
+    if p["halt"]:
+        sys.exit(3)
+
+
+
 
 def cmd_orchestrator_check(a):
     """`task-station orchestrator-check --task REF` — is delegating FROM this task
@@ -1169,7 +1283,7 @@ def _channel_report_back(order, task, report, session=None):
     if not target:
         return None
     memo_send(target, "CHILD #%s stood down — %s" % (task.get("seq"), report),
-              from_sid=session)
+              from_sid=session, routine=True)
     target["updated_ts"] = _now()
     save_task(target)
     return target.get("seq")

@@ -815,7 +815,8 @@ def _autolink_task_signals(task, session=None):
                 # Two-way wording: my side links to the peer over the shared signal (the
                 # peer independently captures + links back on sync — the reciprocal side).
                 memo_send(task, "%s linked: shared %s %s ↔ %s"
-                          % (my, my_sigs[sig], sig, handle), from_sid=None)
+                          % (my, my_sigs[sig], sig, handle), from_sid=None,
+                          routine=True)
                 add_event(task, "autolink",
                           "auto-linked ↔ %s (shared %s %s)" % (handle, my_sigs[sig], sig),
                           session)

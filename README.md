@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-3.13.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.14.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -225,6 +225,7 @@ task-station exit-tick --task 12                 # RUNS them; ticks what passed;
 
 - **A condition with no `--expect` is refused** — it would pass forever whatever the command printed.
 - **A condition that did not run refutes nothing.** A timeout or a missing binary is *unknown*, never *unmet*, and never moves a tick in either direction.
+- **A condition that cannot run, or that can be satisfied by something other than the work, is refused before it is stored.** The shell is asked to *parse* the command (`bash -n` — never to run it; registering a condition must have no side effects), and the shape is linted for the three ways an assertion lies: a trailing `tail -N` (one extra line of stdout swallows the line the assertion is about), a **bare count** as an expected substring (`5013` is inside `15013`), and an **absence assertion** (`no failures`, `0 errors`) which nothing printed at all satisfies — so it passes hardest exactly when the command is broken. `--force` registers anyway and prints what it overrode.
 - **Ticking is automatic; unticking is opt-in** (`--untick`). A failing condition on already-ticked work is reported as a **regression** — a real regression and a moved file look identical from here, and rewriting your record of finished work on that evidence is a bigger claim than a tick.
 
 ### Waves, and what is unblocked now
@@ -254,6 +255,23 @@ task-station grade  --task 17 --dim G1=A --dim G2=A- … [--park human-gate --wh
 `grade` records one pass of the acceptance gate against six rubric dimensions. **Acceptance is per-dimension** (default `A-`), never an average — an average lets a failed gate-integrity dimension hide behind five strong ones — and an ungraded dimension is not a pass. Exit codes let a driver branch: `0` accepted · `1` rejected with retries left · `3` retry budget spent · `4` parked · `2` bad command. **A parked child is never retried**, which is how a human gate halts the loop cleanly instead of being re-asked with a better prompt.
 
 The **judgment** — what grade each dimension earns — is the `grade` skill's, not a flag's. The engine owns only what is deterministic.
+
+A rejection also **goes back to the child as a memo on its own task**, naming the failed dimension and its grade, and naming ungraded dimensions separately — those call for different work (a low grade is the child's to redo, an ungraded one is the judge's to finish). A verdict recorded on the task and nowhere else is a verdict the child never reads: nobody types into an invoked child again, and by gate time it has usually stopped, so a memo — durable, on the record its SessionStart reads — is the only rail that reaches it. `--no-memo` opts out.
+
+### One driven turn
+
+```text
+task-station turn --task 12          # what the loop does now, in order, with each command
+task-station turn --task 12 --json   # the same object, for a driver
+```
+
+`turn` composes the verbs above into **one pass with nobody deciding what comes next**: gate what came back, grade it or park it, release what was accepted, re-launch a spawn that never came up, invoke one new child, wait on the rest. Like `scan` it calls **no model**, runs **no shell**, and writes **nothing** — every step it names is a separate recorded command, and the blanks it leaves (`--dim G1=?`, `--ask '<the request>'`) are exactly the judgement it does not have.
+
+**The order is load-bearing.** What came back is gated *first*, because grading a finished child can release a wave and hands its slot back to the budget — invoking first spends the slot the gate was about to return. And it invokes **one child per pass**: a stagger, not just a cap, because two children in flight in one repo means two version bumps and a rebase for whoever lands second.
+
+A child that stopped is one of eight states, no two of them synonyms. The one worth naming is **silent-exit** — it worked, it is gone, and it left no report. Calling that *failed* retries work that may be complete; calling it *unknown* stalls the loop; and it has a structural cause, since exit conditions run against the main checkout and a child's own work cannot turn them green until it merges. **Spawn intent is not liveness** either: a failed window-open still records the invoke and still mints a session, so the turn reconciles the trail against process liveness *and* against evidence the child actually took a turn — a dead spawn is re-launched, never graded.
+
+`turn` halts with exit `3` and one of six named reasons — `complete` · `empty` · `working` · `budget` · `parked` · `blocked` — because "nothing to do" and "nothing I *can* do" call for opposite responses. Design and rationale: [`docs/specs/LOOP-GATE.md`](docs/specs/LOOP-GATE.md).
 
 ### Session succession — the relay
 

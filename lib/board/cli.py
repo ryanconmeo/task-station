@@ -178,6 +178,12 @@ def main(argv=None):
                          "stdout+stderr (repeatable). AT LEAST ONE IS REQUIRED: a "
                          "condition asserting nothing would pass forever, whatever the "
                          "command printed.")
+    sp.add_argument("--force", action="store_true",
+                    help="register the condition even though the self-check flagged it "
+                         "(a shape that can be satisfied by something other than the "
+                         "work, or a command the shell cannot parse). The problems are "
+                         "printed either way — a flagged condition stored silently is "
+                         "the one outcome nobody could debug.")
     sp.set_defaults(fn=cmd_exit_add)
 
     sp = sub.add_parser("exit-rm", help="drop a step's exit condition (the step stays)")
@@ -244,6 +250,25 @@ def main(argv=None):
     sp.add_argument("--json", dest="as_json", action="store_true",
                     help="the structured report — the same object the text view renders")
     sp.set_defaults(fn=cmd_scan)
+
+    # turn — ONE PASS OF THE LOOP: scan -> invoke -> mechanical gate -> grade -> release,
+    # with the command that performs each step. The composition A4 exists for; like `scan`
+    # it calls no model, runs no shell and writes nothing.
+    sp = sub.add_parser("turn",
+                        help="one driven pass of the loop: what to do now, in order, "
+                             "with the command for each step")
+    sp.add_argument("--task", default=None, metavar="ORCH",
+                    help="the orchestrator whose children this turn plans (default: the "
+                         "attached task)")
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--depth", type=int, default=None, metavar="N",
+                    help="cap the subtree walk at N levels (1 = direct children only)")
+    sp.add_argument("--ask", default=None,
+                    help="the request to put in the invoke/relaunch command it prints "
+                         "(default: a `<the request>` blank — the ask is judgement)")
+    sp.add_argument("--json", dest="as_json", action="store_true",
+                    help="the structured report — the same object the text view renders")
+    sp.set_defaults(fn=cmd_turn)
 
     # invoke — spawn a child session ALREADY ATTACHED to its own task, so the hooks
     # inject that task's digest and the ask carries the REQUEST only.
@@ -348,6 +373,11 @@ def main(argv=None):
                          "indistinguishable later from work somebody quietly dropped.")
     sp.add_argument("--no-decision", dest="no_decision", action="store_true",
                     help="do not also append the grade as a decision on the task")
+    sp.add_argument("--no-memo", dest="no_memo", action="store_true",
+                    help="do not send the verdict to the child as a memo. Off by "
+                         "default: a rejection recorded on the task and nowhere else is "
+                         "one the child never reads, because nobody types into an invoked "
+                         "child again and by gate time it has usually stopped.")
     sp.add_argument("--json", dest="as_json", action="store_true")
     sp.set_defaults(fn=cmd_grade)
 

@@ -121,6 +121,31 @@ import store as store_mod
 ORDER_MEMO, ORDER_STAND_DOWN, ORDER_SPEC = "memo", "stand-down", "spec"
 ORDER_KINDS = (ORDER_MEMO, ORDER_STAND_DOWN, ORDER_SPEC)
 
+# WHICH ORDERS MAY HOLD A TURN — and the answer is NOT "all of them".
+#
+# Measured while the loop was driven by hand: the Stop gate fires at EVERY turn end, so an
+# unsettled order costs a round trip every single time. Holding an orchestrator's turn
+# hostage for "your child closed" — a notice the system generated about another task's
+# lifecycle, already durable on the memo ledger, already on the next prompt's rail — costs
+# more than it delivers. Reserve the blocking rail for what actually changes what the
+# receiver should be doing.
+#
+# THE DISCRIMINATOR IS AUTHORSHIP, NOT KIND, and that distinction is the whole of the fix.
+# "stop rebasing, main moved" and "your child closed" are both memos, and they are not the
+# same message: the first is a person telling THIS session a fact it cannot get any other
+# way — nobody types into an invoked child again, which is why the channel exists at all —
+# and the second is bookkeeping the loop emitted on its own. So a memo written by a session
+# still blocks, and a memo minted by a lifecycle hook rides the ledger.
+#
+# A ROUTINE ORDER IS NOT UNDELIVERED. It stays in `orders_for`, `channel orders` lists it,
+# the Stop gate marks it delivered and settles it, and the memo itself is on the task's own
+# feed where every reader meets it. What it no longer does is stop a turn from ending.
+ROUTINE_FIELD = "routine"
+
+# The kinds that hold a turn WHOEVER wrote them. A stand-down says stop; a spec change says
+# the target moved and DONE here is computed from that target. Neither is bookkeeping.
+ALWAYS_BLOCKING = (ORDER_STAND_DOWN, ORDER_SPEC)
+
 # How many turn-ends one unsettled order may hold. Past this it stays pending and
 # visible but stops blocking — see the anti-wedge note in the module docstring.
 ORDER_MAX_BLOCKS = 3
@@ -385,7 +410,8 @@ def index_active():
         return False
 
 
-def order_queue(task, kind, text, to_sid, from_sid=None, from_task=None):
+def order_queue(task, kind, text, to_sid, from_sid=None, from_task=None,
+                routine=False):
     """Queue one order on `task` for session `to_sid`. Returns `(order, error)` — exactly
     one of the two is None. Mutates `task`; does NOT save.
 
@@ -411,6 +437,10 @@ def order_queue(task, kind, text, to_sid, from_sid=None, from_task=None):
              "text": text[:ORDER_TEXT_MAX], "to_sid": to_sid, "from_sid": from_sid,
              "from_task": from_task, "delivered_ts": None, "blocks": 0,
              "settled_ts": None, "settled_by": None, "report": None}
+    # Written only when true, so an ordinary order's record is shaped exactly as before
+    # and an older reader ignores the key.
+    if routine:
+        order[ROUTINE_FIELD] = True
     task.setdefault("orders", []).append(order)
     _trim(task)
     index_add(to_sid, task.get("id"))
@@ -431,9 +461,29 @@ def deliverable(task, sid):
 
     An order past `ORDER_MAX_BLOCKS` is deliberately absent from this list and present
     in `orders_for` — it is still waiting, it has just stopped being allowed to hold the
-    turn."""
+    turn. So is a ROUTINE order (see `blocks_turn`): a lifecycle notice rides the memo
+    ledger, and `notices` is where it shows up."""
     return [o for o in orders_for(task, sid)
-            if int(o.get("blocks") or 0) < ORDER_MAX_BLOCKS]
+            if blocks_turn(o) and int(o.get("blocks") or 0) < ORDER_MAX_BLOCKS]
+
+
+def blocks_turn(order):
+    """May this order hold a turn end?
+
+    An ALWAYS_BLOCKING kind may, whoever wrote it. Anything else may only if a session
+    deliberately wrote it — a routine lifecycle notice may not."""
+    if order.get("kind") in ALWAYS_BLOCKING:
+        return True
+    return not order.get(ROUTINE_FIELD)
+
+
+def notices(task, sid):
+    """The pending orders for `sid` that ride the MEMO LEDGER instead of blocking.
+
+    The other half of `deliverable`: everything waiting for this session that is not
+    allowed to hold its turn. The Stop gate settles these rather than blocking on them,
+    because the fact they carry is already durable somewhere the reader will meet it."""
+    return [o for o in orders_for(task, sid) if not blocks_turn(o)]
 
 
 def mark_delivered(task, orders_):     # noqa: A002 — shadowing is local and obvious
@@ -536,7 +586,7 @@ def block_reason(task, orders_, sid):
 
 # ------------------------------------------------------------------- the verbs ----
 
-def _fanout(task, kind, text, from_sid=None, from_task=None):
+def _fanout(task, kind, text, from_sid=None, from_task=None, routine=False):
     """Queue one order of `kind` for every RUNNING session on `task` except the sender.
     Returns `(orders, error)`; a laundering refusal stops the whole fan-out, because the
     boundary is about the REQUEST, not about who happens to be listening."""
@@ -546,7 +596,7 @@ def _fanout(task, kind, text, from_sid=None, from_task=None):
     out = []
     for sid in targets:
         order, err = order_queue(task, kind, text, sid, from_sid=from_sid,
-                                 from_task=from_task)
+                                 from_task=from_task, routine=routine)
         if err:
             return [], err
         out.append(order)
@@ -593,7 +643,8 @@ def on_memo(task, memo):
         mid = (memo.get("id") or "")[:8]
         body = "memo %s: %s" % (mid, text) if mid else "memo: %s" % text
         got, err = _fanout(task, ORDER_MEMO, body, from_sid=memo.get("from_sid"),
-                           from_task=memo.get("from_task"))
+                           from_task=memo.get("from_task"),
+                           routine=bool(memo.get(ROUTINE_FIELD)))
         return [] if err else got
     except Exception:                                   # noqa: BLE001
         return []

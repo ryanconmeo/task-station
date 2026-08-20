@@ -259,7 +259,7 @@ def _send_memo(memos, task, text):
         if not t:
             errorlog.record("subscribe:memo", f"no task matching {task!r}")
             return False
-        memos.memo_send(t, text, from_sid=None)
+        memos.memo_send(t, text, from_sid=None, routine=True)
         t["updated_ts"] = memos._now()
         memos.save_task(t)
     except Exception as e:
