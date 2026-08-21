@@ -14,6 +14,8 @@ import sys
 import checker as _checker
 import decisions as _dec
 import heal as _heal
+import loop as _loop
+import turn as _turn
 import hook_health
 import steps as _steps
 import store
@@ -1328,6 +1330,17 @@ def cmd_session_start(a):
         pending = memo_pending_brief(task, a.session)
         if pending:
             msg.append(pending)
+        # A CHILD's report lands on the CHILD's task, so the block above — which is scoped
+        # to the task THIS session is attached to — would never mention it. A parent sitting
+        # on the orchestrator therefore had no surface at all that said a child had handed
+        # work back, and one real report sat unread for seven hours. Fails open: this is a
+        # nag, and a nag that raises is worse than one that is missing.
+        try:
+            kids = _turn.child_reports_brief(task, _loop.children(task, all_tasks()))
+            if kids:
+                msg.append(kids)
+        except Exception:                                       # noqa: BLE001
+            pass
         # Opt-in auto-checkpoint: on a POST-COMPACTION session start, point the model
         # at the durable digest as its source of truth and nudge a refresh if the plan
         # advanced. SessionStart additionalContext reliably lands before the model's

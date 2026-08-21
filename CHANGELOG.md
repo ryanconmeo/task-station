@@ -3,6 +3,85 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.17.0] — 2026-08-21
+
+> Versioned 3.17.0 on the assumption that 3.16.0 lands first. The two are independent
+> changes on independent branches; whichever merges second needs only its version bump
+> rebased.
+
+**THE LOOP COULD HAND WORK DOWN AND HAD NO WAY TO NOTICE IT COME BACK.** Found by running
+the loop for real, and it is the first defect in the loop machinery that only a live run
+could surface. A child finished, cut a release, opened a PR and filed its report as a memo
+on its own task — exactly what the contract asked for — and the report sat unread for
+**seven hours**. Nothing was broken and nothing was lost. The parent simply never looked
+where the child had been told to write.
+
+Three causes, and only the second was the loop's fault.
+
+### Fixed
+- **An unacked report now outranks session liveness (`child_state`).** The report check used
+  to sit at the BOTTOM of the ordering, so a child that finished, filed its report and left
+  its session idle in a worktree read as `running`, and the turn printed *"a live session is
+  attached — the loop is working, not stuck"*. That sentence was true and the conclusion was
+  wrong. Liveness cannot tell a child that is still thinking from one that is done, because
+  both are alive; the REPORT can, since filing one is the child saying it is finished.
+
+  **UNACKED, specifically.** An acked report has already been engaged, so a child that is
+  live again after one is working rather than waiting — otherwise a graded-and-retried child
+  would be gated forever on the report it filed last time round. A PARKED child is still
+  never dragged back by its report: that rule predates this one and outranks it.
+
+- **A child's report is surfaced to the ATTACHED PARENT, not only to sessions attached to
+  the child.** Track A's rule 4 said a memo *"lands where the gate looks"* — the first half
+  (durable, survives the session closing) was true, and the second half was never
+  implemented: the awaiting-your-ack nag fires only for the task the READING session is
+  attached to. The rule described an intention, which is the same class of defect as a fix
+  agreed and never built.
+
+  New `turn.child_reports` / `child_reports_brief`, wired into both nag surfaces
+  (SessionStart and the per-prompt rail). Same shape and same bounds as the memo nag — a
+  handful of lines, the body truncated rather than the line dropped, an overflow count, and
+  the command that reads the full text, because a notice that says a report exists without
+  saying how to read it is half a rail. Unacked only, and it fails open: a nag that raises
+  is worse than a nag that is missing.
+
+### Added
+- **`exit-add --merge-gated` and the `done-pending-merge` state — the honest state that was
+  previously unsayable.** Exit conditions run against the MAIN checkout, so a child's own
+  work cannot turn them green until its PR lands there. That is by design — it is what stops
+  a child grading its own unmerged branch — and it means a child can be genuinely FINISHED
+  while every condition it registered is red. Observed: work done, release cut, PR open,
+  report filed, gate reading 0 of 6 conditions met. The loop's vocabulary (running / ready /
+  settled / parked) had no word for *"finished, waiting on a human to merge"*, so the honest
+  state could not be recorded and the dishonest one — unfinished — was the only thing
+  sayable.
+
+  **DECLARED, NOT INFERRED.** `turn.landed` can probe whether a branch has landed, but it
+  needs a branch name nobody stored and a repo nobody named, and `unprobed` is its common
+  answer. A condition's AUTHOR knows at registration time whether it reads the merge target
+  — they wrote `git show origin/main:…`. An inference whose usual answer is "unprobed" is not
+  a state; a declaration is.
+
+  **IT NEVER SOFTENS A VERDICT.** A merge-gated condition that is unmet is still unmet, still
+  a gate finding, and still blocks the release — closing a task whose work has not landed
+  would settle a predecessor that cannot yet release anything. The gate reports it as
+  `merge-gated` / DONE PENDING MERGE rather than as a red the reader is left to explain, and
+  such a child is `gradeable` (the work is finished and the report is there to judge) while
+  never `clean`.
+
+- **The turn names `SendMessage` as the way to reach a child that is alive right now.**
+  `channel` reaches a child that is TAKING TURNS — transport is the turn boundary, and the
+  Stop hook can refuse to let a turn pass until an order is read. That is right for a child
+  mid-flight and it has one hole: an IDLE session never reaches a turn boundary, so it never
+  reads anything. `channel` also offers reach / orders / stand-down / settle / deny — a
+  parent can stand a child DOWN but cannot hand it WORK.
+
+  The mechanism that actually worked, twice, was the harness's `SendMessage`. That is the
+  BUILD-vs-ADOPT ruling confirmed by a second live case: the harness already owns cross-
+  session delivery, an inbound socket here would be a second one, and the loop's job is to
+  NAME the working path rather than re-implement it. So a gated child that is still live
+  carries a `reach` line printed as a tool call, never as a shell command — the loop cannot
+  run it; the reader can.
 ## [3.16.0] — 2026-08-21
 
 A narrowing of 3.15.0, found by running it on a real task. 3.15.0 made a git prober degrade
