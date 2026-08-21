@@ -4704,3 +4704,262 @@ class TestBothSurfacesTeachTheNewMoves(unittest.TestCase):
         out = buf.getvalue()
         for flag in ("--dismiss", "--candidates", "--goal-reviewed", "--probe-links"):
             self.assertIn(flag, out, flag)
+
+
+# ---------------------------------------------------------------------------
+# WHICH REPOS A PROBER MAY ASK — the folder rename that made the answer wrong.
+#
+# `task_repos` derived its list from `recorded_paths` alone: the FILE and WORKTREE paths a
+# task wrote down. Rename the folder those paths point into and every one of them dies at
+# once — while the ones pointing at something UNRELATED (a notes vault, the installed
+# plugin cache) survive. The list is then non-empty and holds the wrong repo, so the
+# probers answer a confident False about a branch and a commit that are sitting right
+# there. Measured on one real task: 16 of 27 findings were false, and the docstring's own
+# promise — "an empty list is what makes both probers return UNKNOWN rather than False" —
+# was kept for the empty case and broken for the WRONG-REPO case, which is worse because
+# it looks answered.
+#
+# TWO REPAIRS, and they cover the two halves of the same mistake:
+#   * WIDEN THE SCOPE. The repos a task NAMES (`projects`) are resolved through the repo
+#     index (`repos.json`), which records where each repo IS now rather than where a path
+#     recorded months ago said it was. A rename moves the index entry; it does not delete it.
+#   * NARROW THE CLAIM. When a named repo has no LOCAL clone to ask, the prober cannot see
+#     the whole scope it is implicitly claiming to have searched, so a negative is UNKNOWN
+#     rather than rot. The 16th false finding on that task was exactly this: a sha in an
+#     ADO repo nobody had cloned here.
+# ---------------------------------------------------------------------------
+
+class TestWhichReposAProberAsks(_Base):
+    """Every fixture here is the RENAME: the recorded code paths are gone, one unrelated
+    recorded path survives (so the list is non-empty and the old code answers False), and
+    the repo the task names is findable only through the index."""
+
+    def setUp(self):
+        super(TestWhichReposAProberAsks, self).setUp()
+        # The survivor: an unrelated recorded path that really exists. On the real task
+        # this was the notes vault.
+        self.vault = os.path.join(self.tmp, "vault")
+        os.makedirs(self.vault)
+        # Where the named repo actually lives NOW. Nothing recorded points here.
+        self.code = os.path.join(self.tmp, "task-station")
+        os.makedirs(self.code)
+        # Where every recorded code path still points. It does not exist.
+        self.gone = os.path.join(self.tmp, "claude-todo")
+
+    def _index(self, entries):
+        """Write `repos.json` where `paths.data_dir()` reads it — which `_repoint` has
+        already pinned to this test's temp dir."""
+        with open(os.path.join(self.tmp, "repos.json"), "w") as fh:
+            json.dump(entries, fh)
+
+    def _renamed(self, decisions=None, projects=("task-station",), **fields):
+        return self._reload(self._task(
+            decisions=decisions or ["merged commit 4412760 into main"],
+            files=[os.path.join(self.gone, "lib", "heal.py"),
+                   os.path.join(self.vault, "INDEX.md")],
+            projects=list(projects), **fields))
+
+    def _run_only(self, *live):
+        """A git stub that answers as if `live` are the only real repos, and as if the ref
+        or object asked about resolves in each of them. Never runs git."""
+        live = set(live)
+        seen = []
+
+        def run(args, timeout=None):
+            seen.append(args)
+            d = args[args.index("-C") + 1] if "-C" in args else None
+            return (d in live), ""
+        return run, seen
+
+    # -- widening the scope -------------------------------------------------------
+
+    def test_the_repo_the_task_NAMES_is_asked_even_when_no_recorded_path_survives(self):
+        self._index([{"name": "task-station", "path": self.code}])
+        t = self._renamed()
+        run, _seen = self._run_only(self.code, self.vault)
+        self.assertIn(self.code, heal.task_repos(t, run=run))
+
+    def test_a_named_repo_missing_from_the_index_is_simply_not_asked(self):
+        # Fail-open: no index entry is not an error, it is one fewer repo to ask.
+        self._index([{"name": "something-else", "path": self.code}])
+        t = self._renamed()
+        run, _seen = self._run_only(self.code, self.vault)
+        self.assertNotIn(self.code, heal.task_repos(t, run=run))
+
+    def test_an_unreadable_index_never_raises(self):
+        with open(os.path.join(self.tmp, "repos.json"), "w") as fh:
+            fh.write("{not json")
+        t = self._renamed()
+        run, _seen = self._run_only(self.vault)
+        self.assertEqual(heal.task_repos(t, run=run), [self.vault])
+
+    def test_a_branch_that_resolves_in_the_named_repo_is_NOT_reported_gone(self):
+        # The live case: branch monorepo-3.0.0 resolved at a sha locally and on origin, and
+        # the scan called it gone because it asked the vault.
+        self._index([{"name": "task-station", "path": self.code}])
+        t = self._renamed(decisions=["cut it on branch monorepo-3.0.0"])
+        run, _seen = self._run_only(self.code, self.vault)
+
+        def only_code_has_it(args, timeout=None):
+            ok, out = run(args, timeout=timeout)
+            if "rev-parse" in args and "--verify" in args:
+                d = args[args.index("-C") + 1]
+                return (d == self.code), ""
+            return ok, out
+        self.assertIs(heal.branch_prober(t, run=only_code_has_it)("monorepo-3.0.0"), True)
+
+    def test_a_commit_that_resolves_in_the_named_repo_is_NOT_reported_rewritten(self):
+        self._index([{"name": "task-station", "path": self.code}])
+        t = self._renamed()
+        run, _seen = self._run_only(self.code, self.vault)
+
+        def only_code_has_it(args, timeout=None):
+            ok, out = run(args, timeout=timeout)
+            if "cat-file" in args:
+                d = args[args.index("-C") + 1]
+                return (d == self.code), ""
+            return ok, out
+        probe = heal.commit_prober(t, run=only_code_has_it)
+        self.assertIs(probe("4412760"), True)
+        self.assertEqual(heal.commit_rot(t, probe=probe), [])
+
+    # -- narrowing the claim ------------------------------------------------------
+
+    def test_a_named_repo_with_no_local_clone_makes_a_negative_UNKNOWN(self):
+        """The 16th false finding: a sha cited from an ADO repo with no clone on this
+        machine. The prober searched everything it could reach, found nothing, and called
+        it rot — a claim about repos it never opened."""
+        self._index([{"name": "task-station", "path": self.code}])
+        t = self._renamed(projects=("task-station", "org-brain-profile"))
+        run, _seen = self._run_only(self.code, self.vault)
+
+        def resolves_nowhere(args, timeout=None):
+            ok, out = run(args, timeout=timeout)
+            if "cat-file" in args or "--verify" in args:
+                return False, ""
+            return ok, out
+        probe = heal.commit_prober(t, run=resolves_nowhere)
+        self.assertIsNone(probe("4412760"))
+        self.assertEqual(heal.commit_rot(t, probe=probe), [])
+        self.assertIsNone(heal.branch_prober(t, run=resolves_nowhere)("some-branch"))
+
+    def test_with_every_named_repo_local_a_negative_is_still_a_finding(self):
+        """The narrowing must not switch the check off. Every named repo is reachable
+        here, so "resolves in none of them" is a claim the prober is entitled to make."""
+        self._index([{"name": "task-station", "path": self.code}])
+        t = self._renamed()
+        run, _seen = self._run_only(self.code, self.vault)
+
+        def resolves_nowhere(args, timeout=None):
+            ok, out = run(args, timeout=timeout)
+            if "cat-file" in args:
+                return False, ""
+            return ok, out
+        probe = heal.commit_prober(t, run=resolves_nowhere)
+        self.assertIs(probe("4412760"), False)
+        self.assertEqual(len(heal.commit_rot(t, probe=probe)), 1)
+
+    def test_a_task_naming_no_repos_at_all_is_unchanged(self):
+        """`projects` is empty on most tasks. Nothing about them may move."""
+        self._index([{"name": "task-station", "path": self.code}])
+        t = self._renamed(projects=())
+        run, _seen = self._run_only(self.code, self.vault)
+        self.assertEqual(heal.task_repos(t, run=run), [self.vault])
+        self.assertIs(heal.commit_prober(t, run=run)("4412760"), True)
+
+    def test_no_usable_repo_at_all_is_still_UNKNOWN(self):
+        self._index([{"name": "task-station", "path": self.code}])
+        t = self._renamed()
+        self.assertIsNone(heal.commit_prober(t, exists=lambda p: False)("4412760"))
+
+
+# ---------------------------------------------------------------------------
+# AN IDENTICAL FINDING IS ONE FINDING — the rows nobody could adjudicate.
+#
+# `--dismiss` refuses an ambiguous selector rather than guessing, which is right. But two
+# findings can be BYTE-IDENTICAL — five sessions recording the same worktree cwd produce
+# five identical drift rows — and "name one exactly" is then an instruction nobody can
+# follow. On one real task 7 findings were permanently unadjudicatable, which was 100% of
+# its remaining mechanical issues.
+#
+# The rows were never five things: one path is gone once. So they collapse to ONE row
+# carrying `occurrences`, and the count stops being inflated by how many sessions happened
+# to sit in the same directory. `occurrences` is deliberately OUTSIDE the fingerprint —
+# a sixth session must not expire a ruling already made about that path.
+#
+# The ordinal handle is the second half, for the residual case dedupe cannot reach: the
+# same ref reported with DIFFERENT details (a path recorded both as a file and as a
+# worktree). `<check>:<ref>#<n>` names one, and it is tried only AFTER the whole ref has
+# failed, so a ref that genuinely ends in `#2` still wins.
+# ---------------------------------------------------------------------------
+
+class TestIdenticalFindingsAreAdjudicable(_Base):
+    GONE = "/Users/nobody/Workspace/gone-worktrees/wt"
+
+    def _five_sessions_one_cwd(self):
+        """The live shape: several sessions recorded the SAME vanished cwd."""
+        t = self._task()
+        t["session_meta"] = {"sess%d" % i: {"cwd": self.GONE} for i in range(5)}
+        ts.save_task(t)
+        return self._reload(t)
+
+    def test_five_identical_rows_are_one_finding(self):
+        t = self._five_sessions_one_cwd()
+        rows = [f for f in heal.scan(t)["findings"] if f["check"] == "drift"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["occurrences"], 5)
+
+    def test_the_collapsed_row_is_dismissable(self):
+        t = self._five_sessions_one_cwd()
+        result = heal.scan(t)
+        entry, err = heal.dismiss(t, result["findings"], "drift:%s" % self.GONE,
+                                  "the folder was renamed", sid="sess1234")
+        self.assertIsNone(err)
+        self.assertIsNotNone(entry)
+        ts.save_task(t)                    # `dismiss` does not persist — the caller does
+        self.assertEqual(heal.scan(self._reload(t))["findings"], [])
+
+    def test_occurrences_is_not_in_the_fingerprint(self):
+        f = {"check": "drift", "ref": "/x", "detail": "gone"}
+        self.assertEqual(heal.finding_fingerprint(f),
+                         heal.finding_fingerprint(dict(f, occurrences=7)))
+
+    def test_a_single_row_still_reports_one_occurrence(self):
+        t = self._task(files=[self.GONE + "/only.py"])
+        rows = [f for f in heal.scan(self._reload(t))["findings"] if f["check"] == "drift"]
+        self.assertEqual([r.get("occurrences") for r in rows], [1])
+
+    def test_the_ordinal_handle_names_one_of_two_rows_sharing_a_ref(self):
+        rows = [{"check": "drift", "ref": "/p", "detail": "recorded file no longer exists"},
+                {"check": "drift", "ref": "/p", "detail": "recorded worktree is gone"}]
+        first, err = heal._match_rows(rows, "drift", "/p#1", "finding")
+        self.assertIsNone(err)
+        self.assertEqual(first["detail"], "recorded file no longer exists")
+        second, err = heal._match_rows(rows, "drift", "/p#2", "finding")
+        self.assertIsNone(err)
+        self.assertEqual(second["detail"], "recorded worktree is gone")
+
+    def test_the_ambiguity_refusal_offers_the_handles(self):
+        rows = [{"check": "drift", "ref": "/p", "detail": "one"},
+                {"check": "drift", "ref": "/p", "detail": "two"}]
+        row, err = heal._match_rows(rows, "drift", "/p", "finding")
+        self.assertIsNone(row)
+        self.assertIn("/p#1", err)
+        self.assertIn("/p#2", err)
+
+    def test_an_out_of_range_ordinal_is_refused_and_says_the_range(self):
+        rows = [{"check": "drift", "ref": "/p", "detail": "one"},
+                {"check": "drift", "ref": "/p", "detail": "two"}]
+        row, err = heal._match_rows(rows, "drift", "/p#9", "finding")
+        self.assertIsNone(row)
+        self.assertIn("9", err)
+        self.assertIn("2", err)
+
+    def test_a_ref_that_really_ends_in_a_hash_number_wins_over_the_handle(self):
+        # Link-rot refs are URLs and a URL fragment can be `#2`. The whole ref is tried
+        # FIRST, so the real ref resolves and the handle never gets a look in.
+        rows = [{"check": "link-rot", "ref": "https://x/y#2", "detail": "dead"},
+                {"check": "link-rot", "ref": "https://x/y", "detail": "dead"}]
+        row, err = heal._match_rows(rows, "link-rot", "https://x/y#2", "finding")
+        self.assertIsNone(err)
+        self.assertEqual(row["ref"], "https://x/y#2")
