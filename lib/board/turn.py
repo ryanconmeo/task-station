@@ -93,11 +93,12 @@ MANUAL = "manual-pending"        # the launch was handed to a human and is still
 SPAWN_FAILED = "spawn-failed"    # invoked, no process, no turn ever taken
 RUNNING = "running"              # a live session is attached right now
 REPORTED = "reported"            # stopped, and left its report on the memo ledger
+DONE_PENDING_MERGE = "done-pending-merge"   # reported, and every unmet condition is a merge
 SILENT_EXIT = "silent-exit"      # stopped, did work, said nothing (finding 1)
 PARKED = "parked"                # the loop has stopped asking — never retried
 SETTLED = "settled"              # closed; its dependents are released
-CHILD_STATES = (UNSTARTED, MANUAL, SPAWN_FAILED, RUNNING, REPORTED, SILENT_EXIT,
-                PARKED, SETTLED)
+CHILD_STATES = (UNSTARTED, MANUAL, SPAWN_FAILED, RUNNING, REPORTED, DONE_PENDING_MERGE,
+                SILENT_EXIT, PARKED, SETTLED)
 
 # ------------------------------------------------------------------- the actions ----
 #
@@ -188,8 +189,13 @@ def last_launch(task):
     return got[-1] if got else None
 
 
-def report_memo(task, after=None):
+def report_memo(task, after=None, unacked_only=False):
     """The child's OWN hand-back memo on its own task, newest first, or None.
+
+    `unacked_only` keeps only a report NOBODY has dispositioned. That is what the pickup
+    rail turns on: an unacked report is work waiting to be picked up, while an acked one has
+    already been engaged — and a child that is live again after an ack is working, not
+    waiting.
 
     THE SENDER IS THE DISCRIMINATOR. Every memo lands on the same ledger, including the
     rejections the PARENT writes — counting one of those as the hand-back would mark
@@ -209,9 +215,84 @@ def report_memo(task, after=None):
             continue
         if not str(m.get("text") or "").strip():
             continue
+        if unacked_only and (m.get("acks") or []):
+            continue
         if best is None or _ts(m) >= _ts(best):
             best = m
     return best
+
+
+# -- (c) THE RAIL WAS INVISIBLE IN ONE DIRECTION -------------------------------------
+#
+# Track A's rule 4 says a child hands back as a MEMO ON ITS OWN TASK, because that is
+# durable, survives the session closing, and "lands where the gate looks". The first half
+# was true and the second half was never implemented: the awaiting-your-ack nag fires only
+# for the task the READING session is attached to, so a parent sitting on the orchestrator
+# is never told that a memo arrived on a child. Measured once: a good report sat unread for
+# seven hours with nothing broken and nothing lost.
+#
+# So the parent gets the same nag for its children's reports that it already gets for its
+# own memos. Deliberately the SAME SHAPE and the same bounds as `memo_pending_brief` — a
+# handful of lines, the body truncated rather than the line dropped, an overflow count, and
+# the command that reads the full text. A notice that says a report exists without saying
+# how to read it is half a rail.
+#
+# UNACKED ONLY. An acked report has been engaged; re-surfacing it every prompt is how a nag
+# earns being ignored, which is the failure this codebase has had to fix four times over.
+
+# The bounds, mirroring the memo nag's (`_shared.MEMO_PENDING_MAX` / `MEMO_LINE_MAX`) rather
+# than importing them: this module stays stdlib-plus-config/exits/loop, which is what makes a
+# turn testable with no store at all. Two constants that must agree by eye is the cheaper
+# price than a dependency that inverts the module's direction.
+CHILD_REPORT_MAX = 3        # report lines per block
+CHILD_REPORT_LINE_MAX = 200  # preview chars per line
+
+
+def child_reports(orch, children):
+    """`[(child, memo), …]` for each child of `orch` carrying an UNACKED report memo,
+    oldest report first. `children` is passed in — this module never loads."""
+    tid = (orch or {}).get("id")
+    out = []
+    for child in (children or []):
+        if not isinstance(child, dict) or _loop.parent_id(child) != tid:
+            continue
+        launch = last_launch(child)
+        m = report_memo(child, after=(launch["ts"] if launch else None),
+                        unacked_only=True)
+        if m:
+            out.append((child, m))
+    return sorted(out, key=lambda pair: _ts(pair[1]))
+
+
+def child_reports_brief(orch, children, max_items=None, line_max=None):
+    """One bounded block naming the children whose reports nobody has engaged, or None.
+
+    Rendered here rather than in the session seam because the RULE lives here: what counts
+    as a child's report is `report_memo`'s sender discrimination, and a second copy of that
+    in the nag path would answer differently the first time either was tuned."""
+    pairs = child_reports(orch, children)
+    if not pairs:
+        return None
+    max_items = CHILD_REPORT_MAX if max_items is None else max_items
+    line_max = CHILD_REPORT_LINE_MAX if line_max is None else line_max
+    shown = pairs[-max_items:]
+    ref = orch.get("seq") or str(orch.get("id") or "")[:8]
+    out = ["[task-station] %d CHILD report(s) on this plan await a disposition — filed on "
+           "the CHILD's task, so nothing else on this session would tell you:" % len(pairs)]
+    for child, m in shown:
+        seq = child.get("seq")
+        body = " ".join(str(m.get("text") or "").split())
+        prefix = "  • #%s %s — " % (seq, m["id"][:8])
+        budget = max(12, line_max - len(prefix))
+        if len(body) > budget:
+            body = body[:budget - 1].rstrip() + "…"
+        out.append(prefix + body)
+    extra = len(pairs) - len(shown)
+    if extra > 0:
+        out.append("  (+%d more)" % extra)
+    out.append("Read one:  task-station memo show --task <child> --id <id8>   ·   "
+               "then `turn --task %s` gates and grades it" % ref)
+    return "\n".join(out)
 
 
 def unacked(task):
@@ -250,19 +331,36 @@ def child_state(task, live=(), worked=None):
     """Which of the eight states this child is in, right now.
 
     THE ORDER IS THE ARGUMENT. Closed beats everything (its dependents are already
-    released). Liveness beats every stored flag, because a record survives a crash and a
-    process does not. A park beats the launch trail, because a parked child must never be
-    handed back to the loop whatever its trail says. Only then does the trail decide, and
-    the trail decides by RECONCILING INTENT WITH EVIDENCE: a report memo means reported,
-    other evidence means it worked and said nothing, no evidence at all means the spawn
-    never came up."""
+    released). AN UNACKED REPORT BEATS LIVENESS — see below. Liveness then beats every
+    stored flag, because a record survives a crash and a process does not. A park beats the
+    launch trail, because a parked child must never be handed back to the loop whatever its
+    trail says. Only then does the trail decide, and the trail decides by RECONCILING INTENT
+    WITH EVIDENCE: a report memo means reported, other evidence means it worked and said
+    nothing, no evidence at all means the spawn never came up.
+
+    WHY THE REPORT MOVED ABOVE LIVENESS. It used to sit at the bottom, so a child that
+    finished, filed its report and left its session idle in a worktree read as RUNNING, and
+    the turn printed "a live session is attached — the loop is working, not stuck". That
+    sentence was true and the conclusion was wrong: measured once, the work had been finished
+    for SEVEN HOURS. An idle-but-alive child that has already reported was indistinguishable
+    from one still thinking, and liveness cannot tell them apart because both are alive. The
+    REPORT can: filing one is the child saying it is done.
+
+    UNACKED, specifically. An acked report has already been engaged, so a child that is live
+    again after one is working rather than waiting — otherwise a graded-and-retried child
+    would be gated forever on the report it filed last time round. And a PARKED child is
+    never dragged back by its report: that rule predates this one and outranks it."""
     if _loop.is_closed(task):
         return SETTLED
+    launch = last_launch(task)
+    if launch and not _loop.parked(task) \
+            and report_memo(task, after=launch["ts"], unacked_only=True):
+        return DONE_PENDING_MERGE if _exits.merge_gate(task)["all_merge_gated"] \
+            else REPORTED
     if live and task.get("seq") in set(live):
         return RUNNING
     if _loop.parked(task):
         return PARKED
-    launch = last_launch(task)
     if not launch:
         return UNSTARTED
     if report_memo(task, after=launch["ts"]):
@@ -327,6 +425,33 @@ def landed(diff_output):
     branch unmerged. The failure direction is what makes it unacceptable in a driven
     turn — it re-opens work that already shipped."""
     return not str(diff_output or "").strip()
+
+
+# -- REACHING A CHILD THAT IS ALIVE AND IDLE — adopt, do not build --------------------
+#
+# `channel` can reach a child that is TAKING TURNS: transport is the turn boundary, and the
+# Stop hook can refuse to let a turn pass until an order is read. That is the right design
+# for a child mid-flight and it has one hole, found live: an IDLE session never reaches a
+# turn boundary, so it never reads anything. And `channel` offers reach / orders /
+# stand-down / settle / deny — a parent can stand a child DOWN but cannot hand it WORK.
+#
+# So the parent's window was the only way in, and the mechanism that actually worked was the
+# HARNESS's SendMessage — which is how a real parent woke a real idle child on 2026-08-21.
+# That is decision 382 (BUILD vs ADOPT) confirmed by a second live case: the harness already
+# owns cross-session delivery, an inbound socket here would be a second one, and the loop's
+# job is to NAME the working path rather than re-implement it.
+#
+# It is printed as a tool call and never as a shell command, because that is what it is. The
+# loop cannot run it; the reader can.
+
+def reach_command(child_ref, seq=None):
+    """How a parent reaches a child that is alive right now — the harness tool call, as
+    text. `channel orders` is named too, because a child still taking turns reads that
+    without a person in the loop."""
+    return ("SendMessage(to: \"<the child's session or agent name>\", message: \"…\") — "
+            "the harness rail, and the only one an IDLE session ever sees. A child still "
+            "taking turns also reads `task-station channel orders --task %s`, which lands "
+            "at its next turn boundary." % (child_ref if seq is None else seq))
 
 
 def landed_probe(branch, merge="origin/main"):
@@ -574,6 +699,16 @@ def gate(task, live=(), worked=None, landed=None, installed=None, version=None):
                                  "condition that did not run refutes nothing — "
                                  "`exit-tick --task %s` is the missing step."
                                  % (task.get("seq") or "<ref>")})
+    elif ex_state == _exits.UNMET and _exits.merge_gate(task)["all_merge_gated"]:
+        mg = _exits.merge_gate(task)
+        findings.append({"code": "merge-gated", "dim": "G1",
+                         "line": "DONE PENDING MERGE — %d of %d unmet condition(s) were "
+                                 "DECLARED as reading the merge target, and none of the "
+                                 "unmet ones can go green until this work lands there. "
+                                 "This is not a red and it is not clean either: the work "
+                                 "is finished and gradeable, and the release waits for the "
+                                 "merge. Nobody in the loop can perform that merge."
+                                 % (mg["merge_gated"], mg["unmet"])})
     elif ex_state == _exits.UNMET:
         if landed is True:
             findings.append({"code": "conditions-unmet", "dim": "G1",
@@ -606,7 +741,8 @@ def gate(task, live=(), worked=None, landed=None, installed=None, version=None):
         findings.append(stale)
     return {"seq": task.get("seq"), "state": state, "findings": findings,
             "clean": not findings,
-            "gradeable": state in (REPORTED, SILENT_EXIT, PARKED, SETTLED)}
+            "gradeable": state in (REPORTED, DONE_PENDING_MERGE, SILENT_EXIT,
+                                   PARKED, SETTLED)}
 
 
 # ------------------------------------------------------------- rejection and park ----
@@ -732,7 +868,7 @@ def plan(orch, children, live=(), resolve=None, cap=None, retry_max=None, worked
         st = child_state(child, live=live,
                          worked=(worked or {}).get(seq) if worked else None)
         states[seq] = st
-        if st in (REPORTED, SILENT_EXIT):
+        if st in (REPORTED, DONE_PENDING_MERGE, SILENT_EXIT):
             back.append(child)
         elif st in (SPAWN_FAILED, MANUAL):
             relaunch.append(child)
@@ -753,12 +889,27 @@ def plan(orch, children, live=(), resolve=None, cap=None, retry_max=None, worked
                 "predecessor releases everything that depends on it" % threshold,
                 "task-station done --task %s" % _ref(child)))
             continue
+        # A CHILD THAT IS STILL ALIVE GETS THE REACH PATH PRINTED WITH ITS GATE. It has
+        # reported, so it is being gated rather than waited on — but its session is sitting
+        # there, and the parent's next move after grading is usually to hand it the next
+        # thing. `channel` cannot do that (see `reach_command`), so the harness rail is
+        # named here, where the parent is already looking.
+        st = states.get(child.get("seq"))
+        alive = child.get("seq") in live
+        why = ("stopped as %s — run its conditions before reading its report, because a "
+               "report is not evidence" % g["state"])
+        if st == DONE_PENDING_MERGE:
+            why = ("DONE PENDING MERGE — it reported, and every unmet condition was "
+                   "declared as reading the merge target, so nothing in the loop can turn "
+                   "them green. Grade the work; the release waits for a human to merge")
+        elif alive:
+            why = ("reported and STILL ALIVE — an idle session is not a working one, and "
+                   "an unacked report outranks liveness. Gate it rather than wait on it")
         actions.append(_act(
-            GATE, child,
-            "stopped as %s — run its conditions before reading its report, because a "
-            "report is not evidence" % g["state"],
+            GATE, child, why,
             "task-station exit-tick --task %s" % _ref(child),
-            findings=g["findings"], state=g["state"], probe=landed_probe("<branch>")))
+            findings=g["findings"], state=g["state"], probe=landed_probe("<branch>"),
+            reach=(reach_command(_ref(child), seq=_ref(child)) if alive else None)))
         d = retry_decision(child, {"accepted": False}, retry_max=retry_max)
         if d["do"] == PARK:
             actions.append(_act(
@@ -856,6 +1007,8 @@ def lines(p):
         out.append("  %-8s #%-4s %s" % (a["action"].upper(), a["seq"], a["title"]))
         out.append("      why: %s" % a["why"])
         out.append("      run: %s" % a["command"])
+        if a.get("reach"):
+            out.append("      reach: %s" % a["reach"])
         for f in (a.get("findings") or []):
             out.append("      finding [%s] %s: %s"
                        % (f.get("dim") or "?", f.get("code"), f.get("line")))

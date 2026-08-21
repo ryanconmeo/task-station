@@ -54,6 +54,7 @@ _TMP_HOME = tempfile.mkdtemp(prefix="ts-turn-")
 os.environ["TASK_STATION_HOME"] = _TMP_HOME
 
 import channel                 # noqa: E402
+import exits                   # noqa: E402
 import loop                    # noqa: E402
 import store                   # noqa: E402
 import turn                    # noqa: E402
@@ -888,3 +889,234 @@ class BoundedRetries(_CliCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# THE PICKUP RAIL — the loop could hand work DOWN and had no way to notice it come back.
+#
+# Found by running the loop for real, 2026-08-21. A child finished, shipped a release,
+# opened a PR and filed its report as a memo on its own task — exactly what the contract
+# asked for — and the report sat unread for SEVEN HOURS. Nothing was broken and nothing was
+# lost. The parent simply never looks where the child was told to write.
+#
+# THREE CAUSES, and only the second was the loop's fault:
+#   1. The report landed on the CHILD, which is what the brief asked for — but the
+#      awaiting-your-ack rail fires only for the task the READING session is attached to,
+#      so a parent attached to the orchestrator is never told a memo arrived on a child.
+#      The rail was durable and invisible in exactly one direction.
+#   2. `child_state` READ LIVENESS AND NOT REPORTS. The child never exited, so its session
+#      sat idle in the worktree and `turn` printed WAIT — "a live session is attached, the
+#      loop is working, not stuck". True sentence, wrong conclusion: the work had been done
+#      for hours. An idle-but-alive child that has already reported was indistinguishable
+#      from one still thinking.
+#   3. EVEN A GATE RUN WOULD NOT HAVE RELEASED IT, and that part was correct. The child's
+#      conditions read origin/main, so they stayed red until a human merged the PR. The
+#      true state was DONE PENDING MERGE, and the vocabulary had no word for it.
+#
+# Track A's rule 4 said a memo "lands where the gate looks". That was asserted and never
+# tested — the gate looked at child STATE, not child MEMOS — which is the same class of
+# defect as a fix agreed and never built.
+# ---------------------------------------------------------------------------
+
+class ThePickupRail(unittest.TestCase):
+
+    def _reported_and_live(self, **kw):
+        """The live shape: invoked, filed an UNACKED report, session still attached."""
+        return _t("c1", 11, parent="orch", events=[_launch()],
+                  memos=[_memo(from_sid="child-sid", acks=())],
+                  sessions=("child-sid",), **kw)
+
+    # -- (a) an unacked report outranks liveness -----------------------------------
+
+    def test_a_live_child_that_has_reported_reads_REPORTED_not_RUNNING(self):
+        child = self._reported_and_live(conditions={1: "unmet"})
+        self.assertEqual(turn.child_state(child, live={11}), turn.REPORTED)
+
+    def test_a_live_child_that_has_NOT_reported_still_reads_RUNNING(self):
+        """The negative control that keeps WAIT meaningful: a child genuinely still
+        working must not be gated out from under itself."""
+        child = _t("c1", 11, parent="orch", events=[_launch()], sessions=("child-sid",))
+        self.assertEqual(turn.child_state(child, live={11}), turn.RUNNING)
+
+    def test_an_ACKED_report_returns_a_live_child_to_RUNNING(self):
+        """Once the parent has engaged the report, a still-live child is working again —
+        otherwise a graded-and-retried child would be gated forever on its old report."""
+        child = _t("c1", 11, parent="orch", events=[_launch()],
+                   memos=[_memo(acks=[{"sid": "parent-sid", "ts": 2100.0}])],
+                   sessions=("child-sid",))
+        self.assertEqual(turn.child_state(child, live={11}), turn.RUNNING)
+
+    def test_a_parked_child_is_never_dragged_back_by_its_report(self):
+        """A park beats the trail whatever the trail says — that rule predates this one and
+        outranks it. Probed with the child NOT live, so the answer is about the park and the
+        report rather than about liveness (which has always outranked a park: a parked child
+        whose session is running really is running)."""
+        child = self._reported_and_live()
+        child["grades"] = [{"ts": 2050.0, "park": "human-gate", "accepted": False}]
+        self.assertEqual(turn.child_state(child, live=()), turn.PARKED)
+
+    def test_the_turn_GATES_the_idle_reporter_instead_of_waiting_on_it(self):
+        orch = _t("orch", 10, title="orchestrator")
+        child = self._reported_and_live(conditions={1: "unmet"})
+        p = turn.plan(orch, [child], live={11})
+        acts = [a["action"] for a in p["actions"]]
+        self.assertIn(turn.GATE, acts)
+        self.assertNotIn(turn.WAIT, acts)
+
+    # -- (b) done pending merge ---------------------------------------------------
+
+    def test_a_merge_gated_condition_is_declarable(self):
+        child = _t("c1", 11, steps=[{"text": "s", "done": False,
+                                     "exit": {"cmd": "c", "expect": ["OK"],
+                                              "merge_gated": True}}])
+        probe = getattr(exits, "merge_gated", None)
+        self.assertIsNotNone(probe, "exits.merge_gated does not exist")
+        self.assertTrue(probe(child["steps"][0]))
+
+    def test_an_unmet_merge_gated_condition_reads_DONE_PENDING_MERGE(self):
+        child = _t("c1", 11, parent="orch", events=[_launch()],
+                   memos=[_memo()], sessions=("child-sid",),
+                   steps=[{"text": "s", "done": False,
+                           "exit": {"cmd": "c", "expect": ["OK"], "merge_gated": True,
+                                    "last": {"ts": 1000.0, "ok": False, "status": "ran",
+                                             "missing": ["OK"], "got": ""}}}])
+        self.assertTrue(hasattr(turn, "DONE_PENDING_MERGE"),
+                        "turn has no DONE_PENDING_MERGE state")
+        self.assertEqual(turn.child_state(child, live=()), turn.DONE_PENDING_MERGE)
+
+    def test_the_gate_names_it_merge_gated_rather_than_a_red(self):
+        child = _t("c1", 11, parent="orch", events=[_launch()], memos=[_memo()],
+                   sessions=("child-sid",),
+                   steps=[{"text": "s", "done": False,
+                           "exit": {"cmd": "c", "expect": ["OK"], "merge_gated": True,
+                                    "last": {"ts": 1000.0, "ok": False, "status": "ran",
+                                             "missing": ["OK"], "got": ""}}}])
+        codes = [f["code"] for f in turn.gate(child)["findings"]]
+        self.assertIn("merge-gated", codes)
+        self.assertNotIn("conditions-unmet", codes)
+        self.assertNotIn("pre-merge", codes)
+
+    def test_a_merge_gated_child_is_still_GRADEABLE_but_never_clean(self):
+        """Gradeable, because the work is finished and the report is there to judge. Never
+        clean, because closing it would settle a task whose work has not landed."""
+        child = _t("c1", 11, parent="orch", events=[_launch()], memos=[_memo()],
+                   sessions=("child-sid",),
+                   steps=[{"text": "s", "done": False,
+                           "exit": {"cmd": "c", "expect": ["OK"], "merge_gated": True,
+                                    "last": {"ts": 1000.0, "ok": False, "status": "ran",
+                                             "missing": ["OK"], "got": ""}}}])
+        g = turn.gate(child)
+        self.assertTrue(g["gradeable"])
+        self.assertFalse(g["clean"])
+
+    def test_an_ordinary_unmet_condition_is_UNCHANGED(self):
+        """The negative control: only a condition that DECLARED itself merge-gated gets
+        the softer reading. Everything else still reads pre-merge or red."""
+        child = _t("c1", 11, parent="orch", events=[_launch()], memos=[_memo()],
+                   sessions=("child-sid",), conditions={1: "unmet"})
+        codes = [f["code"] for f in turn.gate(child)["findings"]]
+        self.assertIn("pre-merge", codes)
+        self.assertNotIn("merge-gated", codes)
+
+    def test_a_mix_of_merge_gated_and_ordinary_unmet_is_NOT_done_pending_merge(self):
+        """One condition that a merge cannot fix means the work is not finished."""
+        child = _t("c1", 11, parent="orch", events=[_launch()], memos=[_memo()],
+                   sessions=("child-sid",), conditions={1: "unmet"},
+                   steps=[{"text": "s", "done": False,
+                           "exit": {"cmd": "c", "expect": ["OK"], "merge_gated": True,
+                                    "last": {"ts": 1000.0, "ok": False, "status": "ran",
+                                             "missing": ["OK"], "got": ""}}}])
+        self.assertEqual(turn.child_state(child, live=()), turn.REPORTED)
+
+    def test_the_turn_says_DONE_PENDING_MERGE_in_words(self):
+        orch = _t("orch", 10)
+        child = _t("c1", 11, parent="orch", events=[_launch()], memos=[_memo()],
+                   sessions=("child-sid",),
+                   steps=[{"text": "s", "done": False,
+                           "exit": {"cmd": "c", "expect": ["OK"], "merge_gated": True,
+                                    "last": {"ts": 1000.0, "ok": False, "status": "ran",
+                                             "missing": ["OK"], "got": ""}}}])
+        text = "\n".join(turn.lines(turn.plan(orch, [child], live=())))
+        self.assertIn("DONE PENDING MERGE", text)
+
+    # -- (d) reaching an idle child is the harness's job --------------------------
+
+    def test_the_turn_names_SendMessage_as_the_way_to_reach_a_live_child(self):
+        """`channel` can stand a child down but cannot hand it work, and an order is only
+        read at a turn boundary an idle session never reaches. What actually works is the
+        harness's SendMessage — adopt, don't build (decision 382), now confirmed twice."""
+        orch = _t("orch", 10)
+        child = self._reported_and_live(conditions={1: "unmet"})
+        p = turn.plan(orch, [child], live={11})
+        gates = [a for a in p["actions"] if a["action"] == turn.GATE]
+        self.assertTrue(gates, "the live reporter was not gated at all")
+        self.assertIn("SendMessage", gates[0].get("reach") or "")
+        self.assertIn("SendMessage", "\n".join(turn.lines(p)))
+
+    def test_a_child_that_is_NOT_live_gets_no_reach_line(self):
+        orch = _t("orch", 10)
+        child = _t("c1", 11, parent="orch", events=[_launch()], memos=[_memo()],
+                   sessions=("child-sid",), conditions={1: "unmet"})
+        p = turn.plan(orch, [child], live=())
+        gates = [a for a in p["actions"] if a["action"] == turn.GATE]
+        self.assertTrue(gates, "an offline reporter was not gated")
+        self.assertFalse(gates[0].get("reach"))
+
+
+class AChildsReportSurfacesToTheParent(unittest.TestCase):
+    """(c) The rail was durable and invisible in exactly ONE direction. Track A's rule 4
+    said a memo "lands where the gate looks" — but the awaiting-your-ack nag fires only for
+    the task the READING session is attached to, so a parent sitting on the orchestrator was
+    never told a memo had arrived on a child. The rule described an intention; nothing
+    implemented the path."""
+
+    def _brief(self, orch, kids):
+        """Asserted rather than called blind, so a missing surface fails as an ASSERTION
+        and not as an AttributeError — the distinction the red-before-green rule turns on."""
+        fn = getattr(turn, "child_reports_brief", None)
+        self.assertIsNotNone(fn, "turn.child_reports_brief does not exist")
+        return fn(orch, kids)
+
+    def _child(self, seq, acks=(), text="report", parent="orch"):
+        return _t("c%s" % seq, seq, parent=parent, events=[_launch()],
+                  sessions=("child-%s" % seq,),
+                  memos=[_memo(text=text, from_sid="child-%s" % seq, acks=list(acks))])
+
+    def test_an_unacked_child_report_is_surfaced_on_the_parent(self):
+        orch = _t("orch", 10, title="the plan")
+        block = self._brief(orch, [self._child(11)])
+        self.assertIsNotNone(block)
+        self.assertIn("#11", block)
+
+    def test_an_ACKED_child_report_is_not_surfaced(self):
+        orch = _t("orch", 10)
+        child = self._child(11, acks=[{"sid": "parent-sid", "ts": 2100.0}])
+        self.assertIsNone(self._brief(orch, [child]))
+
+    def test_a_parent_with_no_children_gets_nothing(self):
+        self.assertIsNone(self._brief(_t("orch", 10), []))
+
+    def test_a_child_of_some_other_parent_is_not_surfaced(self):
+        orch = _t("orch", 10)
+        stranger = self._child(11, parent="someone-else")
+        self.assertIsNone(self._brief(orch, [stranger]))
+
+    def test_the_block_names_the_command_that_reads_the_report(self):
+        """A notice that says a report exists and not how to read it is half a rail."""
+        orch = _t("orch", 10)
+        block = self._brief(orch, [self._child(11)])
+        self.assertIn("memo show", block)
+
+    def test_several_children_are_bounded_and_the_overflow_is_counted(self):
+        orch = _t("orch", 10)
+        kids = [self._child(seq) for seq in range(11, 20)]
+        block = self._brief(orch, kids)
+        self.assertLessEqual(len(block.splitlines()), 3 + turn.CHILD_REPORT_MAX)
+        self.assertIn("more", block)
+
+    def test_a_long_report_is_truncated_not_dropped(self):
+        orch = _t("orch", 10)
+        block = self._brief(orch, [self._child(11, text="x" * 4000)])
+        self.assertIn("#11", block)
+        self.assertTrue(all(len(l) <= turn.CHILD_REPORT_LINE_MAX + 40
+                            for l in block.splitlines()), block)

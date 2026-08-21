@@ -221,7 +221,8 @@ def cmd_exit_add(a):
                   "anyway and have that recorded.")
             sys.exit(2)
         print("  --force: registering it anyway.")
-    ok, err = _exits.set_condition(steps_list, n, cmd_raw, expect_raw)
+    ok, err = _exits.set_condition(steps_list, n, cmd_raw, expect_raw,
+                                   merge_gated=bool(getattr(a, "merge_gated", False)))
     if not ok:
         print(err)
         sys.exit(2)
@@ -229,6 +230,10 @@ def cmd_exit_add(a):
     save_task(task)
     ref = task.get("seq") or task["id"][:8]
     print("Exit condition — task #%s step %d" % (ref, n))
+    if getattr(a, "merge_gated", False):
+        print("  MERGE-GATED — it reads the merge target, so it stays red until this "
+              "work lands there. That is recorded, not inferred: the loop can now say "
+              "DONE PENDING MERGE instead of calling a finished child unfinished.")
     print("  cmd:     %s" % a.cmd.strip())
     print("  expects: %s" % " · ".join(str(e).strip() for e in a.expect if str(e).strip()))
     print("  nothing has been run — `exit-tick --task %s --step %d` settles it"

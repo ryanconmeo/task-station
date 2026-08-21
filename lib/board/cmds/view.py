@@ -1146,6 +1146,16 @@ def cmd_prompt_context(a):
         # turn until this session acks — computed here alongside delta, but NOT cleared
         # by touch/mark_seen (only an explicit `memo ack` clears one).
         pending = memo_pending_brief(task, a.session)
+        # Same reason as the SessionStart path: a child's report lands on the CHILD's task,
+        # so the ack nag above cannot see it. Fails open — a nag that raises is worse than a
+        # nag that is missing.
+        try:
+            import loop as _loop_mod
+            import turn as _turn_mod
+            kid_reports = _turn_mod.child_reports_brief(
+                task, _loop_mod.children(task, all_tasks()))
+        except Exception:                                       # noqa: BLE001
+            kid_reports = None
         touch(task, session=a.session, note=os.environ.get("TASK_STATION_PROMPT", ""), reopen=True)
         save_task(task)
         if was_closed:
@@ -1173,6 +1183,8 @@ def cmd_prompt_context(a):
         # watermark-cleared (mark_seen doesn't touch them; only `memo ack` does).
         if pending:
             print(pending)
+        if kid_reports:
+            print(kid_reports)
         # THE TWO RECORD ADVISORIES, in the same rail as the memo nag above and gated the
         # same way it is: ONE line each, at most once per (task, session), silent on a
         # healthy task. They are here rather than only at SessionStart because a long
