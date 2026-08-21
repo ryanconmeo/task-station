@@ -106,7 +106,7 @@ def condition(step):
     expect = [str(e) for e in (raw.get("expect") or []) if str(e).strip()]
     if not expect:
         return None
-    out = {"cmd": cmd, "expect": expect}
+    out = {"cmd": cmd, "expect": expect, "merge_gated": bool(raw.get("merge_gated"))}
     if raw.get("added_ts"):
         out["added_ts"] = raw["added_ts"]
     last = raw.get("last")
@@ -117,6 +117,50 @@ def condition(step):
 def has_condition(step):
     """True iff `step` carries a runnable exit condition."""
     return condition(step) is not None
+
+
+# -- MERGE-GATED: the condition that cannot pass until a human merges ------------------
+#
+# THE STATE THAT WAS UNSAYABLE. Exit conditions run against the MAIN checkout, so a child's
+# own work cannot turn them green until its PR lands there. That is by design — it is what
+# stops a child grading its own unmerged branch — and it means a child can be genuinely
+# FINISHED while every condition it registered is red. Observed on a real child: work done,
+# release cut, PR open, report filed, and the gate read 0 of 6 conditions met for seven
+# hours. The loop's vocabulary (running / ready / settled / parked) had no word for
+# "finished, waiting on a human to merge", so the honest state could not be recorded and
+# the dishonest one — unfinished — was the only thing sayable.
+#
+# WHY A DECLARATION AND NOT AN INFERENCE. `turn.landed` can probe whether a branch has
+# landed, but it needs a branch name nobody stored and a repo nobody named, and its
+# unprobed answer is the common one. A condition's AUTHOR knows at registration time
+# whether it reads the merge target — they wrote `git show origin/main:…`. So the author
+# says so once (`exit-add --merge-gated`) and every later reader gets it for free. An
+# inference that is usually "unprobed" is not a state; a declaration is.
+#
+# IT NEVER SOFTENS A VERDICT. A merge-gated condition that is UNMET is still unmet, still a
+# gate finding, and still blocks the release — closing a task whose work has not landed
+# would settle a predecessor that cannot yet release anything. All the flag changes is WHAT
+# THE REPORT SAYS: `merge-gated` and DONE PENDING MERGE, rather than a red the reader is
+# left to explain.
+
+def merge_gated(step):
+    """True iff this step's condition was DECLARED as gated on a merge."""
+    cond = condition(step)
+    return bool(cond and cond.get("merge_gated"))
+
+
+def merge_gate(task):
+    """`{"unmet", "merge_gated", "all_merge_gated"}` over the LIVE steps.
+
+    `all_merge_gated` is the load-bearing one, and it is False when nothing is unmet — a
+    task with no unmet conditions is not "pending merge", it is just fine. One ordinary
+    unmet condition alongside a merge-gated one also makes it False: something a merge
+    cannot fix means the work is not finished."""
+    unmet = [s for _n, s in _steps.live((task or {}).get("steps") or [])
+             if item_state(s) == UNMET]
+    gated = [s for s in unmet if merge_gated(s)]
+    return {"unmet": len(unmet), "merge_gated": len(gated),
+            "all_merge_gated": bool(unmet) and len(gated) == len(unmet)}
 
 
 def item_state(step):
@@ -225,7 +269,8 @@ def last_run_ts(task):
 
 # -- writing -------------------------------------------------------------------
 
-def set_condition(steps, index1, cmd, expect, now=None, flag="exit-add"):
+def set_condition(steps, index1, cmd, expect, now=None, flag="exit-add",
+                  merge_gated=False):
     """Attach (or replace) the exit condition on step `index1`. `(ok, error)`.
 
     UPSERTS, like `claims --register`: re-running it on a step rewrites that step's
@@ -257,6 +302,7 @@ def set_condition(steps, index1, cmd, expect, now=None, flag="exit-add"):
                        "appear in its output." % (flag, i))
     rich = _steps.as_rich(steps[i - 1])
     rich[EXIT_FIELD] = {"cmd": command, "expect": wanted,
+                        "merge_gated": bool(merge_gated),
                         "added_ts": time.time() if now is None else now}
     steps[i - 1] = _steps.compact(rich)
     return True, None

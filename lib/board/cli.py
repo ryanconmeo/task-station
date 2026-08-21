@@ -184,6 +184,15 @@ def main(argv=None):
                          "a floor or a ceiling in the COMMAND and expect its PASS token, "
                          "because a literal count goes red on any legitimate release. "
                          "Copy tools/checker-template.sh.")
+    sp.add_argument("--merge-gated", dest="merge_gated", action="store_true",
+                    help="declare that this condition READS THE MERGE TARGET (origin/main "
+                         "or similar), so it cannot go green until this work lands there. "
+                         "Nothing is softened — an unmet merge-gated condition is still "
+                         "unmet, still a gate finding, and still blocks the release. What "
+                         "changes is that the loop can say DONE PENDING MERGE instead of "
+                         "reporting a finished child as unfinished. Declared rather than "
+                         "inferred: the author knows at registration, and a branch probe's "
+                         "usual answer is `unprobed`.")
     sp.add_argument("--force", action="store_true",
                     help="register the condition even though the self-check flagged it "
                          "(a shape that can be satisfied by something other than the "
