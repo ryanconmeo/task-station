@@ -39,6 +39,11 @@ and to the string literals its call sites pass. Deeper indirection is out of
 scope on purpose; if a future test needs it, this guard should fail loudly
 rather than quietly under-report.
 
+RE-DERIVING THE SET? Read `docs/PATCH-SURFACE.md` first — it is the two-scan
+procedure, and it exists because this set was once derived with one scan when
+there are two. The scans below are the implementation; that document is the
+instruction, and it lives where a person starting a phase will actually look.
+
 Stdlib + unittest only, and it reads source rather than importing anything — it
 must stay runnable even when the engine itself is mid-surgery.
 """
@@ -260,3 +265,70 @@ class PatchSurfaceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# THE TWO-SCAN PROCEDURE HAS TO LIVE WHERE THE NEXT DERIVER WILL LOOK.
+#
+# The guard above already runs BOTH scans, and that is not the same thing as the procedure
+# being recorded. The routed set was first derived with the §3 regex ALONE, which cannot see
+# a `setattr(ts, …)` at all, so two names were missed — and the only place that now explains
+# why is a docstring inside the test that closed the hole. A person re-deriving the set at
+# the start of a phase reads the PLAN, not this file, so the knowledge was recorded exactly
+# where it would not be found.
+#
+# So the procedure is a tracked document, and these assertions are what stop it rotting into
+# a lie. A doc that names a DIFFERENT regex from the one the guard actually runs is worse
+# than no doc: it sends the next deriver back down the road that lost two names. So the doc
+# is pinned to the code, both directions.
+# ---------------------------------------------------------------------------
+
+PROCEDURE_DOC = os.path.join(ROOT, "docs", "PATCH-SURFACE.md")
+
+
+class TheTwoScanProcedureIsRecorded(unittest.TestCase):
+    def _doc(self):
+        self.assertTrue(os.path.exists(PROCEDURE_DOC),
+                        "%s does not exist" % PROCEDURE_DOC)
+        return _read(PROCEDURE_DOC)
+
+    def test_the_document_exists_and_is_tracked(self):
+        body = self._doc()
+        self.assertTrue(body.strip(), "the document is empty")
+
+    def test_it_names_BOTH_scans_and_says_which_one_is_blind(self):
+        body = self._doc()
+        self.assertIn("setattr", body)
+        self.assertIn("ts.", body)
+        # The whole point of the record: one scan cannot see the other's form.
+        self.assertIn("cannot see", body.lower())
+
+    def test_the_regex_it_prints_is_the_regex_THE_GUARD_RUNS(self):
+        """The one assertion that makes this doc trustworthy. A procedure quoting a regex
+        the code does not use would send the next deriver back down the road that lost two
+        names — so the pattern is pinned, not paraphrased."""
+        self.assertIn(_PATCH_RE.pattern, self._doc())
+
+    def test_it_carries_the_routed_set_size_as_a_FLOOR_not_a_literal(self):
+        """A count written as an equality is falsified by the next release that routes a
+        name. The doc states the direction and names the guard that keeps it exact."""
+        body = self._doc()
+        self.assertIn("test_patch_surface", body)
+        self.assertRegex(body, r"(?i)floor|at least|never shrink")
+
+    def test_it_says_what_the_setattr_scan_resolves_and_what_it_does_NOT(self):
+        """The scope limit is half the procedure: ONE hop is resolved, deeper indirection is
+        deliberately out of scope and must fail loudly rather than under-report."""
+        body = self._doc()
+        self.assertIn("one hop", body.lower())
+        self.assertIn("out of scope", body.lower())
+
+    def test_the_guard_points_AT_the_document(self):
+        """Otherwise the doc is a file nobody is told about — the same rot the checker
+        template's pointer test exists to stop.
+
+        Asserted against this module's DOCSTRING and not its source. Scanning the source
+        would be satisfied by the literal inside this very assertion — a guard that passes
+        because it mentions the thing it is checking for, which is the tautology this suite
+        is otherwise careful to avoid."""
+        self.assertIn("docs/PATCH-SURFACE.md", __doc__ or "")
