@@ -3,6 +3,33 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.18.0] — 2026-08-21
+
+Track H's own checklist, closed out. Nothing here changes behaviour: it records a procedure
+that existed only in a place nobody would look, and it adjudicates four checklist items that
+had been open long enough to stop meaning anything.
+
+### Added
+- **`docs/PATCH-SURFACE.md` — the two-scan procedure for re-deriving the routed name set.**
+  `lib/task-station.py` is the facade; a test that patches a name on it only rebinds it there,
+  so every patched name is read late through `board._shared.g("NAME")`. The set of such names
+  is the patch surface, and it was once derived with **one** scan when there are **two**: a
+  direct `ts.<name> = …` assignment, and a `setattr(ts, …)` the first scan cannot see at all.
+  Two names were missed that way, and the only place that explained why was a docstring inside
+  the test that closed the hole — recorded exactly where a person starting a phase would not
+  look.
+
+  **The document is pinned to the code, both directions.** A procedure quoting a regex the
+  guard does not run would send the next deriver back down the road that lost two names, so
+  `tests/test_patch_surface.py` asserts that the pattern printed in the doc IS `_PATCH_RE`, and
+  that the doc states the one-hop resolution limit and what is deliberately out of scope. Its
+  measurements are written as a floor and a dated snapshot, never an equality — the count that
+  must be exact is `ROUTED`, and the guard is what keeps that exact.
+
+  The pointer guard reads this module's **docstring**, not its source: scanning the source
+  would be satisfied by the literal inside the assertion itself, a guard that passes because
+  it mentions the thing it is checking for.
+
 ## [3.17.0] — 2026-08-21
 
 > Versioned 3.17.0 on the assumption that 3.16.0 lands first. The two are independent
