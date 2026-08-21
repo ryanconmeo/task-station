@@ -809,6 +809,22 @@ def main(argv=None):
     sp.add_argument("--story-desc", dest="story_desc", default=None,
                     help="description for the --story url in this update "
                          "(or the most-recent stored story when no --story is given)")
+    # Reconciling the repos a task NAMES. `projects` had only `add-project` (machine-called
+    # by delegate) so it was append-only, and since 3.15.0 an unresolvable name keeps the
+    # cited-commit check UNKNOWN for the life of the task. These two are the way out.
+    sp.add_argument("--project-rm", dest="project_rm", action="append", default=None,
+                    metavar="NAME",
+                    help="drop NAME from the repos this task names (repeatable) — the repo "
+                         "is GONE. Use this to clear an unresolvable name that `heal` "
+                         "reports as `stale-project`; the cited-commit check resumes once "
+                         "every remaining name has a local clone.")
+    sp.add_argument("--project-rename", dest="project_rename", action="append",
+                    default=None, metavar="OLD=NEW",
+                    help="the repo is STILL HERE under a new name (repeatable). Renames in "
+                         "place, keeping the task pointed at the work rather than "
+                         "forgetting it, and COLLAPSES onto NEW if the task already names "
+                         "it — one repo under two identities is one repo. Both halves are "
+                         "required; use --project-rm to drop a name outright.")
     sp.add_argument("--color", default=None); sp.add_argument("--effort", default=None)
     sp.add_argument("--orchestrator", default=None, choices=["on", "off"],
                     help="flag this task ORCHESTRATOR-ONLY: it plans and grades, it does "
