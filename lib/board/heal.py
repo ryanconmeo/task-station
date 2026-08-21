@@ -2785,11 +2785,27 @@ def _ref_hits(rows, ref):
     return exact or [r for r in rows if want and want in str(r.get("ref") or "").casefold()]
 
 
-def _handles(rows, ref):
+def _handles(rows):
     """The selectors that WOULD name each of `rows` unambiguously, as text — the ambiguity
-    refusal prints these so it doubles as the command to retype."""
-    return "; ".join("%s:%s#%d" % (r.get("check"), ref, i)
-                     for i, r in enumerate(rows, 1))
+    refusal prints these so it doubles as the command to retype.
+
+    A row whose REF IS ALREADY UNIQUE among the matches is named by its ref, because that is
+    the honest answer: the selector was a substring that spanned several distinct refs, and
+    the fix is to name the one meant, not to count. Only rows SHARING a ref get an ordinal —
+    those are the ones no exact name can separate."""
+    shared = {}
+    for r in rows:
+        ref = str(r.get("ref") or "")
+        shared[ref] = shared.get(ref, 0) + 1
+    nth, out = {}, []
+    for r in rows:
+        ref = str(r.get("ref") or "")
+        if shared[ref] > 1:
+            nth[ref] = nth.get(ref, 0) + 1
+            out.append("%s:%s#%d" % (r.get("check"), ref, nth[ref]))
+        else:
+            out.append("%s:%s" % (r.get("check"), ref))
+    return "; ".join(out)
 
 
 def _match_rows(rows, check, ref, what):
@@ -2814,17 +2830,17 @@ def _match_rows(rows, check, ref, what):
         if base and 1 <= n <= len(base):
             return base[n - 1], None
         if base:
-            return None, ("heal: %r names row %d, and %r matches %d %s(s). The handles are: "
-                          "%s. Nothing was changed."
+            return None, ("heal: %r names row %d, and %r matches %d %s(s). Name one of: %s. "
+                          "Nothing was changed."
                           % (_row_label({"check": check, "ref": ref}), n, m.group("ref"),
-                             len(base), what, _handles(base, m.group("ref"))))
+                             len(base), what, _handles(base)))
     if not hits:
         return None, ("heal: %r matches no %s. %s"
                       % (_row_label({"check": check, "ref": ref}), what, _listing(rows, what)))
-    return None, ("heal: %r is ambiguous — it matches %d. They differ only in what each one "
-                  "found, so name one by its ordinal handle: %s. Nothing was changed."
-                  % (_row_label({"check": check, "ref": ref}), len(hits),
-                     _handles(hits, ref)))
+    return None, ("heal: %r is ambiguous — it matches %d. Name one exactly: %s. Rows sharing "
+                  "one ref are separated by an ordinal handle, because no exact ref can tell "
+                  "them apart. Nothing was changed."
+                  % (_row_label({"check": check, "ref": ref}), len(hits), _handles(hits)))
 
 
 def _listing(rows, what):

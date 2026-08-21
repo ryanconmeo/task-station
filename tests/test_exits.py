@@ -425,3 +425,56 @@ class CliTest(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# A CONDITION WRITTEN AS A DIRECTION — the shipped answer to "or docs plus a template".
+#
+# `test COUNT = LITERAL` is falsified by any legitimate release: five of one task's
+# seventeen claims went red in four days for that reason alone, and one hid three genuinely
+# broken links behind its stale baseline. The engine needed NOTHING new for the fix — a
+# claim and an exit condition are already "<command> plus the substrings its output must
+# contain", so the comparison goes in the command and the expectation is its PASS token.
+# What was missing was a worked example and a pointer to it from where an author registers.
+#
+# So the template is the shipped artefact, and it is tested like one. A template that does
+# not run is worse than no template: it teaches the shape AND a bug.
+# ---------------------------------------------------------------------------
+
+class DirectionTemplateTest(unittest.TestCase):
+    TEMPLATE = os.path.join(_REPO_ROOT, "tools", "checker-template.sh")
+
+    def test_the_template_exists_and_is_executable(self):
+        self.assertTrue(os.path.exists(self.TEMPLATE), self.TEMPLATE)
+        self.assertTrue(os.access(self.TEMPLATE, os.X_OK), "not executable")
+
+    def test_the_shell_can_parse_it(self):
+        import subprocess
+        p = subprocess.run(["sh", "-n", self.TEMPLATE], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_an_unrunnable_command_prints_FAIL_rather_than_nothing(self):
+        """RULE 3, and the reason this test is here rather than in a doc: an exit condition
+        whose command prints NOTHING goes red with no diagnostic, and the transcript cannot
+        say which half failed. Point the template at a repo that is not there and it must
+        still print a verdict."""
+        import subprocess
+        env = dict(os.environ, REPO="/nonexistent-repo-for-this-test")
+        p = subprocess.run(["sh", self.TEMPLATE], capture_output=True, text=True, env=env)
+        self.assertTrue(p.stdout.strip(), "printed nothing at all")
+        self.assertIn("FAIL", p.stdout)
+        self.assertNotEqual(p.returncode, 0)
+
+    def test_the_template_carries_a_floor_and_never_an_equality(self):
+        body = open(self.TEMPLATE).read()
+        self.assertIn("-ge \"$FLOOR\"", body)          # a floor, not `= LITERAL`
+        self.assertIn("ceiling", body.lower())          # …and the mirror image is shown
+        self.assertIn("path-test-and", body)            # the `&&` guard is named, not implied
+
+    def test_both_registration_surfaces_point_at_it(self):
+        """The pointer is the whole delivery mechanism. If it rots, the template is a file
+        nobody is told about — so the help text is asserted, not trusted."""
+        cli = open(os.path.join(_REPO_ROOT, "lib", "board", "cli.py")).read()
+        self.assertEqual(cli.count("tools/checker-template.sh"), 2, cli.count(
+            "tools/checker-template.sh"))
+        self.assertIn("DIRECTION, NOT A LITERAL", cli)
