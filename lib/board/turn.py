@@ -340,14 +340,42 @@ _TAIL_RE = re.compile(r"\|\s*tail\b")
 _BARE_COUNT_RE = re.compile(r"^\d[\d,]*$")
 _ABSENCE_RE = re.compile(r"^(no|none|not|zero|nothing|0)\b", re.I)
 
+# A PATH TEST SHORT-CIRCUITING THE COMMAND BEHIND IT. Observed live on 2026-08-21: step 5 of
+# #531 was registered as `test -f skills/judge/SKILL.md && python3 -m unittest …`. The skill
+# was renamed judge -> grade, the path test failed, `&&` short-circuited, THE TESTS NEVER RAN
+# — and the command produced EMPTY OUTPUT, so nothing in the transcript said which half
+# failed or why. `scan --run` reported a closed, fully-graded, released track at 4 of 5
+# conditions met, and unattended the loop would have refused to release it and parked
+# finished work: a false red with no diagnostic, which is the worst of the four ways a gate
+# lies because there is nothing to read.
+#
+# WHY THIS SHAPE AND NOT EVERY `&&`. `cd <dir> && <cmd>` is the ordinary way to point a
+# condition at a checkout, and `cd` FAILS LOUDLY — it prints its own complaint, so the
+# transcript says what happened. A FILE TEST prints nothing at all; it only sets an exit
+# status. That silence is the defect, so the check is narrow: a file-test operator, joined by
+# `&&`, at a command position. String tests (`-z`, `-n`) are excluded — they read a variable
+# the same command just set, which no rename can move — and `;` is excluded because it does
+# not short-circuit: the command runs and prints whatever it prints.
+_FILE_TEST_OPS = "efdsrwxhLpSbcgkuOGN"
+_PATH_TEST_AND_RE = re.compile(
+    r"(?:\A|[;&|]|\()\s*!?\s*(?:test|\[\[?)\s+!?\s*-[%s]\b[^&|;]*&&" % _FILE_TEST_OPS)
+
 
 def condition_lint(cmd, expect):
     """The lying shapes in one exit condition, as findings. Empty when it is honest.
 
     Static: it reads the command, it never runs it. Registering a condition must not have
-    side effects, and the three shapes below are visible without executing anything."""
+    side effects, and every shape below is visible without executing anything."""
     out = []
     cmd = str(cmd or "")
+    if _PATH_TEST_AND_RE.search(cmd):
+        out.append({"code": "path-test-and", "dim": "G1",
+                    "line": "a path test guards the command with `&&`. Rename or move that "
+                            "path and the test fails, `&&` short-circuits, the command "
+                            "NEVER RUNS, and the output is EMPTY — so the condition goes "
+                            "red and nothing says which half failed. Drop the guard and "
+                            "let the command speak for itself, or make the path part of "
+                            "what the command asserts."})
     if _TAIL_RE.search(cmd):
         out.append({"code": "tail-swallow", "dim": "G1",
                     "line": "the command ends in a `tail` — one extra line of trailing "

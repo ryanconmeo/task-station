@@ -1103,29 +1103,127 @@ def mentioned_branches(task):
     return names
 
 
-def task_repos(task, exists=os.path.exists, run=_run_git):
-    """The git repositories this task actually touched, as directory paths.
+# -- WHICH REPOS A PROBER MAY ASK, and the folder rename that made the answer wrong ---
+#
+# The first version of `task_repos` derived its list from `recorded_paths` alone — the FILE
+# and WORKTREE paths a task wrote down. That reads as reasonable and is wrong in one very
+# ordinary situation: RENAME THE FOLDER. Every recorded path pointing into it dies at once,
+# while the ones pointing somewhere UNRELATED — a notes vault, the installed plugin cache —
+# survive untouched. The list is then NON-EMPTY and holds the wrong repo, so both probers
+# answer a confident False about a branch and a commit that are sitting right there.
+#
+# Measured on one real task after `claude-todo` was renamed to `task-station`: 16 of 27
+# findings were false. 15 of the 16 cited shas resolved in the renamed clone and none in the
+# vault the prober actually asked. The branch it called gone resolved locally AND on origin.
+#
+# AND THE DOCSTRING'S OWN PROMISE WAS BROKEN. "An empty list is what makes both probers
+# return UNKNOWN rather than False" was kept for the empty case and broken for the
+# wrong-repo case — which is worse, because a list holding the wrong repo looks answered.
+# The fix has to restore the promise, not just widen the search, so it comes in two halves:
+#
+#   * WIDEN THE SCOPE. The repos a task NAMES (`projects`) are resolved through the repo
+#     index (`repos.json`), which records where each repo IS NOW rather than where a path
+#     recorded months ago said it was. A rename MOVES an index entry; it does not delete it.
+#     Recorded paths stay in the union, because they are the only thing that knows about a
+#     worktree, a submodule or a checkout that was never indexed.
+#
+#   * NARROW THE CLAIM. A prober saying False is claiming "this resolves in NONE of the
+#     task's repos". When a repo the task named has no LOCAL clone to ask, that claim covers
+#     repos the prober never opened, so it degrades to UNKNOWN. This is the 16th false
+#     finding exactly: a sha in an ADO repo nobody had cloned on this machine, reported as
+#     rewritten history. Nothing about the check is switched off — with every named repo
+#     reachable, a negative is still a finding, because then the sentence is true.
+#
+# The index is read fail-OPEN, like every other outward probe here: no index, an unreadable
+# one, or a name it does not carry is simply one fewer repo to ask. An index that cannot be
+# read must never be worse than the silence it replaced.
+
+REPO_INDEX_FILE = "repos.json"
+
+
+def repo_index(data_dir=None):
+    """The repo index as `[{name, path, …}, …]`, or `[]` when there is nothing readable.
+
+    `repos.json` is written by `repos --refresh` next to the task store. Reading it here is
+    a one-way dependency on purpose — heal never builds or refreshes the index, it only asks
+    what the index already says, and an absent index degrades this check rather than
+    breaking it."""
+    try:
+        with open(os.path.join(data_dir or paths.data_dir(), REPO_INDEX_FILE)) as fh:
+            raw = json.load(fh)
+    except Exception:                                        # noqa: BLE001
+        return []
+    if isinstance(raw, dict):
+        raw = raw.get("repos")
+    if not isinstance(raw, list):
+        return []
+    return [r for r in raw if isinstance(r, dict) and r.get("name")]
+
+
+def named_repos(task, index=None, exists=os.path.exists):
+    """`(dirs, unresolved)` for the repos this task NAMES in `projects`.
+
+    `dirs` are the ones with a local clone the probers can ask. `unresolved` are the NAMES
+    that resolved to nothing here — no index entry, or an entry whose path is gone — and
+    they are the reason a negative has to read UNKNOWN: they are exactly the repos a "it
+    resolves nowhere" sentence would be covering without having looked."""
+    names = [str(n).strip() for n in (task.get("projects") or []) if str(n or "").strip()]
+    if not names:
+        return [], []
+    by_name = {}
+    for r in (repo_index() if index is None else index):
+        nm = str(r.get("name") or "").strip().casefold()
+        path = str(r.get("path") or "").strip()
+        if nm and path:
+            by_name.setdefault(nm, path)
+    dirs, unresolved, seen = [], [], set()
+    for name in names:
+        path = by_name.get(name.casefold())
+        if path and exists(path) and os.path.isdir(path):
+            if path not in seen:
+                seen.add(path)
+                dirs.append(path)
+        elif name not in unresolved:
+            unresolved.append(name)
+    return dirs, unresolved
+
+
+def repo_scope(task, exists=os.path.exists, run=_run_git, index=None):
+    """`(repos, unresolved)` — every git repo a prober may ask, and the repo NAMES it could
+    not ask because there is no local clone.
 
     ONE reader for both git probers. They ask different questions of the same set — does
-    this branch resolve, does this commit resolve — and two copies of "which repos does
-    this task mean" would answer differently the first time either was tuned. An empty
-    list is what makes both probers return UNKNOWN rather than False."""
+    this branch resolve, does this commit resolve — and two copies of "which repos does this
+    task mean" would answer differently the first time either was tuned. An empty `repos` is
+    what makes both probers return UNKNOWN rather than False; a non-empty `unresolved` is
+    what makes them return UNKNOWN rather than False even when they DID find repos to ask."""
     dirs, seen = [], set()
     for _kind, p in recorded_paths(task):
         for d in (p, os.path.dirname(p)):
             if d and d not in seen and exists(d) and os.path.isdir(d):
                 seen.add(d)
                 dirs.append(d)
-    return [d for d in dirs if _is_repo(d, run)]
+    named, unresolved = named_repos(task, index=index, exists=exists)
+    for d in named:
+        if d not in seen:
+            seen.add(d)
+            dirs.append(d)
+    return [d for d in dirs if _is_repo(d, run)], unresolved
 
 
-def branch_prober(task, exists=os.path.exists, run=_run_git):
-    """A `probe(name) -> True | False | None` over the git repos this task touched.
+def task_repos(task, exists=os.path.exists, run=_run_git, index=None):
+    """The git repositories this task touched or named, as directory paths. The `repos` half
+    of `repo_scope` — kept as its own name because that is the question most readers have."""
+    return repo_scope(task, exists=exists, run=run, index=index)[0]
 
-    None means UNKNOWN — no usable repo was found — and unknown is never reported as
-    drift. That asymmetry is the point: a false "your branch is gone" is far worse
-    than a missed one."""
-    repos = task_repos(task, exists=exists, run=run)
+
+def branch_prober(task, exists=os.path.exists, run=_run_git, index=None):
+    """A `probe(name) -> True | False | None` over the git repos this task touched or named.
+
+    None means UNKNOWN — no usable repo was found, or a named repo could not be asked — and
+    unknown is never reported as drift. That asymmetry is the point: a false "your branch is
+    gone" is far worse than a missed one."""
+    repos, unresolved = repo_scope(task, exists=exists, run=run, index=index)
 
     def probe(name):
         if not repos:
@@ -1133,7 +1231,7 @@ def branch_prober(task, exists=os.path.exists, run=_run_git):
         for d in repos:
             if _has_branch(d, name, run):
                 return True
-        return False
+        return None if unresolved else False
     return probe
 
 
@@ -1288,14 +1386,14 @@ def link_prober(timeout=LINK_PROBE_TIMEOUT):
 # a missed rewritten commit costs one confused reader, while a false "history was rewritten"
 # sends somebody hunting through reflogs for a commit that is sitting right there.
 #
-# THE ONE FALSE POSITIVE THIS CHECK CAN STILL EMIT, named rather than hidden: a commit cited
-# from a repo the task never RECORDED — a plugin's own history quoted on a task whose only
-# recorded path is a different checkout. The scope is what `recorded_paths` knows, and the
-# check cannot widen it without guessing at repos nobody wrote down. So the finding is worded
-# as exactly what was measured — "resolves in none of the TASK'S repos", and "history MAY have
-# been rewritten" — because a hedge in the sentence is cheaper than a check that is silently
-# wrong about which repos it looked in. If that shape shows up in practice, the fix is to
-# record the repo, not to loosen the check.
+# THE FALSE POSITIVE THIS CHECK USED TO EMIT — a commit cited from a repo the task never
+# RECORDED — DID show up in practice, 16 times on one task, and the fix was NOT to loosen the
+# check. The scope was widened to the repos the task NAMES (see `repo_scope`), and the CLAIM
+# was narrowed: when a named repo has no local clone to ask, a negative is UNKNOWN, because
+# "resolves in none of the task's repos" would then be covering repos nobody opened. The
+# finding is still worded as exactly what was measured — "resolves in none of the TASK'S
+# repos", and "history MAY have been rewritten" — because a hedge in the sentence is cheaper
+# than a check that is silently wrong about which repos it looked in.
 
 # The declaring words, then the token. `@\s*` is the second introducer — `main @ 4412760`.
 # Case-insensitive because a decision opens sentences: `Commit 4412760 …`. Edit the list
@@ -1344,11 +1442,12 @@ def _has_commit(d, sha, run=_run_git):
     return ok
 
 
-def commit_prober(task, exists=os.path.exists, run=_run_git):
-    """A `probe(sha) -> True | False | None` over the git repos this task touched — the
-    same injected-prober shape as `branch_prober`, and None means UNKNOWN for the same
-    reason: no usable repo was found, which is not evidence about the commit."""
-    repos = task_repos(task, exists=exists, run=run)
+def commit_prober(task, exists=os.path.exists, run=_run_git, index=None):
+    """A `probe(sha) -> True | False | None` over the git repos this task touched or named —
+    the same injected-prober shape as `branch_prober`, and None means UNKNOWN for the same
+    two reasons: no usable repo was found, or a repo the task named has no local clone here.
+    Neither is evidence about the commit."""
+    repos, unresolved = repo_scope(task, exists=exists, run=run, index=index)
 
     def probe(sha):
         if not repos:
@@ -1356,7 +1455,7 @@ def commit_prober(task, exists=os.path.exists, run=_run_git):
         for d in repos:
             if _has_commit(d, sha, run):
                 return True
-        return False
+        return None if unresolved else False
     return probe
 
 
@@ -2569,6 +2668,49 @@ def dismissed_fingerprints(task):
                if e.get("fingerprint"))
 
 
+# -- AN IDENTICAL FINDING IS ONE FINDING -----------------------------------------
+#
+# `--dismiss` refuses an ambiguous selector rather than guessing which row it meant, and
+# that rule is right: an adjudication written onto the wrong finding is silent, permanent,
+# and only discovered when the finding it should have covered is missing from a later
+# report. But two findings can be BYTE-IDENTICAL, and then "Name one exactly" is an
+# instruction nobody can follow. Five sessions that each recorded the same worktree cwd
+# produce FIVE identical drift rows; on one real task 7 findings were undismissable this
+# way, which was 100% of its remaining mechanical issues — a scan whose whole remaining
+# content could never be adjudicated away.
+#
+# They were never five things. One path is gone ONCE, and how many sessions happened to sit
+# in that directory is a fact about the sessions, not about the path. So identical rows
+# collapse to ONE, carrying `occurrences`, and the issue count stops being inflated by
+# session bookkeeping. Nothing is hidden: the count rides on the row.
+#
+# `occurrences` IS DELIBERATELY OUTSIDE THE FINGERPRINT (which hashes check + ref + detail).
+# A sixth session recording the same cwd must not expire a ruling somebody already made
+# about that path — the fingerprint exists to expire a ruling when the TEXT changes, and
+# "how many times" is not the text.
+#
+# Dedupe cannot reach one residual case: the same ref reported with DIFFERENT details, which
+# is what a path recorded both as a file and as a session cwd produces. `_match_rows` grows
+# an ordinal handle for that — see the note there.
+
+def dedupe_findings(findings):
+    """Identical findings — same check, same ref, same detail — collapsed to one row
+    carrying `occurrences`. Order is the order the first of each arrived."""
+    out, index = [], {}
+    for f in (findings or []):
+        row = dict(f)
+        key = (str(row.get("check") or ""), str(row.get("ref") or ""),
+               str(row.get("detail") or ""))
+        hit = index.get(key)
+        if hit is None:
+            row["occurrences"] = 1
+            index[key] = row
+            out.append(row)
+        else:
+            hit["occurrences"] = hit.get("occurrences", 1) + 1
+    return out
+
+
 def apply_dismissals(findings, task):
     """`(kept, dismissed)` — the findings split by the ledger, each side in the order it
     arrived. Both halves keep their `fingerprint`, which is what lets a later `--undismiss`
@@ -2621,30 +2763,84 @@ def _row_label(row):
     return "%s:%s" % (row.get("check"), row.get("ref"))
 
 
+# The ORDINAL HANDLE: `<check>:<ref>#<n>` names the nth row among the ones a ref matches.
+#
+# It exists for the case dedupe cannot collapse — the same ref carrying DIFFERENT details,
+# which is what one path recorded both as an edited FILE and as a session CWD produces. Two
+# rows, one selector, and before this the reader was told to "name one exactly" with no
+# exact name available.
+#
+# TRIED LAST, NEVER FIRST. A link-rot ref is a URL, and a URL fragment can be `#2`. So the
+# WHOLE ref is resolved first, exactly as before, and the trailing `#<n>` is re-read as a
+# handle only when the ref as written did not land on one row. A real ref ending in `#2`
+# therefore keeps winning, and nothing that worked before resolves differently now.
+_ORDINAL_HANDLE = re.compile(r"^(?P<ref>.+)#(?P<n>\d+)$")
+
+
+def _ref_hits(rows, ref):
+    """The rows a bare ref matches — EXACT first, then substring. Ordering is the caller's
+    row order, which is what makes an ordinal handle mean the same thing twice."""
+    want = str(ref or "").casefold()
+    exact = [r for r in rows if str(r.get("ref") or "").casefold() == want]
+    return exact or [r for r in rows if want and want in str(r.get("ref") or "").casefold()]
+
+
+def _handles(rows):
+    """The selectors that WOULD name each of `rows` unambiguously, as text — the ambiguity
+    refusal prints these so it doubles as the command to retype.
+
+    A row whose REF IS ALREADY UNIQUE among the matches is named by its ref, because that is
+    the honest answer: the selector was a substring that spanned several distinct refs, and
+    the fix is to name the one meant, not to count. Only rows SHARING a ref get an ordinal —
+    those are the ones no exact name can separate."""
+    shared = {}
+    for r in rows:
+        ref = str(r.get("ref") or "")
+        shared[ref] = shared.get(ref, 0) + 1
+    nth, out = {}, []
+    for r in rows:
+        ref = str(r.get("ref") or "")
+        if shared[ref] > 1:
+            nth[ref] = nth.get(ref, 0) + 1
+            out.append("%s:%s#%d" % (r.get("check"), ref, nth[ref]))
+        else:
+            out.append("%s:%s" % (r.get("check"), ref))
+    return "; ".join(out)
+
+
 def _match_rows(rows, check, ref, what):
     """`(row, error)` — the ONE row a `<check>:<ref>` selector names.
 
-    EXACT FIRST, then unambiguous substring, and an ambiguous or missing ref is REFUSED with
-    the list rather than resolved. That is the same rule `select_acks` keeps and for the same
-    reason: an adjudication written onto the wrong finding is silent, permanent, and only
-    discovered when the finding it should have covered is missing from a later report."""
+    EXACT FIRST, then unambiguous substring, then the ordinal handle, and a still-ambiguous
+    or missing ref is REFUSED with the list rather than resolved. That is the same rule
+    `select_acks` keeps and for the same reason: an adjudication written onto the wrong
+    finding is silent, permanent, and only discovered when the finding it should have
+    covered is missing from a later report."""
     same = [r for r in rows if str(r.get("check") or "") == check]
     if not same:
         return None, ("heal: no %s for check %r. %s"
                       % (what, check, _listing(rows, what)))
-    want = ref.casefold()
-    exact = [r for r in same if str(r.get("ref") or "").casefold() == want]
-    hits = exact or [r for r in same
-                     if want in str(r.get("ref") or "").casefold()]
+    hits = _ref_hits(same, ref)
+    if len(hits) == 1:
+        return hits[0], None
+    m = _ORDINAL_HANDLE.match(str(ref or ""))
+    if m:
+        base = _ref_hits(same, m.group("ref"))
+        n = int(m.group("n"))
+        if base and 1 <= n <= len(base):
+            return base[n - 1], None
+        if base:
+            return None, ("heal: %r names row %d, and %r matches %d %s(s). Name one of: %s. "
+                          "Nothing was changed."
+                          % (_row_label({"check": check, "ref": ref}), n, m.group("ref"),
+                             len(base), what, _handles(base)))
     if not hits:
         return None, ("heal: %r matches no %s. %s"
                       % (_row_label({"check": check, "ref": ref}), what, _listing(rows, what)))
-    if len(hits) > 1:
-        return None, ("heal: %r is ambiguous — it matches %d: %s. Name one exactly. "
-                      "Nothing was changed."
-                      % (_row_label({"check": check, "ref": ref}), len(hits),
-                         "; ".join(_row_label(r) for r in hits)))
-    return hits[0], None
+    return None, ("heal: %r is ambiguous — it matches %d. Name one exactly: %s. Rows sharing "
+                  "one ref are separated by an ordinal handle, because no exact ref can tell "
+                  "them apart. Nothing was changed."
+                  % (_row_label({"check": check, "ref": ref}), len(hits), _handles(hits)))
 
 
 def _listing(rows, what):
@@ -2789,6 +2985,7 @@ def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=No
     findings.extend(steps_restating_superseded(task))
     findings.extend(commit_rot(task, states=commits))
     findings.extend(grew_with_candidates(task, groups=groups, size=size))
+    findings = dedupe_findings(findings)
     findings.sort(key=lambda f: CHECK_ORDER.index(f["check"])
                   if f["check"] in CHECK_ORDER else len(CHECK_ORDER))
     findings, dismissed = apply_dismissals(findings, task)
@@ -3680,7 +3877,13 @@ def scan_lines(result):
             continue
         out.append("  %-28s %d" % (title, len(hits)))
         for f in hits:
-            out.append("      • %s — %s" % (f["ref"], f["detail"]))
+            # A COLLAPSED ROW SAYS SO. `dedupe_findings` folds byte-identical rows into
+            # one so they can be adjudicated at all, and a reader who is not told the
+            # multiplicity has silently lost it — "one worktree is gone" and "five
+            # sessions all sat in that worktree" are different facts about the same path.
+            n = f.get("occurrences") or 1
+            seen = " (recorded %d×)" % n if n > 1 else ""
+            out.append("      • %s%s — %s" % (f["ref"], seen, f["detail"]))
     unknown = sum(1 for l in (result.get("links") or []) if l.get("state") is None)
     if unknown:
         out.append("  (%d link(s) UNKNOWN — no network probe was run; a link is never "
