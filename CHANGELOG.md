@@ -55,7 +55,10 @@ than estimates.
   carrying `occurrences`**, so the issue count stops being inflated by session bookkeeping
   and nothing is hidden — the count rides on the row. `occurrences` is deliberately OUTSIDE
   the dismissal fingerprint: a sixth session recording the same cwd must not expire a ruling
-  somebody already made about that path.
+  somebody already made about that path. **And the report says a row was collapsed** —
+  `• <ref> (recorded 5×) — <detail>` — because folding five rows into one without saying so
+  silently loses the fact: "one worktree is gone" and "five sessions all sat in it" are
+  different things about the same path.
 
   For the residual case dedupe cannot reach — the same ref reported with DIFFERENT details,
   which is what one path recorded both as an edited file and as a session cwd produces —

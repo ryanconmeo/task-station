@@ -3877,7 +3877,13 @@ def scan_lines(result):
             continue
         out.append("  %-28s %d" % (title, len(hits)))
         for f in hits:
-            out.append("      • %s — %s" % (f["ref"], f["detail"]))
+            # A COLLAPSED ROW SAYS SO. `dedupe_findings` folds byte-identical rows into
+            # one so they can be adjudicated at all, and a reader who is not told the
+            # multiplicity has silently lost it — "one worktree is gone" and "five
+            # sessions all sat in that worktree" are different facts about the same path.
+            n = f.get("occurrences") or 1
+            seen = " (recorded %d×)" % n if n > 1 else ""
+            out.append("      • %s%s — %s" % (f["ref"], seen, f["detail"]))
     unknown = sum(1 for l in (result.get("links") or []) if l.get("state") is None)
     if unknown:
         out.append("  (%d link(s) UNKNOWN — no network probe was run; a link is never "

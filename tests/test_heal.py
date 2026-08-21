@@ -4919,6 +4919,19 @@ class TestIdenticalFindingsAreAdjudicable(_Base):
         ts.save_task(t)                    # `dismiss` does not persist — the caller does
         self.assertEqual(heal.scan(self._reload(t))["findings"], [])
 
+    def test_the_report_says_a_row_was_collapsed(self):
+        """Folding five rows into one without saying so loses the fact. "one worktree is
+        gone" and "five sessions all sat in it" are different things about one path."""
+        t = self._five_sessions_one_cwd()
+        lines = "\n".join(heal.scan_lines(heal.scan(t)))
+        self.assertIn("recorded 5×", lines)
+
+    def test_a_single_row_is_not_annotated(self):
+        t = self._task(files=[self.GONE + "/only.py"])
+        lines = "\n".join(heal.scan_lines(heal.scan(self._reload(t))))
+        self.assertIn(self.GONE, lines)
+        self.assertNotIn("×", lines)              # no multiplicity annotation at all
+
     def test_occurrences_is_not_in_the_fingerprint(self):
         f = {"check": "drift", "ref": "/x", "detail": "gone"}
         self.assertEqual(heal.finding_fingerprint(f),
