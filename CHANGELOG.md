@@ -3,6 +3,60 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.16.0] — 2026-08-21
+
+A narrowing of 3.15.0, found by running it on a real task. 3.15.0 made a git prober degrade
+a negative to UNKNOWN when a repo the task NAMES has no local clone to ask — correct, because
+*"resolves in none of the task's repos"* would otherwise be claiming something nobody
+checked. It was also **too blunt in one direction**: `projects` is append-only in practice
+(`add-project` is its only writer and `delegate` its only caller), so ONE dead name silences
+the cited-commit check for the LIFE of the task, and the report still printed `clean` for a
+check that had not run.
+
+Measured on the task that produced the original evidence, after its repo index was
+refreshed: two of its four named repos resolve, and the other two are RENAMES — `claude-todo`
+became `task-station`, and a second one moved the same way — so neither can ever resolve
+under the name the task recorded. Two dead names, silence forever.
+
+### Fixed
+- **An unresolvable named repo is now a FINDING (`stale-project`), not a silence.** It is
+  reported by name, with the consequence spelled out — *the cited-commit check reads UNKNOWN
+  rather than reporting rot, for every sha on this task* — and with the exact command that
+  fixes it. This check earns a row rather than a count, which is the bar this module has had
+  to apply four times: a vanished scratchpad costs nothing, while a stale project name
+  disables a whole check invisibly.
+
+- **The report stops saying `clean` when it means `undetermined`.** `clean` means *this check
+  looked and found nothing*; an unanswerable citation means *nobody looked*, and the two were
+  indistinguishable on the row a reader actually scans. The cited-commit row now reads
+  `undetermined` when the task names a repo with no local clone, and a footnote names the
+  repos responsible — a reader told *"UNKNOWN because claude-todo has no local clone"* can
+  act, one told `clean` cannot.
+
+  Deliberately NOT extended to `link-rot`: its probe is opt-in and off by default, so every
+  link is unknown on the cheap path, and printing `undetermined` at every session start would
+  describe a design choice as a problem — which is how a report earns being ignored. Nothing
+  about the record is wrong there; here something is.
+
+### Added
+- **`update --project-rm NAME` and `update --project-rename OLD=NEW`** — the repos a task
+  names can finally be reconciled. This is what makes the 3.15.0 suppression **removable
+  rather than permanent**: clear or rename the dead name and the check resumes on its own,
+  with no widening of the claim.
+
+  TWO VERBS, because conflating them loses the fact. `--project-rm` says the repo is GONE.
+  `--project-rename` says it is STILL HERE UNDER A NEW NAME — what happened to this repo
+  itself — and keeps the task pointing at the work rather than forgetting it. A rename onto a
+  name the task already carries COLLAPSES to one entry: the task named one repo under two
+  identities, and that is one repo. Both halves of `OLD=NEW` are required, because
+  `--project-rename claude-todo` looks like a prune and is not one, and guessing which verb
+  somebody meant is how a task silently loses a repo.
+
+  **Dismissing the finding does NOT lift the suppression, deliberately.** *"I accept the
+  UNKNOWN"* and *"the scope is complete again"* are different rulings, and only the second
+  entitles a prober to say `False`. Dismissal silences the row; pruning the name restores the
+  check.
+
 ## [3.15.0] — 2026-08-21
 
 Three record-hygiene defects, each of which MANUFACTURES A FALSE FINDING — which is how a

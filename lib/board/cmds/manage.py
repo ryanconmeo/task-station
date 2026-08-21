@@ -65,6 +65,61 @@ def _add_project_one(ref, project):
     return None
 
 
+# -- RECONCILING THE REPOS A TASK NAMES ------------------------------------------
+#
+# `projects` was APPEND-ONLY in practice: `_add_project_one` was its only writer and
+# delegate its only caller, so nothing could ever take a name off. That was survivable
+# while the field was routing metadata. It stopped being survivable once `heal`'s git
+# probers read it (3.15.0): a repo that was RENAMED leaves a name that can never resolve,
+# and an unresolvable name keeps the cited-commit check UNKNOWN for the life of the task.
+# So the suppression needed a way OUT, and the way out is reconciling the field.
+#
+# TWO VERBS, because the two situations are different and conflating them loses the fact.
+# `--project-rm` says the repo is GONE. `--project-rename` says it is STILL HERE UNDER A
+# NEW NAME — which is what happened to this repo itself (claude-todo -> task-station) and to
+# two others beside it — and which keeps the task pointing at the work rather than forgetting
+# it. A rename onto a name the task already carries COLLAPSES to one entry: the task named
+# the same repo twice under two identities, and that is one repo.
+
+def _prune_projects(task, names):
+    """Drop each of `names` from `task["projects"]`. Returns the names actually removed."""
+    projs = task.get("projects") or []
+    gone = [n for n in names if n in projs]
+    if gone:
+        task["projects"] = [p for p in projs if p not in gone]
+    return gone
+
+
+def _rename_project(task, old, new):
+    """Rename `old` to `new` IN PLACE, collapsing onto an existing `new`. Returns True when
+    something moved. Position is preserved: `projects` order is the order repos were
+    touched, and a rename is not a re-touch."""
+    projs = task.get("projects") or []
+    if old not in projs:
+        return False
+    out, seen = [], set()
+    for p in projs:
+        name = new if p == old else p
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    task["projects"] = out
+    return True
+
+
+def parse_project_rename(raw):
+    """`'old=new'` → `(old, new, error)`. Split on the FIRST `=` only; both halves are
+    required, because `--project-rename claude-todo` looks like a prune and is not one, and
+    guessing which verb somebody meant is how a task silently loses a repo."""
+    s = str(raw or "").strip()
+    old, sep, new = s.partition("=")
+    old, new = old.strip(), new.strip()
+    if not sep or not old or not new:
+        return None, None, ("--project-rename takes 'old=new' — got %r. Both halves are "
+                            "required; use --project-rm to drop a name outright." % s)
+    return old, new, None
+
+
 def cmd_add_project(a):
     """Record that a task has delegated work into a repo (project). Idempotent.
 
@@ -1034,6 +1089,19 @@ def _update_one(ref, a):
         if story_desc is not None and not story_urls:
             if set_story_desc(task, story_desc):
                 changed.append("story")
+        # --project-rm / --project-rename: reconcile the repos this task NAMES. See the
+        # note above `_prune_projects` for why a rename is not a prune.
+        for raw in (getattr(a, "project_rename", None) or []):
+            old_name, new_name, perr = parse_project_rename(raw)
+            if perr:
+                msgs.append("update %s: %s" % (ref, perr))
+            elif _rename_project(task, old_name, new_name):
+                changed.append("project-renamed %s→%s" % (old_name, new_name))
+        dropped = _prune_projects(task, [str(n).strip() for n in
+                                         (getattr(a, "project_rm", None) or [])
+                                         if str(n or "").strip()])
+        if dropped:
+            changed.append("project-rm %s" % ", ".join(dropped))
         tvis = getattr(a, "trail_visibility", None)
         if tvis is not None and task.get("trail_visibility") != tvis:
             task["trail_visibility"] = tvis
@@ -1105,7 +1173,8 @@ def _update_one(ref, a):
                     "--step-supersede/--step-restore/--decision/--supersedes/--pin/"
                     "--pin-decision/--unpin-decision/--restore-decision/--log/--relate/"
                     "--depends-on/--parent/--absorbed-by/--replaces/--duplicates/"
-                    "--unrelate/--pr/--pr-desc/--story/--story-desc/--color/--effort)" % label)
+                    "--unrelate/--pr/--pr-desc/--story/--story-desc/--project-rm/"
+                    "--project-rename/--color/--effort)" % label)
         return "\n".join(msgs)
     # Reciprocal `child` post on each newly-related task — a side effect, so it runs
     # AFTER the self-update, each write itself optimistic-locked.

@@ -109,7 +109,11 @@ class _UpdateArgs:
                         pin_decision=None, unpin_decision=None, restore_decision=None,
                         log=None, pr=None, pr_desc=None, story=None, story_desc=None,
                         color=None, effort=None, trail_visibility=None, relate=None,
-                        session=None)
+                        session=None,
+                        # 3.16.0: reconciling the repos a task NAMES. `projects` was
+                        # append-only, so a renamed repo haunted the task forever and
+                        # kept the cited-commit check silent.
+                        project_rm=None, project_rename=None)
         defaults.update(kw)
         self.__dict__.update(defaults)
 
@@ -4976,3 +4980,190 @@ class TestIdenticalFindingsAreAdjudicable(_Base):
         row, err = heal._match_rows(rows, "link-rot", "https://x/y#2", "finding")
         self.assertIsNone(err)
         self.assertEqual(row["ref"], "https://x/y#2")
+
+
+# ---------------------------------------------------------------------------
+# AN UNRESOLVABLE PROJECT NAME MUST NOT SILENTLY DISABLE A CHECK FOREVER.
+#
+# 3.15.0 made a prober degrade a negative to UNKNOWN when a repo the task NAMES has no
+# local clone to ask, because "resolves in none of the task's repos" would otherwise cover
+# repos nobody opened. That was right and it was too blunt in one direction: `projects` is
+# APPEND-ONLY in practice, so ONE dead name suppresses the cited-commit check for the life
+# of the task — and the report still said "clean", which is the same lie in a new place.
+#
+# Measured on the task that produced the original evidence, after its index was refreshed:
+# two of its four named repos resolve, and the other two are RENAMES — `claude-todo` became
+# `task-station`, and a second one moved the same way — so neither can ever resolve under
+# the name the task recorded. Two dead names, silence forever.
+#
+# THREE REPAIRS, and none of them re-widens the claim:
+#   * THE REASON IS A FINDING. Each unresolvable name is reported by name, with the
+#     CONSEQUENCE spelled out and the command that fixes it — so it is adjudicable through
+#     the machinery that already exists rather than being a fact only the source shows.
+#   * THE REPORT STOPS SAYING CLEAN WHEN IT MEANS UNDETERMINED. A check that could not run
+#     reads UNKNOWN with its reason, the way the link probe already does.
+#   * `projects` GETS A PRUNE AND A RENAME. That is what makes the suppression REMOVABLE
+#     rather than permanent: reconcile the dead name and the check resumes on its own.
+#
+# Dismissing the finding deliberately does NOT lift the suppression. "I accept the UNKNOWN"
+# and "the scope is complete again" are different rulings, and only the second one entitles
+# a prober to say False.
+# ---------------------------------------------------------------------------
+
+class TestAnUnresolvableProjectIsVisible(_Base):
+    def setUp(self):
+        super(TestAnUnresolvableProjectIsVisible, self).setUp()
+        self.code = os.path.join(self.tmp, "task-station")
+        os.makedirs(self.code)
+        with open(os.path.join(self.tmp, "repos.json"), "w") as fh:
+            json.dump([{"name": "task-station", "path": self.code}], fh)
+
+    def _task_naming(self, *projects):
+        return self._reload(self._task(decisions=["merged commit 4412760 into main"],
+                                       files=[os.path.join(self.code, "lib", "heal.py")],
+                                       projects=list(projects)))
+
+    def _run_ok(self, resolves=False):
+        def run(args, timeout=None):
+            if "cat-file" in args or "--verify" in args:
+                return resolves, ""
+            return True, ""
+        return run
+
+    def test_an_unresolvable_name_is_reported_as_a_finding(self):
+        t = self._task_naming("task-station", "claude-todo")
+        hits = [f for f in heal.scan(t)["findings"] if f["check"] == "stale-project"]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["ref"], "claude-todo")
+
+    def test_the_finding_names_the_consequence_and_the_fix(self):
+        """A reason only the source shows is not a reason anybody can act on."""
+        t = self._task_naming("task-station", "claude-todo")
+        hits = [f for f in heal.scan(t)["findings"] if f["check"] == "stale-project"]
+        self.assertTrue(hits, "no stale-project finding to read a detail from")
+        detail = hits[0]["detail"]
+        self.assertIn("UNKNOWN", detail)
+        self.assertIn("--project-rename", detail)
+        self.assertIn("--project-rm", detail)
+
+    def test_every_name_resolving_reports_nothing(self):
+        t = self._task_naming("task-station")
+        self.assertEqual([f for f in heal.scan(t)["findings"]
+                          if f["check"] == "stale-project"], [])
+
+    def test_a_task_naming_no_projects_reports_nothing(self):
+        t = self._task_naming()
+        self.assertEqual([f for f in heal.scan(t)["findings"]
+                          if f["check"] == "stale-project"], [])
+
+    def test_the_scan_carries_the_unresolved_names(self):
+        t = self._task_naming("task-station", "claude-todo", "old-notes-repo")
+        self.assertEqual(heal.scan(t).get("unresolved_repos"),
+                         ["claude-todo", "old-notes-repo"])
+
+    # -- the report stops saying clean when it means undetermined ------------------
+
+    def test_an_undetermined_commit_check_does_NOT_read_clean(self):
+        t = self._task_naming("task-station", "claude-todo")
+        probe = heal.commit_prober(t, run=self._run_ok(resolves=False))
+        lines = "\n".join(heal.scan_lines(heal.scan(t, commit_probe=probe)))
+        self.assertIn("UNKNOWN", lines)
+        self.assertIn("claude-todo", lines)
+        commits = "\n".join(l for l in lines.splitlines() if "Cited commits" in l)
+        self.assertNotIn("clean", commits)
+
+    def test_with_every_name_resolving_a_negative_is_still_reported(self):
+        """The narrowing must not re-widen the claim: a complete scope still reports rot."""
+        t = self._task_naming("task-station")
+        probe = heal.commit_prober(t, run=self._run_ok(resolves=False))
+        result = heal.scan(t, commit_probe=probe)
+        self.assertEqual([f["check"] for f in result["findings"]], ["cited-commit"])
+
+    def test_a_check_with_nothing_to_say_still_reads_clean(self):
+        """The UNKNOWN line must not replace `clean` on a task that really is clean."""
+        t = self._task_naming("task-station")
+        probe = heal.commit_prober(t, run=self._run_ok(resolves=True))
+        lines = "\n".join(heal.scan_lines(heal.scan(t, commit_probe=probe)))
+        self.assertIn("Cited commits that resolve nowhere clean", lines)
+
+    # -- dismissing accepts the UNKNOWN; it does not entitle a False ---------------
+
+    def test_dismissing_the_stale_project_does_NOT_resume_the_check(self):
+        t = self._task_naming("task-station", "claude-todo")
+        result = heal.scan(t)
+        entry, err = heal.dismiss(t, result["findings"], "stale-project:claude-todo",
+                                  "the repo is gone for good; UNKNOWN is accepted",
+                                  sid="sess1234")
+        self.assertIsNone(err)
+        self.assertIsNotNone(entry)
+        ts.save_task(t)
+        after = self._reload(t)
+        # the finding is silenced …
+        self.assertEqual([f for f in heal.scan(after)["findings"]
+                          if f["check"] == "stale-project"], [])
+        # … and the prober is STILL honest about not having looked everywhere.
+        self.assertIsNone(heal.commit_prober(after, run=self._run_ok(False))("4412760"))
+
+
+class TestReconcilingTheReposATaskNames(_Base):
+    """`projects` was append-only in practice — `add-project` was its only surface, and it
+    is machine-called by delegate. So a renamed repo stayed on the task forever, and after
+    3.15.0 it also kept the cited-commit check permanently UNKNOWN. Pruning and renaming is
+    what makes that suppression REMOVABLE rather than permanent."""
+
+    def _t(self, *projects):
+        return self._reload(self._task(projects=list(projects)))
+
+    def test_a_dead_name_can_be_pruned(self):
+        t = self._t("task-station", "claude-todo")
+        out = self._update(t, project_rm=["claude-todo"])
+        self.assertIn("project-", out)
+        self.assertEqual(self._reload(t).get("projects"), ["task-station"])
+
+    def test_a_renamed_repo_is_renamed_IN_PLACE(self):
+        """Order matters to nobody, but identity does: a rename must not duplicate."""
+        t = self._t("claude-todo", "some-other-repo")
+        self._update(t, project_rename=["claude-todo=task-station"])
+        self.assertEqual(self._reload(t).get("projects"),
+                         ["task-station", "some-other-repo"])
+
+    def test_a_rename_onto_a_name_already_present_COLLAPSES_rather_than_duplicating(self):
+        t = self._t("claude-todo", "task-station")
+        self._update(t, project_rename=["claude-todo=task-station"])
+        self.assertEqual(self._reload(t).get("projects"), ["task-station"])
+
+    def test_pruning_a_name_that_is_not_there_changes_nothing(self):
+        t = self._t("task-station")
+        out = self._update(t, project_rm=["never-existed"])
+        self.assertEqual(self._reload(t).get("projects"), ["task-station"])
+        self.assertIn("nothing to change", out)
+
+    def test_a_malformed_rename_is_refused_and_changes_nothing(self):
+        t = self._t("claude-todo")
+        out = self._update(t, project_rename=["claude-todo"])       # no `=`
+        self.assertIn("old=new", out)
+        self.assertEqual(self._reload(t).get("projects"), ["claude-todo"])
+
+    def test_a_rename_to_an_empty_name_is_refused(self):
+        t = self._t("claude-todo")
+        self._update(t, project_rename=["claude-todo="])
+        self.assertEqual(self._reload(t).get("projects"), ["claude-todo"])
+
+    def test_pruning_the_last_dead_name_resumes_the_commit_check(self):
+        """The whole point. While `claude-todo` is named and unresolvable the prober cannot
+        honestly say False; once the task stops claiming it, the scope is complete again."""
+        code = os.path.join(self.tmp, "task-station")
+        os.makedirs(code)
+        with open(os.path.join(self.tmp, "repos.json"), "w") as fh:
+            json.dump([{"name": "task-station", "path": code}], fh)
+
+        def run(args, timeout=None):
+            if "cat-file" in args:
+                return False, ""
+            return True, ""
+        t = self._reload(self._task(decisions=["merged commit 4412760 into main"],
+                                    files=[os.path.join(code, "lib", "heal.py")],
+                                    projects=["task-station", "claude-todo"]))
+        self.assertIsNone(heal.commit_prober(t, run=run)("4412760"))
+        self._update(t, project_rm=["claude-todo"])
+        self.assertIs(heal.commit_prober(self._reload(t), run=run)("4412760"), False)

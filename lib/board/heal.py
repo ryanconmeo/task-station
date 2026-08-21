@@ -296,6 +296,7 @@ CHECKS = (
     ("refragmented", "Re-fragmented consolidations"),
     ("step-restates-superseded", "Steps restating a superseded decision"),
     ("cited-commit", "Cited commits that resolve nowhere"),
+    ("stale-project", "Named repos with no local clone"),
     ("grew-with-candidates", "Digest grew with candidates outstanding"),
 )
 CHECK_ORDER = [c[0] for c in CHECKS]
@@ -1209,6 +1210,57 @@ def repo_scope(task, exists=os.path.exists, run=_run_git, index=None):
             seen.add(d)
             dirs.append(d)
     return [d for d in dirs if _is_repo(d, run)], unresolved
+
+
+# -- check 12: a named repo with no local clone -----------------------------------
+#
+# THE SUPPRESSION ABOVE HAD TO BECOME VISIBLE. Degrading a negative to UNKNOWN when a named
+# repo cannot be asked is correct — but `projects` is APPEND-ONLY in practice (`add-project`
+# is its only writer and delegate is its only caller), so ONE dead name silences the
+# cited-commit check for the LIFE of the task. And the report still printed "clean" for a
+# check that had not run, which is the same lie this module keeps having to remove: a
+# reader cannot tell "nothing is wrong" from "nobody looked".
+#
+# Measured on the task that produced the original evidence, after its index was refreshed:
+# two of its four named repos resolve, and the other two are RENAMES — `claude-todo` became
+# `task-station` and a second one moved the same way — so those two can never resolve under
+# the names the task recorded. Two dead names, silence forever.
+#
+# So the reason becomes a FINDING — named, with the consequence spelled out and the command
+# that fixes it — and `projects` gets a prune and a rename (`update --project-rm` /
+# `--project-rename`). That is what makes the suppression REMOVABLE rather than permanent:
+# reconcile the dead name and the check resumes on its own, with no widening of the claim.
+#
+# WHY THIS ONE IS A FINDING AND NOT A COUNT, when this module has four times had to demote
+# a noisy check: it has a CONSEQUENCE. A vanished scratchpad costs nothing; a stale project
+# name disables a whole check silently. That is exactly the shape that earns a row.
+#
+# DISMISSING IT DOES NOT LIFT THE SUPPRESSION, deliberately. "I accept the UNKNOWN" and
+# "the scope is complete again" are different rulings, and only the second one entitles a
+# prober to say False. Dismissal silences the row; pruning the name restores the check.
+
+def unresolved_projects(task, index=None, exists=os.path.exists):
+    """The repo NAMES this task names that resolve to no local clone here."""
+    return named_repos(task, index=index, exists=exists)[1]
+
+
+def stale_projects(task, index=None, exists=os.path.exists, names=None):
+    """One finding per named repo with no local clone, as `[finding, …]`.
+
+    `names` lets a caller that already resolved the scope pass them in — `scan` needs the
+    same list for its report, and resolving twice would re-read the index."""
+    names = unresolved_projects(task, index=index, exists=exists) if names is None else names
+    ref = task.get("seq") or str(task.get("id") or "")[:8]
+    return [_finding(
+        "stale-project", n,
+        "the task names repo %r and it resolves to no local clone here, so a prober cannot "
+        "search it. While that is true, `resolves in none of the task's repos` would be "
+        "claiming something nobody checked — so the cited-commit check reads UNKNOWN rather "
+        "than reporting rot, for EVERY sha on this task. Reconcile the name: "
+        "`update --task %s --project-rename '%s=<new-name>'` if the repo was renamed, or "
+        "`update --task %s --project-rm %s` if it is gone. Dismissing this row silences it "
+        "and leaves the check UNKNOWN — that is accepting the unknown, not resolving it."
+        % (n, ref, n, ref, n)) for n in names]
 
 
 def task_repos(task, exists=os.path.exists, run=_run_git, index=None):
@@ -2965,6 +3017,10 @@ def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=No
     # link_states twice would double every network round-trip.
     links = link_states(task, probe=link_probe)
     commits = commit_states(task, probe=commit_probe)      # probed ONCE, for the same reason
+    # Resolved ONCE and used twice — the `stale-project` findings and the report line that
+    # says WHY the commit check could not answer. Re-reading the index would be the same
+    # duplication the two lines above already avoid.
+    unresolved = unresolved_projects(task, exists=exists)
     size = size_objective(task)
     # Grouped ONCE and reused three ways — the check below, the report's two tiers, and
     # anything a caller does with the result. The grouping is pure string work rather than a
@@ -2984,6 +3040,7 @@ def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=No
     findings.extend(refragmented_consolidations(task))
     findings.extend(steps_restating_superseded(task))
     findings.extend(commit_rot(task, states=commits))
+    findings.extend(stale_projects(task, names=unresolved))
     findings.extend(grew_with_candidates(task, groups=groups, size=size))
     findings = dedupe_findings(findings)
     findings.sort(key=lambda f: CHECK_ORDER.index(f["check"])
@@ -3006,6 +3063,7 @@ def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=No
         "pinned_review": pinned_review(task, now=now),
         "goal_review": goal_review(task, now=now),
         "ephemeral": vanished_ephemeral(task, exists=exists),
+        "unresolved_repos": list(unresolved),
         "accrual": accrual(task, now=now),
     }
 
@@ -3869,11 +3927,25 @@ def scan_lines(result):
     per = {}
     for f in result.get("findings") or []:
         per.setdefault(f["check"], []).append(f)
+    # WHICH CHECKS MAY NOT SAY `clean`. `clean` means "this check looked and found nothing".
+    # The cited-commit check cannot say that when the task names a repo with no local clone:
+    # it did not look everywhere it claims to, and a reader scanning the rows must see that
+    # on the ROW rather than in a footnote under it.
+    #
+    # Deliberately NOT extended to `link-rot`. Its probe is opt-in and OFF by default, so
+    # every link is unknown on the cheap path — printing `undetermined` on every session
+    # start would be describing a design choice as a problem, which is how a report earns
+    # being ignored. Nothing about the RECORD is wrong there; here something is.
+    undetermined = set()
+    if (result.get("unresolved_repos") or []) and any(
+            c.get("state") is None for c in (result.get("commits") or [])):
+        undetermined.add("cited-commit")
     out = []
     for slug, title in CHECKS:
         hits = per.get(slug) or []
         if not hits:
-            out.append("  %-28s clean" % title)
+            out.append("  %-28s %s"
+                       % (title, "undetermined" if slug in undetermined else "clean"))
             continue
         out.append("  %-28s %d" % (title, len(hits)))
         for f in hits:
@@ -3888,6 +3960,20 @@ def scan_lines(result):
     if unknown:
         out.append("  (%d link(s) UNKNOWN — no network probe was run; a link is never "
                    "reported dead on a failed check)" % unknown)
+    # A CHECK THAT COULD NOT RUN MUST NOT READ `clean`. `clean` above means "this check
+    # looked and found nothing"; an unprobed or unanswerable citation means nobody looked,
+    # and the two are indistinguishable on the line above. The link probe has said so since
+    # it shipped; the commit probe said nothing, so a task whose scope was incomplete read
+    # as verified. Say the count AND the reason — a reader who is told "UNKNOWN because
+    # claude-todo has no local clone" can act; one told "clean" cannot.
+    unknown_commits = sum(1 for c in (result.get("commits") or [])
+                          if c.get("state") is None)
+    if unknown_commits:
+        stale = result.get("unresolved_repos") or []
+        why = ("no repo could be asked for %s (named, no local clone here)"
+               % ", ".join(stale)) if stale else "no git probe was run"
+        out.append("  (%d cited commit(s) UNKNOWN — %s; a commit is never reported "
+                   "rewritten on a check that could not look)" % (unknown_commits, why))
     return out
 
 
