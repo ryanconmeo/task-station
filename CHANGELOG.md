@@ -3,6 +3,111 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.15.0] — 2026-08-21
+
+Three record-hygiene defects, each of which MANUFACTURES A FALSE FINDING — which is how a
+scan trains its reader to stop reading it. All three were root-caused and reproduced on a
+real task before any of this was written, and the numbers below are measurements rather
+than estimates.
+
+### Fixed
+- **`heal`'s git probers asked the WRONG REPO after a folder rename, and answered a
+  confident `False` instead of UNKNOWN.** `task_repos` derived the repos to probe from
+  `recorded_paths` alone — the FILE and WORKTREE paths a task wrote down. Rename the folder
+  those point into and every one of them dies at once, while the paths pointing somewhere
+  UNRELATED (a notes vault, the installed plugin cache) survive. The list is then NON-EMPTY
+  and holds the wrong repo, so `branch_prober` and `commit_prober` reported a branch and a
+  commit that were sitting right there as gone.
+
+  Measured on one real task after `claude-todo` was renamed to `task-station`: **16 of 27
+  findings were false.** 15 of the 16 cited shas resolved in the renamed clone and none in
+  the vault the prober actually asked; the branch it called gone resolved locally AND on
+  origin. And the module's own docstring promise — "an empty list is what makes both probers
+  return UNKNOWN rather than False" — was kept for the empty case and broken for the
+  wrong-repo case, which is worse, because a list holding the wrong repo looks answered.
+
+  TWO REPAIRS, because the promise had to be restored and not just the search widened.
+  **The scope is wider**: the repos a task NAMES (`projects`) now resolve through the repo
+  index (`repos.json`), which records where each repo IS NOW rather than where a months-old
+  path said it was — a rename MOVES an index entry, it does not delete it. Recorded paths
+  stay in the union, because they are the only thing that knows about a worktree or a
+  checkout nobody indexed. **And the claim is narrower**: a prober saying `False` is
+  asserting "this resolves in NONE of the task's repos", so when a named repo has no LOCAL
+  clone to ask, that sentence would be covering repos nobody opened — it degrades to
+  UNKNOWN. That was the 16th false finding exactly: a sha in an ADO repo with no clone on
+  this machine, reported as rewritten history. Nothing is switched off; with every named
+  repo reachable a negative is still a finding, because then the sentence is true. New
+  `heal.repo_scope` / `named_repos` / `repo_index`; the index is read fail-OPEN, so an
+  absent or unreadable one is simply one fewer repo to ask.
+
+  On the task that produced the evidence this took the scan from **11 findings to 6**.
+
+- **Identical findings were UNDISMISSABLE BY CONSTRUCTION.** `--dismiss` refuses an
+  ambiguous selector rather than guessing, which is right — an adjudication written onto the
+  wrong finding is silent, permanent, and only discovered when the finding it should have
+  covered is missing from a later report. But two findings can be BYTE-IDENTICAL: five
+  sessions that each recorded the same worktree cwd produce five identical drift rows, and
+  `Name one exactly` is then an instruction nobody can follow. On one real task **7 findings
+  were permanently unadjudicatable — 100% of its remaining mechanical issues.**
+
+  They were never five things. One path is gone ONCE, and how many sessions happened to sit
+  in that directory is a fact about the sessions. Identical rows now collapse to **one row
+  carrying `occurrences`**, so the issue count stops being inflated by session bookkeeping
+  and nothing is hidden — the count rides on the row. `occurrences` is deliberately OUTSIDE
+  the dismissal fingerprint: a sixth session recording the same cwd must not expire a ruling
+  somebody already made about that path. **And the report says a row was collapsed** —
+  `• <ref> (recorded 5×) — <detail>` — because folding five rows into one without saying so
+  silently loses the fact: "one worktree is gone" and "five sessions all sat in it" are
+  different things about the same path.
+
+  For the residual case dedupe cannot reach — the same ref reported with DIFFERENT details,
+  which is what one path recorded both as an edited file and as a session cwd produces —
+  `--dismiss`/`--undismiss` accept an **ordinal handle**, `<check>:<ref>#<n>`. It is tried
+  LAST, never first: a link-rot ref is a URL and a URL fragment can be `#2`, so the whole
+  ref resolves exactly as before and the trailing `#<n>` is re-read as a handle only when
+  the ref as written landed on more than one row. A row whose ref is already unique among
+  the matches is still named by its ref, because that is the honest answer — the selector
+  was a substring spanning distinct refs, and the fix is to name the one meant, not to count.
+
+- **`exit-add` now refuses `<path-test> && <command>` by name (`path-test-and`).** Observed
+  live: a condition registered as `test -f skills/judge/SKILL.md && python3 -m unittest …`.
+  The skill was later renamed `judge` → `grade`, the path test failed, `&&` short-circuited,
+  **the tests never ran, and the command produced EMPTY OUTPUT** — so nothing in the
+  transcript said which half failed or why. `scan --run` reported a closed, fully-graded,
+  released track at 4 of 5 conditions met; unattended, the loop would have refused to
+  release it and parked finished work. A false red with no diagnostic is the worst of the
+  four ways a gate lies, because there is nothing to read.
+
+  The check is deliberately NARROW. `cd <dir> && <cmd>` is the ordinary way to point a
+  condition at a checkout and `cd` FAILS LOUDLY — it prints its own complaint, so the
+  transcript says what happened. A file test prints nothing at all; it only sets an exit
+  status, and that silence is the defect. So: file-test operators only, at a command
+  position, joined by `&&`. String tests (`-z`, `-n`) are excluded — they read a variable
+  the same command just set, which no rename can move — and `;` is excluded because it does
+  not short-circuit. An addition to the existing registration self-check, not new machinery.
+
+### Added
+- **A worked template for writing a condition as a DIRECTION rather than a literal**
+  (`tools/checker-template.sh`), pointed at from both registration surfaces
+  (`exit-add --expect`, `claims --register`). `test COUNT = LITERAL` is falsified by any
+  legitimate release: five of one task's seventeen claims went red in four days for that
+  reason alone, and one of them hid three genuinely broken links behind its stale baseline —
+  the claim was already red, so the new breakage changed nothing anybody could see.
+
+  NO NEW CLAIM KIND, and that is the decision rather than an omission. A claim and an exit
+  condition are both already "a command plus the substrings its output must contain", which
+  is sufficient: put the FLOOR or CEILING inside the command, print a PASS token, expect the
+  token. A comparison operator in the registration grammar would need a second evaluation
+  path, a per-claim rule for extracting the number from output, and a mini-language — new
+  surface for a failure that was authoring habit, not missing capability. The template
+  carries the three rules each learned from a condition that lied: a floor or a ceiling
+  never equality; print the MEASURED VALUE beside the verdict, because a gate one commit
+  from red looks identical to one with room to spare; and print a verdict on every path
+  including the broken ones, because a command that prints nothing goes red with no
+  diagnostic. It is tested as a shipped artefact — it parses, it prints `FAIL` when pointed
+  at a repo that is not there, and both help texts are asserted to still point at it, since
+  a pointer that rots leaves a file nobody is told about.
+
 ## [3.14.0] — 2026-08-19
 
 ### Added

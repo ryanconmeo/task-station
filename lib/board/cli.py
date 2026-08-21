@@ -144,7 +144,10 @@ def main(argv=None):
                          "C1 rewrites C1 and leaves the rest alone. A literal pipe "
                          "inside the command is written `\\|`. At least one expected "
                          "substring is required: a claim asserting nothing would pass "
-                         "forever.")
+                         "forever. WRITE IT AS A DIRECTION, NOT A LITERAL — put a floor "
+                         "or a ceiling in the COMMAND and expect its PASS token, because "
+                         "`test COUNT = LITERAL` is falsified by any legitimate release. "
+                         "Copy tools/checker-template.sh.")
     sp.add_argument("--replace", action="store_true",
                     help="with --register: this invocation's claims REPLACE the whole "
                          "list, instead of upserting into it")
@@ -177,7 +180,10 @@ def main(argv=None):
                     help="a substring that must appear in the command's combined "
                          "stdout+stderr (repeatable). AT LEAST ONE IS REQUIRED: a "
                          "condition asserting nothing would pass forever, whatever the "
-                         "command printed.")
+                         "command printed. WRITE IT AS A DIRECTION, NOT A LITERAL — put "
+                         "a floor or a ceiling in the COMMAND and expect its PASS token, "
+                         "because a literal count goes red on any legitimate release. "
+                         "Copy tools/checker-template.sh.")
     sp.add_argument("--force", action="store_true",
                     help="register the condition even though the self-check flagged it "
                          "(a shape that can be satisfied by something other than the "

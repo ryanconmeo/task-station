@@ -290,6 +290,56 @@ class DrivenTurn(_CliCase):
             codes = [f["code"] for f in turn.condition_lint("some-check", expect)]
             self.assertIn("absence-assertion", codes, expect)
 
+    def test_a_path_test_guarding_a_test_run_is_named_by_the_lint(self):
+        """LIVE CASE, 2026-08-21. Step 5 of #531 was registered as
+        `test -f skills/judge/SKILL.md && python3 -m unittest …`. The skill was later
+        renamed judge -> grade, the path test failed, `&&` short-circuited, the tests never
+        ran, and the command printed NOTHING — so the transcript said neither which half
+        failed nor why. A closed, fully-graded, released track read as 4 of 5 conditions
+        met, and unattended the loop would have parked finished work."""
+        codes = [f["code"] for f in turn.condition_lint(
+            "test -f skills/judge/SKILL.md && python3 -m unittest tests.test_loop",
+            ["OK"])]
+        self.assertIn("path-test-and", codes)
+
+    def test_every_bracket_spelling_of_the_same_guard_is_named(self):
+        for cmd in ("[ -f skills/x/SKILL.md ] && python3 -m unittest tests.test_loop",
+                    "[[ -d lib/board ]] && python3 -m unittest tests.test_loop",
+                    "test -e VERSION && make check",
+                    "test ! -f stale.lock && python3 -m unittest tests.test_loop"):
+            codes = [f["code"] for f in turn.condition_lint(cmd, ["OK"])]
+            self.assertIn("path-test-and", codes, cmd)
+
+    def test_the_diagnosis_names_the_empty_output_not_just_the_shape(self):
+        found = [f for f in turn.condition_lint(
+            "test -f a && python3 -m unittest tests.test_loop", ["OK"])
+            if f["code"] == "path-test-and"]
+        self.assertEqual(len(found), 1)
+        self.assertIn("empty", found[0]["line"].lower())
+
+    def test_a_cd_before_the_command_is_NOT_a_path_test(self):
+        """`cd <dir> && <cmd>` is the ordinary way to run a condition against a checkout,
+        and `cd` FAILS LOUDLY when the directory is gone. Flagging it would make the lint
+        something people switch off."""
+        codes = [f["code"] for f in turn.condition_lint(
+            "cd ~/Workspace-Other/task-station && python3 -m unittest tests.test_turn",
+            ["OK", "Ran"])]
+        self.assertNotIn("path-test-and", codes)
+
+    def test_a_string_test_is_NOT_flagged(self):
+        """The check is about a PATH that a rename can move. `-z`/`-n` test a variable
+        the same command just set, and that is not the failure mode observed."""
+        codes = [f["code"] for f in turn.condition_lint(
+            'test -z "$SKIP" && python3 -m unittest tests.test_loop', ["OK"])]
+        self.assertNotIn("path-test-and", codes)
+
+    def test_a_path_test_joined_by_semicolon_is_NOT_flagged(self):
+        """`;` does not short-circuit: the command runs and prints its output whatever the
+        test said. The defect is the AND, not the test."""
+        codes = [f["code"] for f in turn.condition_lint(
+            "test -f a ; python3 -m unittest tests.test_loop", ["OK"])]
+        self.assertNotIn("path-test-and", codes)
+
     def test_the_repaired_shape_passes_the_lint_clean(self):
         """The conditions on this very task were repaired on 2026-08-19 to remove a
         `tail -3` and a bare count. The lint must not flag what replaced them, or the
