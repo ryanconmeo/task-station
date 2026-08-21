@@ -466,6 +466,7 @@ class DirectionTemplateTest(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
 
     def test_the_template_carries_a_floor_and_never_an_equality(self):
+        self.assertTrue(os.path.exists(self.TEMPLATE), self.TEMPLATE)
         body = open(self.TEMPLATE).read()
         self.assertIn("-ge \"$FLOOR\"", body)          # a floor, not `= LITERAL`
         self.assertIn("ceiling", body.lower())          # …and the mirror image is shown
