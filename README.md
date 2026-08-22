@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-3.19.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.20.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -547,6 +547,14 @@ notes converge. Everything is opt-in and stdlib-only, like the rest of the plugi
   key has a `TASK_STATION_BRAIN_*` environment override. Org values — labels, keywords,
   forge coordinates — arrive at runtime from an org profile
   (`python3 -m brain.init_home --profile <org.json>`), never from code.
+- **`task-station org-setup` writes that profile for you.** Four **read-only** scans over
+  systems your org already runs — `INFORMATION_SCHEMA` schema names and migration header
+  comments, directory **group display names only**, repo and project names, and the leading
+  segment of existing wiki page names — plus the six answers no scan can discover (org slug,
+  org brain repo, per-person mirror template, forge + URL, vertical pack, promotion
+  approvers). It validates *before* it writes, because a config the platform refuses to
+  parse means no rules at all, not default rules. Full write-up:
+  [docs/ORG-SETUP.md](docs/ORG-SETUP.md).
 - **The same MCP server serves both planes** — see [the Desktop bridge](#claude-desktop-bridge):
   five `brain_*` tools mount beside the board's eleven, in Claude Code (via the plugin's
   `.mcp.json`) and Claude Desktop alike.

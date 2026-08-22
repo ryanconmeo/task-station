@@ -3,6 +3,100 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.20.0] — 2026-08-27
+
+**A LEADER AT A COMPANY THIS TOOLCHAIN HAS NEVER HEARD OF CAN NOW RUN ONE COMMAND AND GET A
+VALID OrgProfile.** Everything org-specific here — the naming registry's domains, the
+context-injection keywords, the tier labels, the forge that gates promotion — already read
+its values from an OrgProfile at runtime rather than from a literal in this repo. What was
+missing was the other half: the only way to *get* a profile was to write one by hand, so
+adopting the toolchain meant learning a schema before learning anything else.
+
+### Added
+- **`task-station org-setup` — the org-setup wizard (`lib/brain/org_setup.py`).** Four
+  read-only scans over systems an org already runs, plus the six answers no scan can
+  discover, emitted as a schema-valid OrgProfile that `brain-init --profile` consumes
+  directly. Full write-up: `docs/ORG-SETUP.md`.
+
+  **The split the design turns on.** An org's vocabulary is already written down in four
+  places; its *decisions* are written down nowhere. So the wizard scans for the words —
+  `INFORMATION_SCHEMA` schema names and migration **header comments** → business domains;
+  directory **group display names** → function words, departments, role tiers; repo and
+  project names → system domains; the **leading segment** of wiki page names → the naming
+  habits already in use — and it *asks* for the six choices: org slug, org brain repo,
+  per-person mirror template, forge + its org URL, vertical pack, promotion approvers.
+  Guessing an undiscoverable answer would be worse than asking, because a wrong guess is
+  invisible.
+
+  **Read-only is structural, not a promise in a docstring.** The module opens no connection
+  and issues no write. The whole database side is one module constant with no interpolation
+  and no parameters, so there is no argument that could turn it into a write; the other
+  three scans take data a caller already fetched.
+
+  **Signals are weighted, so prose does not become vocabulary.** A schema name, a project
+  name and a wiki leading segment are deliberate acts of partitioning — one occurrence is
+  evidence. A migration header word and a repo word are prose, and count only when they
+  recur. Without that split, every adjective a developer ever typed becomes a business
+  domain and every one-off repo becomes a system.
+
+- **The directory scan is incapable of reading a user object, not merely well-behaved.** A
+  directory holds people, so "does not look" is one refactor away from looking. The only
+  door in is `read_group_display_names()`, which projects every entry down to a single
+  display-name string and **raises** on any entry carrying a user attribute or declaring a
+  Graph user type; below it, `scan_directory()` accepts `str` and raises `TypeError` on
+  anything richer. The type at the boundary is what makes the crossing impossible: past the
+  door there is a list of strings, so there is nothing left for a later change to
+  accidentally start reading. A refusal at the door also beats a filter downstream — a
+  filter is a thing that can be edited out, and a silent drop trains callers to keep handing
+  over people's records.
+
+- **Validate, THEN write.** `write_profile()` validates before it opens the file and raises
+  rather than writing anything. The rule behind the ordering is that a config the platform
+  refuses to parse does **not** degrade to default rules — it means *no* rules — and a
+  half-written profile on disk reads as configured. Every finding is reported at once, too:
+  a leader fixing one field per round trip re-runs four scans for each trip. The schema is
+  DATA (`lib/brain/data/org-profile-schema.json`), for the same reason the naming contract
+  is: the wizard, the validator and the docs cannot disagree about what a profile is.
+
+- **The 2026-08-15 mirror ruling is mechanized, not documented.** The per-person mirror name
+  is a TEMPLATE resolved from the host identity at init, never a literal an administrator
+  types. `resolve_mirror_template()` resolves it — and the schema *requires* the template to
+  contain its placeholder, so a literal fails validation and never reaches a profile. A
+  ruling that lives only in prose is a ruling that gets typed around.
+
+- **A domain with no justifiable area is listed, never guessed.** Two mappings and no third:
+  a word that IS a generic area maps to itself, and a word a shipped generic-English hint
+  recognises (`invoice` → `finance`) maps to the hinted area. Everything else lands in
+  `vocabulary.unmapped_domains` for a person to assign. A wrong area is not a visible error
+  — it is a filter that quietly stops matching — and the org half of the registry is
+  PR-gated precisely so a human assigns it.
+
+- **`tests/fixtures/fake-org/` — the wizard runs end to end with no live credentials.** A
+  wholly invented organisation: a scan bundle, the six answers, and the emitted profile as a
+  committed **golden**. The golden is committed rather than generated-and-discarded because
+  a fingerprint scan over a file that was never written is trivially clean — that false
+  green is exactly what the committed artifact closes. 32 tests
+  (`tests/brain/test_org_setup.py`) cover the four scans, both sides of the group-only
+  restriction, the six answers, the template ruling, the validate-then-write ordering, and
+  the zero-foreign-fingerprint scan over the emitted profile.
+
+### Changed
+- **`task-station org-setup` routes to the brain plane lazily.** The board must not depend
+  on the brain plane being installed (the layer rule runs the other way), so the import is
+  by name inside the handler and an install without it gets one clear line instead of an
+  ImportError traceback. The board restates the wizard's four flags — argparse cannot
+  capture a leading `--flag` into a REMAINDER positional, and `org-setup -- --scan-bundle …`
+  is a UX nobody types correctly the first time — and because a restated flag set drifts
+  *silently* (a forgotten flag is simply never forwarded and the wizard sees a default), a
+  guard asserts the two flag sets are equal in both directions.
+
+### Fixed
+- **`INFORMATION_SCHEMA` no longer escapes the system-schema drop list.** Scanned names are
+  compared as slugs, so `INFORMATION_SCHEMA` normalises to `information-schema` and a
+  drop-list held in raw spelling let the most universal system schema there is straight into
+  an org's registry. The list is now held in slug form. Found by running the wizard against
+  the fixture and reading what it emitted, not by review.
+
 ## [3.19.0] — 2026-08-26
 
 **A record is not a source.** Three bugs filed together from one session, and they are the
@@ -100,6 +194,7 @@ reported and a person found the damage later.
   the ancestry fallback, so a detached re-exec with a scrubbed environment could close the
   wrong app's window. Both scripts now ask the one resolver, and a test greps to keep the
   detection from creeping back in.
+||||||| parent of 0d84d1b (feat: the org-setup wizard — four read-only scans write a valid OrgProfile (3.19.0))
 
 ## [3.18.0] — 2026-08-21
 

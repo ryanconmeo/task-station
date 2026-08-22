@@ -1,0 +1,96 @@
+{
+  "forge": {
+    "kind": "github",
+    "org": "https://github.com/northwind-logistics",
+    "repo": "northwind-org-brain",
+    "target_branch": "main"
+  },
+  "keywords": [
+    "billing",
+    "billing-platform",
+    "dispatch",
+    "hr",
+    "people",
+    "sales",
+    "warehouse",
+    "warehouse-ops"
+  ],
+  "labels": {
+    "org": "Northwind Brain",
+    "private": "My Brain"
+  },
+  "mirror_template": "{username}-brain",
+  "org_label": "Northwind Brain",
+  "org_slug": "northwind",
+  "profile_version": 1,
+  "promotion_approvers": [
+    "a.rivera",
+    "j.okafor"
+  ],
+  "provenance": {
+    "database": {
+      "inputs": 13,
+      "kind": "database",
+      "read_only": true
+    },
+    "directory": {
+      "inputs": 8,
+      "kind": "directory",
+      "read_only": true
+    },
+    "forge": {
+      "inputs": 9,
+      "kind": "forge",
+      "read_only": true
+    },
+    "wiki": {
+      "inputs": 7,
+      "kind": "wiki",
+      "read_only": true
+    }
+  },
+  "vertical_pack": "industrial",
+  "vocabulary": {
+    "departments": [
+      "billing",
+      "dispatch",
+      "fleet",
+      "people",
+      "warehouse"
+    ],
+    "domains": {
+      "billing": "finance",
+      "billing-platform": "finance",
+      "dispatch": "service",
+      "hr": "people",
+      "people": "people",
+      "sales": "sales",
+      "warehouse": "data",
+      "warehouse-ops": "data"
+    },
+    "function_words": [
+      "sg"
+    ],
+    "naming_habits": {
+      "case": "title",
+      "leading_segments": [
+        "billing",
+        "dispatch"
+      ],
+      "separator": " - "
+    },
+    "role_tiers": [
+      "owners",
+      "readers",
+      "admins",
+      "approvers",
+      "contributors",
+      "members"
+    ],
+    "unmapped_domains": [
+      "fleet",
+      "fleet-maintenance",
+      "shipment"
+    ]
+  }
+}

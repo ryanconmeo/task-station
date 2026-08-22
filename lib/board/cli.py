@@ -107,6 +107,24 @@ def main(argv=None):
                     help="auto-attach category tags (comma/space list)")
     sp.set_defaults(fn=cmd_brains)
 
+    # The org-setup wizard lives in the BRAIN plane and owns its own parser; the
+    # board only routes to it. The flags are restated here rather than swallowed
+    # as a REMAINDER because argparse cannot capture a leading `--flag` into a
+    # positional — the alternative UX is `org-setup -- --scan-bundle …`, which
+    # nobody types correctly the first time. Restating them is a drift risk, so
+    # it is guarded: tests/brain/test_org_setup.py asserts this flag set IS the
+    # wizard's flag set.
+    sp = sub.add_parser("org-setup",
+                        help="four read-only scans + six answers -> a valid OrgProfile")
+    sp.add_argument("--scan-bundle", dest="scan_bundle", metavar="JSON",
+                    help="already-fetched read-only inputs for the four scans")
+    sp.add_argument("--answers", metavar="JSON",
+                    help="the six leader answers as JSON; omit to be asked")
+    sp.add_argument("--out", metavar="PATH", help="where to write config.json")
+    sp.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="validate and print the profile; write nothing")
+    sp.set_defaults(fn=cmd_org_setup)
+
     sp = sub.add_parser("hook-health",
                         help="failures the (deliberately non-fatal) hooks recorded")
     sp.add_argument("--clear", action="store_true",
