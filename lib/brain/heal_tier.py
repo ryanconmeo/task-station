@@ -5,13 +5,13 @@ PROVENANCE: ported in 3.0.0 Phase 4 (chunk 4a) from the brain source tree's
 lexicon shipped five org product names; see its comment).
 
 Classifies each stored item against the routing model and reports where it is
-mis-filed. The routing model (kind × scope → destination):
+mis-filed. The routing model (kind × audience → destination):
 
     imperative + safety-critical + mechanizable  -> HOOK   (strongest; human graduates it)
     imperative (else)                            -> CLAUDE.md RULE (team → org brain team-rules)
     declarative + company knowledge              -> vault note
     declarative + personal how-to-work           -> memory (the vault's memory/)
-    team-relevant                                -> tag scope:team (promotion candidate)
+    team-relevant                                -> promote: true (promotion candidate)
 
 Enforcement spectrum: HOOK > CLAUDE.md RULE > MEMORY. Rules stay FEW + sharp;
 memory holds the long tail.
@@ -143,17 +143,20 @@ def _read_item(path):
     m = re.search(r"(?mi)^description:[ \t]*(.*)$", fm)
     if m:
         desc = notes.parse_scalar(m.group(1).strip())
-    scope = ""
-    m = re.search(r"(?mi)^\s*scope:[ \t]*(.*)$", fm)
+    # The `promote:` switch, read through brain.notes — the ONE reader, so a
+    # tier-lint suggestion can never disagree with what promote.py will do.
+    raw_promote = ""
+    m = re.search(r"(?mi)^\s*promote:[ \t]*(.*)$", fm)
     if m:
-        scope = m.group(1).strip().strip('"').lower()
+        raw_promote = m.group(1).strip()
     src = ""
     m = re.search(r"(?mi)^\s*source:[ \t]*(.*)$", fm)
     if m:
         src = notes.parse_scalar(m.group(1).strip())
     is_tombstone = "tier-lint" in body.lower() and "moved" in body.lower()
-    return {"description": desc, "body": body, "scope": scope, "source": src,
-            "tombstone": is_tombstone}
+    return {"description": desc, "body": body,
+            "promote": notes.switch({"promote": raw_promote}, "promote"),
+            "source": src, "tombstone": is_tombstone}
 
 
 def _iter_paths(memory_dir, notes_dir):
@@ -181,8 +184,8 @@ def scan(cfg):
         f = classify(text, tier)
         f.update({"slug": path.stem, "path": str(path),
                   "description": item["description"], "body": item["body"],
-                  "scope": item["scope"], "source": item["source"]})
-        f["team_suggest"] = bool(f["team"] and tier == "note" and f["scope"] != "team")
+                  "promote": item["promote"], "source": item["source"]})
+        f["team_suggest"] = bool(f["team"] and tier == "note" and not f["promote"])
         findings.append(f)
     return findings
 
@@ -224,7 +227,7 @@ def render_report(findings, date):
             lines.append(f"- **{f['slug']}** (`{f['current']}`, {f['confidence']}) → "
                          f"{f['kind']}. cues: {_cue_str(f)}")
         for f in team_tags:
-            lines.append(f"- **{f['slug']}** (`note`) → consider `scope: team` "
+            lines.append(f"- **{f['slug']}** (`note`) → consider `promote: true` "
                          f"(promotion candidate; never auto-pushed). cues: {_cue_str(f)}")
     else:
         lines.append("- none")
@@ -248,7 +251,7 @@ def _memory_tombstone(slug, desc, dest_rel, date):
 
 def _note_tombstone(slug, desc, dest_rel, date):
     return notes.render_note(
-        {"name": slug, "description": desc, "type": "reference", "scope": "personal",
+        {"name": slug, "description": desc, "type": "reference",
          "verified": date, "source": "tier-lint"},
         f"<!-- MOVED to {dest_rel} by tier-lint {date}: this was personal how-to-work, "
         f"re-filed to the memory tier. -->")

@@ -77,10 +77,13 @@ class TierLintFixture(BrainTestCase):
         (self.memory / f"{slug}.md").write_text(
             f"---\nname: {slug}\ndescription: {desc}\nmetadata:\n  type: {mtype}\n---\n\n{body}\n")
 
-    def _note(self, slug, desc, body, scope="personal"):
+    def _note(self, slug, desc, body, promote=None):
+        fm = [f"name: {slug}", f"description: {desc}", "type: reference"]
+        if promote is not None:
+            fm.append(f"promote: {promote}")
+        fm += ["verified: 2026-01-01", "source: manual"]
         (self.vault / "notes" / f"{slug}.md").write_text(
-            f"---\nname: {slug}\ndescription: {desc}\ntype: reference\nscope: {scope}\n"
-            f"verified: 2026-01-01\nsource: manual\n---\n\n{body}\n")
+            "---\n" + "\n".join(fm) + f"\n---\n\n{body}\n")
 
 
 class CorpusTest(TierLintFixture):
@@ -198,10 +201,10 @@ class TombstoneTest(TierLintFixture):
 
 
 class TeamSuggestTest(TierLintFixture):
-    """ADDED. ``team_suggest`` is the ``scope: team`` promotion candidacy flag —
+    """ADDED. ``team_suggest`` is the ``promote: true`` promotion candidacy flag —
     the one output of this module that feeds the promote pipeline (chunk 4b), and
-    the source suite never asserts it. It is deliberately suggestion-only: a
-    ``scope: team`` tag is never applied, so a regression here is silent.
+    the source suite never asserts it. It is deliberately suggestion-only: the
+    switch is never written for you, so a regression here is silent.
     """
 
     def test_a_team_flavoured_note_is_flagged_as_a_promotion_candidate(self):
@@ -209,25 +212,45 @@ class TeamSuggestTest(TierLintFixture):
                    "The team keeps to one standard branch naming convention here.")
         f = next(f for f in heal_tier.scan(self.cfg) if f["slug"] == "shared-convention")
         self.assertTrue(f["team_suggest"])
-        self.assertEqual(f["suggested"], f["current"])   # a tag, never a re-file
+        self.assertEqual(f["suggested"], f["current"])   # a switch, never a re-file
         report = heal_tier.render_report([f], DATE)
-        self.assertIn("consider `scope: team`", report)
+        self.assertIn("consider `promote: true`", report)
         self.assertIn("never auto-pushed", report)
 
-    def test_a_note_already_scoped_team_is_not_re_suggested(self):
+    def test_a_note_already_marked_promote_is_not_re_suggested(self):
         self._note("shared-convention", "how the team names branches",
                    "The team keeps to one standard branch naming convention here.",
-                   scope="team")
+                   promote="true")
         f = next(f for f in heal_tier.scan(self.cfg) if f["slug"] == "shared-convention")
         self.assertFalse(f["team_suggest"])
         self.assertIn("- shared-convention", heal_tier.render_report([f], DATE))  # listed as aligned
 
+    def test_a_promote_value_that_is_not_true_still_gets_suggested(self):
+        """Tier-lint reads the switch through the same one reader promote.py
+        uses, so a value promote.py would refuse must not silence the nudge."""
+        for raw in ("false", "yes", "maybe"):
+            with self.subTest(value=raw):
+                self._note("shared-convention", "how the team names branches",
+                           "The team keeps to one standard branch naming convention here.",
+                           promote=raw)
+                f = next(f for f in heal_tier.scan(self.cfg)
+                         if f["slug"] == "shared-convention")
+                self.assertTrue(f["team_suggest"])
+
     def test_a_team_flavoured_memory_is_never_flagged(self):
-        """The tag lives on vault notes; memory has no scope field to carry it."""
+        """The switch lives on vault notes; memory carries no promote field."""
         self._mem("shared-convention", "how the team names branches",
                   "The team keeps to one standard branch naming convention here.")
         f = next(f for f in heal_tier.scan(self.cfg) if f["slug"] == "shared-convention")
         self.assertFalse(f["team_suggest"])
+
+    def test_a_tombstoned_note_is_written_with_neither_switch(self):
+        """A tier-lint tombstone is a generated note, and a generated note is a
+        private note — it must not arrive pre-marked for anyone else to read."""
+        text = heal_tier._note_tombstone("moved-note", "d", "memory/moved-note.md", DATE)
+        self.assertIn("name: moved-note", text)          # it did write a note
+        self.assertNotIn("publish:", text)
+        self.assertNotIn("promote:", text)
 
 
 if __name__ == "__main__":

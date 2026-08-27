@@ -120,7 +120,10 @@ python3 -m brain.publish               # sync the published subset to your mirro
 
 ## Federation, in one paragraph
 
-Your vault is the superset. A note marked `scope: team` is a **promotion candidate** —
+Your vault is the superset, and it shares nothing by default. A note marked
+`publish: true` is mirrored to your org-readable shared brain; a note marked
+`promote: true` is a **promotion candidate** for the org brain. The two switches are
+independent and both start off. For a promotion candidate,
 `/brain-promote` strips personal context, converts it to the org schema, and lands it as
 a PR a lead approves; nothing is ever auto-pushed. The org-brain clone joins search
 read-only, and org updates can arrive as memos on your board tasks

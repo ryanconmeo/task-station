@@ -19,14 +19,16 @@ the forge auth, and the clone path all resolve from config, never from this doc.
 
 For each slug:
 
-1. **Gate.** Promote only team knowledge. If the note is `scope: team`, it is
-   eligible as-is. If it is not, confirm with the user that it is genuinely
+1. **Gate.** Promote only team knowledge. If the note carries `promote: true`, it
+   is eligible as-is. If it does not, confirm with the user that it is genuinely
    org-relevant (never promote secrets, machine-specific tooling facts, or
-   person-directed content) and pass `--non-team` to opt it in explicitly.
+   person-directed content) and pass `--unmarked` to opt it in explicitly.
+   `promote:` is independent of `publish:` — a note that was never published to
+   the owner's shared brain can still be promoted, and that is a normal case.
 
 2. **Promote.** Run:
    ```bash
-   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/lib" python3 -m brain.promote <slug> [--non-team] [--extent minor|major]
+   PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/lib" python3 -m brain.promote <slug> [--unmarked] [--extent minor|major]
    ```
    The module: finds the merge target in the org-brain clone (reconcile vs create);
    strips personal context to the org-brain core schema; writes to a branch in the

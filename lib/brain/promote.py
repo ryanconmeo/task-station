@@ -10,13 +10,15 @@ the existing org node when one already covers the subject instead of forking a
 sibling.
 
 Flow (``promote``):
-  (a) gate — the note must be ``scope: team`` (or the caller explicitly opts a
-      non-team note in with ``--non-team``);
+  (a) gate — the note must carry ``promote: true`` (or the caller explicitly
+      opts an unmarked note in with ``--unmarked``). ``promote:`` is independent
+      of ``publish:``: a note may go straight to the org brain without ever
+      sitting in the owner's shared mirror;
   (b) merge-target detection — ``naming.find_target`` against the org-brain clone's
       ``notes/``: a hit ⇒ RECONCILE (body replaced, ``contributors[]`` kept
       cumulative, ``verified`` bumped — git IS the history); no hit ⇒ CREATE;
-  (c) strip personal context — org brain core schema only (scope/source/org_brain/
-      provenance dropped, local-only types remapped), home paths + session ids
+  (c) strip personal context — org brain core schema only (publish/promote/source/
+      org_brain/provenance dropped, local-only types remapped), home paths + session ids
       redacted, and the naming contract applied BY SEVERITY: warnings ride along
       on the result, an error (unregistered domain) gates the promote;
   (d) write to a branch in the clone, commit, and — via the selected forge
@@ -76,8 +78,10 @@ def strip_frontmatter(fm, *, verified, contributors, name=None):
     """Build the org brain-schema frontmatter from a private node's ``fm``.
 
     Keeps name/description/type/verified/tags and the cumulative contributor
-    record; DROPS scope/source/org_brain/verified-by/provenance/org_* by simply not
-    copying them. ``type`` is remapped into the org brain vocabulary."""
+    record; DROPS publish/promote/source/org_brain/verified-by/provenance/org_* by
+    simply not copying them — the org brain copy carries NEITHER share switch,
+    because landing in the org wiki is its own decision, made by the PR review.
+    ``type`` is remapped into the org brain vocabulary."""
     out = {
         "name": name or fm.get("name"),
         "description": fm.get("description", "") or "",
@@ -139,7 +143,7 @@ def _queue(cfg, slug, fm, body, day, action):
 # --------------------------------------------------------------------------- #
 # promote (CREATE / RECONCILE)
 # --------------------------------------------------------------------------- #
-def promote(cfg, slug, *, extent="minor", allow_non_team=False, dry_run=False,
+def promote(cfg, slug, *, extent="minor", allow_unmarked=False, dry_run=False,
             today=None):
     """Promote the private node ``slug`` into the org brain. Returns a result
     dict: ``{status, action, slug, branch, pr_url, clone, warnings, message}``.
@@ -150,12 +154,11 @@ def promote(cfg, slug, *, extent="minor", allow_non_team=False, dry_run=False,
     day = today or datetime.date.today().isoformat()
     src_path, fm, body = _load_private(cfg, slug)
 
-    # (a) gate
-    scope = (fm.get("scope") or "personal").strip().lower()
-    if scope != "team" and not allow_non_team:
+    # (a) gate — the `promote:` switch, read through the plane's ONE reader.
+    if not notes.switch(fm, "promote") and not allow_unmarked:
         return {"status": "gated", "slug": slug, "pr_url": None,
-                "message": f"{slug} is scope:{scope} — promote needs scope:team "
-                           f"or an explicit --non-team opt-in"}
+                "message": f"{slug} has no `promote: true` — promote needs the "
+                           f"switch or an explicit --unmarked opt-in"}
 
     alias = _alias(cfg)
     clone = _clone(cfg)
@@ -174,7 +177,7 @@ def promote(cfg, slug, *, extent="minor", allow_non_team=False, dry_run=False,
     # Naming findings on the slug about to land in the ORG brain, split by
     # severity. A warn rides along on the result (the PR reviewer sees it); an
     # ERROR — an unregistered domain, a reserved stem, illegal characters — gates
-    # the promote exactly as scope: does. Gating here is not the "refusal makes
+    # the promote exactly as `promote:` does. Gating here is not the "refusal makes
     # authors fake a name" case: the fact already has a private node, nothing is
     # lost, and the fix is a one-line PR to the registry in this very clone.
     contract = naming.load_contract(str(clone) if clone else None)
@@ -352,8 +355,9 @@ def main(argv=None):
     ap.add_argument("slug", help="vault node slug to promote / finalize")
     ap.add_argument("--extent", choices=["minor", "major"], default="minor",
                     help="RECONCILE contributor extent (default minor)")
-    ap.add_argument("--non-team", action="store_true",
-                    help="opt a non-scope:team note into promotion (explicit gate override)")
+    ap.add_argument("--unmarked", action="store_true",
+                    help="opt a note that has no `promote: true` into promotion "
+                         "(explicit gate override)")
     ap.add_argument("--dry-run", action="store_true",
                     help="build the branch/commit in the clone but do not push or open a PR")
     ap.add_argument("--finalize", action="store_true",
@@ -366,7 +370,7 @@ def main(argv=None):
         if a.finalize:
             res = finalize(cfg, a.slug, org_node=a.org_node)
         else:
-            res = promote(cfg, a.slug, extent=a.extent, allow_non_team=a.non_team,
+            res = promote(cfg, a.slug, extent=a.extent, allow_unmarked=a.unmarked,
                           dry_run=a.dry_run)
     except (PromoteError, forge.ForgeError, notes.NoteIOError) as e:
         sys.exit(f"brain-promote: {e}")
