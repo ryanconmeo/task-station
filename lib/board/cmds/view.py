@@ -247,7 +247,28 @@ def _format_detail(task, session, attached=True):
                     line += "  —  " + p["desc"]
                 out.append("    %s" % line)
         if stories:
-            out.append("  Stories:")
+            # A SUMMARY IS NOT A SOURCE, and the digest has to say so.
+            #
+            # MEASURED 2026-08-26. This block rendered `<url>  —  <desc>` with nothing
+            # marking the desc as something a person typed here. A relayed session read
+            # "seeds out of chain" against story 3614, took it for the scope, and spent
+            # hours designing a mechanism that story's criteria 2, 23, 24 and 28
+            # already specified better. 3614 carries 33 acceptance criteria. The desc
+            # was one of them.
+            #
+            # Reading the digest is a relayed session's whole job, so the digest is
+            # where the distinction has to be drawn — not in a convention nobody
+            # inherits. One line of header, once per render, and the row now names the
+            # command that fetches the real thing.
+            out.append("  Stories — the text after the dash is a SUMMARY WRITTEN ON "
+                       "THIS TASK, never the")
+            out.append("  work item. A one-line summary of a 33-criterion story is a "
+                       "POINTER, not a")
+            out.append("  scope. Read the source before designing or building anything "
+                       "it specifies:")
+            out.append("  `python3 -m brain.ado_tree <id> --no-clip`, or "
+                       "`heal --probe-ado --task <n>`")
+            out.append("  to reconcile every one of them against this record at once.")
             for s in stories:
                 line = s["url"]
                 if s.get("desc"):
