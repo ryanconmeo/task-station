@@ -157,7 +157,7 @@ def cmd_create(a):
         print(line)
     auto_enable_category(task.get("color"))
     _emit_tint_to_origin(task.get("color"))   # tint NOW, not on the next prompt
-    g("_emit_title_to_origin")(task)           # label the window NOW, not next prompt
+    g("_emit_title_to_origin")(task, session)  # label the window NOW, not next prompt
 
 
 def cmd_attach(a):
@@ -220,7 +220,7 @@ def cmd_attach(a):
         print(line)
     auto_enable_category(task.get("color"))
     _emit_tint_to_origin(task.get("color"))   # tint NOW on attach/recategorize
-    g("_emit_title_to_origin")(task)           # relabel the window NOW on attach
+    g("_emit_title_to_origin")(task, getattr(a, "session", None))   # relabel the window NOW on attach
 
 
 def cmd_bump(a):

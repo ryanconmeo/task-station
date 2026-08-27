@@ -942,11 +942,20 @@ def cmd_session_tint(a):
 
 
 def cmd_prompt_title(a):
-    """Emit an OSC title escape that labels the terminal tab/window `#<seq>: <title>`
-    for an attached session — the on-attach surface, run by UserPromptSubmit every
-    prompt. Pure stdout (like prompt-tint); the hook delivers the bytes to the real
-    terminal. Emits NOTHING when the title feature is off (config / `TASK_STATION_TITLE=off`)
-    or the session is unattached/skipped, so the user's own title is left untouched."""
+    """Emit an OSC title escape that labels the terminal tab/window
+    `#<seq>-<ln>: <title>` for an attached session — the on-attach surface, run by
+    UserPromptSubmit every prompt. Pure stdout (like prompt-tint); the hook delivers
+    the bytes to the real terminal. Emits NOTHING when the title feature is off
+    (config / `TASK_STATION_TITLE=off`) or the session is unattached/skipped, so the
+    user's own title is left untouched.
+
+    Carries the session's ROSTER LINE for the same reason session-title does: two
+    windows on one task must not paint themselves the same string. Unresolvable ln →
+    the old task-only label plus a STDERR note (stdout here is raw escape bytes bound
+    for the TTY, so the diagnostic cannot share it).
+
+    Unlike session-title this re-runs every prompt, so it DOES pick up an ln assigned
+    after session start."""
     import config
     if not config.title_enabled():
         return
@@ -957,8 +966,16 @@ def cmd_prompt_title(a):
     if not task:
         return
     ensure_seqs()
+    if ensure_ordinals(task):
+        save_task(task)
+    label, ln = session_title_label(task, getattr(a, "session", None))
+    if ln is None:
+        sys.stderr.write(
+            "prompt-title: no roster ln for session %s on task %s — "
+            "falling back to the task-only title '%s'\n"
+            % ((getattr(a, "session", None) or "?")[:8], task.get("seq", "?"), label))
     # OSC 0 sets both tab and window title (Terminal.app + iTerm2); \033]0; … \007.
-    sys.stdout.write("\033]0;#%s: %s\007" % (task.get("seq", "?"), task["title"]))
+    sys.stdout.write("\033]0;%s\007" % label)
 
 
 def _auto_track_provisional(a, prompt):
@@ -999,7 +1016,7 @@ def _auto_track_provisional(a, prompt):
         clear_count(a.session)
         auto_enable_category(dup.get("color"))
         _emit_tint_to_origin(dup.get("color"))   # tint NOW on auto-fold
-        g("_emit_title_to_origin")(dup)          # relabel the window NOW on auto-fold
+        g("_emit_title_to_origin")(dup, a.session)   # relabel the window NOW on auto-fold
         print("[task-station] Auto-tracked: folded into open task [%s] %s — this "
               "session is now attached and your prompt was noted. No sibling task "
               "was created." % (dup["id"][:8], dup["title"]))
@@ -1017,7 +1034,7 @@ def _auto_track_provisional(a, prompt):
     clear_count(a.session)
     auto_enable_category(task.get("color"))
     _emit_tint_to_origin(task.get("color"))   # tint NOW on provisional auto-create
-    g("_emit_title_to_origin")(task)          # label the window NOW on provisional auto-create
+    g("_emit_title_to_origin")(task, a.session)  # label the window NOW on provisional auto-create
 
     tid = task["id"][:8]
     label = task.get("seq", tid)

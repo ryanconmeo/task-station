@@ -1298,7 +1298,7 @@ def _update_one(ref, a):
     if "color" in changed:
         _emit_tint_to_origin(task.get("color"))   # recategorize tints NOW, not next prompt
     if "title" in changed:
-        g("_emit_title_to_origin")(task)          # a rename relabels the window NOW, not next prompt
+        g("_emit_title_to_origin")(task, getattr(a, "session", None))   # a rename relabels the window NOW, not next prompt
     # A scope change is the moment effort might have grown or shrunk — prompt a
     # re-rate so the column tracks reality, but only when this update touched
     # scope WITHOUT already re-rating (so re-setting effort itself stays quiet).
@@ -1471,9 +1471,9 @@ def _emit_tint_to_origin(color):
         pass   # unwritable/vanished TTY — the prompt hook will tint next message
 
 
-def _emit_title_to_origin(task):
-    """Best-effort: relabel the originating window `#<seq>: <title>` the moment a
-    task is created / attached / renamed, instead of waiting for the next prompt.
+def _emit_title_to_origin(task, session=None):
+    """Best-effort: relabel the originating window `#<seq>-<ln>: <title>` the moment
+    a task is created / attached / renamed, instead of waiting for the next prompt.
 
     Same rationale + mechanism as _emit_tint_to_origin: a create/attach/update
     command runs in Claude's captured Bash tool (stdout = the model-visible
@@ -1481,14 +1481,25 @@ def _emit_title_to_origin(task):
     `origin-tty.sh` the hooks use) and write the OSC-0 escape straight to it.
     Pure best-effort: a no-op (never raises, never writes stdout) when the title
     feature is off or the TTY can't be resolved — the UserPromptSubmit hook still
-    relabels the window next message."""
+    relabels the window next message.
+
+    `session` is the acting session, and it is what makes two windows on one task
+    read differently; every caller has one in scope. Omitted (or an unresolvable
+    ln) falls back to the old task-only label — visibly, on stderr, like the two
+    hook surfaces, because a window that silently drops its ln is the same bug."""
     if not task:
         return
     import config
     if not config.title_enabled():
         return
     ensure_seqs()
-    esc = "\033]0;#%s: %s\007" % (task.get("seq", "?"), task.get("title", ""))
+    label, ln = session_title_label(task, session)
+    if ln is None:
+        sys.stderr.write(
+            "title: no roster ln for session %s on task %s — "
+            "falling back to the task-only title '%s'\n"
+            % ((session or "?")[:8], task.get("seq", "?"), label))
+    esc = "\033]0;%s\007" % label
     try:
         dev = g("subprocess").check_output(
             ["bash", os.path.join(g("BASE"), "origin-tty.sh")],

@@ -960,8 +960,20 @@ def cmd_session_title(a):
     """Print the window/title-bar label for an attached session (or nothing).
 
     The SessionStart hook puts this in hookSpecificOutput.sessionTitle so the
-    terminal reads `#<seq>: <title>` — the closest we get to auto-labelling
-    the hub (the resume-NAME can't be set programmatically on a running session)."""
+    terminal reads `#<seq>-<ln>: <title>` — the closest we get to auto-labelling
+    the hub (the resume-NAME can't be set programmatically on a running session).
+
+    The label carries the session's ROSTER LINE, not just the task number, so two
+    sessions on one task read differently (#444-26 vs #444-28) instead of emitting
+    byte-identical strings the harness cannot tell apart. When the ln can't be
+    resolved the old `#<seq>: <title>` is emitted and a one-line note goes to
+    STDERR — stdout is the title the hook captures, so the diagnostic must not
+    share it. An unattached or skipped session still prints nothing at all.
+
+    KNOWN LIMIT: this runs from the SessionStart hook, so the title is set ONCE,
+    at session start. A session whose ln changes afterwards keeps its original
+    title — an ln is assigned at attach and does not normally move, but a reader
+    must not assume the title live-updates."""
     task_id = get_link(a.session)
     if not task_id or task_id == SKIP_SENTINEL:
         return
@@ -969,7 +981,15 @@ def cmd_session_title(a):
     if not task:
         return
     ensure_seqs()
-    print("#%s: %s" % (task.get("seq", "?"), task["title"]))
+    if ensure_ordinals(task):      # backfill pre-roster hubs, and PERSIST it, so a
+        save_task(task)            # title stays the same string on every re-read
+    label, ln = session_title_label(task, a.session)
+    if ln is None:
+        sys.stderr.write(
+            "session-title: no roster ln for session %s on task %s — "
+            "falling back to the task-only title '%s'\n"
+            % ((a.session or "?")[:8], task.get("seq", "?"), label))
+    print(label)
 
 
 def cmd_whoami(a):
