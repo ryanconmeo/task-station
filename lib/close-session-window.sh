@@ -70,14 +70,31 @@ if [ -z "$win_tty" ]; then
   exit 1
 fi
 
-# Detect the host terminal app the same way open-session-window.sh does. iTerm2
-# sets LC_TERMINAL=iTerm2 and TERM_PROGRAM=iTerm.app; both are inherited down to
-# here AND across the detached --tty re-exec (the child inherits this env), so
-# the close targets the right app whether run directly or detached. Anything we
-# don't recognise as iTerm2 falls back to Terminal.app.
+# Detect the host terminal app THROUGH THE ONE RESOLVER — core/termhost.py — which
+# open-session-window.sh also uses. This file used to carry its own copy of the
+# iTerm2 test, and two copies of one rule is how they drift: the copy here never
+# learned the process-ancestry fallback, so a detached re-exec whose env had been
+# scrubbed silently closed the wrong app's window.
+#
+# The resolver's order is $TASK_STATION_TERMINAL, $LC_TERMINAL, $TERM_PROGRAM, each
+# terminal's own marker, then the parent-process chain. Env is inherited down to
+# here AND across the detached --tty re-exec, and where it is not, the ancestry
+# walk still answers.
+close_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+eval "$(PYTHONPATH="$close_here" python3 -m core.termhost --shell 2>/dev/null)"
+ts_host="${TS_TERM_ID:-unknown}"
+ts_host_name="${TS_TERM_NAME:-unknown}"
+ts_host_how="${TS_TERM_HOW:-unresolved}"
 is_iterm=0
-if [ "${LC_TERMINAL:-}" = "iTerm2" ] || [ "${TERM_PROGRAM:-}" = "iTerm.app" ]; then
-  is_iterm=1
+[ "$ts_host" = "iterm2" ] && is_iterm=1
+
+# A host that is NEITHER of the two AppleScript-driven apps cannot be closed this
+# way, and guessing Terminal.app would close a window belonging to something else.
+# Refuse and name it — the caller treats non-zero as "left it open".
+if [ "$ts_host" != "iterm2" ] && [ "$ts_host" != "apple_terminal" ]; then
+  echo "close-session-window: cannot close a window in $ts_host_name ($ts_host_how) —" >&2
+  echo "  only iTerm2 and Terminal.app are scriptable this way. Leaving it open." >&2
+  exit 4
 fi
 
 if [ "$dry" = 1 ]; then

@@ -32,6 +32,7 @@ __all__ = [
     "_worth_checkpointing",
     "_is_substantive_tracked", "cmd_create", "cmd_attach", "cmd_bump", "cmd_skip",
     "cmd_detach", "_open_tasks_brief", "cmd_mark_edited", "cmd_touch_file",
+    "cmd_terminal",
     "cmd_stop_gate", "cmd_post_compact", "cmd_stop_nudge",
     "_channel_task_for", "_channel_block", "_stop_gate_edit_reason",
     "_stand_down_pending",
@@ -446,6 +447,57 @@ def _stand_down_pending(task, session):
                    for o in _channel.orders_for(task, session))
     except Exception:                                   # noqa: BLE001
         return True
+
+
+def cmd_terminal(a):
+    """`task-station terminal [--open CMD] [--json]` — which terminal is hosting
+    this session, and the only sanctioned way to open a new window in it.
+
+    WHY IT IS A COMMAND. 2026-08-26: asked to open a new terminal, a session ran
+    `osascript -e 'tell application "Terminal" to do script …'` while it was itself
+    running inside iTerm. A stray Terminal.app window opened somewhere the session
+    could not see, the session reported success, and a human had to close it. Both
+    signals were in that session's own environment ($TERM_PROGRAM, $LC_TERMINAL,
+    $ITERM_SESSION_ID) and its process ancestry, and neither was read.
+
+    A rule saying "check $TERM_PROGRAM first" cannot fail; this can. So there is a
+    command, it prints WHICH terminal it chose and WHICH SIGNAL it believed, and on
+    a terminal it cannot drive it REFUSES and hands back the command — because a
+    window in the wrong app produces no error, and no error reads as success."""
+    from core import termhost
+    if not getattr(a, "open_cmd", None):
+        h = termhost.resolve()
+        if getattr(a, "as_json", False):
+            print(json.dumps(h))
+        else:
+            print("%s  (%s)" % (h["name"], h["how"]))
+            print("Open a window here with: task-station terminal --open '<command>'")
+        return
+    cmd = a.open_cmd
+    plan = termhost.spawn_plan(cmd)
+    if not plan["mechanism"]:
+        print(termhost.describe(plan))
+        print(plan["reason"])
+        return
+    script = os.path.join(g("BASE"), "open-session-window.sh")
+    if not os.path.exists(script):
+        print("open-session-window.sh is missing from %s — run this yourself:\n  %s"
+              % (g("BASE"), cmd))
+        return
+    try:
+        # `g("subprocess")` and not a bare read: the suite patches the FACADE, so a
+        # module-global here would see the unpatched value (tests/test_patch_surface).
+        r = g("subprocess").run(["bash", script, cmd], capture_output=True,
+                                text=True, timeout=20)
+    except Exception as exc:                       # never raise out of a spawn
+        print("could not open a window (%s) — run this yourself:\n  %s" % (exc, cmd))
+        return
+    # The script's own stderr already names the host and the signal; relaying it is
+    # what makes the choice visible to whoever asked.
+    for line in (r.stderr or "").splitlines():
+        print(line)
+    if r.returncode != 0:
+        print("No window was opened. Nothing was opened anywhere else either.")
 
 
 def cmd_stop_gate(a):

@@ -485,9 +485,9 @@ def _format_history(task):
 
 
 def _open_jump_window(cmd):
-    """Open a NEW Terminal.app window running `cmd` (the resume one-liner) and
-    bring it to the front, via open-session-window.sh. The current window — the
-    one /todo was typed in — is left untouched.
+    """Open a new window IN THE TERMINAL THE CALLER IS SITTING IN, running `cmd`
+    (the resume one-liner), and bring it to the front, via open-session-window.sh.
+    The current window — the one /todo was typed in — is left untouched.
 
     THE ENV SCRUB LIVES HERE because the leak is a property of THIS TRANSPORT, not of
     the command. Measured 2026-08-18: when Terminal.app is cold, the Apple Event is what
@@ -498,11 +498,18 @@ def _open_jump_window(cmd):
     ride INSIDE the string that becomes `do script`. Putting it at the transport rather
     than in each caller's command builder means a new caller cannot forget it.
 
-    Best-effort and macOS/Terminal.app-only: any failure (not darwin, osascript
-    missing, AppleScript error, script absent) returns False so the caller falls
-    back to just printing the command for the user to run by hand. Never raises."""
-    if sys.platform != "darwin":
-        return False
+    WHICH TERMINAL IS NOT THIS FUNCTION'S BUSINESS. `open-session-window.sh` asks
+    `core.termhost`, which reads the host out of the environment and then out of the
+    process ancestry, prints which signal it believed, and REFUSES on a terminal it
+    cannot drive rather than defaulting to Terminal.app. That refusal is the point:
+    a window opened in the wrong app produces no error, so "success" is what gets
+    reported and a human finds the stray window later.
+
+    NOT DARWIN-GATED ANY MORE. The spawners for WezTerm, kitty and Alacritty are
+    their own CLIs and work wherever those terminals do; the script decides. Any
+    failure (osascript missing, AppleScript error, script absent, an undrivable
+    host) returns False so the caller falls back to printing the command for the
+    user to run by hand. Never raises."""
     script = os.path.join(g("BASE"), "open-session-window.sh")
     if not os.path.exists(script):
         return False

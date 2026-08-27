@@ -542,6 +542,20 @@ def main(argv=None):
                          "checks report `not probed`, never `clean`.")
     sp.set_defaults(fn=cmd_heal)
 
+    # THE ONE SANCTIONED WAY TO OPEN A NEW TERMINAL WINDOW. It exists because the
+    # alternative is a session hand-writing `osascript -e 'tell application
+    # "Terminal"'` while it is sitting in iTerm — which happened, opened a window
+    # nobody could see, and reported success.
+    sp = sub.add_parser("terminal", help="identify the host terminal, or open a new "
+                                         "window in it")
+    sp.add_argument("--open", dest="open_cmd", metavar="CMD", default=None,
+                    help="open a NEW window in THIS terminal running CMD. Refuses "
+                         "(and prints CMD) on a terminal it cannot drive rather than "
+                         "opening one somewhere you are not looking.")
+    sp.add_argument("--json", dest="as_json", action="store_true",
+                    help="emit the resolution as JSON")
+    sp.set_defaults(fn=cmd_terminal)
+
     sp = sub.add_parser("stop-gate"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_stop_gate)     # Stop hook: block ending an untracked edit session
 
