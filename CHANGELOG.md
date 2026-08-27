@@ -3,6 +3,73 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.22.0] — 2026-08-27
+
+**A SPAWNED WINDOW NOW *RUNS* ITS COMMAND INSTEAD OF HAVING IT TYPED.** Measured
+2026-08-27: an `invoke` whose command line was ~1045 characters was typed into a fresh
+iTerm2 window and cut off mid-word. A session was minted, the trail recorded `invoked`,
+`open-session-window.sh` reported "opened a new window running it" — and **nothing ran**.
+The window sat at a prompt. Nothing anywhere raised an error.
+
+**Where the cut was.** Not `osascript`: a 20 000-character argv through the same
+`on run argv` path arrives at length 20 000 intact. It is the **tty line discipline**.
+`write text` (iTerm2) and `do script` (Terminal.app) *type* their string into the new
+session. A shell already sitting at its own line editor (zsh's ZLE, bash's readline) puts
+the tty in raw mode and reads any length — which is why a naive test of this passes. A
+shell that is **not** yet there, because the window is one millisecond old and still
+sourcing its rc files, leaves the tty in **canonical mode**, where the kernel caps one line
+at **1024 bytes** and discards the rest silently. Reproduced exactly: a 1189-character line
+typed into a busy session arrived as its first 1024 bytes and nothing else. 1024 *bytes*, so
+a command carrying em dashes is cut at fewer than 1024 *characters* — which is why the
+original measurement read as "~930 chars in".
+
+### Fixed
+- **The opener hands the new window a FILE, not a command (`lib/open-session-window.sh`).**
+  The command is written to a private, self-deleting launch script and the window is typed
+  one short line — `source <path>` — whose length does not depend on the command's. A fixed
+  ~70-byte line cannot reach the 1024-byte cap, so a 4000-character `invoke` prompt now
+  arrives byte-exact instead of half-arriving and reporting success.
+
+  The script lives under `core.paths.data_dir()/launch` (mode `0700`) or `$TMPDIR`, is
+  created `0600` with an unpredictable `mktemp` name — it carries a session id and the
+  child's whole prompt — and **deletes itself as its first statement**, which is safe
+  because unlinking a file the shell has already opened leaves the payload readable. The
+  `mktemp` template's `X`s are trailing: BSD `mktemp` leaves `…-XXXXXXXXXX.sh` alone and
+  would have produced that exact literal name for every caller.
+
+  `source` and not `bash <file>` on purpose: the line was typed-equivalent before, so its
+  `cd` must still leave you in the task's directory once `claude` exits.
+
+- **Every host branch, not just the one that was caught.** iTerm2 and Terminal.app are the
+  two that type; WezTerm / Ghostty / kitty / Alacritty take an argv and were never subject
+  to the cap, but they get the same runner line — one payload path is one thing to keep
+  correct, and `$cmd` is now re-quoted nowhere.
+
+- **A launch script that cannot be written opens nothing, loudly.** The write happens
+  *before* any host is driven, so the failure exits non-zero naming the host and the reason
+  and hands back the command. PR 20 established refuse-loudly for an unrecognised host; a
+  window that exists but was never given its command is the same class of lie, and it is now
+  refused the same way. An Apple Event or a terminal CLI that fails mid-drive also deletes
+  the script and reports, rather than leaving a window nobody handed anything to.
+
+### Added
+- **`open-session-window.sh --dry-run <cmd>`** (aliases `--print-script`, `--emit-script`) —
+  writes the launch script, opens nothing, and prints the exact line the window would
+  receive plus the script's path. This exists so the tests can assert on what a session
+  **receives**: the whole defect was that the sending side looked perfect, so a test of the
+  sent value proves nothing.
+- **`tests/test_open_session_window.py`** — 11 tests. The runner line is the same length for
+  a 12-character command and a 4000-character one; a 4000-character payload containing both
+  quote characters, a backtick, a `$(…)`, an embedded newline and an em dash comes back out
+  byte-identical; the script is `0600`, unpredictably named, and gone after it runs; and all
+  six drivable hosts refuse non-zero when the script cannot be written. No test opens a
+  window.
+
+### Changed
+- **`docs/ARCHITECTURE.md`** — *Which terminal am I in?* now records the 1024-byte tty cap,
+  the file hand-over, and the refuse-on-unwritable-script rule alongside the existing
+  refuse-on-unknown-host rule.
+
 ## [3.21.0] — 2026-08-27
 
 **A LONG PROSE VALUE NO LONGER HAS TO SURVIVE SHELL QUOTING, BECAUSE IT NO LONGER HAS TO
@@ -81,6 +148,7 @@ corruption for anything downstream to detect, only a shorter sentence that parse
 
 ### Fixed
 - …
+||||||| parent of 2a964fa (fix: a spawned window RUNS the command — hand it a file, not 1024 bytes of typing (3.22.0))
 
 ## [3.20.0] — 2026-08-27
 

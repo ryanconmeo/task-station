@@ -1047,8 +1047,8 @@ one-liner for the session that actually holds the task's context. The guarantees
 a **new** window running the resume one-liner **in the terminal you are actually sitting in**
 and leaves the current window untouched. Which terminal is resolved by `core/termhost.py`
 (see *Which terminal am I in?* below), and any failure — an undrivable host, a missing
-`osascript`, an absent script — prints the command for you to run by hand rather than opening
-a window somewhere you are not looking.
+`osascript`, an absent script, a launch script that could not be written — prints the command
+for you to run by hand rather than opening a window somewhere you are not looking.
 
 ## (d) "Fold don't fork" dedup
 
@@ -1116,6 +1116,21 @@ That fallback is the bug it was rewritten for — 2026-08-26, a session inside i
 application "Terminal"`, a stray window opened where the session could not see it, **no error
 was raised**, success was reported, and a person had to go and close it. `task-station
 terminal [--open CMD]` is the sanctioned way in, so nothing has to hand-write an Apple Event.
+
+**The window is handed a FILE, not the command.** `write text` (iTerm2) and `do script`
+(Terminal.app) *type* their string into the new session, and a line typed into a shell that
+has not yet reached its own line editor — a window one millisecond old, still sourcing its rc
+files — is capped by the **tty line discipline at 1024 bytes**, with the rest discarded and no
+error to anyone. Measured 2026-08-27: an `invoke` whose command line was ~1045 characters was
+cut mid-word, the session was minted, the trail said `invoked`, the opener said "opened a new
+window running it", and nothing ran. So the opener writes the command to a private
+(mode `0600`, unpredictable name, under `data_dir()/launch`) **self-deleting launch script**
+and types one short fixed-length line — `source <path>` — whose length does not depend on the
+command's. `--dry-run` writes that script and prints the runner line plus the path without
+opening anything, which is how `tests/test_open_session_window.py` asserts on what the new
+session *receives* rather than on what was sent. **If the script cannot be written, nothing
+opens**: the write happens before any host is driven, so the refusal is non-zero, names the
+host, and leaves no window that was never given its command.
 
 The `/done` auto-close (`close-session-window.sh`) is still AppleScript-only and therefore
 iTerm2/Terminal.app-only; on any other host it refuses and names it rather than closing
