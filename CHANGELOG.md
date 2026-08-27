@@ -3,6 +3,48 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.23.0] — 2026-08-27
+
+**MEMORY HOLDS ONLY HOW-TO-WORK-WITH-ME FACTS, AND THE LINT NOW SAYS SO.** The
+vault has two knowledge tiers with different jobs: `memory/` is what a session
+needs to know about working with its human, `notes/` is what is true about a
+system. Ten entries had drifted into `memory/` that were neither — four facts
+about how Azure DevOps behaves, one about a colleague, five repo/process rules.
+Nothing objected, because nothing was checking: the tier had no membership rule,
+only a convention. So the folder straddled the personal/work split, and every
+one of those ten would have had to be adjudicated one at a time the day the
+vault splits.
+
+**The check.** `heal_lint` gains a counted `memory-type` bucket: a memory entry
+whose frontmatter `type` is neither `feedback` nor `user` is a finding, named,
+with its destination suggested — a fact about a system goes to a vault note, a
+rule about one repo goes to that repo's `CLAUDE.md`, a fact about another person
+goes to a note. It counts toward the exit code and sorts, renders and reads like
+every other bucket, so a drifting folder now fails the same gate everything else
+does instead of filling up quietly.
+
+**Why a new frontmatter reader.** `frontmatter()` keeps only column-0 keys, and
+the harness nests the type one level down under `metadata:` — so the existing
+helper cannot see the field this check is about. `memory_type()` reads the
+frontmatter block at any indent and accepts both shapes (harness-nested and a
+vault-note-shaped file living in `memory/`). `MEMORY.md` (no type, and never
+gets one), `_`-prefixed files, and tier-lint tombstones are exempt.
+
+### Added
+- `heal_lint`: counted `memory-type` check — a `memory/` entry typed outside
+  `feedback|user` is a named finding carrying its suggested destination.
+- `heal_lint.memory_type()`: frontmatter type reader that sees the harness's
+  nested `metadata: type:` as well as a top-level `type:`.
+- `tests/brain/test_heal_lint.py::MemoryTypeTest` — six cases, fire-and-quiet
+  per the file's convention: `reference` and `project` flagged, `feedback` and
+  `user` quiet, `MEMORY.md` exempt, a tombstone exempt, and the finding proven
+  to move the total (exit 1).
+
+### Changed
+- `skills/brain-heal/SKILL.md` step 3 names `memory-type` and how to resolve it.
+- The `mem()` test fixture takes a `type=` argument (default `feedback`, the
+  conforming value) instead of hardcoding `reference`.
+
 ## [3.22.0] — 2026-08-27
 
 **A SPAWNED WINDOW NOW *RUNS* ITS COMMAND INSTEAD OF HAVING IT TYPED.** Measured

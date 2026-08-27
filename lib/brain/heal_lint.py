@@ -4,8 +4,9 @@ PROVENANCE: ported in 3.0.0 Phase 4 (chunk 4a) from the brain source tree's
 ``scripts/lint.py`` @ 0.14.0.
 
 Checks: broken wikilinks, orphan notes, INDEX drift, frontmatter validity,
-stale ``verified:`` dates, secret-looking strings, MEMORY.md index rot, and
-(informational) reference records whose org node has moved on.
+stale ``verified:`` dates, secret-looking strings, MEMORY.md index rot, memory
+entries typed outside the feedback|user contract, and (informational)
+reference records whose org node has moved on.
 
 Exit 0 = clean, 1 = issues (report written to ``reports/health/``). Paths
 resolve at runtime via ``brain.config`` — nothing baked in at install time, and
@@ -79,6 +80,29 @@ def frontmatter(path):
     return fm, text
 
 
+TYPE_RX = re.compile(r"(?m)^\s*type:[ \t]*(\S+)")
+
+
+def memory_type(path):
+    """A memory entry's ``type``, or ``None`` if missing/unreadable.
+
+    ``frontmatter()`` only keeps column-0 keys, so it cannot see the harness
+    shape's ``metadata:\\n  type: <t>`` — this matches ``type:`` at any
+    indent instead, which also covers a vault-note-shaped file (top-level
+    ``type: <t>``) living in memory/. Frontmatter block only, never the body.
+    """
+    text = path.read_text(errors="ignore")
+    if not text.startswith("---"):
+        return None
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return None
+    m = TYPE_RX.search(parts[1])
+    if not m:
+        return None
+    return m.group(1).strip().strip("\"'").lower()
+
+
 def notify(total):
     """Best-effort desktop notification; never crashes, macOS-only."""
     if platform.system() != "Darwin":
@@ -109,6 +133,7 @@ def scan(cfg, stale_days=DEFAULT_STALE_DAYS, today=None):
     issues = {
         "broken-links": [], "orphans": [], "index-drift": [],
         "frontmatter": [], "naming": [], "stale": [], "secrets": [], "memory-rot": [],
+        "memory-type": [],
     }
     # Naming findings are split by SEVERITY: an unregistered domain (or a reserved
     # stem / illegal character) is an error and counts toward the exit code; the
@@ -188,6 +213,23 @@ def scan(cfg, stale_days=DEFAULT_STALE_DAYS, today=None):
             issues["memory-rot"].append(f"MEMORY.md links missing file {miss}")
         for un in sorted(actual - listed):
             issues["memory-rot"].append(f"memory/{un} not in MEMORY.md index")
+
+    # Memory typed outside the feedback|user contract: memory/ holds only
+    # how-to-work-with-Ryan facts. A tombstone (tier-lint's re-file leftover)
+    # is already handled — skip it rather than double-flag.
+    if memory and memory.exists():
+        for f in sorted(memory.glob("*.md")):
+            if f.name == "MEMORY.md" or f.stem.startswith("_"):
+                continue
+            if "<!-- MOVED to " in f.read_text(errors="ignore"):
+                continue
+            t = memory_type(f) or "missing"
+            if t not in ("feedback", "user"):
+                issues["memory-type"].append(
+                    f"memory/{f.name}: type '{t}' — memory holds only how-to-work-with-Ryan "
+                    "facts (feedback|user); re-file it (a fact about a system -> a vault note "
+                    "in notes/, a rule about one repo -> that repo's CLAUDE.md, a fact about "
+                    "another person -> a vault note)")
 
     # Reference records whose org node moved on since fetch (org_rev behind the
     # org-brain clone HEAD for that file). Warn-tier: the memo feed consumes it.
