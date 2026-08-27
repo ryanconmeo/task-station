@@ -21,6 +21,7 @@ score >= 1. Note that ``pipelines`` never scored in either version — the cue i
 """
 from tests.brain.base import BrainTestCase
 
+import brain.heal_lint as heal_lint
 import brain.heal_tier as heal_tier
 
 DATE = "2026-07-14"
@@ -39,10 +40,20 @@ class ClassifyTest(BrainTestCase):
         self.assertTrue(f["applied_eligible"])
 
     def test_personal_howto_in_notes_suggests_memory(self):
-        f = heal_tier.classify(PERSONAL_BODY, "note")
+        """PORTED CASE, AMENDED (#571): the cue reading is unchanged, but the
+        move into memory is now authorised by the note's DECLARED type, so the
+        case has to declare one. Without a declaration the same text is a
+        suggestion only — the next test."""
+        f = heal_tier.classify(PERSONAL_BODY, "note", declared="feedback")
         self.assertEqual(f["suggested"], "memory")
         self.assertEqual(f["confidence"], "high")
         self.assertTrue(f["applied_eligible"])
+
+    def test_an_undeclared_note_is_suggested_into_memory_but_never_applied(self):
+        f = heal_tier.classify(PERSONAL_BODY, "note")
+        self.assertEqual(f["suggested"], "memory")
+        self.assertFalse(f["applied_eligible"])
+        self.assertIn("type: missing", f["kind"])
 
     def test_safety_mechanizable_imperative_suggests_hook(self):
         f = heal_tier.classify(
@@ -77,8 +88,8 @@ class TierLintFixture(BrainTestCase):
         (self.memory / f"{slug}.md").write_text(
             f"---\nname: {slug}\ndescription: {desc}\nmetadata:\n  type: {mtype}\n---\n\n{body}\n")
 
-    def _note(self, slug, desc, body, promote=None):
-        fm = [f"name: {slug}", f"description: {desc}", "type: reference"]
+    def _note(self, slug, desc, body, promote=None, ntype="reference"):
+        fm = [f"name: {slug}", f"description: {desc}", f"type: {ntype}"]
         if promote is not None:
             fm.append(f"promote: {promote}")
         fm += ["verified: 2026-01-01", "source: manual"]
@@ -94,9 +105,11 @@ class CorpusTest(TierLintFixture):
     def _seed(self):
         self._mem("company-fact", "ledger database reached through the managed DevOps pool",
                   COMPANY_BODY)
-        self._mem("how-i-work", "how I like to review", "I prefer the summary tab first; my usual review flow is top-down.")
+        self._mem("how-i-work", "how I like to review",
+                  "I prefer the summary tab first; my usual review flow is top-down.",
+                  mtype="feedback")
         self._mem("ambiguous", "a stray note", "The kitchen is on the second floor.")
-        self._note("personal-pref", "how I review PRs", PERSONAL_BODY)
+        self._note("personal-pref", "how I review PRs", PERSONAL_BODY, ntype="feedback")
         self._note("company-arch", "Ledger search architecture",
                    "Ledger global search is a materialized RLS table on Azure SQL.")
         self._note("secret-hook", "no secrets in commits",
@@ -174,7 +187,7 @@ class TombstoneTest(TierLintFixture):
         super().setUp()
         self._mem("company-fact", "ledger database reached through the managed DevOps pool",
                   COMPANY_BODY)
-        self._note("personal-pref", "how I review PRs", PERSONAL_BODY)
+        self._note("personal-pref", "how I review PRs", PERSONAL_BODY, ntype="feedback")
 
     def test_a_second_apply_pass_re_files_nothing_and_does_not_raise(self):
         first = heal_tier.run(self.cfg, apply=True, today=DATE)
@@ -251,6 +264,80 @@ class TeamSuggestTest(TierLintFixture):
         self.assertIn("name: moved-note", text)          # it did write a note
         self.assertNotIn("publish:", text)
         self.assertNotIn("promote:", text)
+
+
+SURVEY_BODY = (
+    "Reviewed three unrelated third-party plugins that share one brand. The first "
+    "is an output formatter; rated 3/10 for me, because my global guide already "
+    "encodes the good 70% of it. The third is a reasoning scaffold; also 3/10 for "
+    "me, since my harness ships the same patterns first-class. MARKER-SURVEY-BODY")
+
+
+class MemoryContractTest(TierLintFixture):
+    """ADDED (task-station #571). memory/ holds ONLY how-to-work-with-its-owner
+    facts, declared ``feedback`` or ``user`` — the contract heal_lint's
+    ``memory-type`` check enforces since 3.23.0. Tier-lint did not know it, and
+    the two lints therefore disagreed in the most damaging possible way: on
+    2026-08-21 tier-lint scored :data:`SURVEY_BODY`-shaped content personal 2 /
+    company 0, called it ``high``, moved a survey of three THIRD-PARTY plugins
+    into memory/ and left a tombstone behind — then wrote it with
+    ``write_memory_note``'s default ``type: reference``, i.e. it minted the exact
+    artifact the other lint refuses. Every case here fails on that classifier.
+    """
+
+    def test_a_declared_reference_note_is_never_auto_filed_into_memory(self):
+        f = heal_tier.classify(SURVEY_BODY, "note", declared="reference")
+        self.assertEqual(f["scores"]["personal"], 2)     # the cues are unchanged...
+        self.assertEqual(f["scores"]["company"], 0)
+        self.assertFalse(f["applied_eligible"])          # ...the declaration governs
+        self.assertEqual(f["confidence"], "low")
+        self.assertIn("re-type it to feedback|user", f["kind"])
+
+    def test_the_old_cue_only_reading_is_what_made_it_high_confidence(self):
+        """Same text, declaration withheld from the classifier would be the old
+        behaviour — so pin that the ONLY thing standing between this survey and
+        memory/ is the declared type, not a lexicon tweak."""
+        f = heal_tier.classify(SURVEY_BODY, "note", declared="feedback")
+        self.assertEqual(f["suggested"], "memory")
+        self.assertTrue(f["applied_eligible"])
+
+    def test_apply_leaves_a_declared_reference_note_exactly_where_it_is(self):
+        self._note("plugin-survey", "three plugins sharing one brand", SURVEY_BODY)
+        before = (self.vault / "notes/plugin-survey.md").read_text()
+        result = heal_tier.run(self.cfg, apply=True, today=DATE)
+        self.assertEqual(result["applied"], [])
+        self.assertFalse((self.memory / "plugin-survey.md").exists(),
+                         "a reference survey was minted as a memory")
+        self.assertEqual((self.vault / "notes/plugin-survey.md").read_text(), before,
+                         "the note was tombstoned by a move that must not happen")
+
+    def test_a_note_that_does_move_lands_with_a_legal_memory_type(self):
+        """The move is authorised by the declaration, so the minted memory must
+        CARRY that declaration — not write_memory_note's `reference` default,
+        which would be an instant heal_lint memory-type finding."""
+        self._note("how-to-brief-me", "how I want briefs written", PERSONAL_BODY,
+                   ntype="feedback")
+        heal_tier.run(self.cfg, apply=True, today=DATE)
+        minted = (self.memory / "how-to-brief-me.md").read_text()
+        self.assertIn("MARKER-PERSONAL-BODY", minted)
+        self.assertEqual(heal_lint.memory_type(self.memory / "how-to-brief-me.md"),
+                         "feedback")
+
+    def test_a_memory_declared_outside_the_contract_is_a_finding_not_aligned(self):
+        self._mem("brain-plane-state", "where the brain plane ships",
+                  "My notes on where this ships and how I reach it.", mtype="project")
+        f = next(f for f in heal_tier.scan(self.cfg) if f["slug"] == "brain-plane-state")
+        self.assertEqual(f["suggested"], "note")
+        self.assertFalse(f["applied_eligible"])          # heal_lint owns the count
+        self.assertIn("only feedback|user", f["kind"])
+
+    def test_the_two_lints_read_the_declared_type_through_one_reader(self):
+        """A tier-lint suggestion can never disagree with the check that
+        enforces it — the same argument the module already makes for `promote`."""
+        self._mem("harness-shaped", "d", "b", mtype="user")
+        path = self.memory / "harness-shaped.md"
+        self.assertEqual(heal_tier._read_item(path)["type"],
+                         heal_lint.memory_type(path))
 
 
 if __name__ == "__main__":
