@@ -101,7 +101,8 @@ class FrontmatterKeyOrderTest(BrainTestCase):
         "area: finance",
         "plane: knowledge",
         "type: reference",
-        "scope: personal",
+        "publish: true",
+        "promote: true",
         "verified: 2026-08-13",
         "source: manual",
         'tags: ["billing", "ledger"]',
@@ -121,7 +122,7 @@ class FrontmatterKeyOrderTest(BrainTestCase):
         vault = self.make_vault(self.home / "vault")
         path = notes.write_note(
             vault, "story-2704-balance", description="a: b", body="the body",
-            type="reference", scope="personal", source="manual",
+            type="reference", publish=True, promote=True, source="manual",
             area="finance", plane="knowledge",
             tags=["billing", "ledger"],
             contributors=[{"alias": "a", "ts": "2026-08-13", "extent": "created"}],
@@ -140,8 +141,8 @@ class FrontmatterKeyOrderTest(BrainTestCase):
         keys = [l.split(":", 1)[0] for l in self._write().read_text().splitlines()
                 if l and l != "---" and not l[:1].isspace() and ":" in l]
         self.assertEqual(keys, [
-            "name", "description", "area", "plane", "type", "scope", "verified",
-            "source", "tags", "contributors", "provenance",
+            "name", "description", "area", "plane", "type", "publish", "promote",
+            "verified", "source", "tags", "contributors", "provenance",
             "org_node", "org_rev", "tasks", "fetched", "zz-unknown"])
 
     def test_module_emitters_bind_the_note_key_order(self):
@@ -199,13 +200,14 @@ class UpdateModeTest(BrainTestCase):
         self.assertNotIn("ORIGINAL-MARKER", text)
         self.assertIn("totally new", text)
 
-    def test_update_honours_type_scope_source(self):
+    def test_update_honours_type_switches_source(self):
         notes.write_note(self.vault, "note", body="u", mode="append",
-                         type="decision", scope="team", source="task-station:42",
-                         commit=False)
+                         type="decision", publish=True, promote=True,
+                         source="task-station:42", commit=False)
         fm, _ = notes.parse_note(self.path.read_text())
         self.assertEqual(fm["type"], "decision")
-        self.assertEqual(fm["scope"], "team")
+        self.assertEqual(fm["publish"], "true")
+        self.assertEqual(fm["promote"], "true")
         self.assertEqual(fm["source"], "task-station:42")
 
 
@@ -216,7 +218,7 @@ class TrustIntegrityTest(BrainTestCase):
         self.path = self.vault / "notes/human.md"
         self.path.write_text(
             "---\nname: human\ndescription: a human fact\ntype: reference\n"
-            "scope: personal\nverified: 2020-01-01\nverified-by: human\nsource: manual\n---\n\n"
+            "verified: 2020-01-01\nverified-by: human\nsource: manual\n---\n\n"
             "the fact\n"
         )
 
@@ -238,7 +240,7 @@ class TrustIntegrityTest(BrainTestCase):
         # a note with no verified-by is not human-verified; agent may bump verified
         p = self.vault / "notes/agent.md"
         p.write_text("---\nname: agent\ndescription: d\ntype: reference\n"
-                     "scope: personal\nverified: 2020-01-01\nsource: manual\n---\n\nx\n")
+                     "verified: 2020-01-01\nsource: manual\n---\n\nx\n")
         notes.write_note(self.vault, "agent", body="more", mode="append",
                          actor="agent", commit=False, today="2026-07-14")
         fm, _ = notes.parse_note(p.read_text())
@@ -337,6 +339,83 @@ class WriteMemoryNoteTest(BrainTestCase):
         notes.write_memory_note(self.memory, "mem-note", body="second",
                                 overwrite=True, commit=False)
         self.assertIn("second", (self.memory / "mem-note.md").read_text())
+
+
+# --------------------------------------------------------------------------- #
+# ADDED — the two share switches. `notes.switch` is the ONE reader for the whole
+# brain plane (publish, promote and tier-lint all call it), so its truthiness
+# rule is pinned here rather than re-derived in each caller's suite.
+# --------------------------------------------------------------------------- #
+class SwitchReaderTest(unittest.TestCase):
+    def test_absent_is_off(self):
+        for key in notes.SWITCHES:
+            with self.subTest(key=key):
+                self.assertFalse(notes.switch({}, key))
+                self.assertFalse(notes.switch({"name": "n"}, key))
+
+    def test_only_a_literal_true_is_on(self):
+        for raw in ("true", "True", "TRUE", " true ", '"true"', "'true'", True):
+            with self.subTest(value=raw):
+                self.assertTrue(notes.switch({"publish": raw}, "publish"))
+
+    def test_everything_else_is_off(self):
+        for raw in ("false", "False", "yes", "y", "1", 1, "on", "maybe", "tru",
+                    "", None, [], {}, "team", "personal", "private"):
+            with self.subTest(value=raw):
+                self.assertFalse(notes.switch({"publish": raw}, "publish"))
+
+    def test_the_two_switches_are_read_independently(self):
+        fm = {"promote": "true"}
+        self.assertFalse(notes.switch(fm, "publish"))
+        self.assertTrue(notes.switch(fm, "promote"))
+
+
+class SwitchWritePathTest(BrainTestCase):
+    def setUp(self):
+        super().setUp()
+        self.vault = self.make_vault(self.home / "vault")
+
+    def _fm(self, slug):
+        fm, _ = notes.parse_note((self.vault / f"notes/{slug}.md").read_text())
+        return fm
+
+    def test_a_new_note_is_written_with_neither_switch(self):
+        """Rule 2: no `publish: false` line, no `promote: false` line. A clean
+        note is a private note, and there is no field to remember."""
+        notes.write_note(self.vault, "fresh", description="d", body="b", commit=False)
+        text = (self.vault / "notes/fresh.md").read_text()
+        self.assertIn("name: fresh", text)        # it really did write a note
+        self.assertNotIn("publish", text)
+        self.assertNotIn("promote", text)
+
+    def test_explicit_false_writes_no_field_either(self):
+        notes.write_note(self.vault, "off", description="d", body="b",
+                         publish=False, promote=False, commit=False)
+        self.assertNotIn("publish", (self.vault / "notes/off.md").read_text())
+
+    def test_true_writes_the_lowercase_literal(self):
+        """Emitted as `true`, not python's `True` — a note is read by humans and
+        by the mini-parser, and both should see the documented spelling."""
+        notes.write_note(self.vault, "on", description="d", body="b",
+                         publish=True, commit=False)
+        self.assertIn("publish: true", (self.vault / "notes/on.md").read_text())
+        self.assertTrue(notes.switch(self._fm("on"), "publish"))
+
+    def test_an_update_that_says_nothing_leaves_the_switches_alone(self):
+        notes.write_note(self.vault, "keep", description="d", body="b",
+                         publish=True, commit=False)
+        notes.write_note(self.vault, "keep", body="an addendum", mode="append",
+                         commit=False)
+        self.assertTrue(notes.switch(self._fm("keep"), "publish"))
+
+    def test_an_update_can_turn_a_switch_off_by_removing_the_field(self):
+        notes.write_note(self.vault, "flip", description="d", body="b",
+                         publish=True, promote=True, commit=False)
+        notes.write_note(self.vault, "flip", body="u", mode="append",
+                         publish=False, commit=False)
+        text = (self.vault / "notes/flip.md").read_text()
+        self.assertNotIn("publish", text)         # removed, not set to false
+        self.assertIn("promote: true", text)      # the other one is untouched
 
 
 class BrainLayeringTest(unittest.TestCase):

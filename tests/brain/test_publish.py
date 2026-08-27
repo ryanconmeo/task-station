@@ -1,9 +1,11 @@
 """brain.publish — the publish engine (private vault -> shared brain mirror).
 
-Covers: opt-out eligibility (scope: private), each publish-lint block class
-(local home path / UUID session id / secret), mirror add+update+delete (true
-mirror semantics), INDEX regeneration, README-once, byte-exact + idempotence
-(unchanged input = zero writes), single git commit, and the no-mirror no-op.
+Covers: opt-IN eligibility (`publish: true` and nothing else), each publish-lint
+block class (local home path / UUID session id / secret), mirror
+add+update+delete (true mirror semantics), the three-way deletion sweep and the
+withdrawn-but-kept safety property, INDEX regeneration, README-once, byte-exact
++ idempotence (unchanged input = zero writes), single git commit, and the
+no-mirror no-op.
 
 PROVENANCE: ported in 3.0.0 Phase 4 (chunk 4b) from the brain source tree's
 ``tests/test_publish.py`` @ 0.14.0. All 20 source cases port. Mechanical
@@ -22,6 +24,8 @@ source of truth and every alternation of it blocks; a note that BECOMES dirty is
 swept out of the mirror; the no-notes and missing-vault no-ops; and a real git
 failure is loud.
 """
+import contextlib
+import io
 import os
 import re
 import subprocess
@@ -48,10 +52,16 @@ class PublishBase(BrainTestCase):
         self.mirror = self.home / "shared-brain"
 
     def write_note(self, slug, *, description="a note", body="body text",
-                   scope=None, type="reference"):
+                   publish="true", promote=None, type="reference"):
+        """Write a source note. ``publish`` DEFAULTS TO ``"true"`` so every suite
+        below that is about something else (lint, INDEX, git, idempotence) gets a
+        publishable note without saying so. The default-OFF property is what
+        :class:`EligibilityTest` asserts explicitly — pass ``publish=None``."""
         fm = [f"name: {slug}", f"description: {description}", f"type: {type}"]
-        if scope is not None:
-            fm.append(f"scope: {scope}")
+        if publish is not None:
+            fm.append(f"publish: {publish}")
+        if promote is not None:
+            fm.append(f"promote: {promote}")
         (self.vault / "notes" / f"{slug}.md").write_text(
             "---\n" + "\n".join(fm) + "\n---\n\n" + body + "\n")
 
@@ -67,27 +77,57 @@ class PublishBase(BrainTestCase):
 
 
 class EligibilityTest(PublishBase):
-    def test_missing_scope_publishes(self):
-        self.write_note("alpha")  # no scope -> personal -> publishes
+    """Opt-IN. The default is private, and only a literal ``true`` changes that."""
+
+    def test_a_note_with_no_switches_never_reaches_the_mirror(self):
+        """Brief test 1. Two of the three notes are marked; the unmarked one must
+        not leak, and the run must still publish exactly the two that ARE marked
+        (a positive count — "nothing published" would pass a bare not-in check)."""
+        self.write_note("unmarked", publish=None)
+        self.write_note("marked-one")
+        self.write_note("marked-two")
         res = self.do_publish()
-        self.assertIn("alpha", res["published"])
-        self.assertEqual(self.mirror_notes(), ["alpha.md"])
+        self.assertEqual(sorted(res["published"]), ["marked-one", "marked-two"])
+        self.assertEqual(len(res["published"]), 2)
+        self.assertEqual(self.mirror_notes(), ["marked-one.md", "marked-two.md"])
+        self.assertFalse((self.mirror / "unmarked.md").exists())
 
-    def test_scope_personal_publishes(self):
-        self.write_note("beta", scope="personal")
-        self.do_publish()
-        self.assertEqual(self.mirror_notes(), ["beta.md"])
-
-    def test_scope_team_publishes(self):
-        self.write_note("gamma", scope="team")
-        self.do_publish()
-        self.assertEqual(self.mirror_notes(), ["gamma.md"])
-
-    def test_scope_private_opts_out(self):
-        self.write_note("secretish", scope="private")
+    def test_publish_true_reaches_the_mirror_byte_exact(self):
+        """Brief test 2."""
+        self.write_note("shared", body="the exact bytes")
         res = self.do_publish()
-        self.assertEqual(res["published"], [])
-        self.assertEqual(self.mirror_notes(), [])
+        self.assertEqual(res["published"], ["shared"])
+        self.assertEqual((self.vault / "notes/shared.md").read_bytes(),
+                         (self.mirror / "shared.md").read_bytes())
+
+    def test_true_is_read_in_any_case_and_through_quotes(self):
+        for i, raw in enumerate(("true", "True", "TRUE", '"true"', "'True'")):
+            with self.subTest(value=raw):
+                self.write_note(f"cased{i}", publish=raw)
+        res = self.do_publish()
+        self.assertEqual(len(res["published"]), 5)
+        self.assertEqual(self.mirror_notes(),
+                         [f"cased{i}.md" for i in range(5)])
+
+    def test_anything_that_is_not_true_is_off(self):
+        """Never guess, never warn-and-enable: an unrecognised value is private."""
+        for i, raw in enumerate(("false", "yes", "1", "maybe", "tru", "")):
+            with self.subTest(value=raw):
+                self.write_note(f"odd{i}", publish=raw)
+        self.write_note("control")          # so the run is not vacuously empty
+        res = self.do_publish()
+        self.assertEqual(res["published"], ["control"])
+        self.assertEqual(self.mirror_notes(), ["control.md"])
+
+    def test_promote_true_alone_does_not_publish(self):
+        """Brief test 4 (the publish half). The two switches are independent: a
+        note bound for the org brain does not pass through the shared mirror
+        unless it separately says so."""
+        self.write_note("org-bound", publish=None, promote="true")
+        self.write_note("also-shared")      # positive count, not an empty scan
+        res = self.do_publish()
+        self.assertEqual(res["published"], ["also-shared"])
+        self.assertEqual(self.mirror_notes(), ["also-shared.md"])
 
     def test_underscore_stems_never_publish(self):
         """The promote queue (notes/_org_brain-queue.md) is org-bound content
@@ -163,23 +203,30 @@ class MirrorSemanticsTest(PublishBase):
         self.do_publish()
         self.assertEqual(self.mirror_notes(), ["goaway.md", "keep.md"])
 
-        # update keep, make goaway private (opt-out), add fresh
+        # update keep, delete goaway's SOURCE, add fresh
         self.write_note("keep", body="v2 updated")
-        self.write_note("goaway", body="v1", scope="private")
+        (self.vault / "notes/goaway.md").unlink()
         self.write_note("fresh", body="new")
         res = self.do_publish()
         self.assertEqual(self.mirror_notes(), ["fresh.md", "keep.md"])   # goaway deleted
         self.assertIn("v2 updated", (self.mirror / "keep.md").read_text())
         self.assertIn("goaway", res["removed"])
+        self.assertEqual(res["withdrawn"], [])   # a gone source is not a withdrawal
 
     def test_delete_when_source_removed(self):
+        """Brief test 6: mirror semantics survive the opt-in flip. A mirror note
+        whose SOURCE FILE is gone is still deleted — the withdrawn-but-kept rule
+        protects live sources only, never orphans."""
         self.write_note("temp", body="x")
+        self.write_note("stays", body="y")       # positive count on the rerun
         self.do_publish()
-        self.assertEqual(self.mirror_notes(), ["temp.md"])
+        self.assertEqual(self.mirror_notes(), ["stays.md", "temp.md"])
         (self.vault / "notes/temp.md").unlink()
         res = self.do_publish()
-        self.assertEqual(self.mirror_notes(), [])
-        self.assertIn("temp", res["removed"])
+        self.assertEqual(self.mirror_notes(), ["stays.md"])
+        self.assertEqual(res["removed"], ["temp"])
+        self.assertEqual(res["withdrawn"], [])
+        self.assertEqual(res["published"], ["stays"])
 
     def test_byte_exact_copy(self):
         self.write_note("exact", body="precise bytes")
@@ -222,14 +269,118 @@ class IndexAndReadmeTest(PublishBase):
         self.assertEqual(readme.read_text(), "# custom\n")
 
 
+# --------------------------------------------------------------------------- #
+# The safety property of the opt-out -> opt-in flip. Mirror semantics alone would
+# mean the FIRST run after the flip erases the entire shared brain, because no
+# note carries `publish: true` yet. The third sweep case is what makes that
+# impossible by accident, so it gets its own suite.
+# --------------------------------------------------------------------------- #
+class WithdrawalTest(PublishBase):
+    def _publish_then_unmark(self):
+        self.write_note("was-shared", body="published once")
+        self.write_note("still-shared", body="stays marked")
+        self.do_publish()
+        self.assertEqual(self.mirror_notes(), ["still-shared.md", "was-shared.md"])
+        self.write_note("was-shared", body="published once", publish=None)
+
+    def test_an_unmarked_note_is_reported_and_left_in_the_mirror(self):
+        """Brief test 5 (default half): reported in ``withdrawn``, and the FILE IS
+        STILL THERE afterwards."""
+        self._publish_then_unmark()
+        res = self.do_publish()
+        self.assertEqual(res["withdrawn"], ["was-shared"])
+        self.assertEqual(res["removed"], [])
+        self.assertTrue((self.mirror / "was-shared.md").exists())
+        self.assertEqual(self.mirror_notes(), ["still-shared.md", "was-shared.md"])
+        self.assertEqual(res["published"], ["still-shared"])   # the run still works
+
+    def test_withdraw_flag_removes_it_and_counts_it_as_removed(self):
+        """Brief test 5 (opt-in half): with ``withdraw=True`` it is deleted, and it
+        appears in BOTH lists — ``removed`` (it left) and ``withdrawn`` (why)."""
+        self._publish_then_unmark()
+        res = self.do_publish(withdraw=True)
+        self.assertEqual(res["withdrawn"], ["was-shared"])
+        self.assertEqual(res["removed"], ["was-shared"])
+        self.assertFalse((self.mirror / "was-shared.md").exists())
+        self.assertEqual(self.mirror_notes(), ["still-shared.md"])
+
+    def test_a_withdrawn_note_survives_every_default_rerun(self):
+        """The failure this guards against is a slow bleed: reported once, then
+        quietly dropped on the next run. It must stay until someone opts in."""
+        self._publish_then_unmark()
+        for i in range(3):
+            with self.subTest(run=i):
+                res = self.do_publish()
+                self.assertEqual(res["withdrawn"], ["was-shared"])
+                self.assertTrue((self.mirror / "was-shared.md").exists())
+
+    def test_a_withdrawn_note_costs_no_writes_on_a_rerun(self):
+        """Idempotence must hold WITH a withdrawn note present: the first run
+        after the un-marking rewrites INDEX.md (the note leaves the listing), and
+        every run after that writes nothing at all."""
+        self._publish_then_unmark()
+        self.assertGreater(self.do_publish()["writes"], 0)   # INDEX.md drops the line
+        self.assertEqual(self.do_publish()["writes"], 0)
+
+    def test_a_blocked_note_is_deleted_not_withdrawn(self):
+        """Row two of the sweep table beats row three: a leak comes out of the
+        mirror immediately, even though its source is present."""
+        self.write_note("leaky", body="clean for now")
+        self.do_publish()
+        self.write_note("leaky", body="now with /Users/ada/x in it", publish=None)
+        res = self.do_publish()
+        self.assertEqual(res["removed"], ["leaky"])
+        self.assertEqual(res["withdrawn"], [])
+        self.assertEqual(self.mirror_notes(), [])
+
+    def test_the_summary_names_the_notes_and_the_exact_command(self):
+        """A withdrawn note that is not surfaced is a note nobody re-publishes."""
+        self._publish_then_unmark()
+        res = self.do_publish()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            publish._print_summary(res, self.mirror)
+        out = buf.getvalue()
+        self.assertIn("WITHDRAWN-BUT-KEPT", out)
+        self.assertIn("- was-shared", out)                 # one per line, by name
+        self.assertIn("NOT deleted", out)
+        self.assertIn("`publish: true`", out)              # how to keep it
+        self.assertIn("--withdraw", out)                   # how to drop it
+
+    def test_the_summary_does_not_claim_a_withdrawn_note_was_kept(self):
+        """After ``--withdraw`` the notes ARE gone; printing the keep-it banner
+        would be a lie the user acts on."""
+        self._publish_then_unmark()
+        res = self.do_publish(withdraw=True)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            publish._print_summary(res, self.mirror)
+        out = buf.getvalue()
+        self.assertNotIn("WITHDRAWN-BUT-KEPT", out)
+        self.assertIn("removed was-shared", out)
+
+    def test_the_cli_exposes_withdraw(self):
+        os.environ["TASK_STATION_BRAIN_PUBLISH_MIRROR"] = str(self.mirror)
+        self._publish_then_unmark()
+        self.assertEqual(publish.main(["--mirror", str(self.mirror), "--quiet"]), 0)
+        self.assertTrue((self.mirror / "was-shared.md").exists())      # kept
+        self.assertEqual(
+            publish.main(["--mirror", str(self.mirror), "--withdraw", "--quiet"]), 0)
+        self.assertFalse((self.mirror / "was-shared.md").exists())     # dropped
+
+
 class IdempotenceTest(PublishBase):
     def test_unchanged_input_zero_writes(self):
+        """Brief test 7."""
         self.write_note("stable", body="unchanging")
         first = self.do_publish()
         self.assertGreater(first["writes"], 0)
+        self.assertEqual(first["published"], ["stable"])
         second = self.do_publish()
         self.assertEqual(second["writes"], 0)   # nothing rewritten
         self.assertEqual(second["removed"], [])
+        self.assertEqual(second["withdrawn"], [])
+        self.assertEqual(second["published"], ["stable"])
 
 
 class GitCommitTest(PublishBase):

@@ -116,17 +116,17 @@ class OrgBrainCloneTest(BrainTestCase):
         self.assertEqual(bconfig.load()["org_brain_clone"], bconfig.DEFAULT_ORG_BRAIN())
 
     def test_json_key(self):
-        self.write_primary_config({"org_brain_clone": str(self.home / "canon")})
-        self.assertEqual(bconfig.load()["org_brain_clone"], self.home / "canon")
+        self.write_primary_config({"org_brain_clone": str(self.home / "org-clone")})
+        self.assertEqual(bconfig.load()["org_brain_clone"], self.home / "org-clone")
 
     def test_env_key(self):
-        os.environ["TASK_STATION_BRAIN_ORG_BRAIN_CLONE"] = str(self.home / "e-canon")
-        self.assertEqual(bconfig.load()["org_brain_clone"], self.home / "e-canon")
+        os.environ["TASK_STATION_BRAIN_ORG_BRAIN_CLONE"] = str(self.home / "e-org-clone")
+        self.assertEqual(bconfig.load()["org_brain_clone"], self.home / "e-org-clone")
 
     def test_env_beats_json(self):
-        self.write_primary_config({"org_brain_clone": str(self.home / "canon")})
-        os.environ["TASK_STATION_BRAIN_ORG_BRAIN_CLONE"] = str(self.home / "e-canon")
-        self.assertEqual(bconfig.load()["org_brain_clone"], self.home / "e-canon")
+        self.write_primary_config({"org_brain_clone": str(self.home / "org-clone")})
+        os.environ["TASK_STATION_BRAIN_ORG_BRAIN_CLONE"] = str(self.home / "e-org-clone")
+        self.assertEqual(bconfig.load()["org_brain_clone"], self.home / "e-org-clone")
 
     def test_retired_key_is_ignored(self):
         # The old name must NOT resolve any more - a config still carrying it

@@ -4,10 +4,11 @@ PROVENANCE: ported in 3.0.0 Phase 4 (chunk 4b) from the brain source tree's
 ``scripts/publish.py`` @ 0.14.0.
 
 The shared brain is a per-person mirror repo: org-readable, owner-writable. It
-holds the notes the owner chooses to publish. Publishing is **opt-out**: every
-note in ``<vault>/notes/`` publishes UNLESS its frontmatter carries
-``scope: private``. ``memory/``, ``raw/``, ``plans/`` and ``reports/`` NEVER
-publish — this engine only ever reads ``notes/``.
+holds the notes the owner chooses to publish. Publishing is **opt-IN**: a note
+in ``<vault>/notes/`` publishes ONLY when its frontmatter carries
+``publish: true``. A note with no such field — which is every note by default —
+stays in the private vault. ``memory/``, ``raw/``, ``plans/`` and ``reports/``
+NEVER publish; this engine only ever reads ``notes/``.
 
 Before a note is mirrored it passes a blocking **publish-lint** (per note): a
 note that contains a local home-directory absolute path, a UUID-shaped session
@@ -16,12 +17,20 @@ per-note reason — never transformed silently — and the run continues. The
 summary lists every blocked note.
 
 Sync is true mirror semantics: eligible+clean notes are copied byte-exact
-(preserving filenames), a mirror note whose source went private or was removed
-is DELETED, an ``INDEX.md`` is regenerated from the published notes, and a
-``README.md`` header (read-only-for-others notice) is written once if absent.
-The run is idempotent — unchanged input performs zero writes. When the mirror is
-a git repo the sync lands as ONE commit ``publish: <n> notes (<date>)``; it is
-never pushed (the owner/hub pushes).
+(preserving filenames), an ``INDEX.md`` is regenerated from the published notes,
+and a ``README.md`` header (read-only-for-others notice) is written once if
+absent. The run is idempotent — unchanged input performs zero writes. When the
+mirror is a git repo the sync lands as ONE commit ``publish: <n> notes
+(<date>)``; it is never pushed (the owner/hub pushes).
+
+THE DELETION SWEEP IS THREE-WAY, and that is the safety property of opt-in.
+Mirror semantics would otherwise mean the first run after the opt-out→opt-in
+flip erases every previously-published note, because none of them carry the new
+field yet. So a mirror note whose source is GONE is deleted, one whose source is
+BLOCKED by publish-lint is deleted (a leak must come out), but one whose source
+is still there and still clean and merely has no ``publish: true`` is KEPT and
+REPORTED as ``withdrawn``. Only an explicit ``withdraw=True`` / ``--withdraw``
+actually drops those. A default run never silently un-publishes anything.
 
 Layer rule: brain may import core and its own siblings, never board. Stdlib +
 the sibling ``config`` / ``notes`` / ``heal_lint`` modules only.
@@ -73,8 +82,12 @@ def lint_note(text):
     return reasons
 
 
-def _scope_of(fm):
-    return (fm.get("scope") or "personal").strip().lower()
+def _flag(fm, key):
+    """Read one of the two share switches. Absent = OFF; only a literal ``true``
+    (any case, quoted or not) enables. The implementation is ``notes.switch`` —
+    ONE reader for the whole plane, so publish and promote can never disagree
+    about what a switch means."""
+    return notes.switch(fm, key)
 
 
 def _index_content(published_meta):
@@ -128,14 +141,19 @@ def _git_commit_all(mirror, msg):
     return msg
 
 
-def run(cfg, *, mirror=None, owner=None, commit=True, today=None):
+def run(cfg, *, mirror=None, owner=None, commit=True, today=None, withdraw=False):
     """Publish eligible vault notes into ``mirror``. Returns a summary dict:
     ``{status, published[slugs], blocked[(name, reasons)], removed[slugs],
-    writes, committed}``. ``writes`` counts every file written/deleted — zero on
-    an unchanged rerun (the idempotence contract)."""
+    withdrawn[slugs], writes, committed}``. ``writes`` counts every file
+    written/deleted — zero on an unchanged rerun (the idempotence contract).
+
+    ``withdrawn`` lists mirror notes whose source is present and clean but no
+    longer carries ``publish: true``. By default they are KEPT (and reported);
+    ``withdraw=True`` deletes them, in which case they appear in BOTH
+    ``withdrawn`` (what was dropped) and ``removed`` (what left the mirror)."""
     day = today or datetime.date.today().isoformat()
     summary = {"status": "ok", "published": [], "blocked": [],
-               "removed": [], "writes": 0, "committed": None}
+               "removed": [], "withdrawn": [], "writes": 0, "committed": None}
     if not mirror:
         summary["status"] = "no-mirror"
         return summary
@@ -157,8 +175,8 @@ def run(cfg, *, mirror=None, owner=None, commit=True, today=None):
             continue
         text = src.read_text(errors="ignore")
         fm, _ = notes.parse_note(text)
-        if _scope_of(fm) == "private":
-            continue  # opt-out
+        if not _flag(fm, "publish"):
+            continue  # opt-IN: no `publish: true`, no mirror copy
         reasons = lint_note(text)
         if reasons:
             # Loud skip — never transform the source silently; the run continues.
@@ -172,12 +190,31 @@ def run(cfg, *, mirror=None, owner=None, commit=True, today=None):
         published_meta.append((src.name, fm))
         summary["published"].append(src.stem)
 
-    # deletion sweep: a mirror note whose source went private / was removed / was
-    # blocked is no longer published -> delete it (true mirror semantics).
+    # Deletion sweep — THREE cases, not one (see the module docstring):
+    #   source GONE from notes/          -> delete   (true mirror semantics)
+    #   source BLOCKED by publish-lint   -> delete   (a leak must come out)
+    #   source clean but not marked      -> KEEP + report as `withdrawn`
+    # The third case is what makes the opt-out→opt-in flip survivable: without
+    # it the very next publish would erase the whole mirror, since no note
+    # carries the new field yet.
     keep = {name for name, _ in published_meta}
     for m in sorted(mirror.glob("*.md")):
         if m.name in ("INDEX.md", "README.md") or m.name in keep:
             continue
+        source = notes_dir / m.name
+        # Row three — and ONLY row three — is the keep case, and the lint is
+        # re-run here rather than reused off summary["blocked"] because an
+        # UNMARKED source is never linted above (the gate skips it first). A
+        # note that is both unmarked and dirty is a leak, and a leak comes out
+        # whatever its switch says. `_`-stems were never publishable at all, so
+        # a stray one in the mirror is a deletion too.
+        withdrawn = (source.exists()
+                     and not source.stem.startswith("_")
+                     and not lint_note(source.read_text(errors="ignore")))
+        if withdrawn:
+            summary["withdrawn"].append(m.stem)
+            if not withdraw:
+                continue        # kept on purpose — reported, never dropped
         m.unlink()
         summary["writes"] += 1
         summary["removed"].append(m.stem)
@@ -208,6 +245,16 @@ def _print_summary(res, mirror):
         print(f"  ✗ BLOCKED {name}: {'; '.join(reasons)}")
     for slug in res["removed"]:
         print(f"  - removed {slug}")
+    # Loud, one per line, with the exact command: a withdrawn note is the one
+    # case where the run deliberately did NOT do what mirror semantics say.
+    kept = [s for s in res.get("withdrawn", []) if s not in res["removed"]]
+    if kept:
+        print(f"  ! WITHDRAWN-BUT-KEPT {len(kept)} notes are in the mirror with no "
+              "`publish: true` in the source:")
+        for slug in kept:
+            print(f"      - {slug}")
+        print("    They were NOT deleted. Add `publish: true` to keep them, or "
+              "re-run with --withdraw to remove them.")
     if res["committed"]:
         print(f"  committed: {res['committed']} (not pushed)")
 
@@ -221,6 +268,10 @@ def main(argv=None):
                     help="no-op unless a publish_mirror is EXPLICITLY configured "
                          "(env/config) — the /brain-heal auto-step uses this so the "
                          "brain never auto-publishes to an un-opted-in default location")
+    ap.add_argument("--withdraw", action="store_true",
+                    help="ALSO delete mirror notes whose source is present and clean "
+                         "but no longer carries `publish: true`. Without this they are "
+                         "kept and reported — a default run never un-publishes silently")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
 
@@ -238,7 +289,7 @@ def main(argv=None):
         if not a.quiet:
             print(f"brain-publish: vault missing at {cfg['vault']} — run /brain-init")
         return 0
-    res = run(cfg, mirror=mirror, owner=a.owner)
+    res = run(cfg, mirror=mirror, owner=a.owner, withdraw=a.withdraw)
     if not a.quiet:
         _print_summary(res, mirror)
     return 0

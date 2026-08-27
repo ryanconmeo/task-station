@@ -72,10 +72,17 @@ class PromoteFixture(BrainTestCase):
                     "org_label": "org brain", "alias": "ryan",
                     "forge_target_branch": "main"}
 
-    def _private(self, slug, *, scope="team", type="reference", desc="d", body="b",
-                 provenance=None, folder="notes"):
-        fm = {"name": slug, "description": desc, "type": type, "scope": scope,
+    def _private(self, slug, *, promote="true", publish=None, type="reference",
+                 desc="d", body="b", provenance=None, folder="notes"):
+        """``promote`` defaults to ``"true"`` so the suites below that are about
+        something else (reconcile, strip, finalize) get a promotable note.
+        :class:`GateTest` is where the default-OFF property is asserted."""
+        fm = {"name": slug, "description": desc, "type": type,
               "verified": "2026-01-01", "source": "manual"}
+        if publish is not None:
+            fm["publish"] = publish
+        if promote is not None:
+            fm["promote"] = promote
         if provenance:
             fm["provenance"] = provenance
         (self.vault / folder / f"{slug}.md").write_text(notes.render_note(fm, body))
@@ -91,14 +98,58 @@ class PromoteFixture(BrainTestCase):
 
 
 class GateTest(PromoteFixture):
-    def test_personal_note_gated(self):
-        self._private("ai-personal-note", scope="personal")
-        res = promote.promote(self.cfg, "ai-personal-note", dry_run=True)
-        self.assertEqual(res["status"], "gated")
+    def test_promote_true_passes_the_gate(self):
+        """Brief test 3 (the pass half)."""
+        self._private("ledger-marked-note")
+        res = promote.promote(self.cfg, "ledger-marked-note", dry_run=True)
+        self.assertEqual(res["status"], "created")
 
-    def test_non_team_opt_in_allowed(self):
-        self._private("ai-personal-note", scope="personal")
-        res = promote.promote(self.cfg, "ai-personal-note", allow_non_team=True, dry_run=True)
+    def test_a_note_without_the_switch_is_refused_by_name(self):
+        """Brief test 3 (the refusal half). The message has to name the field the
+        author must add, or they cannot act on it."""
+        self._private("ai-unmarked-note", promote=None)
+        res = promote.promote(self.cfg, "ai-unmarked-note", dry_run=True)
+        self.assertEqual(res["status"], "gated")
+        self.assertIn("promote: true", res["message"])
+        self.assertIn("--unmarked", res["message"])
+
+    def test_promote_without_publish_is_a_valid_promote(self):
+        """Brief test 4 (the promote half). The two switches are independent: a
+        note can go straight to the org brain with no shared-mirror stop, and
+        promote must never require, imply, or add `publish:`."""
+        self._private("ledger-org-only", promote="true", publish=None)
+        res = promote.promote(self.cfg, "ledger-org-only", dry_run=True,
+                              today="2026-07-24")
+        self.assertEqual(res["status"], "created")
+        source = (self.vault / "notes/ledger-org-only.md").read_text()
+        self.assertNotIn("publish:", source)     # the source is untouched
+        _git(self.clone, "checkout", "promote-ledger-org-only")
+        fm, _ = notes.parse_note((self.clone / "notes/ledger-org-only.md").read_text())
+        self.assertNotIn("publish", fm)          # and neither switch is carried over
+        self.assertNotIn("promote", fm)
+
+    def test_a_value_that_is_not_true_does_not_pass_the_gate(self):
+        for raw in ("false", "yes", "1", "maybe"):
+            with self.subTest(value=raw):
+                self._private("ai-odd-note", promote=raw)
+                res = promote.promote(self.cfg, "ai-odd-note", dry_run=True)
+                self.assertEqual(res["status"], "gated")
+
+    def test_true_is_read_in_any_case(self):
+        # Asserted as "not gated" rather than "created": once the first case has
+        # landed in the clone, a later near-named slug legitimately RECONCILES
+        # instead — which is the merge-target machinery, not the gate.
+        for i, raw in enumerate(("true", "True", "TRUE", '"true"')):
+            with self.subTest(value=raw):
+                slug = f"ledger-cased-note-{i}"
+                self._private(slug, promote=raw)
+                res = promote.promote(self.cfg, slug, dry_run=True)
+                self.assertNotEqual(res["status"], "gated")
+                self.assertIn(res["status"], ("created", "reconciled"))
+
+    def test_unmarked_opt_in_allowed(self):
+        self._private("ai-unmarked-note", promote=None)
+        res = promote.promote(self.cfg, "ai-unmarked-note", allow_unmarked=True, dry_run=True)
         self.assertEqual(res["status"], "created")
 
     def test_an_unregistered_domain_gates_the_promote(self):
@@ -129,7 +180,8 @@ class CreateTest(PromoteFixture):
         _git(self.clone, "checkout", "promote-ledger-new-subject")
         fm, body = notes.parse_note((self.clone / "notes/ledger-new-subject.md").read_text())
         self.assertEqual(fm["type"], "reference")
-        self.assertNotIn("scope", fm)          # personal keys stripped
+        self.assertNotIn("publish", fm)        # personal keys stripped —
+        self.assertNotIn("promote", fm)        # the org copy carries no switch
         self.assertNotIn("source", fm)
         self.assertEqual(fm["verified"], "2026-07-24")
         self.assertEqual(fm["contributors"], [{"alias": "ryan", "ts": "2026-07-24",
@@ -179,7 +231,7 @@ class QueueFallbackTest(BrainTestCase):
                "org_label": "org brain"}
         # no clone ⇒ no org registry, so the slug must lead with a GENERIC area
         fm = {"name": "ai-q-note", "description": "d", "type": "reference",
-              "scope": "team", "verified": "2026-01-01"}
+              "promote": "true", "verified": "2026-01-01"}
         (vault / "notes/ai-q-note.md").write_text(notes.render_note(fm, "queued body"))
         res = promote.promote(cfg, "ai-q-note", dry_run=True, today="2026-07-24")
         self.assertEqual(res["status"], "queued")
@@ -362,8 +414,8 @@ class QueueShapeTest(BrainTestCase):
                     "org_label": "org brain"}
 
     def _private(self, slug, body="b"):
-        fm = {"name": slug, "description": "d", "type": "decision", "scope": "team",
-              "verified": "2026-01-01", "source": "manual"}
+        fm = {"name": slug, "description": "d", "type": "decision", "promote": "true",
+              "publish": "true", "verified": "2026-01-01", "source": "manual"}
         (self.vault / "notes" / f"{slug}.md").write_text(notes.render_note(fm, body))
 
     def test_the_queue_header_is_written_once(self):
@@ -383,7 +435,8 @@ class QueueShapeTest(BrainTestCase):
         text = (self.vault / "notes/_org_brain-queue.md").read_text()
         self.assertIn("<local-path>", text)
         self.assertNotIn("/Users/", text)
-        self.assertNotIn("scope:", text)          # personal keys never queued
+        self.assertNotIn("publish:", text)        # personal keys never queued
+        self.assertNotIn("promote:", text)        # (neither share switch survives)
         self.assertNotIn("source:", text)
         self.assertIn("contributors:", text)      # org schema present
         self.assertIn("type: reference", text)    # local-only type remapped

@@ -57,7 +57,8 @@ class TemplateLintTest(unittest.TestCase):
         _, body = self._check("routing-spec", {"architecture", "reference"})
         low = body.lower()
         self.assertIn("shared brain", low)
-        self.assertIn("scope: private", body)      # the opt-out is documented
+        self.assertIn("publish: true", body)       # the opt-IN switch is documented
+        self.assertIn("promote: true", body)       # ...and so is the org-brain one
         self.assertIn("peers", low)                # peers are read-only
 
     def test_team_rules_has_publish_rule(self):
