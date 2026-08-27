@@ -327,11 +327,36 @@ class DigestTest(unittest.TestCase):
         ts.add_story(t, s2)
         ts.save_task(t)
         detail = ts._format_detail(ts.load_task(t["id"]), "sess")
-        self.assertIn("Stories:", detail)
+        self.assertIn("Stories", detail)
         self.assertIn("%s  —  first story" % s1, detail)   # url + desc on one line
         self.assertIn(s2, detail)                          # url-only line
         # Stories sits in the Artifacts block
-        self.assertLess(detail.index("Artifacts:"), detail.index("Stories:"))
+        self.assertLess(detail.index("Artifacts:"), detail.index("Stories"))
+
+    def test_the_story_block_says_the_desc_is_a_summary_not_the_work_item(self):
+        """MEASURED 2026-08-26. This block rendered `<url> — <desc>` with nothing
+        marking the desc as something a person typed HERE. A relayed session read
+        "seeds out of chain" against story 3614, took it for the scope, and spent
+        hours designing a mechanism the story's criteria 2, 23, 24 and 28 already
+        specified better — 3614 carries 33 criteria and the desc was one of them.
+
+        Reading the digest is a relayed session's whole job, so the digest is where
+        the distinction has to be drawn."""
+        t = self._task()
+        ts.add_story(t, "https://dev.azure.com/Org/Proj/_workitems/edit/3614",
+                     "seeds out of chain")
+        ts.save_task(t)
+        detail = ts._format_detail(ts.load_task(t["id"]), "sess")
+        self.assertIn("SUMMARY WRITTEN ON THIS TASK", detail)
+        self.assertIn("POINTER, not a", detail)
+        self.assertIn("brain.ado_tree", detail)          # how to read the source
+        self.assertIn("--probe-ado", detail)             # how to reconcile them all
+
+    def test_the_summary_warning_costs_nothing_when_there_are_no_stories(self):
+        t = self._task()
+        ts.save_task(t)
+        detail = ts._format_detail(ts.load_task(t["id"]), "sess")
+        self.assertNotIn("SUMMARY WRITTEN ON THIS TASK", detail)
 
     # -- terminal detail: digest-first -----------------------------------------
 

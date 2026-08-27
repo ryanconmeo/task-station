@@ -247,7 +247,28 @@ def _format_detail(task, session, attached=True):
                     line += "  —  " + p["desc"]
                 out.append("    %s" % line)
         if stories:
-            out.append("  Stories:")
+            # A SUMMARY IS NOT A SOURCE, and the digest has to say so.
+            #
+            # MEASURED 2026-08-26. This block rendered `<url>  —  <desc>` with nothing
+            # marking the desc as something a person typed here. A relayed session read
+            # "seeds out of chain" against story 3614, took it for the scope, and spent
+            # hours designing a mechanism that story's criteria 2, 23, 24 and 28
+            # already specified better. 3614 carries 33 acceptance criteria. The desc
+            # was one of them.
+            #
+            # Reading the digest is a relayed session's whole job, so the digest is
+            # where the distinction has to be drawn — not in a convention nobody
+            # inherits. One line of header, once per render, and the row now names the
+            # command that fetches the real thing.
+            out.append("  Stories — the text after the dash is a SUMMARY WRITTEN ON "
+                       "THIS TASK, never the")
+            out.append("  work item. A one-line summary of a 33-criterion story is a "
+                       "POINTER, not a")
+            out.append("  scope. Read the source before designing or building anything "
+                       "it specifies:")
+            out.append("  `python3 -m brain.ado_tree <id> --no-clip`, or "
+                       "`heal --probe-ado --task <n>`")
+            out.append("  to reconcile every one of them against this record at once.")
             for s in stories:
                 line = s["url"]
                 if s.get("desc"):
@@ -464,9 +485,9 @@ def _format_history(task):
 
 
 def _open_jump_window(cmd):
-    """Open a NEW Terminal.app window running `cmd` (the resume one-liner) and
-    bring it to the front, via open-session-window.sh. The current window — the
-    one /todo was typed in — is left untouched.
+    """Open a new window IN THE TERMINAL THE CALLER IS SITTING IN, running `cmd`
+    (the resume one-liner), and bring it to the front, via open-session-window.sh.
+    The current window — the one /todo was typed in — is left untouched.
 
     THE ENV SCRUB LIVES HERE because the leak is a property of THIS TRANSPORT, not of
     the command. Measured 2026-08-18: when Terminal.app is cold, the Apple Event is what
@@ -477,11 +498,18 @@ def _open_jump_window(cmd):
     ride INSIDE the string that becomes `do script`. Putting it at the transport rather
     than in each caller's command builder means a new caller cannot forget it.
 
-    Best-effort and macOS/Terminal.app-only: any failure (not darwin, osascript
-    missing, AppleScript error, script absent) returns False so the caller falls
-    back to just printing the command for the user to run by hand. Never raises."""
-    if sys.platform != "darwin":
-        return False
+    WHICH TERMINAL IS NOT THIS FUNCTION'S BUSINESS. `open-session-window.sh` asks
+    `core.termhost`, which reads the host out of the environment and then out of the
+    process ancestry, prints which signal it believed, and REFUSES on a terminal it
+    cannot drive rather than defaulting to Terminal.app. That refusal is the point:
+    a window opened in the wrong app produces no error, so "success" is what gets
+    reported and a human finds the stray window later.
+
+    NOT DARWIN-GATED ANY MORE. The spawners for WezTerm, kitty and Alacritty are
+    their own CLIs and work wherever those terminals do; the script decides. Any
+    failure (osascript missing, AppleScript error, script absent, an undrivable
+    host) returns False so the caller falls back to printing the command for the
+    user to run by hand. Never raises."""
     script = os.path.join(g("BASE"), "open-session-window.sh")
     if not os.path.exists(script):
         return False

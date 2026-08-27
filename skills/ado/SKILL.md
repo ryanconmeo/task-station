@@ -33,12 +33,38 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/lib" python3 -m brain.ado_tree <id>
 | `python3 -m brain.ado_tree <id> --comments` | also fetch each item's comments (one extra call per node) |
 | `python3 -m brain.ado_tree <id> --depth N` | child recursion depth (default 3) |
 | `python3 -m brain.ado_tree <id> --no-parent` | skip the parent lookup |
+| `python3 -m brain.ado_tree <id> --no-clip` | description + acceptance criteria **in full** — see the warning below |
 | `python3 -m brain.ado_tree <id> --no-desc` | omit description / acceptance criteria |
 | `python3 -m brain.ado_tree <id> --org URL` | the organization url (else config `ado_org` → `$ADO_ORG`) |
 | `python3 -m brain.ado_tree <id> --login` | auto-run `az login` (opens a browser) if no credential is found |
 
 Reach for `--full` when you need a specific field the compact tree omits; the default
 tree is enough for state/assignee/PR/parent-child questions.
+
+### The compact view CLIPS long text, and you must not design against a clip
+
+`description` and `acceptance_criteria` run to thousands of characters on a real
+story. The compact view shows the first 600, and it **declares** it: the clipped text
+lands under `<field>_preview` with `<field>_truncated`, `<field>_chars` and
+`<field>_criteria` beside it, and **the plain field name is absent**. So a reader
+keying on `acceptance_criteria` gets the whole field or nothing — never a confident
+fraction. The markdown view prints the same in words: `[33 criteria, 9237 chars, 604
+shown — --no-clip for the rest]`.
+
+**Before you plan, design, or build anything a work item specifies, read its criteria
+in full** — `--no-clip` (or `--full`, which no longer clips either):
+
+```
+PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/lib" python3 -m brain.ado_tree <id> --json --no-clip
+```
+
+This exists because the clip was silent. Story 3614's `acceptance_criteria` came back
+as 604 characters — as did four other stories', all exactly 604, because 600 plus
+`" ..."` lands on the same length every time. The real field is 9,237 characters and
+33 criteria; the clip stopped inside criterion 4. A session took the fragment for the
+whole story and spent hours building a mechanism criteria 2, 23, 24 and 28 already
+specified better. To reconcile a whole task against its work items at once, use
+`heal --probe-ado --task <n>`.
 
 **There is no built-in organization.** With none of `--org`, the config key `ado_org`,
 or `$ADO_ORG` set, the run stops and names all three ways in rather than pointing at

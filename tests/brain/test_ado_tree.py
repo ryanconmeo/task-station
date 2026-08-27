@@ -265,3 +265,110 @@ class DefaultOrgTest(BrainTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------------- the 604-character lie
+class TruncationDeclaresItself(unittest.TestCase):
+    """MEASURED 2026-08-26 on story 3614 of one real board.
+
+    `--json` returned a 604-character `acceptance_criteria` for 3614 — and for
+    3607, 2966, 3202 and 3510, all exactly 604, because the old 600-char clip plus
+    " ..." lands on the same length every time. 3614's field is 9,237 characters
+    and 33 numbered criteria; the clip stopped inside criterion 4. A session read
+    it, believed it had the story, and built a file-level checksum ledger that
+    criteria 2, 23, 24 and 28 already specified better.
+
+    The defect was never the truncation. It was that a truncated value was
+    INDISTINGUISHABLE from a complete one. So the rule pinned here: when the text
+    is clipped, the plain field name is ABSENT — a reader keying on
+    `acceptance_criteria` gets the truth or nothing, never a confident fraction.
+    """
+
+    LONG = "<ol>" + "".join("<li>criterion %d body text here</li>" % i
+                            for i in range(1, 34)) + "</ol>"
+
+    def _item(self, ac):
+        it = _fake_item()
+        it["fields"]["Microsoft.VSTS.Common.AcceptanceCriteria"] = ac
+        return it
+
+    def test_clipped_field_never_uses_the_plain_name(self):
+        n = ado_tree.node_of(ORG, self._item(self.LONG), want_desc=True)
+        self.assertNotIn("acceptance_criteria", n)
+        self.assertIn("acceptance_criteria_preview", n)
+        self.assertTrue(n["acceptance_criteria_truncated"])
+
+    def test_clip_carries_the_size_it_is_hiding(self):
+        n = ado_tree.node_of(ORG, self._item(self.LONG), want_desc=True)
+        full = ado_tree._plain(self.LONG)
+        self.assertEqual(n["acceptance_criteria_chars"], len(full))
+        self.assertEqual(n["acceptance_criteria_criteria"], 33)
+        self.assertIn("acceptance_criteria", n["truncated"])
+        self.assertIn("--no-clip", n["truncated_hint"])
+
+    def test_no_clip_returns_the_whole_field_under_the_plain_name(self):
+        n = ado_tree.node_of(ORG, self._item(self.LONG), want_desc=True, clip=None)
+        self.assertNotIn("acceptance_criteria_preview", n)
+        self.assertNotIn("truncated", n)
+        self.assertEqual(n["acceptance_criteria_criteria"], 33)
+        self.assertIn("criterion 33", n["acceptance_criteria"])
+
+    def test_full_does_not_clip_either(self):
+        """`--full` means "nothing dropped". Before this it still carried the
+        604-char clip under the plain name while the truth sat in `fields` as raw
+        HTML — the worst of both, and the shape the 3614 session actually hit."""
+        n = ado_tree.node_of(ORG, self._item(self.LONG), want_desc=True, full=True)
+        self.assertIn("criterion 33", n["acceptance_criteria"])
+        self.assertNotIn("acceptance_criteria_truncated", n)
+
+    def test_short_field_is_untouched(self):
+        n = ado_tree.node_of(ORG, self._item("<p>It works</p>"), want_desc=True)
+        self.assertEqual(n["acceptance_criteria"], "It works")
+        self.assertNotIn("acceptance_criteria_truncated", n)
+
+    def test_five_distinct_stories_never_share_a_length(self):
+        """The tell that started the investigation: five different work items, five
+        identical 604-char values. Distinct sources must now differ in what they
+        report, because the reported number is the SOURCE's size, not the clip's."""
+        sizes = set()
+        for n_crit in (12, 20, 24, 33):
+            ac = "<ol>" + "".join("<li>criterion %d body</li>" % i
+                                  for i in range(1, n_crit + 1)) + "</ol>"
+            node = ado_tree.node_of(ORG, self._item(ac), want_desc=True)
+            sizes.add((node.get("acceptance_criteria_chars"),
+                       node.get("acceptance_criteria_criteria")))
+        self.assertEqual(len(sizes), 4)
+
+
+class OrderedListNumbering(unittest.TestCase):
+    """ADO's editor writes criteria as `<ol><li>`, so the numbering lives in the
+    MARKUP. Stripping tags turned "criterion 23" into an anonymous line — which is
+    why `count_criteria` saw zero on three of the five real stories measured."""
+
+    def test_ol_items_are_numbered(self):
+        self.assertEqual(ado_tree._plain("<ol><li>a</li><li>b</li></ol>"),
+                         "1. a\n\n2. b")
+
+    def test_ol_start_is_honoured(self):
+        self.assertTrue(ado_tree._plain('<ol start="5"><li>x</li></ol>').startswith("5."))
+
+    def test_ul_items_are_bulleted_not_numbered(self):
+        self.assertEqual(ado_tree._plain("<ul><li>x</li></ul>"), "- x")
+
+    def test_count_criteria_is_a_floor_not_a_guess(self):
+        self.assertEqual(ado_tree.count_criteria("1. a\n2. b\n3. c"), 3)
+        self.assertEqual(ado_tree.count_criteria("prose with no numbering"), 0)
+
+    def test_malformed_markup_still_yields_the_text(self):
+        self.assertIn("kept", ado_tree._plain("<div><b>kept</div></b><<>"))
+
+
+class RenderDeclaresWhatItIsNotShowing(unittest.TestCase):
+    def test_md_says_how_many_criteria_it_is_hiding(self):
+        it = _fake_item()
+        it["fields"]["Microsoft.VSTS.Common.AcceptanceCriteria"] = (
+            TruncationDeclaresItself.LONG)
+        tree = {"root": ado_tree.node_of(ORG, it, want_desc=True)}
+        out = ado_tree.render_md(tree, ORG)
+        self.assertIn("33 criteria", out)
+        self.assertIn("--no-clip", out)

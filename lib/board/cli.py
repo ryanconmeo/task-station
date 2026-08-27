@@ -531,7 +531,30 @@ def main(argv=None):
                          "Off by default (a session start must cost no network). Only an "
                          "explicit 404/410 counts as dead; every other answer, including any "
                          "error, stays UNKNOWN and is never reported.")
+    sp.add_argument("--probe-ado", dest="probe_ado", action="store_true",
+                    help="opt in to RECONCILING THIS TASK AGAINST THE WORK ITEMS IT "
+                         "CLAIMS — reads each stored story's real AcceptanceCriteria and "
+                         "Description (plus its parent Feature's children) and reports "
+                         "criteria no decision acknowledges, criteria the log words "
+                         "differently, descriptions that miss the source, and Feature "
+                         "children absent from the task. Off by default: it is several "
+                         "authenticated round trips per work item. Without it those five "
+                         "checks report `not probed`, never `clean`.")
     sp.set_defaults(fn=cmd_heal)
+
+    # THE ONE SANCTIONED WAY TO OPEN A NEW TERMINAL WINDOW. It exists because the
+    # alternative is a session hand-writing `osascript -e 'tell application
+    # "Terminal"'` while it is sitting in iTerm — which happened, opened a window
+    # nobody could see, and reported success.
+    sp = sub.add_parser("terminal", help="identify the host terminal, or open a new "
+                                         "window in it")
+    sp.add_argument("--open", dest="open_cmd", metavar="CMD", default=None,
+                    help="open a NEW window in THIS terminal running CMD. Refuses "
+                         "(and prints CMD) on a terminal it cannot drive rather than "
+                         "opening one somewhere you are not looking.")
+    sp.add_argument("--json", dest="as_json", action="store_true",
+                    help="emit the resolution as JSON")
+    sp.set_defaults(fn=cmd_terminal)
 
     sp = sub.add_parser("stop-gate"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_stop_gate)     # Stop hook: block ending an untracked edit session

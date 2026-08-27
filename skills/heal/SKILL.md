@@ -19,11 +19,13 @@ Measured on one real task before this existed: **72 decisions, 68 still current,
 
 **There is no approval gate, deliberately.** You do not present a plan and wait for a yes. What replaces the gate is the **undo trail**: the CLI prints the exact reversing command for every write it makes, and step 5 requires you to surface those lines verbatim. Removing the question is only defensible because taking a wrong call back now costs one paste — so never soften those commands into "this is reversible", which is the version nobody can act on.
 
-### 1. Run `heal --scan` FIRST
+### 1. Run `heal --scan` FIRST — with `--probe-ado` whenever the task claims work items
 
 ```
-python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" heal --scan --task <n>
+python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" heal --scan --probe-ado --task <n>
 ```
+
+Drop `--probe-ado` only when the task's digest shows **no Stories block** (nothing to reconcile against) or when you are sweeping with `--all` (it is several authenticated round trips *per work item* — ~40s for a task claiming 24 of them, which is fine once and not fine twenty times). Everything else takes it. See *[Reconciling against the source](#reconciling-against-the-source-probe-ado)* for what it reads and why skipping it is not free.
 
 It is deterministic, about **700 tokens**, and invokes no model at all. It tells you whether there is anything to do before you spend anything finding out. **Never open with the dry run** — that is the expensive block, and reaching for it first is how one heal came to cost two.
 
@@ -32,6 +34,8 @@ The task can be named positionally (`heal --scan 12`), with `--task 12`, with `-
 ### 2. Scan clean? Check the two things it cannot see, then stamp it and stop.
 
 Read the closing rows before you believe the verdict. The scan now ends on **three**: `Mechanical` (what the checks found), `Judgment` (whether the half no check can do has been *recorded* — a stamp carrying a `--note` — or `NOT RUN`), and only then `Heal due?`. `Heal due? no` on its own reads as *this task is a complete record*, and it has never meant that.
+
+**`not probed` is not `clean`.** If the five `ado-*` rows read `not probed — N work item(s) unverified`, the scan did not open a single work item and you know nothing about whether this record still matches what those items say. Re-run with `--probe-ado` before you call anything clean. A stamp on an unprobed task records that the log agrees with itself, which was never the thing in doubt.
 
 A clean scan means **the record does not contradict itself**. It does **not** mean the record is complete — see *the one gap the scan cannot cover* below — and it does not mean the record is still **true**: re-read the goal line and the live checklist against the newest decisions (step 4, and the section *what a clean scan still cannot see*). So before stamping, do the one judgement the deterministic layer structurally cannot: **verify that everything which actually shipped since the last heal has a decision** — a release, a merged PR, a document. The scan prints an `Accrued since last heal` line for exactly this; check it against what you know happened from the conversation and the repo, and record anything missing with `update --decision` (plus `--pr` / `--log`).
 
@@ -79,7 +83,7 @@ The CLI generates those commands as it writes — `update --task <n> --restore-d
 
 Do not re-render the `/todo` list.
 
-### The user should never need to type `--apply`, `--merge`, `--split`, `--dispose-acks`, `--mark-healed`, `--goal-reviewed`, `--candidates`, `--dismiss` or `--probe-links`
+### The user should never need to type `--apply`, `--merge`, `--split`, `--dispose-acks`, `--mark-healed`, `--goal-reviewed`, `--candidates`, `--dismiss`, `--probe-links` or `--probe-ado`
 
 **You choose them.** They exist so this skill can act precisely and so a script can too; they are not a menu for a person to pick from. A user who types `heal --apply` on a hunch gets the worst of both worlds — they pay for the dry run they never read, and before this release they also got a heal stamped for a pass that did nothing. If the user does name a flag, honour it; otherwise never make them learn one.
 
@@ -240,6 +244,39 @@ heal --dismissals --task <n>
 
 **Use it for a false positive you have READ.** It is not a way to quieten a report you have not.
 
+## Reconciling against the source (`--probe-ado`)
+
+Every other check in this pass reads **one record** and asks whether it is internally consistent. That cannot catch a record that is perfectly coherent and no longer resembles the thing it describes — and that failure has now happened twice:
+
+- **Story 3614** carries **33 acceptance criteria**. Criteria 2, 23, 24 and 28 specify a per-**row** converging applier with a row ledger. Task 503's record described the story as *"seeds out of chain"* — criterion 29, one of 33. A relayed session read the record (that is the record's entire purpose), designed a file-level checksum ledger from first principles over several hours, and shipped something strictly weaker than the specification that already existed. It surfaced only because someone said, in passing, *"I thought this was the direction when we initially scoped that portion."*
+- **Story 3070** and its PR sat inside Feature 3064 — task 506's **own** Feature — for 25 days, unowned, blocking the promotion pipeline. 506's story list is hand-maintained, and 3070 was filed after the task was created.
+
+Same root cause both times: **the task record was trusted as if it were the source.** `--probe-ado` reads each claimed work item's real `AcceptanceCriteria`, `Description` and parent Feature, and reports five checks:
+
+| Check | What it means |
+|---|---|
+| `ado-criteria-unacknowledged` | criteria no current decision or live step reaches — **the 3614 gap** |
+| `ado-criteria-conflict` | criteria the log HAS decided on but words **differently** |
+| `ado-summary-lossy` | this task's own one-line description of a work item, measured against the source title |
+| `ado-sibling-missing` | open, unowned children of a Feature this task claims — **the 3070 gap** |
+| `ado-unreachable` | a work item that would not read. **Unverified**, never "confirmed" |
+
+### The judgement this section demands of you, and it is not optional
+
+`ado-criteria-conflict` is the one check that hands you a **candidate, not a verdict**. The deterministic layer measures that a criterion and a decision are in the same territory and word it differently; whether that is *agreement in other words* or *a decision that contradicts the criterion* is a judgement, and a check that guessed would be the same class of mistake as the 604-character `acceptance_criteria` field that caused the incident.
+
+So for **every** criterion in the conflict band, the ADO RECONCILE section prints the criterion beside the decision index that covers it. Rule on each one:
+
+- **Consistent** — the decision says the same thing in other words. Nothing to do.
+- **Contradicts** — the decision decided something the criterion rules out. This is the 3614 shape: criterion 2 decides convergence *per row*; the decision decided it *per file*. Record it: `update --task <n> --decision '<what the criterion actually specifies, and what we built instead>' --supersedes <k>`. If the built thing is genuinely the better answer, the **story** is what needs changing — say so and take it to ADO; do not leave the record and the work item disagreeing.
+- **Cannot tell without reading the story** — then read it: `python3 -m brain.ado_tree <id> --no-clip`. Never rule "consistent" by default.
+
+`ado-criteria-unacknowledged` is simpler and just as load-bearing: those criteria are in scope and nothing in this task has ever mentioned them. Either they belong to this task (add steps or a decision saying so) or they do not (say which task owns them). *Silence is what let 3614 happen.*
+
+### One habit this replaces
+
+Do **not** summarise a work item into the task record and then treat that summary as the scope. A one-line summary of a 33-criterion story is a **pointer**, not a scope — the digest now says so above the Stories block. When a task's work is specified by a work item, read the work item.
+
 ## The one opt-in network call
 
 ```
@@ -273,6 +310,7 @@ Without that, the record still reads `last heal never`. Measured on one real tas
 - **Never touch the `--log` milestone trail or `history`.** Append-only and sacred.
 - **Per-task by default.** `--all` sweeps the board and warns loudly about its scope first.
 - **Do not invent history.** If you cannot tell which half of a compound decision was refuted, split it and leave both halves current — that is honest. Guessing is not.
+- **A record is not a source.** Where a work item specifies the work, the work item is the specification and this task is a summary of it. Never rule on a criterion you have not read, never call an unprobed task clean, and never let a decision and a criterion sit contradicting each other with neither marked. `heal --probe-ado` is what makes that checkable; the two incidents it exists for are in *Reconciling against the source*.
 
 ## When it is due
 

@@ -42,6 +42,7 @@ import os
 import re
 import subprocess
 import sys
+from html.parser import HTMLParser
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -58,6 +59,13 @@ HIER_PARENT = "System.LinkTypes.Hierarchy-Reverse"
 
 NO_ORG_HINT = ("no ADO organization configured — pass --org <url>, set "
                "\"ado_org\" in the brain config, or export ADO_ORG")
+
+# How much of a long text field the compact view shows before it must declare
+# itself a preview. See the block above TEXT_FIELDS for why the declaration is
+# not optional.
+PREVIEW_CHARS = 600
+TRUNCATED_HINT = ("text clipped for the compact view — re-run with --no-clip "
+                  "(or --full) for the complete field")
 
 
 def default_org() -> str | None:
@@ -219,19 +227,148 @@ def _person(field) -> str:
     return field or ""
 
 
-def _strip_html(s: str, limit: int = 600) -> str:
+class _ToText(HTMLParser):
+    """HTML -> plain text that KEEPS THE NUMBERS.
+
+    The regex strip this replaces threw ordered lists away. ADO's editor writes a
+    criteria list as ``<ol><li>...</li></ol>``, so the numbering lives in the
+    MARKUP, not the text — and stripping tags turned "criterion 23" into an
+    anonymous line in the middle of a wall. Stories 3607, 2966 and 3202 on one real
+    board all
+    number that way; the counter below is what lets a reader (or the heal
+    reconciler) say "criterion 23" and have it mean the same thing it means in the
+    ADO UI. ``<ol start="n">`` is honoured. Unordered lists become "- ".
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.stack: list[list] = []          # [kind, next_number]
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in ("ol", "ul"):
+            start = 1
+            for k, v in attrs:
+                if k.lower() == "start":
+                    try:
+                        start = int(v)
+                    except (TypeError, ValueError):
+                        pass
+            self.stack.append([tag, start])
+            self.parts.append("\n")
+        elif tag == "li":
+            self.parts.append("\n")
+            if self.stack and self.stack[-1][0] == "ol":
+                frame = self.stack[-1]
+                self.parts.append("%d. " % frame[1])
+                frame[1] += 1
+            else:
+                self.parts.append("- ")
+        elif tag in ("br", "p", "div", "tr"):
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in ("ol", "ul"):
+            if self.stack:
+                self.stack.pop()
+            self.parts.append("\n")
+        elif tag in ("p", "div", "li", "tr"):
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+    def text(self) -> str:
+        return "".join(self.parts)
+
+
+def _plain(s: str) -> str:
+    """HTML -> plain text. NEVER truncates. Truncation is a RENDER decision and it
+    belongs to the caller that renders, not to the function that reads the field."""
     if not s:
         return ""
-    s = re.sub(r"<(br|/p|/div|/li)\s*/?>", "\n", s, flags=re.I)
-    s = re.sub(r"<[^>]+>", "", s)
-    s = html.unescape(s).strip()
-    s = re.sub(r"\n{3,}", "\n\n", s)
-    if len(s) > limit:
-        s = s[:limit].rstrip() + " ..."
-    return s
+    parser = _ToText()
+    try:
+        parser.feed(s)
+        parser.close()
+        out = parser.text()
+    except Exception:                        # malformed markup must never lose the field
+        out = re.sub(r"<(br|/p|/div|/li)\s*/?>", "\n", s, flags=re.I)
+        out = html.unescape(re.sub(r"<[^>]+>", "", out))
+    # Trailing spaces are an artifact of the tag boundaries, not content.
+    out = "\n".join(line.rstrip() for line in out.splitlines()).strip()
+    return re.sub(r"\n{3,}", "\n\n", out)
 
 
-def node_of(org: str, item: dict, want_desc: bool, full: bool = False) -> dict:
+def _strip_html(s: str, limit: int | None = 600) -> str:
+    """Back-compat wrapper: plain text, optionally clipped. `limit=None` means the
+    whole field. Callers that must not lose content pass None."""
+    out = _plain(s)
+    if limit is not None and len(out) > limit:
+        out = out[:limit].rstrip() + " ..."
+    return out
+
+
+def count_criteria(text: str) -> int:
+    """How many enumerated criteria a plain-text AcceptanceCriteria field declares.
+
+    Counts lines opening with `<n>.` / `<n>)` (an `<ol>`, or hand-typed numbers) and
+    lines opening with `- ` (a `<ul>` — several stories on this board bullet their
+    criteria instead of numbering them, and a bulleted list of eight is still eight
+    criteria). 0 for prose, which is honest: the number is a floor a reader can
+    check, never a claim the field is empty."""
+    if not text:
+        return 0
+    return len(re.findall(r"(?m)^\s*(?:\d+[.)]|-)\s+\S", text))
+
+
+# WHY THE FIELD NAME IS NEVER ALLOWED TO HOLD A PARTIAL VALUE
+# ----------------------------------------------------------
+# MEASURED 2026-08-26 on one real board, story 3614. `--json` returned a 604-
+# `acceptance_criteria` for that story -- and for 3607, 2966, 3202 and 3510 too,
+# all exactly 604, because `_strip_html`'s 600-char clip plus " ..." lands on the
+# same length every time. 3614's real field is 9,237 characters and 33 numbered
+# criteria; the clip stopped inside criterion 4. A session read it, believed it had
+# the story, and spent hours designing a mechanism criteria 2, 23, 24 and 28
+# already specified -- better, and in more detail.
+#
+# The failure was not the truncation. It was that the truncated value was
+# INDISTINGUISHABLE from a complete one: a plausible-looking short field under the
+# plain name `acceptance_criteria`, with a trailing " ..." that reads as prose.
+# So the rule here is absolute: when the text is clipped, the plain field name is
+# ABSENT and the clip lands under `*_preview`, beside a `*_truncated` flag, the
+# full character count, the criteria count, and the exact flag that returns the
+# rest. A reader keying on `acceptance_criteria` now gets the truth or nothing --
+# never a confident fraction.
+TEXT_FIELDS = (("description", "System.Description"),
+               ("acceptance_criteria", "Microsoft.VSTS.Common.AcceptanceCriteria"))
+
+
+def _emit_text(node: dict, key: str, raw: str, limit: int | None) -> None:
+    """Put one long text field on a node under the rule above. No-op for an empty
+    field. `limit=None` emits the complete text under the plain name."""
+    text = _plain(raw)
+    if not text:
+        return
+    n_crit = count_criteria(text)
+    if limit is None or len(text) <= limit:
+        node[key] = text
+        if n_crit:
+            node[key + "_criteria"] = n_crit
+        return
+    node[key + "_preview"] = text[:limit].rstrip() + " ..."
+    node[key + "_truncated"] = True
+    node[key + "_chars"] = len(text)
+    if n_crit:
+        node[key + "_criteria"] = n_crit
+    node.setdefault("truncated", []).append(key)
+    node["truncated_hint"] = TRUNCATED_HINT
+
+
+def node_of(org: str, item: dict, want_desc: bool, full: bool = False,
+            clip: int | None = PREVIEW_CHARS) -> dict:
     f = item.get("fields", {})
     wid = f.get("System.Id") or item.get("id")
     n = {
@@ -248,12 +385,12 @@ def node_of(org: str, item: dict, want_desc: bool, full: bool = False) -> dict:
     if f.get("System.Tags"):
         n["tags"] = f["System.Tags"]
     if want_desc:
-        desc = _strip_html(f.get("System.Description", ""))
-        ac = _strip_html(f.get("Microsoft.VSTS.Common.AcceptanceCriteria", ""))
-        if desc:
-            n["description"] = desc
-        if ac:
-            n["acceptance_criteria"] = ac
+        # `--full` means "nothing dropped", so it must not clip either -- before
+        # this, `--full --json` still carried the 604-char clip under the plain
+        # name while the truth sat in the raw `fields` bag as HTML.
+        limit = None if (full or clip is None) else clip
+        for key, field in TEXT_FIELDS:
+            _emit_text(n, key, f.get(field, ""), limit)
     if full:
         # Nothing dropped: the complete field bag + relations + links + rev,
         # byte-for-byte what the ADO MCP's wit_get_work_item would return.
@@ -268,10 +405,11 @@ def node_of(org: str, item: dict, want_desc: bool, full: bool = False) -> dict:
 
 def build_tree(org: str, root_id: int, auth: Auth, depth: int,
                want_desc: bool, include_parent: bool,
-               full: bool = False, comments: bool = False) -> dict:
+               full: bool = False, comments: bool = False,
+               clip: int | None = PREVIEW_CHARS) -> dict:
     root = fetch_item(org, root_id, auth)
     rels = parse_relations(root)
-    node = node_of(org, root, want_desc, full)
+    node = node_of(org, root, want_desc, full, clip=clip)
     node["prs"] = rels["prs"]
     if comments:
         node["comments"] = fetch_comments(org, node.get("project", ""), root_id, auth)
@@ -286,7 +424,7 @@ def build_tree(org: str, root_id: int, auth: Auth, depth: int,
         for cid in child_ids:
             citem = fetch_item(org, cid, auth)
             crels = parse_relations(citem)
-            cnode = node_of(org, citem, want_desc, full)
+            cnode = node_of(org, citem, want_desc, full, clip=clip)
             cnode["prs"] = crels["prs"]
             if comments:
                 cnode["comments"] = fetch_comments(org, cnode.get("project", ""), cid, auth)
@@ -297,11 +435,28 @@ def build_tree(org: str, root_id: int, auth: Auth, depth: int,
     result = {"root": node}
     if include_parent and rels["parent"]:
         pit = fetch_item(org, rels["parent"], auth)
-        result["parent"] = node_of(org, pit, want_desc, full)
+        result["parent"] = node_of(org, pit, want_desc, full, clip=clip)
     return result
 
 
 # ----------------------------------------------------------------------- render
+def _size_note(node: dict, key: str) -> str:
+    """"33 criteria, 9237 chars — 604 shown, --no-clip for the rest" — the one line
+    that would have stopped the 3614 miss. Empty when there is nothing to warn about
+    (short field, no numbered criteria)."""
+    bits = []
+    n_crit = node.get(key + "_criteria")
+    if n_crit:
+        bits.append(f"{n_crit} criteria")
+    if node.get(key + "_truncated"):
+        bits.append(f"{node.get(key + '_chars', '?')} chars, "
+                    f"{len(node.get(key + '_preview', ''))} shown — --no-clip for the rest")
+    elif bits:
+        text = node.get(key) or ""
+        bits.append(f"{len(text)} chars, full text present")
+    return ", ".join(bits)
+
+
 STATE_MARK = {"Done": "✓", "Closed": "✓", "Removed": "×", "Resolved": "✓"}
 
 
@@ -322,11 +477,17 @@ def render_md(tree: dict, org: str) -> str:
         lines.append(f"{indent}   {n['url']}")
         for pr in n.get("prs", []):
             lines.append(f"{indent}   -> PR !{pr['id']} - {pr['name']}")
-        if n.get("description"):
-            first = n["description"].splitlines()[0]
-            lines.append(f"{indent}   ... {first}")
-        if n.get("acceptance_criteria"):
-            lines.append(f"{indent}   AC: {n['acceptance_criteria'].splitlines()[0]}")
+        for key, label in (("description", "..."), ("acceptance_criteria", "AC:")):
+            text = n.get(key) or n.get(key + "_preview")
+            if not text:
+                continue
+            lines.append(f"{indent}   {label} {text.splitlines()[0]}")
+            # The md view shows ONE line of a field that can run to thousands of
+            # characters, so it always says how much it is not showing. A reader
+            # who sees "33 criteria" cannot mistake one line for the story.
+            note = _size_note(n, key)
+            if note:
+                lines.append(f"{indent}       [{note}]")
         for c in n.get("children", []):
             emit(c, indent + "  ")
 
@@ -348,6 +509,12 @@ def main() -> None:
                     help="also fetch each item's comments (extra call per node)")
     ap.add_argument("--depth", type=int, default=3, help="child recursion depth")
     ap.add_argument("--no-desc", action="store_true", help="omit description/AC")
+    ap.add_argument("--no-clip", action="store_true",
+                    help="emit description/AC in FULL. Without it the compact view "
+                         "clips them to %d chars and says so — the clipped text "
+                         "lands under <field>_preview with <field>_truncated, "
+                         "<field>_chars and <field>_criteria beside it, and the "
+                         "plain field name is absent." % PREVIEW_CHARS)
     ap.add_argument("--no-parent", action="store_true", help="omit parent lookup")
     ap.add_argument("--login", action="store_true", help="auto `az login` if no cred")
     args = ap.parse_args()
@@ -359,7 +526,8 @@ def main() -> None:
     sys.stderr.write(f"[auth: {auth.kind}]  [org: {org}]\n")
     tree = build_tree(org, args.id, auth, depth=args.depth,
                       want_desc=not args.no_desc, include_parent=not args.no_parent,
-                      full=args.full, comments=args.comments)
+                      full=args.full, comments=args.comments,
+                      clip=None if args.no_clip else PREVIEW_CHARS)
     if args.json or args.full:
         print(json.dumps(tree, indent=2, ensure_ascii=False))
     else:
