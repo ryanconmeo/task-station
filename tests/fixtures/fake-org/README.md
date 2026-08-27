@@ -19,9 +19,17 @@ thrown away proves nothing, because a missing file scans clean.
 
 **The directory section is groups only.** `scan-bundle.json` deliberately mixes
 plain display-name strings with Graph-shaped group objects, so the fixture
-exercises the one door into the directory scan
-(`read_group_display_names`). There is no user object here and there cannot be
-one: the reader raises on any entry carrying a user attribute.
+exercises the one door into the directory scan (`screen_group_entries`). There is
+no user object here and there cannot be one: the screen raises on any entry
+carrying a user attribute or declaring a Graph user type.
+
+The mix is also why the golden shows **`unscreened_entries: 6`** — six of the
+eight entries are bare strings, which the screen cannot inspect. That is the
+point of the number, not a defect in the fixture: it is what the shipped example
+is meant to teach. A bare string has no attribute to refuse and no type to check,
+so a person's name in one would reach the profile, and no heuristic guesses at
+which strings are people. Supplying entries as objects is what gets them screened
+— and takes the count to zero.
 
 Regenerate the golden after an intended change:
 

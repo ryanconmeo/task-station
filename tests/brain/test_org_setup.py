@@ -7,9 +7,18 @@ its properties load-bearing in a way that ordinary correctness is not:
   1. **THE DIRECTORY SCAN CANNOT READ A USER OBJECT.** Not "does not" — *cannot*.
      A directory holds people, and a scan that merely declines to look at them is
      one refactor away from looking at them. So the tests assert the refusal is
-     at the door (`read_group_display_names` RAISES on a user attribute and on a
+     at the door (`screen_group_entries` RAISES on a user attribute and on a
      Graph user type) and that the scan below it accepts strings only, which is
      what makes the crossing structurally impossible rather than well-behaved.
+
+     **And they assert where that guarantee stops.** It covers OBJECTS. A bare
+     string has no attribute to refuse and no type to check, so a person's name
+     typed into one reaches the profile — and no heuristic is applied, because a
+     person's name and a department's name are the same shape and a guess wrong
+     in either direction is worse than the gap. What is asserted instead is that
+     a bare string never passes SILENTLY: every one is counted, the count reaches
+     `provenance.directory.unscreened_entries` and the printed summary, and a
+     profile that fails to state it does not validate.
 
   2. **AN INVALID PROFILE NEVER REACHES DISK.** A config the platform refuses to
      parse does not degrade to default rules — it means NO rules. So the negative
@@ -142,18 +151,27 @@ class DirectoryScanReadsGroupDisplayNamesOnly(unittest.TestCase):
     """The group-only restriction, asserted from both sides: what the door
     refuses, and what the scan below it is even able to accept."""
 
-    def test_a_user_object_is_refused_at_the_door(self):
-        with self.assertRaises(org_setup.DirectoryScopeError):
-            org_setup.read_group_display_names([
-                {"displayName": "Ada Lovelace", "userPrincipalName": "ada@example.com"}])
+    #: Four object-shaped attacks, one per way a directory response can hand over
+    #: a person: the classic identifier, a mail-only record, a record whose only
+    #: user-ish field is a job title, and one that carries NO user attribute at
+    #: all and is recognisable only by its declared type.
+    USER_OBJECT_ATTACKS = (
+        {"displayName": "Ada Lovelace", "userPrincipalName": "ada@example.com"},
+        {"displayName": "Ada Lovelace", "mail": "ada@example.com"},
+        {"displayName": "Ada Lovelace", "jobTitle": "Analyst"},
+        {"@odata.type": "#microsoft.graph.user", "displayName": "Ada Lovelace"},
+    )
 
-    def test_a_graph_user_type_is_refused_even_with_no_user_attributes(self):
-        """An entry can declare itself a user and carry nothing but a name. The
-        type is enough — the reader must never depend on an attribute being
-        present to notice it is holding a person's record."""
-        with self.assertRaises(org_setup.DirectoryScopeError):
-            org_setup.read_group_display_names([
-                {"@odata.type": "#microsoft.graph.user", "displayName": "Ada Lovelace"}])
+    def test_every_object_shaped_user_record_is_refused_at_the_door(self):
+        """The last case is the one that needs saying: an entry can declare itself
+        a user and carry nothing but a name. The type alone is enough — the screen
+        must never depend on an attribute being PRESENT to notice it is holding a
+        person's record."""
+        for attack in self.USER_OBJECT_ATTACKS:
+            for door in (org_setup.screen_group_entries,
+                         org_setup.read_group_display_names):
+                with self.assertRaises(org_setup.DirectoryScopeError):
+                    door([attack])
 
     def test_a_group_object_is_projected_down_to_its_display_name(self):
         """Everything else about a group is discarded HERE, not downstream. Past
@@ -166,6 +184,29 @@ class DirectoryScanReadsGroupDisplayNamesOnly(unittest.TestCase):
         ])
         self.assertEqual(names, ["SG-Billing-Owners", "SG-Billing-Readers"])
         self.assertTrue(all(isinstance(n, str) for n in names))
+
+    def test_a_bare_string_is_counted_because_it_cannot_be_screened(self):
+        """A bare string has no attribute to refuse and no type to check. It is
+        passed through — and TALLIED, which is the whole mechanism: the number is
+        what stops an un-inspectable entry from looking inspected."""
+        out = org_setup.screen_group_entries([
+            {"@odata.type": "#microsoft.graph.group", "displayName": "SG-Billing-Owners"},
+            "SG-Billing-Readers",
+        ])
+        self.assertEqual(out["names"], ["SG-Billing-Owners", "SG-Billing-Readers"])
+        self.assertEqual(out["screened"], 1)
+        self.assertEqual(out["unscreened"], 1)
+
+    def test_no_person_shape_heuristic_is_applied(self):
+        """A person's name and a department's name are the same shape, so the
+        screen treats them identically and says so with the count. Guessing would
+        be worse than the gap in both directions: a wrongly-refused group silently
+        loses vocabulary, and a wrongly-admitted person is the very leak the count
+        is there to declare."""
+        person = org_setup.screen_group_entries(["Dana Okonkwo"])
+        department = org_setup.screen_group_entries(["Fleet Maintenance"])
+        self.assertEqual(person["unscreened"], department["unscreened"])
+        self.assertEqual(person["screened"], department["screened"])
 
     def test_the_scan_itself_accepts_nothing_but_strings(self):
         """The type at the boundary is `str`. Hand the scan a user object and it
@@ -330,6 +371,55 @@ class TheWizardRunsAgainstAFakeOrg(unittest.TestCase):
         for name, scan in scans.items():
             self.assertTrue(scan["read_only"], name)
             self.assertGreater(scan["inputs"], 0, name)
+
+    def test_a_name_in_a_bare_string_reaches_the_profile_and_is_declared(self):
+        """THE LIMIT, ASSERTED RATHER THAN HIDDEN. A person's name typed into a
+        bare string does reach the emitted profile — the screen cannot see it, and
+        nothing guesses. What must be true is that the profile SAYS so: the tally
+        rises, and the wizard prints it in front of whoever approves the profile.
+
+        The provenance test in this file cannot catch this case, deliberately:
+        those words DID come from the supplied input, which is exactly what it
+        asserts. This is the test that covers it."""
+        b = bundle()
+        clean = org_setup.build_profile(answers(), org_setup.run_scans(b))
+        before = clean["provenance"]["directory"]["unscreened_entries"]
+
+        b["directory"]["groups"] = list(b["directory"]["groups"]) + ["Dana Okonkwo"]
+        scans = org_setup.run_scans(b)
+        leaky = org_setup.build_profile(answers(), scans)
+
+        # the limit itself — the name is in the artifact, unguessed at
+        self.assertIn("okonkwo", leaky["vocabulary"]["departments"])
+        # …and the artifact declares that an entry went un-inspected
+        self.assertEqual(leaky["provenance"]["directory"]["unscreened_entries"], before + 1)
+        # …and a human reading the wizard's output is told, not left to notice
+        summary = org_setup._summary(leaky, scans)
+        self.assertIn("bypassed the object screen", summary)
+        self.assertIn("bare strings", summary)
+
+    def test_a_profile_that_does_not_state_the_tally_fails_validation(self):
+        """An unstated count is silence, and silence is the failure this closes.
+        `scan_directory` defaults the tally to None rather than 0 precisely so a
+        caller that skipped the screen cannot claim everything was screened."""
+        scans = org_setup.run_scans(bundle())
+        scans["directory"] = org_setup.scan_directory(["SG-Billing-Owners"])
+        with self.assertRaises(org_setup.ProfileInvalid) as ctx:
+            org_setup.build_profile(answers(), scans)
+        self.assertIn("unscreened_entries", str(ctx.exception))
+
+    def test_an_all_object_directory_reports_a_zero_tally(self):
+        """Zero is a claim somebody made, and it has to be reachable — otherwise
+        the count would only ever read as "some", and a reviewer would learn to
+        ignore it."""
+        b = bundle()
+        b["directory"]["groups"] = [
+            {"@odata.type": "#microsoft.graph.group", "displayName": n}
+            for n in org_setup.read_group_display_names(b["directory"]["groups"])]
+        scans = org_setup.run_scans(b)
+        profile = org_setup.build_profile(answers(), scans)
+        self.assertEqual(profile["provenance"]["directory"]["unscreened_entries"], 0)
+        self.assertNotIn("bare strings", org_setup._summary(profile, scans))
 
     def test_a_bundle_carrying_a_user_object_is_refused(self):
         """The refusal is not only in the collector — a hand-written bundle goes

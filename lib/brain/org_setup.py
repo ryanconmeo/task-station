@@ -28,13 +28,26 @@ parameters; the other three collectors take data a caller already fetched.
 
 The directory scan carries a stronger rule, because a directory holds people.
 The requirement is that it be **incapable** of reading a user object, not merely
-that it does not — so the only door into it is
-:func:`read_group_display_names`, which projects every entry down to a single
-display-name string and **raises** :class:`DirectoryScopeError` the moment an
-entry carries a user attribute. :func:`scan_directory` accepts strings and
-nothing else. There is no code path from a user object to a scan result: the
-type at the boundary is ``str``, so a user object cannot survive the crossing
-even if a caller hands one in by mistake.
+that it does not — so the only door into it is :func:`screen_group_entries`,
+which projects every entry down to a single display-name string and **raises**
+:class:`DirectoryScopeError` the moment an entry carries a user attribute.
+:func:`scan_directory` accepts strings and nothing else. There is no code path
+from a user *object* to a scan result: the type at the boundary is ``str``, so a
+user object cannot survive the crossing even if a caller hands one in by mistake.
+
+WHERE THAT GUARANTEE STOPS, STATED PLAINLY. It covers **objects**. A directory
+section may also carry **bare strings**, and a bare string is not inspectable:
+there is no attribute to refuse and no type to check, so a person's name typed
+into one — a distribution list named after somebody, in a hand-assembled bundle —
+reaches the profile. Guessing which strings are people is NOT the answer: a
+person's name and a department's name are the same shape, and a heuristic wrong
+in either direction is worse than the gap.
+
+So the rule is that a bare string must not pass **silently**. Every one is
+counted, and the count is carried into ``provenance.directory.unscreened_entries``
+and printed by the wizard — in front of the person who approves the profile. The
+count is *required* by the schema, so a profile that fails to state it does not
+validate: an unstated count is exactly the silence this closes.
 
 VALIDATE, THEN WRITE — never the other way round. :func:`write_profile`
 validates before it opens the file and raises :class:`ProfileInvalid` rather
@@ -333,27 +346,40 @@ FUNCTION_WORD_SHARE = 0.25
 FUNCTION_WORD_MIN_GROUPS = 4
 
 
-def read_group_display_names(entries):
+def screen_group_entries(entries):
     """THE ONLY DOOR INTO THE DIRECTORY SCAN. Projects each entry to one display
-    name and returns a list of plain strings.
+    name, and reports how many entries it was actually able to screen.
 
-    Two refusals, both loud:
+    Returns ``{"names": [...], "screened": n, "unscreened": n}``.
+
+    Two refusals, both loud, and both for entries shaped as **objects**:
 
       * an entry carrying any of :data:`USER_OBJECT_ATTRS` raises
         :class:`DirectoryScopeError` — that entry is a person's record and this
         scan has no business holding it;
       * an entry that declares ``"@odata.type": "#microsoft.graph.user"`` (or any
-        type ending in ``user``) raises for the same reason.
+        type ending in ``user``) raises for the same reason. The type alone is
+        enough: the screen must never depend on an attribute being *present* to
+        notice it is holding a person's record.
 
-    Everything else about an entry is discarded here, not downstream. That is
-    what makes the scan *incapable* of reading a user object rather than merely
-    well-behaved: past this function the data is a list of strings, so there is
-    nothing for a later change to accidentally start reading."""
-    names = []
+    Everything else about a screened entry is discarded here, not downstream.
+    That is what makes the scan *incapable* of reading a user object rather than
+    merely well-behaved: past this function the data is a list of strings, so
+    there is nothing for a later change to accidentally start reading.
+
+    A **bare string** is a different case, and it is counted rather than judged.
+    There is no attribute to refuse and no type to check, so the screen cannot
+    tell a group's name from a person's — and it does not try, because the two
+    are the same shape and a heuristic wrong in either direction is worse than
+    the gap. The string is passed through and added to ``unscreened``, which
+    travels all the way into the emitted profile so the person approving it can
+    see how much of the input the screen never saw."""
+    names, unscreened = [], 0
     for entry in entries or ():
         if isinstance(entry, str):
             if entry.strip():
                 names.append(entry.strip())
+                unscreened += 1     # accepted, but nothing here was inspectable
             continue
         if not isinstance(entry, dict):
             raise DirectoryScopeError(
@@ -378,17 +404,32 @@ def read_group_display_names(entries):
             raise DirectoryScopeError(
                 "group entry has no display name (looked for %s)" % (list(_GROUP_NAME_KEYS),))
         names.append(name)
-    return names
+    return {"names": names, "screened": len(names) - unscreened, "unscreened": unscreened}
 
 
-def scan_directory(group_display_names=()):
+def read_group_display_names(entries):
+    """The display names alone, for a caller with no use for the screen's tally.
+    :func:`screen_group_entries` is the door; this is the same door with the
+    count dropped — so it must NOT be used to build a profile, which is required
+    to state that count."""
+    return screen_group_entries(entries)["names"]
+
+
+def scan_directory(group_display_names=(), unscreened_entries=None):
     """SCAN 2 — function words, the department set, and role tiers, from GROUP
     DISPLAY NAMES ONLY.
 
     Takes strings and nothing else. Hand it anything richer and it is a
     :class:`TypeError` here, not a privacy incident later; use
-    :func:`read_group_display_names` to get from a directory response to the
-    strings this accepts.
+    :func:`screen_group_entries` to get from a directory response to the strings
+    this accepts.
+
+    ``unscreened_entries`` is the screen's tally of entries it could not inspect
+    (bare strings), carried through to the emitted profile. It defaults to
+    ``None`` — meaning *no screen reported* — rather than to ``0``, because a
+    zero default would let a caller that skipped the screen entirely claim
+    everything was screened. ``None`` fails profile validation; a zero is a claim
+    somebody actually made.
 
     A group name is typically ``<function> <department> <tier>`` in some order.
     The three axes are separated by frequency, not by parsing a format nobody
@@ -435,6 +476,7 @@ def scan_directory(group_display_names=()):
         "read_only": True,
         "scope": "group-display-names-only",
         "inputs": len(names),
+        "unscreened_entries": unscreened_entries,
         "departments": _ranked(dept_counts),
         "role_tiers": _ranked(tier_counts),
         "function_words": function_words,
@@ -554,19 +596,22 @@ def run_scans(bundle):
 
     A bundle is how the wizard runs **with no live credentials**: whoever has
     access produces it once, and the wizard — and every test — reads it. The
-    directory section goes through :func:`read_group_display_names` here, so a
-    bundle that carries user objects is refused at this level too, not only when
-    a collector is used."""
+    directory section goes through :func:`screen_group_entries` here, so a bundle
+    that carries user objects is refused at this level too, not only when a
+    collector is used — and the screen's tally of entries it could not inspect
+    travels with the scan result rather than being recomputed later."""
     bundle = bundle or {}
     db = bundle.get("database") or {}
     directory = bundle.get("directory") or {}
     forge = bundle.get("forge") or {}
     wiki = bundle.get("wiki") or {}
     groups = directory.get("groups", directory.get("group_display_names", []))
+    screened = screen_group_entries(groups)
     return {
         "database": scan_database(db.get("schema_names", []),
                                   db.get("migration_headers", [])),
-        "directory": scan_directory(read_group_display_names(groups)),
+        "directory": scan_directory(screened["names"],
+                                    unscreened_entries=screened["unscreened"]),
         "forge": scan_forge(forge.get("repos", []), forge.get("projects", [])),
         "wiki": scan_wiki(wiki.get("pages", [])),
     }
@@ -871,15 +916,27 @@ def build_profile(answers, scans):
         "keywords": sorted(vocab["domains"]),
         "vocabulary": vocab,
         "provenance": {
-            name: {"kind": s.get("kind", name),
-                   "read_only": bool(s.get("read_only")),
-                   "inputs": int(s.get("inputs", 0))}
-            for name, s in sorted(scans.items())
+            name: _provenance(name, s) for name, s in sorted(scans.items())
         },
     }
     if answers.get("labels"):
         profile["labels"] = dict(answers["labels"])
     return validate_profile(profile)
+
+
+def _provenance(name, scan):
+    """What a scan says about itself, in the artifact. The directory scan says one
+    thing more: how many of its entries the object screen could not inspect. That
+    number is not decoration — it is the only thing standing between a bare string
+    carrying a person's name and a profile that looks fully screened. It is copied
+    through verbatim, `None` included, so a scan built without a screen fails
+    validation rather than silently reporting zero."""
+    out = {"kind": scan.get("kind", name),
+           "read_only": bool(scan.get("read_only")),
+           "inputs": int(scan.get("inputs", 0))}
+    if name == "directory":
+        out["unscreened_entries"] = scan.get("unscreened_entries")
+    return out
 
 
 def _default_org_label(org_slug):
@@ -992,10 +1049,21 @@ def _summary(profile, scans):
             "wiki": lambda: "%d leading segment(s), separator %r"
                             % (len(s["leading_segments"]), s["separator"]),
             "directory": lambda: "%d department(s), %d role tier(s) "
-                                 "(group display names only)"
-                                 % (len(s["departments"]), len(s["role_tiers"])),
+                                 "(group display names only; %s of %d entries "
+                                 "bypassed the object screen)"
+                                 % (len(s["departments"]), len(s["role_tiers"]),
+                                    s.get("unscreened_entries"), s["inputs"]),
         }[name]()
         lines.append("  scan %-9s %2d input(s) -> %s" % (name, s["inputs"], detail))
+    unscreened = scans["directory"].get("unscreened_entries") or 0
+    if unscreened:
+        lines.append("  NOTE         %s. The screen refuses user"
+                     % ("1 directory entry was a bare string" if unscreened == 1
+                        else "%d directory entries were bare strings" % unscreened))
+        lines.append("               OBJECTS; it cannot inspect a plain string, so a person's "
+                     "name in one")
+        lines.append("               reaches the profile. Supply group objects to have them "
+                     "screened.")
     vocab = profile["vocabulary"]
     lines.append("  vocabulary   %d domain(s) mapped to an area, %d unmapped"
                  % (len(vocab["domains"]), len(vocab["unmapped_domains"])))

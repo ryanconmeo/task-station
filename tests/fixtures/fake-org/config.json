@@ -36,7 +36,8 @@
     "directory": {
       "inputs": 8,
       "kind": "directory",
-      "read_only": true
+      "read_only": true,
+      "unscreened_entries": 6
     },
     "forge": {
       "inputs": 9,

@@ -50,6 +50,28 @@ adopting the toolchain meant learning a schema before learning anything else.
   filter is a thing that can be edited out, and a silent drop trains callers to keep handing
   over people's records.
 
+- **…and where that guarantee stops is stated, counted, and put in front of a human.** The
+  screen covers **objects**. A directory section may also carry **bare strings**, and a bare
+  string is not inspectable — no attribute to refuse, no type to check — so a person's name
+  typed into one (a distribution list named after somebody, in a hand-assembled bundle)
+  reaches the profile. Detecting person-shaped names is deliberately NOT attempted: a
+  person's name and a department's name are the same shape, and a guess wrong in either
+  direction is worse than the gap, because a wrongly-refused group silently loses vocabulary
+  and a wrongly-admitted person is the leak the guess was meant to prevent.
+
+  So the rule is that a bare string must never pass **silently**. Every one is counted, and
+  the count lands in `provenance.directory.unscreened_entries` and in the wizard's printed
+  summary — the two places the person approving the profile actually looks. The schema
+  **requires** it, even when zero, so a profile that does not state it fails validation; and
+  `scan_directory()` defaults the tally to `None` rather than `0`, because a zero default
+  would let a caller who skipped the screen claim everything was screened. Zero is a claim
+  somebody made; missing is nobody having looked.
+
+  Found by an independent verification pass attacking the screen rather than reading its
+  docstring — the four object-shaped attacks all held, and the fifth shape was the one no
+  test had. The provenance test could not have caught it: those words *did* trace to the
+  supplied input, which is exactly what that test asserts.
+
 - **Validate, THEN write.** `write_profile()` validates before it opens the file and raises
   rather than writing anything. The rule behind the ordering is that a config the platform
   refuses to parse does **not** degrade to default rules — it means *no* rules — and a
@@ -79,6 +101,12 @@ adopting the toolchain meant learning a schema before learning anything else.
   (`tests/brain/test_org_setup.py`) cover the four scans, both sides of the group-only
   restriction, the six answers, the template ruling, the validate-then-write ordering, and
   the zero-foreign-fingerprint scan over the emitted profile.
+
+  The fingerprint scan is written as a **provenance** check rather than a denylist of
+  foreign org terms: a denylist can only catch the names somebody thought to list, and the
+  list is itself a fingerprint (which is why this repo's push gate keeps its pattern list
+  out of the tree). Every word in the emitted profile must trace to the fixture or to
+  shipped vocabulary instead.
 
 ### Changed
 - **`task-station org-setup` routes to the brain plane lazily.** The board must not depend

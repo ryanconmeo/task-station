@@ -131,6 +131,21 @@
       "provenance": {
         "type": "object",
         "required": ["database", "directory", "forge", "wiki"],
+        "properties": {
+          "directory": {
+            "type": "object",
+            "required": ["kind", "read_only", "inputs", "unscreened_entries"],
+            "properties": {
+              "kind": {"type": "string", "minLength": 1},
+              "read_only": {"type": "boolean"},
+              "inputs": {"type": "integer"},
+              "unscreened_entries": {
+                "type": "integer",
+                "description": "how many directory entries the object screen could NOT inspect — i.e. bare strings. The screen refuses user OBJECTS; a plain string has no attribute to refuse and no type to check, so a person's name typed into one reaches the profile. Detecting person-shaped names is not attempted: a name and a department are the same shape, and a heuristic wrong in either direction is worse than the gap. Required rather than optional, and required even when zero, because a profile that does not state this number is silence — and silence is the failure this count exists to close. Zero is a claim somebody made; a missing value is nobody having looked"
+              }
+            }
+          }
+        },
         "valueSchema": {
           "type": "object",
           "required": ["kind", "read_only", "inputs"],

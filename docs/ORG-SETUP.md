@@ -56,18 +56,52 @@ typed becomes a business domain.
 A directory holds people, so the requirement is stronger: the scan must be
 **incapable** of reading a user object, not merely decline to.
 
-- The only door in is `read_group_display_names()`. It projects every entry down
-  to a single display-name string, and **raises** `DirectoryScopeError` on any
-  entry carrying a user attribute (`userPrincipalName`, `mail`, `employeeId`, …)
-  or declaring a Graph user type.
+- The only door in is `screen_group_entries()`. It projects every entry down to a
+  single display-name string, and **raises** `DirectoryScopeError` on any entry
+  carrying a user attribute (`userPrincipalName`, `mail`, `employeeId`, …) or
+  declaring a Graph user type. The type check earns its place on its own: an
+  entry can declare itself a user and carry no user attribute at all, and the
+  screen must never depend on an attribute being *present* to notice it is
+  holding a person's record.
 - Past that function the data is a list of strings. `scan_directory()` accepts
   `str` and raises `TypeError` on anything richer.
 
-So there is no code path from a user object to a scan result: the type at the
+So there is no code path from a user **object** to a scan result: the type at the
 boundary is `str`, and a user object cannot survive the crossing even if a caller
 hands one in by mistake. A refusal at the door, rather than a filter downstream,
 is the difference — a filter is a thing a later change can edit out, and a silent
 drop trains callers to keep handing over people's records.
+
+### Where that guarantee stops — bare strings
+
+**It covers objects.** A directory section may also carry **bare strings**, and a
+bare string is not inspectable: there is no attribute to refuse and no type to
+check. So a person's name typed into one — a distribution list named after
+somebody, in a hand-assembled bundle — reaches the emitted profile, and its words
+land in `vocabulary.departments`.
+
+**No heuristic is applied, on purpose.** A person's name and a department's name
+are the same shape, and a guess wrong in either direction is worse than the gap:
+a wrongly-refused group silently loses vocabulary, and a wrongly-admitted person
+is the very leak the guess was supposed to prevent.
+
+**What is guaranteed instead is that a bare string never passes silently.** Every
+one is counted, and the count travels to two places a person actually looks:
+
+| where | what it says |
+|---|---|
+| `provenance.directory.unscreened_entries` | in the emitted profile — the artifact an org-brain PR reviewer reads |
+| the wizard's printed summary | `… 6 of 8 entries bypassed the object screen`, plus a NOTE naming the consequence |
+
+The count is **required by the schema, and required even when zero**. A profile
+that does not state it fails validation, because an unstated count is exactly the
+silence this closes. `scan_directory()` defaults the tally to `None`, not `0`, for
+the same reason: a zero default would let a caller who skipped the screen entirely
+claim everything was screened. **Zero is a claim somebody made; missing is nobody
+having looked.**
+
+To have entries screened, supply them as objects — `{"displayName": "…"}` is
+enough.
 
 ## The six answers
 
