@@ -3,6 +3,39 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.27.0] — 2026-08-27
+
+**THE TIER-LINT MOVED A REFERENCE SURVEY INTO MEMORY, WHICH IS THE ONE PLACE IT DOES
+NOT BELONG.** Since 3.23.0 the `memory-type` check in `heal_lint` has enforced one rule:
+`memory/` holds only how-to-work-with-its-owner facts, declared `type: feedback` or
+`type: user`. `heal_tier` — the automation that files items into tiers — did not know
+that rule, and the two lints disagreed in the most damaging direction available. On
+2026-08-21 it read a survey of three THIRD-PARTY plugins, scored it personal 2 / company
+0 on the strength of the words "my" and "for me", called that `high` confidence, moved
+the note into `memory/` and left a tombstone where it used to be.
+
+The cue engine was only half of it. The move also wrote the new memory with
+`write_memory_note`'s default `type: reference` — so **every** note→memory re-filing
+minted, by construction, exactly the artifact the other lint refuses. The automation
+meant to keep the tiers straight was manufacturing violations.
+
+### Fixed
+- **The memory tier is governed by declaration, not by cues.** `heal_tier.classify()`
+  now takes the item's declared frontmatter type, and an item may be re-filed INTO
+  `memory/` only when it already declares `feedback` or `user` (`MEMORY_TYPES`, the same
+  tuple `heal_lint` enforces). Cues can still SUGGEST the move — the finding is reported
+  for a human, at `low` confidence, naming the re-type it would need — but they can no
+  longer authorise it. First-person voice ("my", "for me") is not the claim "this is a
+  fact about the owner", and cue counting cannot establish that claim at all.
+- **A note that does move lands legal.** `apply_moves` carries the note's own declared
+  type into `write_memory_note` instead of falling back to `reference`.
+- **A memory declared outside the contract is a finding, not "aligned".** Tier-lint
+  reports it as a re-file suggestion; it never auto-moves, because `heal_lint` owns the
+  counted bucket and the right fix is sometimes a re-type.
+- `heal_tier` reads the declared type through `heal_lint.memory_type` — one reader, so a
+  tier-lint suggestion can never disagree with the check that enforces it (the same
+  argument the module already made for the `promote` switch).
+
 ## [3.26.0] — 2026-08-27
 
 **A FAILED SPAWN USED TO POISON THE NEXT ONE, SO ONE ERROR READ AS REPEATED CHILD
