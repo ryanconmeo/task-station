@@ -298,9 +298,23 @@ CHECKS = (
     ("cited-commit", "Cited commits that resolve nowhere"),
     ("stale-project", "Named repos with no local clone"),
     ("grew-with-candidates", "Digest grew with candidates outstanding"),
+    # THE RECONCILE AGAINST THE SOURCE — see heal_ado.py. Registered here so these
+    # findings sort, title, dedupe and DISMISS through exactly the same machinery as
+    # every other check; a second finding vocabulary would be a second thing to keep
+    # in step. They are produced only when an ADO prober is wired (`--probe-ado`),
+    # the same way link-rot needs `--probe-links`.
+    ("ado-unreachable", "Work items that could not be read"),
+    ("ado-summary-lossy", "Task's description of a work item misses the source"),
+    ("ado-criteria-unacknowledged", "Criteria no decision acknowledges"),
+    ("ado-criteria-conflict", "Criteria the log describes differently"),
+    ("ado-sibling-missing", "Feature children absent from the task"),
 )
 CHECK_ORDER = [c[0] for c in CHECKS]
 CHECK_TITLES = dict(CHECKS)
+# The subset produced by heal_ado, so the reporters can tell "looked and found
+# nothing" apart from "never looked" without re-deriving the list.
+_ADO_CHECKS = ("ado-unreachable", "ado-summary-lossy", "ado-criteria-unacknowledged",
+               "ado-criteria-conflict", "ado-sibling-missing")
 
 
 def _finding(check, ref, detail):
@@ -2984,7 +2998,7 @@ def dismissal_rows(task, result=None):
 # -- the scan --------------------------------------------------------------------
 
 def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=None,
-         commit_probe=None):
+         commit_probe=None, ado_probe=None, ado_owned=None):
     """Run all eleven checks, plus the sections that are deliberately NOT checks. NEVER
     mutates the task — not one field.
 
@@ -3003,11 +3017,18 @@ def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=No
     missing from it. See the note above `accrual` for the release that was recorded
     nowhere while every check reported clean.
 
-    ALL THREE OUTWARD PROBES DEFAULT TO OFF: `branch_probe=None` and `commit_probe=None`
-    mean no git subprocess, `link_probe=None` means no HTTP. So the default scan is pure
-    Python plus filesystem stats and is cheap enough for every session start. `heal --scan`
-    and the dry run wire the two git probers; the link probe stays opt-in behind
-    `--probe-links`.
+    ALL FOUR OUTWARD PROBES DEFAULT TO OFF: `branch_probe=None` and `commit_probe=None`
+    mean no git subprocess, `link_probe=None` means no HTTP, `ado_probe=None` means the
+    work items this task claims are not read. So the default scan is pure Python plus
+    filesystem stats and is cheap enough for every session start. `heal --scan` and the
+    dry run wire the two git probers; the link probe stays opt-in behind `--probe-links`
+    and the ADO reconcile behind `--probe-ado`.
+
+    `ado_probe=None` REPORTS ITSELF. The result's `ado` block says `ran: False` and
+    names how many work items went unverified, because "the source was not read" and
+    "the record agrees with the source" must never render the same. That distinction is
+    the whole reason `heal_ado` exists — see its docstring for the two measured times
+    the task record was trusted as if it were the source.
 
     DISMISSED FINDINGS LEAVE `findings` ENTIRELY and land in `dismissed` — so the issue
     count, `due()` and `plan()` all stop seeing them from one place, rather than each
@@ -3042,6 +3063,16 @@ def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=No
     findings.extend(commit_rot(task, states=commits))
     findings.extend(stale_projects(task, names=unresolved))
     findings.extend(grew_with_candidates(task, groups=groups, size=size))
+    # The reconcile against the SOURCE. Its findings join the same list so they sort,
+    # dedupe, count and dismiss identically; when no prober is wired it contributes
+    # none and says so in `ado`.
+    # Imported HERE rather than at module scope: heal_ado reuses this module's
+    # tokenizer and finding shape, so a module-level import in both directions is a
+    # cycle. One lazy import at the single call site costs nothing and keeps the
+    # vocabulary shared instead of duplicated.
+    from . import heal_ado
+    ado = heal_ado.reconcile(task, probe=ado_probe, owned_elsewhere=ado_owned)
+    findings.extend(ado["findings"])
     findings = dedupe_findings(findings)
     findings.sort(key=lambda f: CHECK_ORDER.index(f["check"])
                   if f["check"] in CHECK_ORDER else len(CHECK_ORDER))
@@ -3064,6 +3095,7 @@ def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=No
         "goal_review": goal_review(task, now=now),
         "ephemeral": vanished_ephemeral(task, exists=exists),
         "unresolved_repos": list(unresolved),
+        "ado": ado,
         "accrual": accrual(task, now=now),
     }
 
@@ -3940,12 +3972,27 @@ def scan_lines(result):
     if (result.get("unresolved_repos") or []) and any(
             c.get("state") is None for c in (result.get("commits") or [])):
         undetermined.add("cited-commit")
+    # THE FIVE ADO CHECKS MAY NEVER SAY `clean` WHEN THE PROBE DID NOT RUN, and it does
+    # not run by default. This module exists because a record was trusted as if it were
+    # the source; a row reading "Criteria no decision acknowledges … clean" on a scan
+    # that never opened a single work item would be the same mistake in the report that
+    # produced it. `not probed` is the honest word and it names the cost.
+    ado = result.get("ado") or {}
+    not_probed = "" if ado.get("ran") else (
+        "not probed — %d work item(s) unverified (heal --probe-ado)"
+        % ado.get("claimed", 0))
+    if not_probed:
+        undetermined |= set(_ADO_CHECKS)
     out = []
     for slug, title in CHECKS:
         hits = per.get(slug) or []
         if not hits:
-            out.append("  %-28s %s"
-                       % (title, "undetermined" if slug in undetermined else "clean"))
+            word = "clean"
+            if slug in _ADO_CHECKS and not_probed:
+                word = not_probed
+            elif slug in undetermined:
+                word = "undetermined"
+            out.append("  %-28s %s" % (title, word))
             continue
         out.append("  %-28s %d" % (title, len(hits)))
         for f in hits:
@@ -4132,6 +4179,21 @@ def ephemeral_lines(result):
     return ["  %-28s %d  (EXPECTED — session scratchpads and system temp paths are "
             "erased by design, so these are NOT findings, are not counted as issues, "
             "and never make a heal due)" % ("Expected-ephemeral paths", len(gone))]
+
+
+def ado_lines(result):
+    """The ADO reconcile section — the EVIDENCE behind the five ado-* checks.
+
+    Printed as its own block rather than folded into the finding rows because the
+    conflict band is a candidate the reader has to RULE on, and a count with no text
+    under it cannot be ruled on. When the probe did not run this is one line saying
+    so, naming how many work items the task claims and no one read."""
+    ado = (result or {}).get("ado") or {}
+    if not ado:
+        return []
+    from . import heal_ado
+    body = heal_ado.report(ado)
+    return [""] + ["  " + line for line in body.splitlines()]
 
 
 def pinned_lines(result):

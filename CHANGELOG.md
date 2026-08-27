@@ -3,6 +3,104 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.19.0] — 2026-08-26
+
+**A record is not a source.** Three bugs filed together from one session, and they are the
+same bug three times: a signal was available, it was not read, and a plausible-looking
+assumption was substituted for it. Each one is answered with a mechanism rather than a rule,
+because in all three cases the wrong answer produced **no error** — so "success" is what got
+reported and a person found the damage later.
+
+### Added
+- **`heal --probe-ado` — reconcile a task against the WORK ITEMS it claims, not only against
+  its own log.** Every other check in `heal` reads one record and asks whether it is
+  internally consistent. That cannot catch a record which is perfectly coherent and no longer
+  resembles the thing it describes, and that has now happened twice. Story 3614 carries **33
+  acceptance criteria**; criteria 2, 23, 24 and 28 specify a per-**row** converging applier
+  with a row ledger. A task's record described it as *"seeds out of chain"* — criterion 29,
+  one of 33 — and a relayed session read the record, designed a file-level checksum ledger
+  from first principles over several hours, and shipped something strictly weaker than the
+  specification that already existed. Separately, a story and its PR sat inside a Feature the
+  task itself claimed for 25 days, unowned, because the story list is hand-maintained and the
+  story was filed after the task was created.
+
+  Five new checks, registered in `heal.CHECKS` so they sort, dedupe, count and **dismiss**
+  through the same machinery as every other finding: `ado-criteria-unacknowledged` (criteria
+  no current decision or live step reaches), `ado-criteria-conflict` (criteria the log HAS
+  decided on but words differently), `ado-summary-lossy` (the task's own one-line description
+  of a work item, measured against the source title), `ado-sibling-missing` (open, unowned
+  children of a Feature this task claims) and `ado-unreachable` (a work item that would not
+  read — **unverified**, never "confirmed").
+
+  **Mechanical and judgement are separated on purpose.** One measured quantity does the
+  mechanical work: *coverage*, the fraction of a criterion's vocabulary present in the task's
+  text — asymmetric, unlike `heal.word_overlap`, because Jaccard scores a 20-word criterion
+  inside a 300-word decision at ~0.07 and that under-report is the exact direction that hid
+  3614. Whether a decision *contradicts* a criterion is a judgement, so the conflict band is
+  reported as a candidate with the criterion printed beside the decision index that covers
+  it, and `skills/heal` makes ruling on each one a required step. A check that guessed
+  "contradicts" would be the same class of mistake as the truncated field below.
+
+  **Off by default, and it says so.** Several authenticated round trips per work item, so a
+  session start never pays. Without the probe those five rows read `not probed — N work
+  item(s) unverified`, never `clean`.
+- **`core/termhost.py` + `task-station terminal [--open CMD]` — one terminal-host resolver.**
+  Ordered: `$TASK_STATION_TERMINAL`, `$LC_TERMINAL` (the only marker that survives ssh and
+  tmux), `$TERM_PROGRAM`, each terminal's own variable (`$KITTY_WINDOW_ID`, `$WEZTERM_PANE`,
+  `$ALACRITTY_SOCKET`, `$WT_SESSION`, `$KONSOLE_VERSION`, …), then the **process ancestry** —
+  which is what still answers when the environment has been scrubbed by a detached re-exec or
+  a login shell. Knows iTerm2, Terminal.app, WezTerm, Ghostty, kitty, Alacritty, VS Code,
+  Hyper, Warp, Tabby, Rio, Windows Terminal, Konsole and GNOME Terminal.
+- **`brain.ado_tree --no-clip`** — description and acceptance criteria in full, without the
+  raw field bag `--full` carries.
+
+### Changed
+- **The digest's Stories block says the description is a SUMMARY, not the work item.** It
+  rendered `<url> — <desc>` with nothing marking the desc as something a person typed on this
+  task. Reading the digest is a relayed session's whole job, so the digest is where the
+  distinction has to be drawn: the block now says a one-line summary of a 33-criterion story
+  is a **pointer, not a scope**, and names both ways to reach the source. Five lines once per
+  render, and nothing at all when the task claims no stories.
+- **`skills/heal` opens with `--probe-ado`** whenever the task claims work items, adds the
+  hard rule *a record is not a source*, and states that `not probed` is not `clean` — a stamp
+  on an unprobed task records that the log agrees with itself, which was never in doubt.
+- **`skills/ado` documents that the compact view clips**, and that criteria are read in full
+  before anything a work item specifies is designed or built.
+- **`_open_jump_window` is no longer darwin-gated** — the CLI spawners work wherever their
+  terminals do, and the script decides.
+
+### Fixed
+- **`brain.ado_tree` returned a plausible wrong value for `acceptance_criteria`, and that is
+  what caused the 3614 miss.** `--json` returned **604 characters** for story 3614 — and for
+  3607, 2966, 3202 and 3510 too, all exactly 604, because the 600-character clip plus `" ..."`
+  lands on the same length every time. 3614's real field is **9,237 characters and 33 numbered
+  criteria**; the clip stopped inside criterion 4. The defect was never the truncation, it was
+  that a truncated value was **indistinguishable from a complete one**. Now: when the text is
+  clipped the plain field name is **absent** — the clip lands under `<field>_preview` beside
+  `<field>_truncated`, `<field>_chars`, `<field>_criteria` and the flag that returns the rest,
+  so a reader keying on `acceptance_criteria` gets the truth or nothing. `--full` no longer
+  clips either (it meant "nothing dropped" while still carrying the clip under the plain
+  name). The markdown view now prints `[33 criteria, 9237 chars, 604 shown — --no-clip for
+  the rest]`.
+- **HTML→text kept no ordered-list numbering, so "criterion 23" became an anonymous line.**
+  ADO's editor writes criteria as `<ol><li>`; the tag strip threw the numbers away, which is
+  why three of five real stories counted **zero** criteria. Counts now: 3614=33, 3202=24,
+  3510=24, 3607=20, 2966=12. Bulleted (`<ul>`) criteria are recognised too and labelled
+  *item n*, never *criterion n* — quoting a number ADO does not render sends a reader after a
+  label that is not there.
+- **"Open a new terminal" assumed Terminal.app.** A session running inside **iTerm** ran
+  `osascript -e 'tell application "Terminal" to do script …'`; a stray window opened where the
+  session could not see it, the session reported success, and a person had to close it. Both
+  signals were in that session's own environment and process ancestry and neither was read.
+  `open-session-window.sh` now asks the resolver, **says which host it chose and which signal
+  it believed**, drives iTerm2/Terminal.app by Apple Event and WezTerm/Ghostty/kitty/Alacritty
+  by their own CLIs — and on anything else **exits non-zero and hands back the command**. It
+  never falls back to Terminal.app: that fallback *is* the incident.
+- **`close-session-window.sh` carried a second copy of the iTerm2 test** which never learned
+  the ancestry fallback, so a detached re-exec with a scrubbed environment could close the
+  wrong app's window. Both scripts now ask the one resolver, and a test greps to keep the
+  detection from creeping back in.
+
 ## [3.18.0] — 2026-08-21
 
 Track H's own checklist, closed out. Nothing here changes behaviour: it records a procedure

@@ -14,6 +14,7 @@ import sys
 import checker as _checker
 import decisions as _dec
 import heal as _heal
+from board import heal_ado as _heal_ado
 import loop as _loop
 import turn as _turn
 import hook_health
@@ -101,7 +102,28 @@ def _heal_targets(a):
     return [task], None
 
 
-def _heal_scan_one(task, probe_branches=True, link_probe=None):
+def _heal_ado_owned(exclude=()):
+    """Every work-item id claimed by a task on the board, for the sibling check to
+    subtract. `exclude` drops the tasks being healed, so a task never reads its own
+    claims as somebody else's ownership.
+
+    Fails OPEN to the empty set: an unreadable board must make the check NOISIER,
+    never quieter — a silently-empty ownership map would hide the orphan this check
+    exists to find, and hiding is the failure mode under repair here."""
+    skip = {t.get("id") for t in (exclude or ())}
+    owned = set()
+    try:
+        for t in all_tasks():
+            if t.get("id") in skip:
+                continue
+            owned |= {i["id"] for i in _heal_ado.claimed_items(t)}
+    except Exception:
+        return set()
+    return owned
+
+
+def _heal_scan_one(task, probe_branches=True, link_probe=None, ado_probe=None,
+                   ado_owned=None):
     """Run the layer-1 scan for one task and persist its gate file. Never mutates the
     task.
 
@@ -112,10 +134,12 @@ def _heal_scan_one(task, probe_branches=True, link_probe=None):
     free).
 
     `link_probe` stays separate and stays OFF unless `--probe-links` asks: git is local and
-    bounded, HTTP is neither."""
+    bounded, HTTP is neither. `ado_probe` is the same bargain for `--probe-ado`: it reads
+    every work item the task claims, which is several authenticated round trips."""
     bp = _heal.branch_prober(task) if probe_branches else None
     cp = _heal.commit_prober(task) if probe_branches else None
-    result = _heal.scan(task, branch_probe=bp, link_probe=link_probe, commit_probe=cp)
+    result = _heal.scan(task, branch_probe=bp, link_probe=link_probe, commit_probe=cp,
+                        ado_probe=ado_probe, ado_owned=ado_owned)
     _heal.write_gate(result)
     return result
 
@@ -155,6 +179,7 @@ def _heal_scan_report(task, result):
     out.extend(_heal.ephemeral_lines(result))
     out.extend(_heal.pinned_lines(result))
     out.extend(_heal.goal_review_lines(result))
+    out.extend(_heal.ado_lines(result))
     out.extend(_heal.accrual_lines(result))
     out.extend(_heal.summary_lines(task, result))
     return "\n".join(out)
@@ -198,6 +223,7 @@ def _heal_block(task, result, ops, applied=None, backup=None, before=None):
     out.extend(_heal.ephemeral_lines(result))
     out.extend(_heal.pinned_lines(result))
     out.extend(_heal.goal_review_lines(result))
+    out.extend(_heal.ado_lines(result))
     out.extend(_heal.accrual_lines(result))
     out.extend(_heal.summary_lines(task, result))
     out.append("")
@@ -1221,9 +1247,28 @@ def cmd_heal(a):
               "PR/story link. Only a 404/410 counts as dead; every other answer, including "
               "any error, stays UNKNOWN and is never reported.")
         print("")
+    # THE RECONCILE AGAINST THE SOURCE, same opt-in bargain and a louder one. It reads
+    # every work item the task claims — several authenticated round trips each — so it
+    # cannot ride the session-start path. What it must never do is stay INVISIBLE when
+    # it is off: `scan_lines` prints `not probed` for its five checks rather than
+    # `clean`, because this whole module exists because a record was trusted as if it
+    # were the source.
+    ado_probe = _heal_ado.ado_prober() if getattr(a, "probe_ado", False) else None
+    # WHAT EVERY OTHER TASK ALREADY OWNS. A Feature child another task claims is not an
+    # orphan — that is the board working — so the sibling check subtracts it. Computed
+    # ONCE for the whole invocation rather than per task.
+    ado_owned = _heal_ado_owned(tasks) if ado_probe is not None else None
+    if ado_probe is not None:
+        print("[HEAL] --probe-ado: reading the REAL AcceptanceCriteria and Description of "
+              "every work item this task claims, plus each parent Feature's children. "
+              "Criteria the log never acknowledges, criteria it words differently, "
+              "descriptions that miss the source and unlisted Feature children are "
+              "reported as findings.")
+        print("")
     blocks = []
     for task in tasks:
-        result = _heal_scan_one(task, probe_branches=True, link_probe=link_probe)
+        result = _heal_scan_one(task, probe_branches=True, link_probe=link_probe,
+                                ado_probe=ado_probe, ado_owned=ado_owned)
         if scan_only:
             blocks.append(_heal_scan_report(task, result))
             continue
@@ -1279,7 +1324,8 @@ def cmd_heal(a):
         # Re-scan AFTER the mutation so the report and the gate show the healed state,
         # and clear the nag watermark — the state changed, so the nag should re-arm.
         _heal.clear_gate(task["id"])
-        fresh = _heal_scan_one(task, probe_branches=True, link_probe=link_probe)
+        fresh = _heal_scan_one(task, probe_branches=True, link_probe=link_probe,
+                               ado_probe=ado_probe, ado_owned=ado_owned)
         _stream_emit("task.checkpoint", task, _stream_digest(task), session)
         if getattr(a, "verbose", False):
             blocks.append(_heal_block(task, fresh, ops, applied=applied, backup=path,
