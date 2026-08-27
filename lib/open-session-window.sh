@@ -45,11 +45,11 @@
 # is handed ONE SHORT LINE — `source /path/to/that/script` — whose length does not
 # depend on the command's. A fixed ~70-byte line can never reach the 1024-byte cap.
 #
-# DO NOT "SIMPLIFY" THIS BACK TO `write text theCmd` / `do script theCmd`. It will
-# look correct, it will pass every test that checks what was SENT, and it will start
-# silently truncating again the first time a prompt gets long and a window is slow to
-# start. The defect was never visible on the sending side; that is what made it cost
-# a whole invoke that reported success.
+# DO NOT "SIMPLIFY" THIS BACK TO handing the command straight to `write text` or to
+# `do script`. It will look correct, it will pass every test that checks what was
+# SENT, and it will start silently truncating again the first time a prompt gets long
+# and a window is slow to start. The defect was never visible on the sending side;
+# that is what made it cost a whole invoke that reported success.
 # ---------------------------------------------------------------------------------
 #
 # WHICH TERMINAL. Resolved by `core/termhost.py` — one table, ordered: an explicit
