@@ -107,6 +107,8 @@ python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" scan --task <orchestrator>
 
 Anything newly `READY` is the next wave. Invoke it (step 6).
 
+**Pass a long `--note` or `--why` on stdin, never as a shell word.** Both take `-` (stdin) or `@PATH` (a file). A note quoted on the command line loses anything inside backticks — the shell runs it as a command — and `grade` still reports success, so the child reads a rejection with the term it needed cut out of it.
+
 **5b — Rejected, retries left.** `grade` already sent the verdict back **as a memo on the child task**, naming each failed dimension with its grade and listing the ungraded ones separately. You do not send a second memo; you make the `--note` say the thing that matters, because that note travels in it:
 
 ```
