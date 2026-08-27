@@ -19,7 +19,7 @@ __all__ = [
     "delta_brief", "memo_pending_brief",
     "_prompt_is_human",
     "_next_hub_ordinal", "ensure_ordinals", "hub_ordinal", "ordinal_label",
-    "session_display", "register_worker_session",
+    "session_display", "session_title_label", "register_worker_session",
     "touch", "set_status", "close_task_inplace", "promote_active",
     "_project_dir_for",
     "_MSGCOUNT_MEM", "_REPLIES_MEM", "_SESSION_PATH_MEM", "_MSGCOUNT_ATEXIT",
@@ -254,6 +254,34 @@ def ordinal_label(task, sid):
     if n is None or task.get("seq") is None:
         return None
     return "%s-%s" % (task["seq"], n)
+
+def session_title_label(task, sid):
+    """The window/tab label for ONE session on `task` — '#<seq>-<ln>: <title>'.
+
+    Two sessions on the same task must never produce the same label. The number
+    is the roster line the board already prints everywhere (444-26, 566-1), so a
+    human reading a tab and a peer reading `sessions` are naming the same thing.
+
+    Returns `(label, ln)`. `ln` is the resolved '<seq>-<n>' string, or None when
+    it could not be resolved — in which case the label FALLS BACK to the old,
+    session-blind '#<seq>: <title>' rather than emitting a wrong or blank number.
+    Callers must report which of the two they emitted; a title that silently
+    loses its ln is the bug this exists to prevent.
+
+    Resolution goes through ordinal_label(), the SAME lookup `whoami --porcelain`
+    field 2 serves and delegate's `_spawner_ordinal` consumes. There is no second
+    way to compute an ln. Workers have no ordinal by design (they carry a
+    descriptive name instead), so a worker session takes the fallback.
+
+    KNOWN LIMIT — the SessionStart hook sets a title ONCE, at session start, so a
+    session whose ln changes afterwards keeps its original title. An ln is
+    assigned at attach and does not normally move, so this is acceptable; a
+    reader must simply not assume the title live-updates."""
+    ln = ordinal_label(task, sid) if sid else None
+    if ln:
+        return ("#%s: %s" % (ln, task.get("title", "")), ln)
+    return ("#%s: %s" % (task.get("seq", "?"), task.get("title", "")), None)
+
 
 def session_display(task, sid):
     """Human handle for a session on this task: hub → '<seq>-<n>', worker → its

@@ -93,7 +93,7 @@ class ImmediateTitle(unittest.TestCase):
         task = self._make("old title")
         seen = []
         saved = ts._emit_title_to_origin
-        ts._emit_title_to_origin = lambda t: seen.append(t)
+        ts._emit_title_to_origin = lambda t, sid=None: seen.append(t)
         try:
             ts._update_one(str(task["seq"]), _Args(title="new title"))
         finally:
@@ -105,7 +105,7 @@ class ImmediateTitle(unittest.TestCase):
         task = self._make("keep this title")
         seen = []
         saved = ts._emit_title_to_origin
-        ts._emit_title_to_origin = lambda t: seen.append(t)
+        ts._emit_title_to_origin = lambda t, sid=None: seen.append(t)
         try:
             ts._update_one(str(task["seq"]), _Args(effort="l"))
         finally:
