@@ -126,5 +126,59 @@ class ModuleEntryPointTest(BrainTestCase):
         self.assertIn(str(vault), r.stdout)
 
 
+class NewNoteSwitchFlagsTest(BrainTestCase):
+    """``brain.search new`` — the two switches as CLI flags, driven end to end.
+
+    ADDED with the publish/promote redesign. The retired ``--scope`` took a VALUE
+    whose safest-sounding option published; these are two ``store_true`` flags
+    that are simply absent by default, and absent is private."""
+
+    def setUp(self):
+        super().setUp()
+        self.vault = self.make_vault(self.home / "vault")
+
+    def _run(self, *args):
+        env = dict(os.environ)
+        env["HOME"] = str(self.home)
+        env["PYTHONPATH"] = str(LIB)
+        for k, rel in PINNED_ENV.items():
+            env[k] = str(self.home / rel)
+        env["TASK_STATION_BRAIN_VAULT"] = str(self.vault)
+        return subprocess.run([sys.executable, "-m", "brain.search", *args],
+                              capture_output=True, text=True, env=env)
+
+    def _new(self, slug, *flags):
+        r = self._run("new", slug, "--description", "a neutral fact", *flags)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return (self.vault / f"notes/{slug}.md").read_text()
+
+    def test_a_plain_new_note_carries_neither_switch(self):
+        text = self._new("ai-plain-node")
+        self.assertIn("name: ai-plain-node", text)      # the note WAS written
+        self.assertNotIn("publish:", text)
+        self.assertNotIn("promote:", text)
+
+    def test_publish_flag_writes_only_publish(self):
+        text = self._new("ai-shared-node", "--publish")
+        self.assertIn("publish: true", text)
+        self.assertNotIn("promote:", text)
+
+    def test_promote_flag_writes_only_promote(self):
+        text = self._new("ai-org-node", "--promote")
+        self.assertIn("promote: true", text)
+        self.assertNotIn("publish:", text)
+
+    def test_both_flags_are_independent(self):
+        text = self._new("ai-both-node", "--publish", "--promote")
+        self.assertIn("publish: true", text)
+        self.assertIn("promote: true", text)
+
+    def test_the_retired_scope_flag_is_gone(self):
+        r = self._run("new", "ai-legacy-node", "--description", "d", "--scope", "team")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--scope", r.stderr)          # argparse names the dead flag
+        self.assertFalse((self.vault / "notes/ai-legacy-node.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

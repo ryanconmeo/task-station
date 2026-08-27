@@ -38,7 +38,7 @@ The brain's data home is `~/brains/` with lowercase `brain/` (your personal vaul
    }
    ```
    where `<plugin-root>` is this plugin's installed path.
-9. **Federation** (optional, print it): to publish to an org-visible **shared brain**, set `publish_mirror` in `~/brains/config.json` (or env `TASK_STATION_BRAIN_PUBLISH_MIRROR`) to your mirror clone — until it is *explicitly* set, the `/brain-heal` publish step stays a no-op (nothing is auto-published). Create the mirror repo + its allow-only ACL with `python3 -m brain.publish_setup --org <org> --project <project> --repo <alias>-brain-shared --owner <upn>` (prints the recipe; `--execute` runs it with a token you supply). Then `python3 -m brain.search publish` mirrors your eligible notes (everything except `scope: private`).
+9. **Federation** (optional, print it): to publish to an org-visible **shared brain**, set `publish_mirror` in `~/brains/config.json` (or env `TASK_STATION_BRAIN_PUBLISH_MIRROR`) to your mirror clone — until it is *explicitly* set, the `/brain-heal` publish step stays a no-op (nothing is auto-published). Create the mirror repo + its allow-only ACL with `python3 -m brain.publish_setup --org <org> --project <project> --repo <alias>-brain-shared --owner <upn>` (prints the recipe; `--execute` runs it with a token you supply). Then `python3 -m brain.search publish` mirrors the notes you have marked `publish: true` — and only those; publishing is opt-in, so an unmarked note never leaves the vault.
 
 ## Reversibility / undo
 

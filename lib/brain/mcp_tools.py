@@ -89,7 +89,8 @@ TOOLS = [
             "description": {"type": "string", "description": "one-line summary"},
             "body": {"type": "string", "description": "the fact: absolute dates, [[wikilinks]], no secrets"},
             "type": {"type": "string", "enum": ["how-to", "gotcha", "state", "architecture", "reference", "decision"], "default": "reference"},
-            "scope": {"type": "string", "enum": ["personal", "team", "private"], "default": "personal", "description": "personal (default; publishes to your shared brain) | team (org brain promotion candidate) | private (opt out of publishing)"},
+            "publish": {"type": "boolean", "default": False, "description": "false (default) — the note stays in the private vault and nobody else can read it. true — it is mirrored to your org-readable shared brain, where colleagues read it directly, with no review step."},
+            "promote": {"type": "boolean", "default": False, "description": "false (default) — the note is not offered to the company wiki. true — it becomes a candidate for the org brain; /brain-promote lands it as a PR a lead approves. INDEPENDENT of publish: a note can go straight to the org brain without ever sitting in your shared mirror."},
             "mode": {"type": "string", "enum": ["create", "append", "merge", "replace"], "description": "Write mode. Omit to auto-pick (create if new, append if it exists). 'replace' is DESTRUCTIVE — it overwrites the whole body; use only when the caller truly means to discard the existing note."}},
             "required": ["slug", "description", "body"]},
     },
@@ -143,7 +144,9 @@ def t_save(args):
     mode = args.get("mode") or ("append" if exists else "create")
     path = notes.write_note(
         vault, slug, mode=mode, body=body, description=desc,
-        type=args.get("type", "reference"), scope=args.get("scope", "personal"),
+        type=args.get("type", "reference"),
+        publish=bool(args.get("publish", False)),
+        promote=bool(args.get("promote", False)),
         source="mcp", folder="notes", actor="agent",
     )
     action = {"create": "created", "append": "updated (appended under ## Updates)",
@@ -151,7 +154,10 @@ def t_save(args):
     search.append_log("note", f"{slug} ({action} via brain MCP)")
     return (f"{action}: {path}\nREMINDER for the caller: add/update the INDEX.md line and a hub link "
             f"(no orphans). The note was committed to the vault git repo automatically. "
-            f"scope: team notes are org brain promotion candidates.")
+            f"Sharing is two independent switches, both OFF unless you set them: "
+            f"`publish: true` mirrors the note to your shared brain (colleagues read it, "
+            f"no review); `promote: true` makes it an org brain candidate (a lead reviews "
+            f"the PR). A note with neither stays private.")
 
 
 def t_log(args):

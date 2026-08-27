@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-3.24.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.25.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -538,10 +538,12 @@ notes converge. Everything is opt-in and stdlib-only, like the rest of the plugi
   dirty-gated heal nag keeps the vault reconciled; and a `PreToolUse(Bash)` **secret
   guard** denies commands that would echo a secret into the transcript (it fails open —
   a guard bug never blocks your shell).
-- **Federation is layered, never magic.** A personal note marked `scope: team` becomes a
-  promotion candidate; `/brain-promote` converts it to the org schema and lands it as a
-  PR a lead approves. An org-brain clone joins search read-only; peers' published
-  subsets can be subscribed and searched, and a peer's copy never beats your own note.
+- **Federation is layered, never magic.** Nothing leaves the private vault unless a note
+  says so: `publish: true` mirrors it to your shared brain, `promote: true` makes it a
+  promotion candidate, both default off and neither implies the other. `/brain-promote`
+  converts a marked note to the org schema and lands it as a PR a lead approves. An
+  org-brain clone joins search read-only; peers' published subsets can be subscribed and
+  searched, and a peer's copy never beats your own note.
 - **Configuration** resolves `~/.claude/brain-station.json` → `~/brains/config.json`
   (vault, memory, org-brain clone, publish mirror, inject/distill toggles), and every
   key has a `TASK_STATION_BRAIN_*` environment override. Org values — labels, keywords,

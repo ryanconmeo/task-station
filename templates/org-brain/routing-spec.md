@@ -7,21 +7,21 @@ verified: 2026-08-13
 
 # Routing spec — where knowledge goes
 
-Every durable thing you learn has exactly one right home. Route by **kind × scope**;
+Every durable thing you learn has exactly one right home. Route by **kind × audience**;
 enforce by the **enforcement spectrum**; capture and promote by the **flows** below.
 
 ## The classification function
 
 Given an item, classify it and file it:
 
-| Kind / scope | Destination | Why |
+| Kind / audience | Destination | Why |
 |---|---|---|
 | imperative **and** safety-critical **and** mechanizable | **HOOK** | cannot-miss, deterministic (e.g. a pre-commit secret-guard) |
 | imperative (anything else) | **CLAUDE.md RULE** | steers every session; team-scoped → **org-brain team-rules** |
-| declarative + company knowledge | **private-brain note** | searchable Q&A knowledge; **org-visible by default** via your shared brain (see below) |
+| declarative + company knowledge | **private-brain note** | searchable Q&A knowledge; **private until you say otherwise** (see below) |
 | declarative + personal how-to-work | **memory** (`brain/memory/`) | the long tail of "how I work" |
-| genuinely private note | tag **`scope: private`** | the opt-OUT — kept in the private vault, never published |
-| team-relevant (any of the above) | tag **`scope: team`** | promotion candidate — **never auto-pushed to the org brain** |
+| worth sharing with colleagues | switch **`publish: true`** | the opt-IN — mirrored to your shared brain, no review step |
+| team-relevant (any of the above) | switch **`promote: true`** | promotion candidate — **never auto-pushed to the org brain** |
 | rendered deliverable | **artifact** (the board's artifacts dir) | never wikified |
 | code | **repos** | code lives in git, not the wiki |
 
@@ -46,16 +46,16 @@ spend it sparingly:
 
 1. **Autonomous write-back** — a session that *learns or corrects a durable fact* writes it back **unprompted**, via the sanctioned `brain_save` path. No user ask is needed for this.
 2. **Phrasing guard (routing only)** — a bare "remember this" with **no** mention of the brain / private brain / the vault routes to the harness's **native memory**, not the wiki. This guard classifies *user phrasing*; it does **not** veto the autonomous write-back above.
-3. **Tier-lint** — `/brain-heal` runs `brain.heal_tier`, which flags mis-filed items and re-files high-confidence `memory↔note` moves automatically (lossless). HOOK/RULE graduations and `scope: team` tags are **suggestions for a human**.
-4. **Gated promotion** — `scope: team` marks a note as an org candidate. Promotion to the org brain is **always** a human-approved PR (`/brain-promote`), **never** an automatic push. Leads merge with one click.
+3. **Tier-lint** — `/brain-heal` runs `brain.heal_tier`, which flags mis-filed items and re-files high-confidence `memory↔note` moves automatically (lossless). HOOK/RULE graduations and `promote: true` switches are **suggestions for a human**.
+4. **Gated promotion** — `promote: true` marks a note as an org candidate. Promotion to the org brain is **always** a human-approved PR (`/brain-promote`), **never** an automatic push. Leads merge with one click.
 
 ## Shared brain — the three visibility tiers
 
 A note has a **home** (above) and a **visibility**. Three tiers, widening:
 
 1. **Private vault** — your full private brain on your machine. Everything lives here.
-2. **Shared brain** — a per-person mirror repo (org-readable, owner-writable) holding the notes you publish. Publishing is **opt-OUT**: every note in `notes/` publishes UNLESS its frontmatter says `scope: private`. `memory/`, `raw/`, `plans/`, `reports/` NEVER publish. A blocking **publish-lint** skips (never silently rewrites) any note carrying a local home path, a UUID-shaped session id, or a secret. Publish company knowledge here by default so it outlives you.
-3. **Org brain** — the one curated, PR-gated org wiki. `scope: team` notes are promotion candidates; a lead approves the PR.
+2. **Shared brain** — a per-person mirror repo (org-readable, owner-writable) holding the notes you publish. Publishing is **opt-IN**: a note in `notes/` publishes ONLY if its frontmatter says `publish: true`, so nothing leaves the private vault by accident. `memory/`, `raw/`, `plans/`, `reports/` never publish at all. A blocking **publish-lint** skips (never silently rewrites) any note carrying a local home path, a UUID-shaped session id, or a secret. Company knowledge is worth the switch — it outlives you there. Dropping the switch does not delete the mirror copy: the run reports it as withdrawn and keeps it until you pass `--withdraw`.
+3. **Org brain** — the one curated, PR-gated org wiki. `promote: true` notes are promotion candidates; a lead approves the PR. The two switches are independent — `promote: true` alone sends a note to the org brain without publishing it to your shared mirror.
 
 **Peers** are other people's shared brains, cloned **lazily on demand**
 (`python3 -m brain.search peers add <alias>`) and **read-only** — never auto-pulled, and

@@ -51,7 +51,7 @@ class SchemaRoundTripTest(BrainTestCase):
         # a note with none of the new fields parses and re-emits unchanged shape
         p = self.vault / "notes/legacy.md"
         p.write_text("---\nname: legacy\ndescription: d\ntype: reference\n"
-                     "scope: personal\nverified: 2020-01-01\nsource: manual\n---\n\nx\n")
+                     "verified: 2020-01-01\nsource: manual\n---\n\nx\n")
         fm, _ = notes.parse_note(p.read_text())
         self.assertNotIn("tags", fm)
         self.assertEqual(fm["name"], "legacy")

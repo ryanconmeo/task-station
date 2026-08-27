@@ -263,9 +263,9 @@ def naming_contract(cfg=None):
     return naming.load_contract(str(clone) if clone else None)
 
 
-def new_note(slug, description, type_="reference", scope="personal", source="manual",
-             folder="notes", tags=None, contract=None, area=None, plane=None,
-             extra=None):
+def new_note(slug, description, type_="reference", publish=False, promote=False,
+             source="manual", folder="notes", tags=None, contract=None, area=None,
+             plane=None, extra=None):
     config.require_valid()  # never write to a silently-defaulted vault
     # The org schema requires area: + plane: on every knowledge node. area is
     # DERIVED from the slug's domain, and an unregistered domain raises here
@@ -277,8 +277,9 @@ def new_note(slug, description, type_="reference", scope="personal", source="man
     # YAML-safe frontmatter, git-commit-at-write. mode='create' fails if it exists.
     return notes.write_note(
         VAULT, slug, mode="create", description=description,
-        type=type_, scope=scope, source=source, folder=folder, actor="agent",
-        tags=tags, area=stamp.get("area"), plane=stamp.get("plane"), extra=extra,
+        type=type_, publish=publish, promote=promote, source=source, folder=folder,
+        actor="agent", tags=tags, area=stamp.get("area"), plane=stamp.get("plane"),
+        extra=extra,
     )
 
 
@@ -368,9 +369,9 @@ def cmd_new(a):
         extra = {"distinct-from": hit["slug"]}
 
     try:
-        path = new_note(a.slug, a.description, a.type, a.scope, a.source, a.folder,
-                        tags=_parse_tags(a.tags), contract=contract,
-                        area=a.area, plane=a.plane, extra=extra)
+        path = new_note(a.slug, a.description, a.type, a.publish, a.promote,
+                        a.source, a.folder, tags=_parse_tags(a.tags),
+                        contract=contract, area=a.area, plane=a.plane, extra=extra)
     except notes.NoteIOError as e:
         sys.exit(f"brain: {e}")
     print(path)
@@ -476,7 +477,8 @@ def cmd_publish(a):
     mirror = a.mirror or _CFG["publish_mirror"]
     if not VAULT.exists():
         sys.exit(f"brain: vault missing at {VAULT} — run /brain-init")
-    res = publish.run(_CFG, mirror=mirror, owner=a.owner)
+    res = publish.run(_CFG, mirror=mirror, owner=a.owner,
+                      withdraw=getattr(a, "withdraw", False))
     publish._print_summary(res, mirror)
 
 
@@ -527,7 +529,12 @@ def main(argv=None):
     s.add_argument("slug")
     s.add_argument("--description", required=True)
     s.add_argument("--type", default="reference")
-    s.add_argument("--scope", default="personal")
+    s.add_argument("--publish", action="store_true",
+                   help="mark the note `publish: true` — it lands in your shared "
+                        "brain mirror. Default OFF: a note with no switch stays private")
+    s.add_argument("--promote", action="store_true",
+                   help="mark the note `promote: true` — it becomes an org brain "
+                        "candidate (a lead still reviews the PR). Independent of --publish")
     s.add_argument("--source", default="manual")
     s.add_argument("--folder", default="notes")
     s.add_argument("--tags", help="comma-separated flat tags (departments AND teams)")
@@ -561,9 +568,12 @@ def main(argv=None):
     s.set_defaults(fn=cmd_log)
     s = sub.add_parser("status", help="brain health at a glance (also prints the configured vault path)")
     s.set_defaults(fn=cmd_status)
-    s = sub.add_parser("publish", help="mirror eligible notes to your shared brain (opt-out; scope: private excluded)")
+    s = sub.add_parser("publish", help="mirror notes marked `publish: true` to your shared brain (opt-IN; an unmarked note stays private)")
     s.add_argument("--mirror", help="override the publish mirror dir (default: config publish_mirror)")
     s.add_argument("--owner", help="owner name/UPN for the mirror README header")
+    s.add_argument("--withdraw", action="store_true",
+                   help="also delete mirror notes whose source no longer says "
+                        "`publish: true` (default: keep them and report)")
     s.set_defaults(fn=cmd_publish)
     s = sub.add_parser("peers", help="teammates' shared brains — lazy clone + sync + search (never auto-pulled)")
     s.add_argument("action", choices=["list", "add", "sync", "remove"])

@@ -44,13 +44,13 @@ PR — don't bend the name to pass.
      `converged-with:`). Either way the decision is *recorded*, so the next
      session doesn't re-litigate it.
    - **below 0.60 — genuinely new.** Create.
-2. `python3 -m brain.search new <slug> --description '<one line>' --type <rule|how-to|gotcha|architecture|state|reference> [--scope team] [--source task-station:<seq>]`
+2. `python3 -m brain.search new <slug> --description '<one line>' --type <rule|how-to|gotcha|architecture|state|reference> [--publish] [--promote] [--source task-station:<seq>]`
    `area:` and `plane:` are stamped for you — `area` is derived from the slug's
    domain and `plane: knowledge` is set for `notes/` and `projects/`. Only pass
    `--area`/`--plane` to override a derivation you know is wrong.
 3. Fill the body: the fact, absolute dates, `[[related-note]]` links, work-item URLs (never local paths in anything promotable).
 4. Add an INDEX.md line (right section) and a link from the relevant `projects/` hub — no orphans.
-5. `scope: team` if a teammate would benefit → it's an org brain promotion candidate ([[_org-brain-queue]]).
+5. Decide the two sharing switches — both default OFF, and a note with neither stays private. `publish: true` if a colleague should be able to read it in your shared brain. `promote: true` if the whole org should have it → an org brain promotion candidate ([[_org-brain-queue]]). They are independent; set either, both, or neither.
 
 **Dump/transcript/finding pile → raw/.** Write `raw/YYYY-MM-DD-<slug>.md` verbatim with a 2-line provenance header (where it came from, date). Untrusted until distilled.
 

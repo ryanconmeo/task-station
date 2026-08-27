@@ -3,6 +3,89 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.25.0] — 2026-08-27
+
+**NOTHING LEAVES THE PRIVATE VAULT UNLESS A NOTE SAYS SO.** Publishing to the
+org-readable shared brain was **opt-out**: every note in `notes/` was mirrored unless
+its frontmatter carried `scope: private`. But the shipped vault schema documented the
+vocabulary as `scope: personal | team` — the word `private` appeared nowhere in it —
+and `_scope_of()` defaulted a missing scope to `personal`. So the value that *sounds*
+like keep-this-to-myself published, and the only value that blocked was one the schema
+never told you to write. Nothing malfunctioned; the naming did. Measured on the
+author's own vault 2026-08-27: **148 of 150 notes were eligible to publish, and exactly
+one had opted out.**
+
+**Two switches, each named after what it does, both default OFF.** `publish: true`
+puts a note in your shared mirror. `promote: true` makes it a candidate for the org
+brain. The field names the folder it lands in, so you can open the folder and see
+whether it worked. They are INDEPENDENT — `promote` without `publish` sends a note
+straight to the org wiki without it ever sitting in a personal mirror, which the old
+three-value ladder could not express. A note with neither field stays private, and
+there is no field to remember for the safe case. `personal`, `private`, `team`,
+`scope` and `canon` are retired as share vocabulary.
+
+**The deletion sweep is three-way, and that is the safety property.** `publish` syncs
+by mirror semantics, so flipping the default from opt-out to opt-in would make the very
+next run erase every previously-published note — none of them carry the new field yet.
+So: a mirror note whose source is GONE is deleted; one whose source is BLOCKED by
+publish-lint is deleted (a leak must come out); but one whose source is still there,
+still clean, and merely unmarked is **KEPT and reported** as `withdrawn`, with the exact
+command to act on it. Only an explicit `--withdraw` drops those. A default run can
+never silently un-publish anything.
+
+Measured against the real 134-note mirror before anything was committed: with the vault
+marked, the new engine published **148** notes — the identical set the old engine
+produced — removed 0 and withdrew 0. Run against the *unmarked* vault (the migration
+skipped), it published 0, reported all **134** as withdrawn-but-kept, and lost **0**;
+the same run with `--withdraw` removed all 134, which is what the old sweep would have
+done unconditionally.
+
+### Added
+- `brain.notes.switch(fm, key)` — the ONE reader of both share switches, so `publish`,
+  `promote` and the tier-lint can never disagree about what `true` means. Absent is
+  False; only a literal `true` (any case, quoted or not) is True; an unrecognised value
+  is False rather than a guess.
+- `brain.notes._apply_switches()` — the sanctioned writer: `None` leaves a field alone,
+  `True` writes `true`, `False` REMOVES the field (absent is the single representation
+  of off).
+- `publish.run(..., withdraw=False)` and a `--withdraw` flag on both `brain.publish`
+  and `brain.search publish`, plus a `withdrawn` key on the run summary and a loud
+  `WITHDRAWN-BUT-KEPT` block in the printed summary.
+- `tests/brain/test_share_vocabulary.py` — a drift guard over 48 files in `lib/brain`,
+  `skills/brain*`, `templates/org-brain` and `docs/BRAIN.md`. It asserts zero retired
+  vocabulary AND that files were actually read, that every named tree contributed, that
+  the new vocabulary is present, and it carries a negative control that poisons a copy
+  of a real scanned file and requires the same walk to catch it.
+
+### Changed
+- `brain.publish` is opt-IN: the gate is `publish: true`, not "anything but
+  `scope: private`". Module docstring rewritten accordingly.
+- `brain.promote` gates on `promote: true`; `--non-team` → `--unmarked` (kwarg
+  `allow_non_team` → `allow_unmarked`), and the refusal names the field. The org-brain
+  copy carries neither switch.
+- `brain.notes._FM_ORDER`: the `scope` slot becomes `publish` then `promote`, same
+  position. `write_note(scope=…)` → `write_note(publish=…, promote=…)`; a fresh note is
+  written with NEITHER field.
+- `brain.search`: `new_note(scope=…)` → the two booleans; CLI `--scope` → `--publish` /
+  `--promote`.
+- `brain.mcp_tools`: the `brain_save` `scope` enum becomes two independent booleans,
+  both `default: false`, each described by where the note lands.
+- `brain.heal_tier` suggests `promote: true` instead of tagging `scope: team`, reads the
+  switch through `notes.switch`, and writes tombstones with neither switch.
+- The vault schema new installs get (`lib/brain/vault-scaffold/CLAUDE.md`), the org-brain
+  templates (`routing-spec.md`, `team-rules.md`), the four brain skills, `README.md` and
+  `docs/BRAIN.md` all move to the new vocabulary in the same release — a half-migrated
+  vocabulary is worse than either end state, because then two files disagree about who
+  can read a note.
+
+### Fixed
+- The vault schema and the publish engine no longer disagree about who can read a note.
+  The schema shipped `scope: personal | team` while the engine's only blocking value was
+  the undocumented `scope: private`; both ends now name the same two switches.
+- A previously-published note can no longer leave the shared mirror as a side effect of
+  a default flip, a forgotten field, or a routine sync. Un-publishing is now something
+  a run reports and a human opts into.
+
 ## [3.24.0] — 2026-08-27
 
 **A SESSION TITLE NOW NAMES THE SESSION, NOT JUST THE TASK.** Measured 2026-08-27:

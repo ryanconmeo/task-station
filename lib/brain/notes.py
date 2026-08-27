@@ -33,6 +33,13 @@ writes here buys five guarantees the scattered writers could not:
   (f) the knowledge stamp — ``area:``/``plane:`` have a canonical slot in the
       frontmatter order and a single derivation (:func:`knowledge_stamp`) that
       REFUSES rather than writing a node the org schema would reject.
+  (g) the two share switches — ``publish:`` and ``promote:``, both defaulting
+      OFF and read by exactly one function (:func:`switch`). A note with neither
+      field stays in the private vault; ``publish: true`` puts it in the owner's
+      shared mirror, ``promote: true`` makes it a candidate for the org brain.
+      The two are INDEPENDENT — neither implies the other — and a fresh note is
+      written with NEITHER field, because a clean note is a private note and the
+      point is that there is no field to remember.
 
 KEY ORDER IS THE ONE SILENT CONTRACT. ``core.frontmatter`` takes the order as a
 parameter because order is a schema decision and core owns no schema. So this
@@ -76,8 +83,8 @@ WRITABLE_FOLDERS = ("notes", "projects", "reports", "reports/health", "plans",
 # reader scanning the top of a file should see WHAT it is about before HOW it is
 # typed. ``converged-with``/``distinct-from`` record a graded merge-target
 # decision so the next session does not re-litigate it.
-_FM_ORDER = ["name", "description", "area", "plane", "type", "scope", "verified",
-             "verified-by", "source", "tags", "contributors", "provenance",
+_FM_ORDER = ["name", "description", "area", "plane", "type", "publish", "promote",
+             "verified", "verified-by", "source", "tags", "contributors", "provenance",
              "converged-with", "distinct-from",
              "org_node", "org_rev", "tasks", "fetched", "org_brain"]
 
@@ -121,6 +128,45 @@ def render_note(fm, body):
     """Frontmatter block + a blank line + ``body``, in the canonical note key
     order (:data:`_FM_ORDER`)."""
     return _frontmatter.render_note(fm, body, order=_FM_ORDER)
+
+
+# --------------------------------------------------------------------------- #
+# the two share switches — publish: / promote:
+# --------------------------------------------------------------------------- #
+SWITCHES = ("publish", "promote")
+_TRUE = "true"
+
+
+def switch(fm, key):
+    """Read one of the two share switches (:data:`SWITCHES`) off a frontmatter
+    dict. THE one reader — publish, promote and tier-lint all come here.
+
+    Both switches default OFF: an ABSENT field is False, and only a literal
+    ``true`` (any case, quoted or not) is True. Anything else — ``yes``, ``1``,
+    ``maybe``, a typo — is False. Never guess and never warn-and-enable: for a
+    field that decides who can read a note, the safe answer to "I don't
+    recognise this value" is "do not share it"."""
+    v = fm.get(key)
+    if isinstance(v, bool):
+        return v
+    return str("" if v is None else v).strip().strip('"').strip("'").lower() == _TRUE
+
+
+def _apply_switches(fm, publish, promote):
+    """Merge the two switches into ``fm``, ONLY where the caller said something.
+
+    ``None`` (the default) leaves the field exactly as it was. A true value
+    writes the literal ``true``. A FALSE value REMOVES the field rather than
+    recording ``publish: false`` — absent already means off, and "no field to
+    remember" is the whole point of the design."""
+    for key, val in (("publish", publish), ("promote", promote)):
+        if val is None:
+            continue
+        if val:
+            fm[key] = _TRUE
+        else:
+            fm.pop(key, None)
+    return fm
 
 
 # --------------------------------------------------------------------------- #
@@ -363,7 +409,7 @@ def _apply_fields(fm, *, name=None, tags=None, contributors=None,
 
 
 def write_note(vault, slug, *, mode="create", body="", description=None,
-               type=None, scope=None, source="manual", folder="notes",
+               type=None, publish=None, promote=None, source="manual", folder="notes",
                actor="agent", section=None, verified_by=None,
                commit=True, today=None, name=None, tags=None,
                contributors=None, provenance=None, extra=None,
@@ -383,6 +429,11 @@ def write_note(vault, slug, *, mode="create", body="", description=None,
     actor : "agent" | "human"
         An ``agent`` write may not raise ``verified:``/``verified-by:`` on a
         human-verified note (see (d)).
+    publish, promote : bool, optional
+        The two independent share switches (see (g)). ``None`` — the default —
+        writes nothing and leaves an existing value alone, so a new note gets
+        NEITHER field and stays private. ``True`` writes the literal ``true``;
+        ``False`` removes the field (absent already means off).
     area, plane : str, optional
         Stamped verbatim when given (both create and update). They are NOT
         derived here — :func:`knowledge_stamp` derives them and refuses when it
@@ -402,14 +453,16 @@ def write_note(vault, slug, *, mode="create", body="", description=None,
     if not exists:
         # append/merge/replace on a missing note degrade to a fresh create so the
         # caller never has to special-case "does it exist yet".
+        # NEITHER switch is written here on purpose: a clean note is a private
+        # note, and the caller has to say `publish=True` to change that.
         fm = {
             "name": slug,
             "description": description if description is not None else "",
             "type": type or "reference",
-            "scope": scope or "personal",
             "verified": day,
             "source": source,
         }
+        _apply_switches(fm, publish, promote)
         if actor == "human":
             fm["verified-by"] = verified_by or "human"
         elif verified_by:
@@ -427,13 +480,12 @@ def write_note(vault, slug, *, mode="create", body="", description=None,
         fm, old_body = parse_note(old_text)
         human = _is_human_verified(fm)
 
-        # --- frontmatter merge (type/scope/source/description honoured) -------
+        # --- frontmatter merge (type/switches/source/description honoured) ----
         if description is not None:
             fm["description"] = description
         if type is not None:
             fm["type"] = type
-        if scope is not None:
-            fm["scope"] = scope
+        _apply_switches(fm, publish, promote)
         if source is not None:
             fm["source"] = source
         _apply_stamp(fm, area, plane)
@@ -474,8 +526,8 @@ def write_note(vault, slug, *, mode="create", body="", description=None,
 
 def write_note_fm(repo, slug, fm, body="", *, folder="notes", source="promote",
                   op="create", commit=True):
-    """Write a note with an EXPLICIT frontmatter dict — no auto scope/source/
-    verified injection; the caller owns the schema. Same slug + containment
+    """Write a note with an EXPLICIT frontmatter dict — no auto publish/promote/
+    source/verified injection; the caller owns the schema. Same slug + containment
     safety, YAML-safe emit, structured-field validation, and git-commit-at-write
     as :func:`write_note`.
 

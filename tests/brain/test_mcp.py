@@ -144,6 +144,56 @@ class MCPServerTest(ServerProcessMixin):
         self.assertIn("## Updates", text)
         self.assertIn("an update fact", text)
 
+    def test_brain_save_defaults_to_neither_switch(self):
+        """Rule 2 through the MCP surface: the tool an agent reaches for most
+        must not write a note anyone else can read unless it was asked to."""
+        self._initialize()
+        self._rpc("tools/call", {"name": "brain_save", "arguments": {
+            "slug": "repo-quiet-fact", "description": "d", "body": "b"}})
+        text = (self.vault / "notes/repo-quiet-fact.md").read_text()
+        self.assertIn("name: repo-quiet-fact", text)   # the note WAS written
+        self.assertNotIn("publish:", text)
+        self.assertNotIn("promote:", text)
+
+    def test_brain_save_writes_each_switch_independently(self):
+        self._initialize()
+        for slug, args, expect in (
+                ("repo-shared-fact", {"publish": True}, ("publish: true",)),
+                ("repo-org-fact", {"promote": True}, ("promote: true",)),
+                ("repo-both-fact", {"publish": True, "promote": True},
+                 ("publish: true", "promote: true")),
+        ):
+            with self.subTest(slug=slug):
+                self._rpc("tools/call", {"name": "brain_save", "arguments": dict(
+                    slug=slug, description="d", body="b", **args)})
+                text = (self.vault / f"notes/{slug}.md").read_text()
+                for needle in expect:
+                    self.assertIn(needle, text)
+                for absent in {"publish: true", "promote: true"} - set(expect):
+                    self.assertNotIn(absent, text)
+
+    def test_the_save_schema_offers_two_independent_booleans(self):
+        """The schema IS the agent-facing documentation of the design, so it is
+        asserted rather than left to prose drift."""
+        spec = next(t for t in mcp.TOOLS if t["name"] == "brain_save")
+        props = spec["inputSchema"]["properties"]
+        self.assertNotIn("scope", props)
+        for key in ("publish", "promote"):
+            with self.subTest(key=key):
+                self.assertEqual(props[key]["type"], "boolean")
+                self.assertIs(props[key]["default"], False)
+                self.assertTrue(props[key]["description"].strip())
+        self.assertNotIn("publish", spec["inputSchema"]["required"])
+        self.assertNotIn("promote", spec["inputSchema"]["required"])
+
+    def test_the_save_result_explains_both_switches(self):
+        self._initialize()
+        r = self._rpc("tools/call", {"name": "brain_save", "arguments": {
+            "slug": "repo-told-fact", "description": "d", "body": "b"}})
+        text = r["result"]["content"][0]["text"]
+        self.assertIn("`publish: true`", text)
+        self.assertIn("`promote: true`", text)
+
     def test_traversal_slug_is_error(self):
         self._initialize()
         r = self._rpc("tools/call", {"name": "brain_save", "arguments": {

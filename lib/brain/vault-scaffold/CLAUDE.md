@@ -23,13 +23,21 @@ This vault is your personal second brain, an **LLM-maintained wiki**: Claude mai
 name: <kebab-slug>            # must equal filename
 description: <one line — used by INDEX and relevance scans>
 type: how-to | gotcha | state | architecture | reference | report | decision | hub
-scope: personal | team | private   # team ⇒ org brain promotion candidate; private ⇒ never published (opt-out)
+publish: true                 # OPTIONAL, default off ⇒ mirror to your shared brain (colleagues read it)
+promote: true                 # OPTIONAL, default off ⇒ org brain candidate (a lead reviews the PR)
 verified: YYYY-MM-DD          # last confirmed true
 source: <session | manual | raw/<file>>
 org-brain: <note slug or repo URL once promoted; omit until then>
 ---
 <body: the fact. Wikilink related notes with [[slug]]. Convert relative dates to absolute.>
 ```
+
+**Sharing is two switches, both OFF by default, and they are independent.** A note with
+neither field stays in this vault and nobody else can read it — that is the default, and
+there is no field to remember. `publish: true` mirrors it to your shared brain, where
+colleagues read it with no review step. `promote: true` makes it a candidate for the org
+brain, where a lead reviews the PR. `promote: true` without `publish: true` is legal and
+means exactly what it says: straight to the company wiki, no personal-mirror stop.
 
 ## Read rules (every session)
 
@@ -42,21 +50,22 @@ org-brain: <note slug or repo URL once promoted; omit until then>
 - **Autonomous write-back is model-initiated — no explicit user ask required.** Learning or correcting a durable fact is itself the trigger: write the note then and there, unprompted. This is a **distinct trigger** from user-invoked capture (`/brain-save`); the "explicit brain-directed ask" guard on brain-save/`brain_save` only keeps a casual bare "remember this" in Claude's native memory — it does **not** veto this policy.
 - **Mechanism (single write path): the `brain_save` MCP tool** — for both autonomous write-back and user-invoked capture. It creates/updates the note, bumps `verified:`, and appends LOG; the caller then finishes INDEX + hub link + commit. Fall back to `python3 -m brain.search new` only when the brain MCP is unavailable.
 - **One fact per note; update-don't-duplicate.** Correcting a note: fix in place, bump `verified:`, and if the old claim mattered, add a dated correction line ("Corrected YYYY-MM-DD: was X, actually Y"). Provenance is git.
-- New note: prefer the `brain_save` MCP tool (or `python3 -m brain.search new <slug> --description '…' --type <t> [--scope team]`), then fill/verify the body, add it to INDEX (right section), link it from at least one hub or related note — **no orphans**.
+- New note: prefer the `brain_save` MCP tool (or `python3 -m brain.search new <slug> --description '…' --type <t> [--publish] [--promote]`), then fill/verify the body, add it to INDEX (right section), link it from at least one hub or related note — **no orphans**.
 - Substantial answers (multi-source syntheses worth re-reading) get filed to `reports/YYYY-MM-DD-<slug>.md` and linked from INDEX.
 - Append LOG for every operation. Commit in logical units.
 - **Never**: secrets/connection strings/tokens (reference the secret's *location*, never its value); person-directed criticism; edits to a linked `org-brain/` clone (contribute by PR).
 
 ## Shared brain (federation) boundary
 
-- **Publishing is opt-OUT.** Every note in `notes/` is mirrored to your org-visible **shared brain** UNLESS its frontmatter says `scope: private`. `memory/`, `raw/`, `plans/`, `reports/` NEVER publish. Default to publishing company knowledge so it outlives you; reserve `scope: private` for genuinely personal notes.
-- **The mirror is generated, not hand-edited** — `python3 -m brain.search publish` (and a `/brain-heal` step) copies eligible notes byte-exact, regenerates the mirror `INDEX.md`, and commits (never pushes). A **publish-lint** refuses to mirror any note containing a local home path, a UUID-shaped session id, or a secret — fix the source (scrub it or mark `scope: private`); the note is skipped, never silently rewritten.
+- **Publishing is opt-IN.** A note in `notes/` reaches your org-visible **shared brain** ONLY if its frontmatter says `publish: true`. Nothing leaves this vault unless a note explicitly says so. `memory/`, `raw/`, `plans/`, `reports/` never publish at all. Company knowledge is worth publishing so it outlives you — but that is a decision you make per note, by adding the switch.
+- **The mirror is generated, not hand-edited** — `python3 -m brain.search publish` (and a `/brain-heal` step) copies marked notes byte-exact, regenerates the mirror `INDEX.md`, and commits (never pushes). A **publish-lint** refuses to mirror any note containing a local home path, a UUID-shaped session id, or a secret — fix the source (scrub it, or drop the `publish: true`); the note is skipped, never silently rewritten.
+- **Un-publishing is deliberate.** Remove `publish: true` and the next run does NOT delete the mirror copy — it reports the note as `WITHDRAWN-BUT-KEPT` and leaves it in place. `python3 -m brain.search publish --withdraw` is what actually removes it. (A note whose source file is gone, or that the publish-lint now blocks, IS deleted straight away — a leak has to come out.)
 - **Peers are read-only.** Teammates' shared brains clone lazily under `~/brains/peers/` (`python3 -m brain.search peers add <alias>`), are never auto-pulled, and are searched only with `--peers`. Never edit a peer clone.
 
 ## org brain (org brain) boundary
 
-- private brain is a superset. Team-relevant facts get `scope: team` — the promotion pipeline.
-- `/brain-promote <slug>`: strips personal context (local paths, session IDs, first person), drops `scope/source/org-brain` keys, writes to the org-brain clone on a branch (you open the PR). Until org brain exists, promotions queue in `notes/_org-brain-queue.md`.
+- private brain is a superset. Team-relevant facts get `promote: true` — the promotion pipeline. This is independent of `publish:`; a fact can go to the org brain without ever entering your shared mirror.
+- `/brain-promote <slug>`: strips personal context (local paths, session IDs, first person), drops `publish/promote/source/org-brain` keys, writes to the org-brain clone on a branch (you open the PR). Until org brain exists, promotions queue in `notes/_org-brain-queue.md`.
 - org brain notes are **linked, never copied**. Contradiction between a org brain note and a local note = reconcile item: newest verified fact wins.
 
 ## Self-healing
