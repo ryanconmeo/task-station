@@ -1,0 +1,161 @@
+{
+  "$comment": "SHIPPED OrgProfile schema — the DATA half of `brain.org_setup`, kept out of the code for the same reason naming-contract.json is: the wizard, the validator and the docs must not be able to disagree about what a profile is. Two schemas live here. `answers` describes the SIX things a leader must supply because no scan can discover them; `profile` describes the artifact the wizard emits (the Phase-7 OrgProfile that `brain-init --profile` consumes). Nothing here names an organisation: every example is a placeholder, and the real org arrives at runtime from the leader's answers.",
+  "version": "1.0.0",
+  "validator": {
+    "$comment": "The supported keyword subset, deliberately small — this is a hand-rolled stdlib validator (task-station ships no third-party dependency), so an unsupported keyword must be a loud authoring error rather than a silently skipped check.",
+    "keywords": ["type", "required", "properties", "items", "enum", "const", "pattern", "minLength", "minItems", "mustContain", "valueSchema", "description"]
+  },
+  "answers": {
+    "$comment": "THE SIX UNDISCOVERABLE ANSWERS. A scan reads what an org already wrote down; these are decisions nobody has written down anywhere a scan can reach, so the wizard must ask. `forge_project` is the seventh field only because ADO needs a project segment where GitHub does not — it is part of answer 4, not a new answer.",
+    "type": "object",
+    "required": ["org_slug", "org_brain_repo", "mirror_template", "forge_kind", "forge_url", "vertical_pack", "promotion_approvers"],
+    "properties": {
+      "org_slug": {
+        "type": "string",
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$",
+        "description": "answer 1 — the org's short identity, kebab-case, used to name everything downstream"
+      },
+      "org_brain_repo": {
+        "type": "string",
+        "minLength": 1,
+        "description": "answer 2 — the repo name of the shared ORG brain on the forge"
+      },
+      "mirror_template": {
+        "type": "string",
+        "mustContain": "{username}",
+        "description": "answer 3 — the per-person mirror NAMING TEMPLATE. Binding ruling 2026-08-15: a template resolved from the host identity at init, never a literal an admin types, which is why the placeholder is required rather than optional"
+      },
+      "forge_kind": {
+        "type": "string",
+        "enum": ["ado", "github"],
+        "description": "answer 4a — which git forge adapter (core.forge) drives promotion"
+      },
+      "forge_url": {
+        "type": "string",
+        "pattern": "^https://[^\\s]+$",
+        "description": "answer 4b — the forge's org URL, e.g. https://example.com/your-org"
+      },
+      "forge_project": {
+        "type": "string",
+        "minLength": 1,
+        "description": "answer 4c — the ADO project segment; required for forge_kind=ado, absent for github"
+      },
+      "forge_target_branch": {
+        "type": "string",
+        "minLength": 1,
+        "description": "optional — the org brain's integration branch (default main)"
+      },
+      "vertical_pack": {
+        "type": ["string", "null"],
+        "description": "answer 5 — which opt-in vocabulary pack from naming-contract.json applies, or null for none. Checked against the shipped pack list, not against a copy of it here"
+      },
+      "promotion_approvers": {
+        "type": "array",
+        "minItems": 1,
+        "items": {"type": "string", "minLength": 1},
+        "description": "answer 6 — who may approve an org-brain promotion PR. An empty list would mean promotion is ungated, so the floor is one"
+      },
+      "org_label": {
+        "type": "string",
+        "minLength": 1,
+        "description": "optional — display name for the shared org wiki; derived from org_slug when absent"
+      },
+      "labels": {
+        "type": "object",
+        "properties": {
+          "private": {"type": "string", "minLength": 1},
+          "org": {"type": "string", "minLength": 1}
+        },
+        "description": "optional — the two tier labels; brain.config falls back to built-in generics when absent"
+      }
+    }
+  },
+  "profile": {
+    "$comment": "THE EMITTED ARTIFACT. Keys `org_label`, `labels`, `keywords` and `forge` are the Phase-7 shape `brain.init_home._apply_profile` reads — their names are fixed by that consumer, not chosen here. Everything else is the wizard's own record: the leader's decisions that are not forge settings, the scanned vocabulary, and the provenance that says which scan produced what.",
+    "type": "object",
+    "required": ["profile_version", "org_slug", "org_label", "mirror_template", "vertical_pack", "promotion_approvers", "forge", "vocabulary", "provenance"],
+    "properties": {
+      "profile_version": {"type": "integer", "const": 1},
+      "org_slug": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$"},
+      "org_label": {"type": "string", "minLength": 1},
+      "labels": {
+        "type": "object",
+        "properties": {
+          "private": {"type": "string", "minLength": 1},
+          "org": {"type": "string", "minLength": 1}
+        }
+      },
+      "keywords": {"type": "array", "items": {"type": "string", "minLength": 1}},
+      "mirror_template": {"type": "string", "mustContain": "{username}"},
+      "vertical_pack": {"type": ["string", "null"]},
+      "promotion_approvers": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+      "forge": {
+        "type": "object",
+        "required": ["kind", "org", "repo", "target_branch"],
+        "properties": {
+          "kind": {"type": "string", "enum": ["ado", "github"]},
+          "org": {"type": "string", "pattern": "^https://[^\\s]+$"},
+          "project": {"type": "string", "minLength": 1},
+          "repo": {"type": "string", "minLength": 1},
+          "target_branch": {"type": "string", "minLength": 1}
+        }
+      },
+      "vocabulary": {
+        "type": "object",
+        "required": ["domains", "unmapped_domains", "departments", "role_tiers", "function_words", "naming_habits"],
+        "properties": {
+          "domains": {
+            "type": "object",
+            "valueSchema": {"type": "string", "minLength": 1},
+            "description": "the org's domain words mapped to a generic area — the payload of the org brain's schemas/node-types.json"
+          },
+          "unmapped_domains": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "description": "discovered words with no area a shipped hint can justify. Listed rather than guessed: a wrong area is a filter that silently stops matching, and the org half of the registry is PR-gated on purpose"
+          },
+          "departments": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "role_tiers": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "function_words": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "naming_habits": {
+            "type": "object",
+            "required": ["leading_segments", "separator", "case"],
+            "properties": {
+              "leading_segments": {"type": "array", "items": {"type": "string", "minLength": 1}},
+              "separator": {"type": "string"},
+              "case": {"type": "string"}
+            }
+          }
+        }
+      },
+      "provenance": {
+        "type": "object",
+        "required": ["database", "directory", "forge", "wiki"],
+        "properties": {
+          "directory": {
+            "type": "object",
+            "required": ["kind", "read_only", "inputs", "unscreened_entries"],
+            "properties": {
+              "kind": {"type": "string", "minLength": 1},
+              "read_only": {"type": "boolean"},
+              "inputs": {"type": "integer"},
+              "unscreened_entries": {
+                "type": "integer",
+                "description": "how many directory entries the object screen could NOT inspect — i.e. bare strings. The screen refuses user OBJECTS; a plain string has no attribute to refuse and no type to check, so a person's name typed into one reaches the profile. Detecting person-shaped names is not attempted: a name and a department are the same shape, and a heuristic wrong in either direction is worse than the gap. Required rather than optional, and required even when zero, because a profile that does not state this number is silence — and silence is the failure this count exists to close. Zero is a claim somebody made; a missing value is nobody having looked"
+              }
+            }
+          }
+        },
+        "valueSchema": {
+          "type": "object",
+          "required": ["kind", "read_only", "inputs"],
+          "properties": {
+            "kind": {"type": "string", "minLength": 1},
+            "read_only": {"type": "boolean"},
+            "inputs": {"type": "integer"}
+          }
+        }
+      }
+    }
+  }
+}

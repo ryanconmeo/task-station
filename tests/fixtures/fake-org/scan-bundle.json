@@ -1,0 +1,76 @@
+{
+  "_comment": "Already-fetched, READ-ONLY inputs for the four scans of a wholly invented organisation. This is what lets the wizard run end to end with no live credentials: whoever has access produces a bundle once, and the wizard (and every test) reads it.",
+  "database": {
+    "_comment": "INFORMATION_SCHEMA.SCHEMATA names, plus the first lines of each migration file. The engine's own schemas (dbo/sys/INFORMATION_SCHEMA) are present on purpose — the scan must drop them rather than put the database's plumbing in an org's registry.",
+    "schema_names": [
+      "sales",
+      "Billing",
+      "WarehouseOps",
+      "Dispatch",
+      "FleetMaintenance",
+      "hr",
+      "dbo",
+      "sys",
+      "INFORMATION_SCHEMA"
+    ],
+    "migration_headers": [
+      {
+        "file": "0001_dispatch_routes.sql",
+        "text": "-- Dispatch: route planning tables\n-- Owner: logistics platform team\nCREATE TABLE dispatch.route (id INT);"
+      },
+      {
+        "file": "0002_billing_invoice.sql",
+        "text": "-- Billing: invoice header and lines\n-- Supersedes the shipment charge sheet\nCREATE TABLE billing.invoice (id INT);"
+      },
+      {
+        "file": "0003_dispatch_driver.sql",
+        "text": "/* Dispatch: driver handover and shipment legs */\nCREATE TABLE dispatch.driver (id INT);"
+      },
+      {
+        "file": "0004_warehouse_counts.sql",
+        "text": "# Warehouse: cycle count staging for the shipment reconciliation\nCREATE TABLE warehouse.count (id INT);"
+      }
+    ]
+  },
+  "directory": {
+    "_comment": "GROUP DISPLAY NAMES ONLY. Mixed shapes on purpose — bare strings and Graph-shaped group objects — so the fixture exercises read_group_display_names, the single door into the directory scan. No user object appears here, and none can: the reader raises on any entry carrying a user attribute.",
+    "groups": [
+      {"@odata.type": "#microsoft.graph.group", "displayName": "SG-Billing-Approvers"},
+      {"@odata.type": "#microsoft.graph.group", "displayName": "SG-Billing-Owners"},
+      "SG-Billing-Readers",
+      "SG-Dispatch-Owners",
+      "SG-Dispatch-Contributors",
+      "SG-Warehouse-Readers",
+      "SG-Fleet-Members",
+      "SG-People-Admins"
+    ]
+  },
+  "forge": {
+    "_comment": "Repo and project names only. A project name is an explicit act of grouping; a repo word has to recur before it counts as a system.",
+    "projects": [
+      "Dispatch",
+      "Billing Platform"
+    ],
+    "repos": [
+      "dispatch-api",
+      "dispatch-web",
+      "billing-service",
+      "billing-ledger",
+      "fleet-telemetry",
+      "warehouse-etl",
+      "shared-tools"
+    ]
+  },
+  "wiki": {
+    "_comment": "Current page names. Only the LEADING segment is read — that is where this org has been putting its top-level categorisation all along.",
+    "pages": [
+      "Billing - Invoice approval",
+      "Billing - Credit notes",
+      "Dispatch - Route planning",
+      "Dispatch - Driver handover",
+      "Fleet - Maintenance windows",
+      "Warehouse - Cycle counts",
+      "People - Onboarding"
+    ]
+  }
+}

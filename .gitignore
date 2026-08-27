@@ -17,3 +17,10 @@ HANDOFF-REPORT-*.md
 
 # macOS Finder metadata
 .DS_Store
+
+# Python bytecode caches. Never committed: they are per-interpreter build output
+# (a py3.13 run and a py3.9 run write different files for identical source), and
+# a `git add -A` in a worktree where the suite has been run will otherwise sweep
+# dozens of them into a commit.
+__pycache__/
+*.py[cod]
