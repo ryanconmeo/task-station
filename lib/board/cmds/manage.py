@@ -36,7 +36,9 @@ __all__ = [
     "_repos_load", "_repos_render_manifest", "_repos_set_flag",
     "_repos_manifest_action", "cmd_repos",
     "_open_argv", "_open_path",
-    "cmd_capture_artifacts", "cmd_board", "cmd_brains", "cmd_hook_health",
+    "cmd_capture_artifacts", "cmd_board", "cmd_brains", "cmd_org_setup",
+    "org_setup_argv", "ORG_SETUP_FLAGS",
+    "cmd_hook_health",
 ]
 
 
@@ -1798,6 +1800,50 @@ def cmd_board(a):
     print(out)
     if getattr(a, "open", False):
         _open_path(out)
+
+
+def cmd_org_setup(a):
+    """`task-station org-setup` — the org-setup wizard: four READ-ONLY scans over
+    an organisation's own systems plus the six answers no scan can discover,
+    emitted as a schema-valid OrgProfile that `brain-init --profile` consumes.
+
+    The engine is `brain.org_setup`, imported LAZILY and by name: the board plane
+    must not depend on the brain plane being installed (the layer rule runs the
+    other way), so an install without it gets one clear line instead of an
+    ImportError traceback. This is a routing seam — the parsed flags are handed
+    straight back to the wizard's own parser, which stays the single place the
+    wizard's behaviour is defined."""
+    try:
+        import brain.org_setup as _org_setup
+    except ImportError as e:
+        print("org-setup: the brain plane is not installed (%s)" % e)
+        return
+    rc = _org_setup.main(org_setup_argv(a))
+    if rc:
+        raise SystemExit(rc)
+
+
+#: The board flag -> wizard flag mapping, as DATA so the drift guard in
+#: tests/brain/test_org_setup.py can read it instead of re-deriving it.
+ORG_SETUP_FLAGS = (
+    ("scan_bundle", "--scan-bundle", "value"),
+    ("answers", "--answers", "value"),
+    ("out", "--out", "value"),
+    ("dry_run", "--dry-run", "flag"),
+)
+
+
+def org_setup_argv(a):
+    """Rebuild the wizard's argv from the board's parsed namespace."""
+    argv = []
+    for attr, flag, kind in ORG_SETUP_FLAGS:
+        value = getattr(a, attr, None)
+        if kind == "flag":
+            if value:
+                argv.append(flag)
+        elif value:
+            argv.extend([flag, str(value)])
+    return argv
 
 
 def cmd_brains(a):

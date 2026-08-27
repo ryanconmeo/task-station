@@ -1,0 +1,18 @@
+{
+  "org_slug": "northwind",
+  "org_label": "Northwind Brain",
+  "labels": {
+    "private": "My Brain",
+    "org": "Northwind Brain"
+  },
+  "org_brain_repo": "northwind-org-brain",
+  "mirror_template": "{username}-brain",
+  "forge_kind": "github",
+  "forge_url": "https://github.com/northwind-logistics",
+  "forge_target_branch": "main",
+  "vertical_pack": "industrial",
+  "promotion_approvers": [
+    "a.rivera",
+    "j.okafor"
+  ]
+}
