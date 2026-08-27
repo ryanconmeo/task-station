@@ -771,17 +771,40 @@ def cmd_invoke(a):
     cwd = getattr(a, "cwd", None)
     header = "Invoke — #%s %s%s" % (child.get("seq"), child.get("title"),
                                     ("  ← #%s" % orch.get("seq")) if orch else "")
+    # WHERE THE CHILD STARTS, resolved ONCE and used by every path below — the preview,
+    # the guard, the roster entry and the command. It used to be derived three times
+    # (once in the preview, once inside `fresh_resume_command`, once in the `--cwd`
+    # override), which is how a roster entry could record one directory while the window
+    # opened in another.
+    explicit = bool(cwd)
+    where = os.path.expanduser(cwd) if explicit \
+        else _fresh_session_cwd(child.get("session_meta"))
     # The workspace verdict is reached BEFORE anything is written, so the preview and
     # the real run report the same finding — one of them just stops here.
     verdict = _workspace.assess(cwd)
+
+    # A DEFAULT IS A GUESS, AND A GUESS GETS CHECKED. An explicit `--cwd` is a human
+    # naming a directory and is left alone (the trust guard still reports on it, and
+    # `test_a_refusal_does_not_stop_the_invoke` pins that a refusal there does not block
+    # the launch). A DEFAULT is this command's own inference, and inferring a directory a
+    # child cannot start in is how #570 happened: the child dies at zero turns, its dead
+    # entry becomes the next default, and the retry dies identically. Refusing costs one
+    # flag; not refusing costs a run of phantom child failures. Exit 3, not 2 — the ask
+    # was fine, the inference was not, and naming a --cwd makes the same command work.
+    if not explicit:
+        spawn = _workspace.spawnable(where)
+        if not spawn["ok"]:
+            print(header)
+            for line in _workspace.spawn_refusal_lines(
+                    spawn, inherited=(where != os.getcwd())):
+                print(line)
+            sys.exit(3)
 
     if getattr(a, "dry_run", False):
         # A PREVIEW MUST COST NOTHING. No session minted, no event on either task, no
         # trust file touched, no window. `--print-command` is a REAL launch path (the
         # human runs the printed line, so it legitimately pre-attaches a session); this
         # is the path for merely LOOKING, which previously did not exist.
-        where = os.path.expanduser(cwd) if cwd \
-            else _fresh_session_cwd(child.get("session_meta"))
         base = "cd %s && claude --session-id %s" % (shlex.quote(where), DRY_RUN_SID)
         cmd = _invoke_command(base, role, model, permission_mode, ask, effort,
                               ref=child.get("seq"))
@@ -796,10 +819,8 @@ def cmd_invoke(a):
         print("    %s" % cmd)
         return
 
-    sid, base = fresh_resume_command(child, preborn=True)
-    if cwd:
-        base = "cd %s && claude --session-id %s" % (shlex.quote(os.path.expanduser(cwd)),
-                                                    sid)
+    sid, base = fresh_resume_command(child, preborn=True, cwd=where)
+    base = "cd %s && claude --session-id %s" % (shlex.quote(where), sid)
     done = _workspace.apply(verdict)
     cmd = _invoke_command(base, role, model, permission_mode, ask, effort,
                           ref=child.get("seq"))

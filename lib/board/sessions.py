@@ -33,6 +33,7 @@ __all__ = [
     "effective_context_window", "_session_cwd", "_load_delegate_registry",
     "_live_bg_index", "_is_live_bg", "bg_aware_resume", "bg_resume_hint",
     "worker_targets", "worker_lines", "_is_resumable", "_fresh_session_cwd",
+    "SPAWN_GRACE_S", "session_ran", "spawn_failed",
     "fresh_resume_command", "_resume_target", "resume_command", "session_tree",
     "_live_session_index", "_live_note",
     "_mirror_child_close", "_delegate_module", "_reap_task_workers",
@@ -325,8 +326,12 @@ def touch(task, session=None, note=None, reopen=False, register=True):
         # `cd … && claude --resume …` one-liner that reopens it in the right dir.
         meta = task.setdefault("session_meta", {})
         prev = meta.get(session) or {}
+        # `first_turn_at` is the moment this session first ACTED — the signal that
+        # separates a live session from a spawn that only ever recorded its intent.
+        # Stamped once and never moved, so it stays the first turn and not the last.
         entry = {"cwd": os.getcwd(), "ts": _now(), "role": "hub",
-                 "spawned_at": prev.get("spawned_at") or _now()}
+                 "spawned_at": prev.get("spawned_at") or _now(),
+                 "first_turn_at": prev.get("first_turn_at") or _now()}
         if prev.get("role") == "hub" and "ordinal" in prev:
             entry["ordinal"] = prev["ordinal"]        # re-touch keeps the number
         else:
@@ -1072,18 +1077,100 @@ def _is_resumable(cmd):
     return bool(cmd) and ("--resume " in cmd or "--session-id " in cmd)
 
 
+# A SESSION THAT NEVER RAN IS NOT A PLACE THE WORK LIVES.
+#
+# A spawn records its INTENT before the window opens: `fresh_resume_command` writes a
+# `session_meta` entry with the cwd the child is about to be launched into. If the child
+# then dies at zero turns — a trust dialog nobody can answer, a directory that no longer
+# exists — that entry survives as the task's most recent session, and the next spawn
+# reads its cwd as the default. The retry inherits the exact condition that killed its
+# predecessor, so retrying can never recover. MEASURED 2026-08-27 on #569: two sessions
+# on the roster, both dead at 0 turns, both in the same scratchpad directory, and only
+# the third was a real child.
+#
+# THREE SIGNALS THAT A SESSION ACTUALLY CAME UP, in cost order:
+#   1. `first_turn_at` — stamped by `touch` the first time the session acts. Authoritative,
+#      and free. Only entries written since 3.26.0 carry it.
+#   2. `ts` advanced past `spawned_at` — `touch` rewrites `ts` (and the cwd) when a session
+#      attaches, so a gap between them means the session reported for duty. Both are
+#      stamped from separate `_now()` calls at spawn, microseconds apart, so the
+#      comparison needs a floor rather than a bare `>`. This is what reads the entries
+#      that predate `first_turn_at`.
+#   3. A findable transcript with at least one message. The ground truth, and the only one
+#      that touches the disk, so it is asked last.
+SPAWN_GRACE_S = 120.0        # a window takes seconds to come up; below this, "not yet"
+_TURN_EPSILON_S = 1.0        # ts/spawned_at are stamped microseconds apart at spawn
+
+
+def session_ran(sid, m):
+    """True when session `sid` actually reached a turn — not merely that a spawn was
+    recorded for it. See the note above for the three signals and why there are three."""
+    m = m or {}
+    if m.get("first_turn_at"):
+        return True
+    spawned, ts = m.get("spawned_at"), m.get("ts")
+    if spawned and ts and (ts - spawned) > _TURN_EPSILON_S:
+        return True
+    if not spawned:
+        # No spawn was ever recorded for it, so nothing here is a phantom: an entry that
+        # arrived some other way is taken at its word.
+        return True
+    try:
+        path = g("_find_session_path")(sid)
+        return bool(path) and g("_session_msgcount")(path) >= 1
+    except Exception:
+        # The transcript lookup is the only signal here that touches the disk (and the
+        # only one that needs the facade wired). When it cannot answer, the answer is
+        # NO: the two cheap signals have already said there is no evidence this session
+        # ran, and treating "cannot tell" as "ran" is what hands a retry the directory
+        # that killed its predecessor. A skipped candidate costs one fall-through; a
+        # wrongly-trusted one costs the whole run.
+        return False
+
+
+def spawn_failed(sid, m, now=None):
+    """True when this roster entry is a SPAWN that never produced a session — distinct
+    from a child that ran and failed, which is the distinction the roster has to make or
+    one spawn error reads as repeated child failure.
+
+    Requires all three: the board MINTED it (`preborn` — set only by the paths that open
+    a window), it never took a turn, and the grace period has passed. A window that came
+    up thirty seconds ago and has not attached yet is not a failure, it is a window."""
+    m = m or {}
+    if not m.get("preborn") or not m.get("spawned_at"):
+        return False
+    if session_ran(sid, m):
+        return False
+    now = _now() if now is None else now
+    return (now - m["spawned_at"]) > SPAWN_GRACE_S
+
+
 def _fresh_session_cwd(meta):
-    """Best cwd for a freshly minted session: the most recently recorded session's
-    cwd (so the new window opens where the work lives), else the process cwd."""
-    for m in sorted((meta or {}).values(), key=lambda m: m.get("ts", 0), reverse=True):
-        if m.get("cwd"):
-            return m["cwd"]
+    """Best cwd for a freshly minted session: the most recently recorded session's cwd
+    (so the new window opens where the work lives), else the process cwd.
+
+    SESSIONS THAT NEVER RAN ARE SKIPPED. Such an entry records where a spawn was AIMED,
+    never where work happened — and if that aim is what killed it, inheriting it kills
+    the retry too. Falling through to the next candidate that actually took a turn is
+    the whole propagation fix."""
+    for sid, m in sorted((meta or {}).items(),
+                         key=lambda kv: (kv[1] or {}).get("ts", 0), reverse=True):
+        if not (m or {}).get("cwd"):
+            continue
+        if not session_ran(sid, m):
+            continue
+        return m["cwd"]
     return os.getcwd()
 
 
-def fresh_resume_command(task, preborn=False):
+def fresh_resume_command(task, preborn=False, cwd=None):
     """Mint a brand-new session id, pre-bind it to `task`, and return
     `(sid, "cd <cwd> && claude --session-id <sid>")`.
+
+    `cwd` overrides the derived default. Pass it whenever the caller already knows where
+    the window will open: the roster entry is what a LATER spawn reads as its default, so
+    an entry recording one directory while the window opens in another seeds exactly the
+    bad-cwd propagation this function sits in the middle of.
 
     Pre-binding = a hub `session_meta` entry + a session→task link, so when the
     emitted command launches the window, SessionStart sees the link and
@@ -1095,7 +1182,7 @@ def fresh_resume_command(task, preborn=False):
     `--session-id <sid>` for it (used by `pin --new`) until its transcript exists."""
     new_sid = str(uuid.uuid4())
     meta = task.setdefault("session_meta", {})
-    cwd = _fresh_session_cwd(meta)
+    cwd = os.path.expanduser(cwd) if cwd else _fresh_session_cwd(meta)
     ensure_ordinals(task)
     entry = {"cwd": cwd, "ts": _now(), "role": "hub",
              "ordinal": _next_hub_ordinal(task), "spawned_at": _now()}
@@ -1219,12 +1306,16 @@ def session_tree(task):
     """The hub/worker session TREE for one task, for `/todo <n>` detail and the board.
 
     Returns `{"hubs": [hub…], "orphan_workers": [wk…]}` where
-      hub = {"sid", "cwd", "ts", "pinned", "main", "live", "msgs", "preborn", "workers": [wk…]}
+      hub = {"sid", "cwd", "ts", "pinned", "main", "live", "msgs", "preborn", "ran",
+             "spawn_failed", "workers": [wk…]}
       wk  = {"sid", "project", "label", "dir", "model", "ts", "spawner"}
 
     Hubs are the `session_meta` entries with `role == "hub"`, newest-first by their
     recorded ts. `live` = a transcript is findable AND has ≥1 user message; `msgs` is
-    that count (0 when no transcript). `main` = the pinned hub if one is pinned, else
+    that count (0 when no transcript). `ran` = the session actually reached a turn;
+    `spawn_failed` = the board minted it, it never ran, and the grace period is past —
+    a SPAWN failure, which is not the same event as a child that ran and failed.
+    `main` = the pinned hub if one is pinned, else
     the newest live hub with `msgs >= SUBSTANCE_FLOOR` (fallback: newest live) — every
     other hub is a side-quest. Workers are the delegate-registry entries whose `seq`
     matches this task, nested under the hub whose sid == their `spawner` (WS2 field);
@@ -1265,6 +1356,10 @@ def session_tree(task):
             "pinned": (sid == pinned), "main": False,
             "live": bool(path) and msgs >= 1, "msgs": msgs,
             "preborn": bool(m.get("preborn")), "ordinal": m.get("ordinal"),
+            # `ran` / `spawn_failed` are what let a reader tell a child that FAILED from
+            # a spawn that never produced a child at all. Both are False for a window
+            # that is still coming up — "not yet" is not "never".
+            "ran": session_ran(sid, m), "spawn_failed": spawn_failed(sid, m),
             "workers": sorted(workers_by_spawner.get(sid, []), key=_wk_sort, reverse=True),
         })
     # Classify the single "main" hub (the working session); the rest are side-quests.

@@ -3,6 +3,59 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.26.0] — 2026-08-27
+
+**A FAILED SPAWN USED TO POISON THE NEXT ONE, SO ONE ERROR READ AS REPEATED CHILD
+FAILURE.** `invoke` opens the child's window in a directory it usually INFERS — "where
+the task's most recent session ran". MEASURED 2026-08-27 on task #569, three sessions
+sat on the roster and only ONE of them was a real child:
+
+- `invoke` was run from a **scratchpad** directory. With no earlier session to inherit
+  from, the default fell through to the process cwd. A plain directory has no trusted
+  parent to inherit trust from, so the child stopped on a first-run trust dialog that no
+  loop can answer and exited at **0 turns** (`e8b15efb`).
+- The retry then read **that dead session's** cwd as its default — a session that never
+  ran anywhere, whose roster entry records only where a spawn was *aimed* — and died
+  identically (`fa5f4956`).
+- Both showed on the roster as `○ … gone · 0 msgs`, the same words a session that ran
+  and left gets. One spawn bug hit twice was indistinguishable from two children
+  failing, which is a different diagnosis leading to a different fix.
+
+### Fixed
+- **A session that took no turn is never inherited as a directory.** `_fresh_session_cwd`
+  now skips roster entries that never reached a turn and falls through to the next
+  candidate that did. This is the propagation fix: without it, a retry inherits the exact
+  condition that killed its predecessor, so retrying can never recover.
+- **`invoke` refuses a DEFAULT it cannot vouch for** rather than launching into it
+  (exit 3 — the ask was fine, the inference was not, and naming a `--cwd` makes the same
+  command work). The refusal names the directory, the reason, whether it was inherited
+  from an earlier session or taken from the process cwd, and the two ways out. An
+  explicit `--cwd` is a human naming a directory and is **not** refused — the trust
+  verdict is still reported and the launch still proceeds, exactly as before.
+- **The roster entry now records where the window actually opens.** `--cwd` used to
+  override the launch command but not the `session_meta` entry, so a good launch could
+  manufacture a bad default for the *next* spawn. `fresh_resume_command` takes the
+  resolved directory, and `invoke` resolves it once for the preview, the guard, the
+  roster entry and the command.
+
+### Added
+- **`✖ SPAWN FAILED — never ran`, a fourth session state** on the `/todo <n>` roster
+  (`spawn-failed` on the HTML board), for an entry the board minted that never reached a
+  turn. Deliberately not `gone`: nothing was ever there to go. A window still coming up
+  is not a failure — the classification waits out a 120s grace period first.
+- `sessions.session_ran(sid, meta)` and `sessions.spawn_failed(sid, meta)`, the two
+  predicates behind all of the above. `session_ran` reads three signals in cost order:
+  the new `first_turn_at` stamp, `ts` having advanced past `spawned_at` (which reads
+  entries written before that stamp existed), and finally a transcript on disk.
+- `workspace.spawnable(cwd)` — "can a child COME UP here", which is a different question
+  from `assess`'s "may this plugin pre-seed trust here". A directory passes if it is
+  already a trusted project or if it is a linked worktree of one; a main checkout and a
+  trusted home directory both fail `assess` and are perfectly fine to start in.
+
+### Changed
+- `touch()` stamps `first_turn_at` the first time a session acts. Stamped once and never
+  moved, so it stays the first turn and not the last.
+
 ## [3.25.0] — 2026-08-27
 
 **NOTHING LEAVES THE PRIVATE VAULT UNLESS A NOTE SAYS SO.** Publishing to the

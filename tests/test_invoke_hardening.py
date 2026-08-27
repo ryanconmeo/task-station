@@ -119,6 +119,13 @@ class _InvokeTest(unittest.TestCase):
         self._orig_cfg = os.environ.get("CLAUDE_CONFIG_DIR")
         os.environ["CLAUDE_CONFIG_DIR"] = self.cfg
         self.claude_json = os.path.join(self.cfg, ".claude.json")
+        # THE LAUNCHING DIRECTORY IS TRUSTED — the ordinary case, and stated here so the
+        # tests below are about what they say they are about. Since 3.26.0 `invoke`
+        # REFUSES a DEFAULTED cwd that no child could start in, so a fixture that left the
+        # process cwd untrusted would make every no-`--cwd` test a spawn-guard test.
+        # The tests about an untrusted default (test_spawn_cwd_poison.py) say so
+        # themselves, and the one test about a MISSING config removes this file first.
+        self._known(os.getcwd())
         # The parent's model SELECTION, pinned to "nothing configured" for every test
         # that is not about it. It is read from the real `~/.claude/settings.json`, so a
         # developer running an `opus[1m]` session would otherwise see their own window
@@ -176,8 +183,18 @@ class _InvokeTest(unittest.TestCase):
         return os.path.realpath(path)
 
     def _known(self, *paths, trusted=True):
-        """Write `~/.claude.json` marking `paths` as projects this machine knows."""
-        doc = {"projects": {p: {"hasTrustDialogAccepted": bool(trusted)} for p in paths}}
+        """Mark `paths` as projects this machine knows in `~/.claude.json`.
+
+        MERGES rather than replaces: setUp records the launching directory as trusted, and
+        a wholesale rewrite here would silently revoke it and turn every caller into a
+        spawn-guard test."""
+        doc = {"projects": {}}
+        if os.path.exists(self.claude_json):
+            with open(self.claude_json, encoding="utf-8") as f:
+                doc = json.load(f) or {"projects": {}}
+        projects = doc.setdefault("projects", {})
+        for p in paths:
+            projects[p] = {"hasTrustDialogAccepted": bool(trusted)}
         with open(self.claude_json, "w", encoding="utf-8") as f:
             json.dump(doc, f)
         return doc
@@ -388,6 +405,7 @@ class TrustPreseed(_InvokeTest):
         parent, child = self._pair()
         main = self._repo()
         wt = self._worktree(main)
+        os.remove(self.claude_json)          # setUp writes one; this test is its absence
         out, _ = self._invoke(parent=parent, child=child, cwd=wt)
         self.assertFalse(os.path.exists(self.claude_json))
         self.assertIn("did not", out.lower())
