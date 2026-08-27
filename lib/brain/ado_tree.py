@@ -311,13 +311,16 @@ def _strip_html(s: str, limit: int | None = 600) -> str:
 
 
 def count_criteria(text: str) -> int:
-    """How many numbered criteria a plain-text AcceptanceCriteria field declares.
-    Counts lines that OPEN with `<n>.` or `<n>)` — the shape every hand-written ADO
-    criteria list on this board uses. 0 for prose criteria, which is honest: the
-    number is a floor a reader can check, never a claim the field is empty."""
+    """How many enumerated criteria a plain-text AcceptanceCriteria field declares.
+
+    Counts lines opening with `<n>.` / `<n>)` (an `<ol>`, or hand-typed numbers) and
+    lines opening with `- ` (a `<ul>` — several stories on this board bullet their
+    criteria instead of numbering them, and a bulleted list of eight is still eight
+    criteria). 0 for prose, which is honest: the number is a floor a reader can
+    check, never a claim the field is empty."""
     if not text:
         return 0
-    return len(re.findall(r"(?m)^\s*\d+[.)]\s+\S", text))
+    return len(re.findall(r"(?m)^\s*(?:\d+[.)]|-)\s+\S", text))
 
 
 # WHY THE FIELD NAME IS NEVER ALLOWED TO HOLD A PARTIAL VALUE
