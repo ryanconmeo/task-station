@@ -233,7 +233,8 @@ class _ToText(HTMLParser):
     The regex strip this replaces threw ordered lists away. ADO's editor writes a
     criteria list as ``<ol><li>...</li></ol>``, so the numbering lives in the
     MARKUP, not the text — and stripping tags turned "criterion 23" into an
-    anonymous line in the middle of a wall. Volt stories 3607, 2966 and 3202 all
+    anonymous line in the middle of a wall. Stories 3607, 2966 and 3202 on one real
+    board all
     number that way; the counter below is what lets a reader (or the heal
     reconciler) say "criterion 23" and have it mean the same thing it means in the
     ADO UI. ``<ol start="n">`` is honoured. Unordered lists become "- ".
@@ -325,7 +326,7 @@ def count_criteria(text: str) -> int:
 
 # WHY THE FIELD NAME IS NEVER ALLOWED TO HOLD A PARTIAL VALUE
 # ----------------------------------------------------------
-# MEASURED 2026-08-26, Volt story 3614. `--json` returned a 604-character
+# MEASURED 2026-08-26 on one real board, story 3614. `--json` returned a 604-
 # `acceptance_criteria` for that story -- and for 3607, 2966, 3202 and 3510 too,
 # all exactly 604, because `_strip_html`'s 600-char clip plus " ..." lands on the
 # same length every time. 3614's real field is 9,237 characters and 33 numbered

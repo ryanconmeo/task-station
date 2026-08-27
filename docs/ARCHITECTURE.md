@@ -223,6 +223,57 @@ trail and that is its entire job. All three are reversible through one inverse,
 present. A decision carries **exactly one** replacement — `_check_unreplaced` refuses to
 double-mark — which is what keeps the inverse unambiguous.
 
+#### Reconciling against the SOURCE — `heal --probe-ado` (`lib/board/heal_ado.py`)
+
+Everything above reconciles a task **with itself**: decisions against decisions, steps
+against decisions, the digest against its own size. Every one of those checks reads a single
+record and asks whether it is internally consistent — and none of them can catch a record
+that is perfectly coherent and no longer resembles the thing it describes.
+
+That failure has happened twice. Story **3614** carries **33 acceptance criteria**; criteria
+2, 23, 24 and 28 specify a per-**row** converging applier with a row ledger. The task's
+record described it as *"seeds out of chain"* — criterion 29, one of 33 — and a relayed
+session read the record (the record's entire purpose), designed a file-level checksum ledger
+from first principles, and shipped something strictly weaker than the specification that
+already existed. Separately, story **3070** and its PR sat inside a Feature the task itself
+claimed for 25 days, unowned, because the story list is hand-maintained and 3070 was filed
+after the task was created. **The task record was trusted as if it were the source.**
+
+`--probe-ado` reads each claimed work item's real `AcceptanceCriteria`, `Description` and
+parent Feature, and produces five checks registered in `heal.CHECKS` — so they sort, dedupe,
+count and **dismiss** through exactly the same machinery as every other finding:
+
+| Check | What it catches |
+|---|---|
+| `ado-criteria-unacknowledged` | criteria no current decision or live step reaches |
+| `ado-criteria-conflict` | criteria the log HAS decided on but words **differently** |
+| `ado-summary-lossy` | this task's own description of a work item vs the source title |
+| `ado-sibling-missing` | open, unowned children of a Feature this task claims |
+| `ado-unreachable` | a work item that would not read — **unverified**, not "confirmed" |
+
+**One measured quantity, three bands.** *Coverage* is the fraction of a criterion's
+significant vocabulary present in the task's text. It is **asymmetric**, unlike
+`heal.word_overlap`: a 20-word criterion fully absorbed into a 300-word decision scores 1.0
+here and ~0.07 as a Jaccard ratio, and that under-report is the exact direction that hid
+3614. `>= ACK_COVERAGE` is acknowledged; `CONFLICT_FLOOR .. ACK` is *same territory, worded
+differently*; below is untouched.
+
+**The middle band is a candidate, not a verdict.** Whether a decision *contradicts* a
+criterion is a judgement, and this layer is deterministic and zero-token by contract. So the
+report prints each such criterion beside the decision index that covers it, and
+`skills/heal` makes ruling on the pair a required step. A check that guessed "contradicts"
+would be the same class of mistake as the 604-character `acceptance_criteria` field that
+caused the incident: a plausible answer where an honest *"look at this"* belonged.
+
+**Layer rule.** `board` never imports `brain`, so the work-item reader is reached as a
+subprocess (`python3 -m brain.ado_tree … --no-clip`) — zero tokens, which is why the board's
+skills already reach for it that way. The prober is injectable, so every test runs without a
+network, an `az` login, or a subprocess.
+
+**Off by default, and it says so.** Several authenticated round trips per work item, so the
+SessionStart path never pays. What it must never do is stay invisible: without the probe
+those five rows read `not probed — N work item(s) unverified`, never `clean`.
+
 **Two layers, split by cost.**
 
 - **Layer 1 — `heal.scan()`.** Deterministic, zero tokens, and it never mutates the task.
@@ -992,10 +1043,12 @@ one-liner for the session that actually holds the task's context. The guarantees
 - **Fresh fallback.** No findable live transcript → `cd <cwd> && claude` (fresh), **never
   `--continue`**.
 
-**`-s` jump window** (`_open_jump_window` → `open-session-window.sh`): macOS/Terminal.app-only
-and best-effort — it opens a **new** window running the resume one-liner and leaves the
-current window untouched; any failure (not darwin, missing `osascript`, absent script) just
-prints the command for you to run by hand.
+**`-s` jump window** (`_open_jump_window` → `open-session-window.sh`): best-effort — it opens
+a **new** window running the resume one-liner **in the terminal you are actually sitting in**
+and leaves the current window untouched. Which terminal is resolved by `core/termhost.py`
+(see *Which terminal am I in?* below), and any failure — an undrivable host, a missing
+`osascript`, an absent script — prints the command for you to run by hand rather than opening
+a window somewhere you are not looking.
 
 ## (d) "Fold don't fork" dedup
 
@@ -1048,11 +1101,26 @@ whole escape is wrapped in tmux's DCS passthrough (`term.tmux_wrap`: `ESC P tmux
 each ESC doubled> ESC \`) so it reaches the real terminal instead of being eaten by the pane
 — requires `tmux set -g allow-passthrough on`.
 
-**Window open/close is macOS-only.** The `-s` jump window (`_open_jump_window` →
-`open-session-window.sh`) and the `/done` auto-close (`close-session-window.sh`) drive
-Terminal.app / iTerm2 via AppleScript and are `darwin`-gated; off macOS they degrade to a
-one-line "run this yourself" hint (jump) or a silent no-op (close), never an error. Tint and
-window-title OSC are plain escapes and work anywhere a terminal is detected.
+**Which terminal am I in?** One resolver answers it — `core/termhost.py` — and both window
+scripts ask it. Order: `$TASK_STATION_TERMINAL` → `$LC_TERMINAL` (the only marker that
+survives ssh and tmux) → `$TERM_PROGRAM` → each terminal's own variable (`$KITTY_WINDOW_ID`,
+`$WEZTERM_PANE`, `$ALACRITTY_SOCKET`, `$WT_SESSION`, `$KONSOLE_VERSION`, …) → the **process
+ancestry**, which is what still answers when the environment has been scrubbed by a detached
+re-exec or a login shell. Every answer carries `how`, the signal it believed, and the spawner
+prints it.
+
+**An unrecognised host opens nothing.** `open-session-window.sh` drives iTerm2 and
+Terminal.app by Apple Event and WezTerm / Ghostty / kitty / Alacritty by their own CLIs;
+anything else exits non-zero and hands back the command. It never falls back to Terminal.app.
+That fallback is the bug it was rewritten for — 2026-08-26, a session inside iTerm ran `tell
+application "Terminal"`, a stray window opened where the session could not see it, **no error
+was raised**, success was reported, and a person had to go and close it. `task-station
+terminal [--open CMD]` is the sanctioned way in, so nothing has to hand-write an Apple Event.
+
+The `/done` auto-close (`close-session-window.sh`) is still AppleScript-only and therefore
+iTerm2/Terminal.app-only; on any other host it refuses and names it rather than closing
+someone else's window. Tint and window-title OSC are plain escapes and work anywhere a
+terminal is detected.
 
 **Targeting the right window.** The hooks don't print escapes to stdout — they resolve the
 *originating* TTY via `origin-tty.sh` and write there, so tinting is focus-proof.

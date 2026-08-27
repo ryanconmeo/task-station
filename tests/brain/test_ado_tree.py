@@ -269,7 +269,7 @@ if __name__ == "__main__":
 
 # ------------------------------------------------------- the 604-character lie
 class TruncationDeclaresItself(unittest.TestCase):
-    """MEASURED 2026-08-26 on Volt story 3614.
+    """MEASURED 2026-08-26 on story 3614 of one real board.
 
     `--json` returned a 604-character `acceptance_criteria` for 3614 — and for
     3607, 2966, 3202 and 3510, all exactly 604, because the old 600-char clip plus
@@ -343,7 +343,7 @@ class TruncationDeclaresItself(unittest.TestCase):
 class OrderedListNumbering(unittest.TestCase):
     """ADO's editor writes criteria as `<ol><li>`, so the numbering lives in the
     MARKUP. Stripping tags turned "criterion 23" into an anonymous line — which is
-    why `count_criteria` saw zero on three of the five Volt stories."""
+    why `count_criteria` saw zero on three of the five real stories measured."""
 
     def test_ol_items_are_numbered(self):
         self.assertEqual(ado_tree._plain("<ol><li>a</li><li>b</li></ol>"),

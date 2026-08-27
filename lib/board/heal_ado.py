@@ -10,7 +10,7 @@ longer resembles the thing it describes.
 
 TWICE, MEASURED, THE SAME SHAPE.
 
-  1. 2026-08-26, session 503-12. Volt story 3614 carries 33 acceptance criteria.
+  1. 2026-08-26, session 503-12. Story 3614 on one real board carries 33
      Criteria 2, 23, 24 and 28 specify a per-ROW converging applier with a row
      ledger. Task 503's record described 3614 as, effectively, "seeds out of
      chain" — one criterion out of 33, and criterion 29 at that. A relayed session
