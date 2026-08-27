@@ -106,16 +106,24 @@ class SessionTitleLn(unittest.TestCase):
     def test_positive_count_of_distinct_titles(self):
         """Pin the COUNT, not just pairwise inequality: N attached sessions
         produce N distinct titles, so a third session can't collide with a pair
-        that already differs."""
+        that already differs.
+
+        The size is not invented. MEASURED 2026-08-27 against the real store,
+        task #444 carries 28 rostered hub sessions; under the old code all 28
+        collapsed to ONE title string, and under this one they yield 28. That is
+        the acceptance narrative, so the fixture mirrors it at the same width."""
         t = self._seed()
-        sids = ["sess-%d" % i for i in range(5)]
+        sids = ["sess-%d" % i for i in range(28)]
         for s in sids:
             t = self._attach(t, s)
         titles = [self._title(s)[0].strip() for s in sids]
-        self.assertEqual(len(titles), 5)
-        self.assertEqual(len(set(titles)), 5)
+        self.assertEqual(len(titles), 28)
+        self.assertEqual(len(set(titles)), 28)
         for x in titles:
             self.assertRegex(x, r"^#%s-\d+: " % t["seq"])
+        # …and the old, session-blind format collapses all 28 to one string —
+        # the collapse this test exists to prevent regressing to.
+        self.assertEqual(len({"#%s: %s" % (t["seq"], t["title"]) for _ in sids}), 1)
 
     def test_single_session_unchanged_apart_from_the_ln(self):
         t = self._seed("Only one session here")

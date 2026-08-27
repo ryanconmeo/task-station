@@ -16,8 +16,26 @@ trying to reach its successor could not name the target and used the wrong rail.
 
 **The fix is the roster line.** Every title surface now emits `#<seq>-<ln>: <title>`,
 where `<ln>` is the number the board already prints everywhere (`444-28`, `566-1`).
-`#444-26` and `#444-28` now read differently in a tab, in a peer listing, and in
-`hookSpecificOutput.sessionTitle` — so one session can be addressed without guessing.
+MEASURED 2026-08-27 against the real store: task #444 carries **28** rostered hub
+sessions, which the old format collapsed to **one** title string. They now yield 28.
+
+**What this does and does not buy, measured rather than assumed.** Only ONE of these
+surfaces can be used to *address* a session: `session-title`, which the SessionStart
+hook feeds to `hookSpecificOutput.sessionTitle`. The rest — `prompt-title`,
+`_emit_title_to_origin`, the tints, the statusline — write to the terminal or the
+status bar and never reach the harness, so they are DISPLAY only. They are fixed here
+because a human reads them, not because they carry addressing weight.
+
+And the addressing benefit is **partly unverified**. A `ListAgents` call from a session
+whose `session-title` correctly emitted `#569: …` came back named `ryannguyen-1b` — a
+cwd-derived name, not its title. Another live session in the same listing was named
+`#444: World-tier rework: …`, verbatim its own `session-title` output. So the harness
+adopts `sessionTitle` as the agent name in at least some cases and not in others, by a
+rule this change does not establish and did not attempt to. What is proven is the
+STRING: it is now distinct per session everywhere it is emitted. Whether a given
+harness build turns that string into an addressable name is a separate question, and
+an unattached session — which still, correctly, gets no title at all — keeps falling
+back to a cwd-derived name that can collide with another session in the same directory.
 
 **One lookup, not two.** The ln resolves through `ordinal_label()` — the same lookup
 `whoami --porcelain` field 2 serves and delegate's `_spawner_ordinal` consumes. The
