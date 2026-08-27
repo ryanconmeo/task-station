@@ -448,6 +448,78 @@ def assess(cwd):
     return verdict
 
 
+# CAN A CHILD ACTUALLY COME UP HERE? A DIFFERENT QUESTION FROM `assess`.
+#
+# `assess` answers "may this plugin pre-seed trust for `cwd`", and its answer is no for
+# most perfectly workable directories — a main checkout and the home directory both have
+# nobody to inherit from. `spawnable` answers the question `invoke` actually needs before
+# it opens a window: will a session started here REACH ITS FIRST TURN, or will it stop on
+# a trust dialog no loop can answer? Two ways to pass, and only two:
+#
+#   trusted     — the directory is already an accepted project in ~/.claude.json.
+#   inheritable — it is a linked worktree of a trusted main checkout, so `apply` is about
+#                 to grant it (`assess().ok`).
+#
+# Anything else is a directory a child dies in at zero turns. That is not a hypothetical:
+# 2026-08-27 an invoke run from a scratchpad directory spawned two children that both
+# exited at 0 turns, and the roster read as two child failures.
+
+SPAWN_TRUSTED = "trusted"
+SPAWN_INHERITABLE = "inheritable"
+
+
+def spawnable(cwd):
+    """Whether a child session launched in `cwd` can reach its first turn.
+
+    Returns `{"cwd", "ok", "how", "reason"}` — `how` is SPAWN_TRUSTED / SPAWN_INHERITABLE
+    when ok, else None and `reason` says which wall it hit. Writes nothing; the trust
+    grant that makes an `inheritable` directory usable is still `apply`'s job.
+
+    `cwd=None` is not a pass: a caller with no directory to check has nothing to vouch
+    for, and this function's answer to an unanswerable question is no."""
+    out = {"cwd": None, "ok": False, "how": None, "reason": ""}
+    if not cwd:
+        out["reason"] = "no directory to check"
+        return out
+    expanded = os.path.expanduser(cwd)
+    path = os.path.realpath(expanded)
+    out["cwd"] = path
+    trusted = trusted_projects()
+    if expanded in trusted or path in trusted:
+        out["ok"], out["how"] = True, SPAWN_TRUSTED
+        return out
+    verdict = assess(path)
+    if verdict.get("ok"):
+        out["ok"], out["how"] = True, SPAWN_INHERITABLE
+        return out
+    out["reason"] = (verdict.get("reason")
+                     or "%s is not a trusted project on this machine" % path)
+    return out
+
+
+def spawn_refusal_lines(result, flag="--cwd", inherited=False):
+    """The refusal `invoke` prints when the directory it was ABOUT TO DEFAULT TO cannot
+    hold a session. Says the reason, says why refusing beats launching, and says the two
+    ways out — because a refusal a human cannot act on is just a slower failure.
+
+    `inherited=True` when the candidate came from an earlier session on the task rather
+    than from the process cwd; that is the propagation case and it is worth naming."""
+    where = result.get("cwd")
+    src = ("inherited from an earlier session on this task" if inherited
+           else "the directory this command was run from")
+    return [
+        "invoke: REFUSED — %s is not a workspace a child can start in (%s)." % (where, src),
+        "  %s" % (result.get("reason") or "it is not a trusted project on this machine"),
+        "  A child launched there meets a first-run trust dialog that no loop can answer, "
+        "so it exits at ZERO TURNS — and that dead session's directory then becomes the "
+        "next invoke's default, which is how one bad spawn becomes a run of them that "
+        "reads as repeated child failure.",
+        "  Pass %s <dir> naming somewhere the child can work (a trusted project, or a "
+        "linked worktree of one), or open a session in %s once and accept its trust "
+        "dialog." % (flag, where),
+    ]
+
+
 def apply(verdict):
     """Perform the writes `verdict` authorises, and return the human-readable list of
     what was actually done. A refused or empty verdict writes NOTHING and returns []."""

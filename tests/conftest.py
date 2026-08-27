@@ -27,3 +27,30 @@ os.environ.setdefault("XDG_STATE_HOME", _tsd)
 # test shells out to the real CLI (nondeterministic live-agent list). Tests that
 # need a live set stub ts._LIVE_BG_INDEX directly.
 os.environ.setdefault("TASK_STATION_NO_AGENT_QUERY", "1")
+
+# THE SUITE'S LAUNCHING DIRECTORY IS A TRUSTED PROJECT. Since 3.26.0 `invoke` REFUSES
+# to default a child into a directory no session could start in (see #570: a defaulted
+# cwd that could not hold trust killed two children at zero turns). Every `invoke` test
+# that passes no `--cwd` therefore resolves to the process cwd, and with no
+# `~/.claude.json` at all that is a refusal — so the ordinary condition is stated here
+# ONCE rather than re-asserted in a dozen fixtures. Tests that are ABOUT an untrusted
+# or missing config repoint CLAUDE_CONFIG_DIR themselves and are unaffected.
+def _trust_cwd():
+    import json
+    cfg = os.path.join(os.environ['CLAUDE_CONFIG_DIR'], '.claude.json')
+    doc = {}
+    if os.path.exists(cfg):
+        try:
+            with open(cfg, encoding='utf-8') as f:
+                doc = json.load(f) or {}
+        except Exception:
+            doc = {}
+    projects = doc.setdefault('projects', {})
+    for p in {os.getcwd(), os.path.realpath(os.getcwd())}:
+        projects.setdefault(p, {'hasTrustDialogAccepted': True})
+    os.makedirs(os.path.dirname(cfg), exist_ok=True)
+    with open(cfg, 'w', encoding='utf-8') as f:
+        json.dump(doc, f)
+
+
+_trust_cwd()
