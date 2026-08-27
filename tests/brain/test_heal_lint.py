@@ -24,6 +24,8 @@ The check classes, and where each is asserted:
   naming severity    LintSeverityTest    (PORTED — error counted, warn is not)
   secrets            SecretTest          (all four alternations of SECRET_RX)
   MEMORY.md rot      MemoryRotTest       (both directions)
+  memory type        MemoryTypeTest      (feedback|user only; MEMORY.md and
+                                          tombstones exempt)
   reference-dirty    ReferenceDirtyTest  (real git clone; warn tier)
   self-exemption     ReportsHealthTest   (lint never lints its own report)
   report + exit      RunTest
@@ -84,9 +86,9 @@ class HealLintFixture(BrainTestCase):
         text = idx.read_text()
         idx.write_text(text + "".join(f"- [[{s}]] — d\n" for s in slugs))
 
-    def mem(self, name, body="a memory", index=True):
+    def mem(self, name, body="a memory", index=True, type="feedback"):
         (self.memory / f"{name}.md").write_text(
-            f"---\nname: {name}\ndescription: d\nmetadata:\n  type: reference\n---\n\n{body}\n")
+            f"---\nname: {name}\ndescription: d\nmetadata:\n  type: {type}\n---\n\n{body}\n")
         if index:
             self.mem_index(f"- [{name}]({name}.md) — d")
         return self.memory / f"{name}.md"
@@ -264,6 +266,50 @@ class MemoryRotTest(HealLintFixture):
     def test_a_consistent_memory_store_is_quiet(self):
         self.mem("how-i-work")
         self.assertEqual(self.issues("memory-rot"), [])
+
+
+class MemoryTypeTest(HealLintFixture):
+    """memory/ holds ONLY how-to-work-with-Ryan facts — harness types
+    ``feedback`` and ``user``. Anything else (a system fact, a per-repo rule,
+    a fact about someone else) drifted in and belongs elsewhere."""
+
+    def test_a_reference_typed_memory_is_flagged(self):
+        self.mem("how-i-work", type="reference")
+        found = self.issues("memory-type")
+        self.assertEqual(len(found), 1)
+        self.assertIn("how-i-work", found[0])
+        self.assertIn("notes/", found[0])
+
+    def test_a_project_typed_memory_is_flagged(self):
+        self.mem("release-freeze", type="project")
+        found = self.issues("memory-type")
+        self.assertEqual(len(found), 1)
+        self.assertIn("release-freeze", found[0])
+        self.assertIn("notes/", found[0])
+
+    def test_feedback_and_user_typed_memory_are_both_quiet(self):
+        self.mem("how-i-work", type="feedback")
+        self.mem("who-ryan-is", type="user")
+        self.assertEqual(self.issues("memory-type"), [])
+
+    def test_memory_md_itself_is_never_flagged(self):
+        self.mem_index("- [how-i-work](how-i-work.md) — d")
+        self.assertEqual(self.issues("memory-type"), [])
+
+    def test_a_tombstone_is_quiet_regardless_of_its_stale_type(self):
+        """tier-lint leaves a tombstone behind when it re-files an entry — its
+        stale ``type:`` is already handled and must not double-flag."""
+        (self.memory / "how-i-work.md").write_text(
+            "---\nname: how-i-work\ndescription: d\nmetadata:\n  type: reference\n---\n\n"
+            "<!-- MOVED to notes/how-i-work.md by tier-lint 2026-07-14 -->\n")
+        self.mem_index("- [how-i-work](how-i-work.md) — d")
+        self.assertEqual(self.issues("memory-type"), [])
+
+    def test_a_lone_misfiled_memory_is_counted_toward_the_exit_code(self):
+        self.mem("how-i-work", type="reference")
+        out = heal_lint.run(self.cfg, today=DATE)
+        self.assertEqual(out["total"], 1, out["report"])
+        self.assertEqual(self.exit_code(out), 1)
 
 
 class ReportsHealthTest(HealLintFixture):
