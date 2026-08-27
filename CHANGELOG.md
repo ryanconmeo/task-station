@@ -3,6 +3,60 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.24.0] — 2026-08-27
+
+**A SESSION TITLE NOW NAMES THE SESSION, NOT JUST THE TASK.** Measured 2026-08-27:
+`session-title --session <444-26>` and `session-title --session <444-28>` returned
+**byte-identical** strings — `#444: World-tier rework: …` — because
+`cmd_session_title` printed `task["seq"]`, the TASK number, and never touched the
+session. Two live sessions on one task were therefore indistinguishable to a human
+reading a tab and to the harness reading `sessionTitle`. The harness fell back to
+cwd-derived peer names (both showed as `ryannguyen-NN`), which is why a session
+trying to reach its successor could not name the target and used the wrong rail.
+
+**The fix is the roster line.** Every title surface now emits `#<seq>-<ln>: <title>`,
+where `<ln>` is the number the board already prints everywhere (`444-28`, `566-1`).
+`#444-26` and `#444-28` now read differently in a tab, in a peer listing, and in
+`hookSpecificOutput.sessionTitle` — so one session can be addressed without guessing.
+
+**One lookup, not two.** The ln resolves through `ordinal_label()` — the same lookup
+`whoami --porcelain` field 2 serves and delegate's `_spawner_ordinal` consumes. The
+new `sessions.session_title_label(task, sid)` is the single place a title is built;
+there is no second way to compute an ln.
+
+**The fallback is visible, never silent.** A session with no resolvable ln (a worker,
+which carries a descriptive name by design; or a link with no roster entry) emits the
+OLD `#<seq>: <title>` and says so on **stderr** — stdout is the title the hook
+captures, so the diagnostic cannot share it. A wrong number and a blank one are both
+worse than the old format, and a title that quietly drops its ln is the same class of
+bug this release exists to close. An unattached or skipped session still prints
+nothing at all.
+
+**KNOWN LIMIT.** `session-title` runs from the SessionStart hook, so the title is set
+**once**, at session start. A session whose ln changes afterwards keeps its original
+title. An ln is assigned at attach and does not normally move, so this is acceptable —
+but a reader must not assume the title live-updates. `prompt-title` re-runs every
+prompt and does pick up a later ln.
+
+### Changed
+- `session-title` (SessionStart → `hookSpecificOutput.sessionTitle`) emits
+  `#<seq>-<ln>: <title>`.
+- `prompt-title` (UserPromptSubmit → OSC 0 escape) emits the same label.
+- `_emit_title_to_origin` — the immediate relabel on create / attach / auto-fold /
+  auto-create / rename — takes the acting `session` and emits the same label. All five
+  call sites pass it.
+- `sessions.session_title_label(task, sid) -> (label, ln)` is the shared builder;
+  `ensure_ordinals` is persisted on the title path so a title is stable across re-reads.
+
+### Ruled out (checked, no change needed)
+- `prompt-tint` / `session-tint` — emit a **colour** from the task's category. Two
+  sessions on one task legitimately share a colour; a tint carries no identity, so
+  there is nothing to disambiguate.
+- `whoami --statusline` — `statusline_segment(task, width, ordinal=…)` already renders
+  `#<seq>-<n>` and is already fed `hub_ordinal(task, session)`. Correct before this.
+- `sub.py`'s three `hookSpecificOutput` emitters — all `additionalContext` (the
+  create-prompt, the compaction nudge, the staleness nudge). None is a title.
+
 ## [3.23.0] — 2026-08-27
 
 **MEMORY HOLDS ONLY HOW-TO-WORK-WITH-ME FACTS, AND THE LINT NOW SAYS SO.** The
