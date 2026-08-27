@@ -109,6 +109,7 @@ CLAIMS_FIELD = "claims"               # the additive task field this module owns
 CLAIM_TIMEOUT = 600                   # seconds per claim command (config-tunable)
 CLAIM_OUTPUT_TAIL = 1000              # chars of combined output kept as `got`
 CLAIM_ID_MAX = 32                     # a claim id is a label ("C1"), not a paragraph
+CLAIM_NONE_MIN_WORDS = 3              # "no" is not a reason; a sentence is
 
 # The finding checks, in the order every surface reports them — `(slug, title)`.
 CHECKS = (
@@ -671,7 +672,17 @@ def pointers(task, config_paths=None, exists=os.path.exists):
 #
 #   task["claims"] = {"doc": "/abs/path/plan.md", "bound_ts": 1234.5,
 #                     "items": [{"id": "C1", "cmd": "…", "expect": ["…"]}],
+#                     "none": {"reason": "…", "ts": …},
 #                     "last_verify": {"ts": …, "results": [{"id","ok","got"}]}}
+#
+# `none` IS THE THIRD STATE, and it exists because the other two could not tell each
+# other apart. A task with no claims used to mean either "nobody registered any" or
+# "there is deliberately nothing here to re-run", and `verify` answered PASS to both —
+# an absence read as a success, which is the one shape this codebase keeps finding.
+# `--none '<reason>'` writes the second reading down, with the reason, so `verify` can
+# refuse the first. Registering a claim clears it: the two are contradictory statements
+# about the same task, and a stale "deliberately none" sitting under three live claims
+# would be a lie the store told on every read.
 #
 # WHY A PLAN NEEDS THESE. A plan document asserts things — the scrub landed, the release
 # shipped, the suite is green — and a reader has no way to tell an assertion that is
@@ -727,6 +738,60 @@ def last_verify(task):
     return raw if isinstance(raw, dict) else {}
 
 
+def claims_none(task):
+    """The recorded DELIBERATE absence — `{"reason", "ts"}` — or `{}`.
+
+    Distinct from "no claims registered", which is what every task looks like before
+    anybody has thought about it. This is the record that somebody DID think about it
+    and concluded there is nothing here a later session could usefully re-run."""
+    raw = claims(task).get("none")
+    return raw if isinstance(raw, dict) and str(raw.get("reason") or "").strip() else {}
+
+
+def declare_none(task, reason, now=None):
+    """Record that this task deliberately registers no claims. `(ok, error)`.
+
+    THE REASON IS MANDATORY AND IS A SENTENCE, for the same reason `memo ack --noop`'s
+    is: an escape hatch with a one-word reason is an escape hatch everybody takes, and
+    the next reader learns nothing from "n/a". Three words is a low bar that "no" and
+    "none" still fail.
+
+    REFUSES while claims are registered rather than dropping them. A caller typing both
+    is contradicting themselves, and picking a winner silently — either deleting their
+    command list or filing a reason that the very next read contradicts — is worse than
+    saying so. Does NOT save; the caller persists."""
+    text = " ".join(str(reason or "").split())
+    if not text:
+        return False, ("claims --none needs a reason — it is the line the next reader "
+                       "gets instead of a command they can run.")
+    if len(text.split()) < CLAIM_NONE_MIN_WORDS:
+        return False, ("claims --none %r is not a reason. Say what a later session would "
+                       "have re-run and why it cannot — %d words or more."
+                       % (text, CLAIM_NONE_MIN_WORDS))
+    if claim_items(task):
+        return False, ("claims --none says there is nothing to re-run, but %d claim(s) "
+                       "are registered. `--remove` them first if that is what you mean."
+                       % len(claim_items(task)))
+    block = _block(task)
+    block["none"] = {"reason": text, "ts": time.time() if now is None else now}
+    return True, None
+
+
+def clear_none(task):
+    """Drop the deliberate-absence record. Returns True when one was there.
+
+    Called by `register` rather than exposed as its own flag: registering a claim IS the
+    retraction, and a second command to type would be one people forget, leaving the
+    store asserting both."""
+    block = claims(task)
+    if not block.get("none"):
+        return False
+    block.pop("none", None)
+    if not block.get("doc") and not block.get("items") and not block.get("last_verify"):
+        task.pop(CLAIMS_FIELD, None)
+    return True
+
+
 def _block(task):
     """The claims block, created in place if absent. The only writer of the key."""
     raw = task.get(CLAIMS_FIELD)
@@ -771,7 +836,8 @@ def unbind(task):
         return False, "claims --unbind: this task has no bound document."
     block.pop("doc", None)
     block.pop("bound_ts", None)
-    if not block.get("items") and not block.get("last_verify"):
+    if (not block.get("items") and not block.get("last_verify")
+            and not block.get("none")):
         task.pop(CLAIMS_FIELD, None)
     return True, None
 
@@ -845,6 +911,7 @@ def register(task, specs, replace=False):
         parsed.append(item)
     if not parsed:
         return 0, 0, errors
+    clear_none(task)          # a registered claim retracts "deliberately none"
     block = _block(task)
     if replace:
         block["items"] = []
@@ -886,7 +953,8 @@ def remove(task, ids):
     missing = [i for i in wanted if i not in removed]
     if removed:
         block["items"] = kept
-        if not kept and not block.get("doc") and not block.get("last_verify"):
+        if (not kept and not block.get("doc") and not block.get("last_verify")
+                and not block.get("none")):
             task.pop(CLAIMS_FIELD, None)
     return removed, missing
 

@@ -573,6 +573,15 @@ DRY_RUN_SID = "00000000-0000-0000-0000-000000000000"
 # whether a child gets re-launched or silently waited on forever.
 MANUAL_LAUNCH = _turn.MANUAL_MARK
 
+# The placeholder a report contract writes where the CHILD'S OWN task ref belongs, so a
+# contract that names a command can name a runnable one. `loop.CLAIMS_CONTRACT` uses it
+# for `claims --task <n>`. Substituted here and nowhere else: the role table is written
+# once and read by every spawner, and a contract that resolved its own ref would need to
+# know something only the invoke knows. When no ref is known the token is LEFT STANDING —
+# a visible placeholder beats a wrong number, and beats a sentence that quietly drops the
+# flag it was telling you to pass.
+CHILD_REF_TOKEN = "<n>"
+
 
 def _child_prompt(ask, role, report, ref=None):
     """The ask, plus the role's REPORT CONTRACT, plus THE RAIL THE REPORT TRAVELS ON.
@@ -593,8 +602,14 @@ def _child_prompt(ask, role, report, ref=None):
     role with no contract still has to hand something back.
 
     Takes the contract STRING, not the role spec: the role table is read once, by
-    `workspace.resolve_spawn`, and this function only formats what it answered."""
+    `workspace.resolve_spawn`, and this function only formats what it answered.
+
+    `<n>` IN THE CONTRACT BECOMES THE CHILD'S TASK REF, so a contract that tells the
+    child to run `claims --task <n>` hands it a command it can paste rather than one more
+    thing to resolve on the way to doing what was asked. Only when a ref is known."""
     report = str(report or "").strip()
+    if report and ref is not None:
+        report = report.replace(CHILD_REF_TOKEN, str(ref))
     out = ask
     if report:
         out = "%s\n\nREPORT BACK — the %s contract: %s" % (ask, role or "role", report)

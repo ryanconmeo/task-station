@@ -32,6 +32,7 @@ __all__ = [
     "_heal_goal_reviewed", "_heal_candidates_report", "_heal_dispose",
     "_CLAIMS_ACTIONS",
     "_claims_target", "_claims_writes", "_claims_show", "_claims_verify",
+    "VERIFY_PASSED", "VERIFY_FAILED", "VERIFY_NOTHING",
     "cmd_claims", "cmd_heal", "cmd_session_start",
 ]
 
@@ -835,7 +836,19 @@ def _heal_dispose(a, task, result):
 # whatever side effects those commands have — is not a trade this tool gets to make on
 # the user's behalf.
 
+# `verify` HAS THREE OUTCOMES, NOT TWO, and they get three exit codes. Green is 0 and a
+# refuted claim is 1, as they always were. NOTHING RAN is 3 — a task with no claims
+# registered used to print "has no claims registered" and exit 0, which is a PASS handed
+# out for the absence of the very thing being checked, and three children in a row were
+# graded down for a gap that the gate had just told them was fine. 3 rather than 1
+# because it is not a red: nothing was refuted, there was nothing to refute, and a caller
+# gating on this wants to tell "your claim broke" from "you registered none". The way
+# OUT of 3 is `--none '<reason>'`, not an invented claim.
 _CLAIMS_ACTIONS = ("show", "verify")
+
+VERIFY_PASSED = "passed"      # every claim that ran, passed
+VERIFY_FAILED = "failed"      # at least one claim was refuted, timed out, or errored
+VERIFY_NOTHING = "nothing"    # nothing ran and no reason was recorded for that
 
 
 def _claims_target(a):
@@ -860,7 +873,7 @@ def _claims_target(a):
 def _claims_writes(a, task):
     """Apply the mutating flags in a fixed order, as `(lines, changed)`.
 
-    ORDER IS BIND → UNBIND → REGISTER → REMOVE, and it is fixed so one invocation reads
+    ORDER IS BIND → UNBIND → REGISTER → REMOVE → NONE, and it is fixed so one invocation reads
     the same way every time. Each flag reports its own outcome line, including its own
     refusal: a mistyped `--register` must not silently take the rest of the invocation
     down with it, and a `--remove` naming an id that is not there says so rather than
@@ -893,6 +906,14 @@ def _claims_writes(a, task):
             lines.append("no such claim: %s — nothing was removed for %s"
                          % (", ".join(missing),
                             "it" if len(missing) == 1 else "those"))
+    if getattr(a, "none", None):
+        # LAST, so `--remove C1 --none '…'` works in one invocation: the removal has
+        # already happened by the time the refusal checks whether any claim is left.
+        ok, err = _checker.declare_none(task, a.none)
+        lines.append(err if err else
+                     "recorded: this task deliberately registers no claims — "
+                     "`verify` now passes and says why, instead of reporting nothing")
+        changed = changed or ok
     return lines, changed
 
 
@@ -911,11 +932,17 @@ def _claims_show(task):
         out.append("  doc: none — `claims --task %s --bind <abs path>` binds one"
                    % (task.get("seq") or task["id"][:8]))
     items = _checker.claim_items(task)
+    declared = _checker.claims_none(task)
     last = {r.get("id"): r for r in (_checker.last_verify(task).get("results") or [])
             if isinstance(r, dict)}
-    if not items:
+    if not items and declared:
+        out.append("  claims: NONE, deliberately (%s) — %s"
+                   % (rel_time(declared.get("ts")) if declared.get("ts")
+                      else "at an unknown time", declared["reason"]))
+    elif not items:
         out.append("  claims: none registered — "
-                   "`--register 'C1|<command>|<expected substring>'`")
+                   "`--register 'C1|<command>|<expected substring>'`, or "
+                   "`--none '<why there is nothing to re-run>'` if that is the answer")
     else:
         out.append("  %d claim(s):" % len(items))
         for item in items:
@@ -929,33 +956,58 @@ def _claims_show(task):
         passed = len([r for r in results if isinstance(r, dict) and r.get("ok")])
         out.append("  last verify: %s — %d/%d passed"
                    % (rel_time(verified.get("ts")), passed, len(results)))
-    else:
+    elif not declared:
         out.append("  last verify: never — `claims verify --task %s`"
                    % (task.get("seq") or task["id"][:8]))
     return out
 
 
 def _claims_verify(a, task):
-    """Run the claims and report. Returns True when every claim that ran passed.
+    """Run the claims and report. Returns one of VERIFY_PASSED / VERIFY_FAILED /
+    VERIFY_NOTHING.
 
     PERSISTS `last_verify` EVEN WHEN CLAIMS FAILED, which is the point: a stored red
     result is what makes the failure visible to the next reader of the task, and
     discarding it would leave the record saying only that a verification once passed.
+
+    NOTHING-RAN IS ITS OWN VERDICT, not a pass. This used to return the same True a
+    green run returns, so a gate that shelled out here read "no claims registered" as
+    success and moved on — the absence of the check reported as the check passing. It is
+    a pass only when somebody has written down WHY there is nothing to run (`--none`),
+    and then the reason is what gets printed, because a reader is owed the reason and
+    not merely the silence.
 
     The exit code is the caller's job (`cmd_claims`), so this can be reused by a surface
     that wants the verdict without ending the process."""
     only = getattr(a, "id", None)
     results = _checker.verify(task, only=only,
                              timeout=getattr(a, "timeout", None) or None)
+    ref = task.get("seq") or task["id"][:8]
     if not results:
+        declared = _checker.claims_none(task)
         if only:
-            print("claims verify: task #%s has no claim %s registered."
-                  % (task.get("seq"), only))
-        else:
-            print("claims verify: task #%s has no claims registered — "
-                  "`claims --task %s --register 'C1|<command>|<expected>'`."
-                  % (task.get("seq"), task.get("seq")))
-        return True
+            # A typo'd id is the same absence wearing a worse disguise: `verify --id C9`
+            # against a task whose claim is C1 ran nothing at all, and passing it would
+            # let one wrong character green a gate.
+            print("claims verify: task #%s has no claim %s registered — nothing ran, so "
+                  "nothing was proved. Registered: %s"
+                  % (ref, only,
+                     ", ".join(i["id"] for i in _checker.claim_items(task)) or "none"))
+            return VERIFY_NOTHING
+        if declared:
+            print("claims verify: task #%s deliberately registers no claims — %s"
+                  % (ref, declared["reason"]))
+            return VERIFY_PASSED
+        print("claims verify: task #%s has NO CLAIMS REGISTERED, so nothing ran and "
+              "nothing was proved — this is a finding, not a pass.\n"
+              "  Register the commands you already ran to verify the work, each with "
+              "the output substring you already asserted on:\n"
+              "    claims --task %s --register 'C1|<command>|<expected substring>'\n"
+              "  If there is genuinely nothing a later session could re-run, say so and "
+              "why — that is a pass:\n"
+              "    claims --task %s --none '<why>'"
+              % (ref, ref, ref))
+        return VERIFY_NOTHING
     task["updated_ts"] = _now()
     save_task(task)
     ok = [r for r in results if r["ok"]]
@@ -972,15 +1024,20 @@ def _claims_verify(a, task):
             print("         missing from the output: %s" % " · ".join(r["missing"]))
         if r["got"] and r["status"] == "ran" and not r["ok"]:
             print("         got (tail): %s" % " ".join(r["got"].split())[-200:])
-    return not [r for r in results if not r["ok"]]
+    return (VERIFY_PASSED if not [r for r in results if not r["ok"]]
+            else VERIFY_FAILED)
 
 
 def cmd_claims(a):
     """`task-station claims [verify] [--task REF] [--bind …] [--register …] …`
 
     THE PLAN CHECKS ITSELF FROM HERE ON. Bind a document to a task, register the shell
-    commands that settle what it asserts, and `verify` runs them. A failing verify exits
-    NON-ZERO, so it can gate a release step rather than only inform a reader.
+    commands that settle what it asserts, and `verify` runs them.
+
+    `verify` EXITS 0 GREEN, 1 ON A REFUTED CLAIM, 3 WHEN NOTHING RAN — so it can gate a
+    release step rather than only inform a reader, and so a gate can tell a broken claim
+    from a task that registered none. 3 is cleared by registering a claim, or by
+    `--none '<reason>'` when there is genuinely nothing a later session could re-run.
 
     Bare `claims` is a READ — the bound document, the registered claims, the last
     verification — and reads nothing else and runs nothing. That default matters: `verify`
@@ -995,7 +1052,7 @@ def cmd_claims(a):
     if err:
         print(err)
         return
-    mutating = [f for f in ("bind", "unbind", "register", "remove", "replace")
+    mutating = [f for f in ("bind", "unbind", "register", "remove", "replace", "none")
                 if getattr(a, f, None)]
     if action == "verify" and mutating:
         # Refuse rather than pick an order. Somebody typing both is asking "register this
@@ -1010,8 +1067,11 @@ def cmd_claims(a):
               "--register. To empty the list, `--remove <id>` each claim.")
         return
     if action == "verify":
-        if not _claims_verify(a, task):
+        verdict = _claims_verify(a, task)
+        if verdict == VERIFY_FAILED:
             sys.exit(1)      # a failing claim must be able to gate, not just inform
+        if verdict == VERIFY_NOTHING:
+            sys.exit(3)      # nothing ran: not a red, but never a pass either
         return
     lines, changed = _claims_writes(a, task)
     if changed:

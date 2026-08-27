@@ -1266,9 +1266,22 @@ class TestClaimsCli(_Base):
         self.assertIn("C2", out)
         self.assertNotIn("C1 ", out)
 
-    def test_verify_with_no_claims_says_so_and_does_not_fail(self):
-        out = self._claims(self._task(), action="verify")
-        self.assertIn("no claims registered", out)
+    def test_verify_with_no_claims_is_a_finding_not_a_pass(self):
+        """WAS `…_says_so_and_does_not_fail`, and the old name was the bug. `verify`
+        printed "has no claims registered" and exited 0 — a PASS handed out for the
+        absence of the very thing being checked, which is the shape that let three
+        children in a row be graded down for a gap their gate had just called fine.
+
+        Exit 3, not 1: nothing was refuted because there was nothing to refute, and a
+        caller gating on this needs to tell "your claim broke" from "you registered
+        none"."""
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as caught:
+                ts.cmd_claims(_Args(task=str(self._task()["seq"]), action="verify"))
+        self.assertEqual(caught.exception.code, 3)
+        self.assertIn("NO CLAIMS REGISTERED", buf.getvalue())
+        self.assertIn("--none", buf.getvalue())
 
     def test_verify_refuses_to_be_combined_with_a_write(self):
         # Answering half of "register this and tell me whether it passes" — with a verify
