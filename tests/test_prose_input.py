@@ -275,6 +275,12 @@ class _ProseTableTest(unittest.TestCase):
             ("turn", "ask"), ("invoke", "ask"),
             ("grade", "why"), ("heal", "why"), ("channel", "why"),
             ("memo", "text"),
+            # found by sweeping every free-text option in the tree, not by the
+            # original list: `--log` is the README's own pair to `--decision`, and a
+            # title is a sentence like any other.
+            ("update", "log"), ("update", "title"), ("create", "title"),
+            ("update", "pr_desc"), ("update", "story_desc"),
+            ("decompose", "into"),
         }
         covered = {(c, d) for c, ds in pi.PROSE_FLAGS.items() for d in ds}
         self.assertEqual(set(), required - covered)
@@ -296,7 +302,7 @@ class _ProseTableTest(unittest.TestCase):
                                   "%s --%s is resolved but its help never says so"
                                   % (name, dest))
                     annotated += 1
-        self.assertGreaterEqual(annotated, 25)     # a positive count, asserted
+        self.assertGreaterEqual(annotated, 31)     # a positive count, asserted
 
     def test_no_second_file_spelling_exists(self):
         """ONE file spelling. A `--<flag>-file` twin would be a second thing to
@@ -371,6 +377,22 @@ class _ProseEndToEndTest(unittest.TestCase):
         self._run(["update", "--task", self.ref, "--state", "-"])
         self.assertEqual("NEXT: run `exit-tick` and quote $(its output)",
                          ts.load_task(self.task["id"]).get("state"))
+
+    def test_log_takes_stdin(self):
+        # `--log` is repeatable and append-only, the same shape as `--decision`.
+        sys.stdin = _FakeStdin("3.21.0 shipped: `-` and `@PATH` on every prose flag\n")
+        self._run(["update", "--task", self.ref, "--log", "-"])
+        entries = ts.load_task(self.task["id"]).get("history") or []
+        self.assertEqual(1, len(entries))
+        self.assertIn("`-` and `@PATH`", entries[0]["text"])
+
+    def test_title_takes_a_file(self):
+        path = os.path.join(self.tmp, "t.txt")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("a title with `backticks` and $(a subshell) in it\n")
+        self._run(["update", "--task", self.ref, "--title", "@" + path])
+        self.assertEqual("a title with `backticks` and $(a subshell) in it",
+                         ts.load_task(self.task["id"])["title"])
 
     def test_empty_string_still_clears_a_field(self):
         self._run(["update", "--task", self.ref, "--goal", "a goal"])

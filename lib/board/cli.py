@@ -1143,9 +1143,10 @@ def main(argv=None):
 
     # THE PROSE-INPUT CONVENTION, in full, because this is the seam that applies it.
     #
-    # Every prose-bearing flag — `--decision`, `--note`, `--summary`,
-    # `--append-summary`, `--state`, `--goal`, `--ask`, `--why`, `memo send --text`
-    # and the rest of board.prose_input.PROSE_FLAGS — takes its value three ways:
+    # Every prose-bearing flag — `--decision`, `--log`, `--note`, `--title`,
+    # `--summary`, `--append-summary`, `--state`, `--goal`, `--ask`, `--why`,
+    # `memo send --text` and the rest of board.prose_input.PROSE_FLAGS (31 flags
+    # across 13 subcommands) — takes its value three ways:
     #
     #   --decision 'text'    the plain string, used verbatim (unchanged, always)
     #   --decision -         read it from stdin

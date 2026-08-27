@@ -59,19 +59,42 @@ FILE_SIGIL = "@"         # a LEADING @; `@@` escapes to a literal leading @
 # ids (--id), numbers, and refs (--task) — a shell cannot corrupt a token with no
 # spaces or metacharacters in it, and `-`/`@` are likelier to be real values there.
 PROSE_FLAGS = {
-    "create":            ("summary", "goal"),
+    "create":            ("title", "summary", "goal"),
     "attach":            ("note",),
-    "update":            ("summary", "append_summary", "state", "goal", "decision"),
+    "update":            ("title", "summary", "append_summary", "state", "goal",
+                          "decision", "log", "pr_desc", "story_desc"),
     "turn":              ("ask",),
     "invoke":            ("ask",),
     "grade":             ("note", "why"),
     "heal":              ("note", "decision", "why", "noop"),
     "memo":              ("text", "decision", "noop"),
     "channel":           ("why", "report", "action"),
+    "decompose":         ("into",),
     "add-event":         ("text",),
     "add-ledger":        ("detail",),
     "capture-artifacts": ("text",),
 }
+
+# DELIBERATELY NOT PROSE, and each for a reason worth writing down:
+#
+#   exit-add --cmd / --expect    a shell command and a match substring. Not prose,
+#                                and `-`/`@` are plausible literal values in both.
+#   channel --by                 a short attribution ('permission classifier'),
+#                                not a sentence.
+#   glossary --def               genuinely prose, but `glossary` dispatches twice
+#                                (its own subcommand AND `/todo glossary`, sharing
+#                                _add_glossary_args). Covering only one path would
+#                                be a quiet inconsistency, which is the failure mode
+#                                this whole module exists to avoid. Worth doing on
+#                                purpose, in its own change.
+#   brains --description/--purpose   same shape as glossary: prose, secondary
+#                                dispatch, left for a deliberate follow-up.
+#
+# Also excluded, uncontroversially: refs (--task, --session, --id, --peer), slugs
+# (--memory), enumerations (--role, --park, --kind, --action on add-ledger),
+# numbers, paths (--cwd, --out) and URLs (--pr, --story). A shell cannot corrupt a
+# token with no spaces or metacharacters in it, and there `-`/`@` are likelier to
+# be a real value than a reference to one.
 
 HELP_SUFFIX = ("long prose: `-` reads the value from stdin, `@PATH` from a file "
                "(`@@` = a literal leading @), so shell quoting cannot corrupt it")

@@ -22,9 +22,19 @@ corruption for anything downstream to detect, only a shorter sentence that parse
 ### Added
 - **`-` (stdin) and `@PATH` (a file) on every prose-bearing flag (`lib/board/prose_input.py`).**
   `--decision`, `--note`, `--summary`, `--append-summary`, `--state`, `--goal`, `--ask`,
-  `--why`, `memo send --text`, and the prose flags on `channel`, `add-event`, `add-ledger`
-  and `capture-artifacts` — 25 flag definitions across 12 subcommands. Neither path passes
+  `--why`, `memo send --text`, `--title`, `--log`, `--pr-desc`, `--story-desc`,
+  `decompose --into`, and the prose flags on `channel`, `add-event`, `add-ledger` and
+  `capture-artifacts` — **31 flag definitions across 13 subcommands**. Neither path passes
   through the shell, so backticks, `$(...)`, `$VAR`, quotes and newlines arrive verbatim.
+
+  **The set came from sweeping every free-text option in the parser tree**, not from the
+  list the task started with. That sweep is what found `update --log` — the README's own
+  pair to `--decision` for the dated-milestone half of the trail — and `--title`, which is
+  a sentence like any other. `PROSE_FLAGS` also records, in comments, the flags left out
+  and why: `exit-add --cmd`/`--expect` (a shell command and a match substring, where `-`
+  and `@` are plausible literal values), `channel --by`, and `glossary --def` /
+  `brains --description` — genuinely prose, but each dispatched two ways, so covering one
+  path would be the quiet inconsistency this module exists to prevent.
 
   **`-` follows the convention this codebase already had.** `cmd_post_compact` reads the
   compaction summary from stdin the same way; a second spelling for the same idea would
@@ -44,7 +54,7 @@ corruption for anything downstream to detect, only a shorter sentence that parse
   zero bytes are all exit-2 refusals that write nothing. Storing `@/tmp/typo.md` as though
   it were the prose would be the same silent-success bug in a new costume.
 
-- **`tests/test_prose_input.py` — 31 tests.** Each branch (plain string · stdin · file),
+- **`tests/test_prose_input.py` — 33 tests.** Each branch (plain string · stdin · file),
   a payload carrying backticks, `$(...)`, `$VAR`, single and double quotes and newlines
   round-tripping byte-exact, the ambiguous values ruled on explicitly (a literal lone `-`,
   a value beginning with a dash, a value containing an `@`), a tty-stdin call with no `-`
@@ -52,7 +62,7 @@ corruption for anything downstream to detect, only a shorter sentence that parse
   the real parser tree, so the convention cannot document a flag it does not resolve.
 
 ### Changed
-- **The help text for all 25 flags is now generated from the same table that resolves them**
+- **The help text for all 31 flags is now generated from the same table that resolves them**
   (`annotate_prose_help`, called on the built parser tree before `parse_args`). The
   documented convention and the implemented one are driven by one source and cannot drift.
 - **`heal`, `grade` and `brief` each carry one line** telling a model to use the stdin form
@@ -67,7 +77,7 @@ corruption for anything downstream to detect, only a shorter sentence that parse
   and only a *leading* `@` is the file sigil, so a value that starts with a dash (`-x`) or
   merely contains an `@` (`rnguyen@example.com`) is still used verbatim. stdin is read only
   when `-` was actually passed, so an interactive call with no `-` never blocks on a
-  terminal that will never send EOF. The full 5311-test suite passes unchanged.
+  terminal that will never send EOF. The full suite passes unchanged (5313 tests).
 
 ### Fixed
 - …

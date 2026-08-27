@@ -143,7 +143,7 @@ Every task carries a small, stored digest so a resume loads a briefing and the b
 
 **Content hygiene:** `summary` is the **current** description — rewrite it to the present truth (`--summary` replaces it wholesale), and never let it become a running log. The trail goes in `--decision` (why) and `--log` (dated milestones/findings); both are retrievable via `/todo <n> history`.
 
-**Long prose goes in on stdin, not as a shell word.** Every prose-bearing flag — `--decision`, `--note`, `--summary`, `--append-summary`, `--state`, `--goal`, `--ask`, `--why`, `memo send --text` — also accepts `-` to read its value from **stdin** and `@PATH` to read it from a **file** (`@@` for a value that really begins with `@`). Use one of those for anything containing backticks, `$(...)`, quotes or newlines. As a quoted shell argument that text does not survive: backticks inside double quotes run as command substitution, so
+**Long prose goes in on stdin, not as a shell word.** Every prose-bearing flag — `--decision`, `--log`, `--note`, `--title`, `--summary`, `--append-summary`, `--state`, `--goal`, `--ask`, `--why`, `memo send --text` and the rest of the 31 listed in `board.prose_input.PROSE_FLAGS` — also accepts `-` to read its value from **stdin** and `@PATH` to read it from a **file** (`@@` for a value that really begins with `@`). Use one of those for anything containing backticks, `$(...)`, quotes or newlines. As a quoted shell argument that text does not survive: backticks inside double quotes run as command substitution, so
 
 ```sh
 task-station update --task 12 --decision "the `turn` command found it"
