@@ -3,6 +3,91 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.28.0] — 2026-08-27
+
+**THE REPORT CONTRACT ASKED FOR CLAIMS WITHOUT EVER SAYING WHAT A CLAIM IS, AND THE GATE
+REPORTED THEIR ABSENCE AS A PASS.** MEASURED 2026-08-27: tasks #567, #569 and #570 were
+each held to **G4 = A-**, and in all three cases the same single demerit was the whole
+reason — *no claims registered*. Each of the three had already done the work a claim is
+made of: each ran real commands and quoted their real output in its report. #570 named
+the defect outright rather than guessing at a shape:
+
+> NO CLAIMS REGISTERED. #569's gate marked that as the G4 demerit. I have not registered
+> claims here either — I did not want to guess at the shape mid-flight. If the report
+> contract wants them, tell me what to register and I will.
+
+Three identical misses across three children and two subject areas is a contract defect,
+not three lapses of judgement — and declining to invent one was the **correct** instinct.
+A claim invented to satisfy a contract is worse than no claim. Two things were missing,
+one at each end.
+
+### Added
+
+- **The implementer report contract now says what a claim is, in the contract itself**
+  (`loop.CLAIMS_CONTRACT`, composed onto `ROLE_DEFAULTS["implementer"]["report"]`, so it
+  travels in the child's prompt like every other contract). Three sentences, each
+  load-bearing:
+  1. **What a claim is for** — a COMMAND plus THE OUTPUT SUBSTRING IT MUST PRINT,
+     registered so a *later* session can re-run it and find out whether the thing is
+     still true. Not a summary, not a test name, not a restatement of the work.
+  2. **The default shape**, which is the floor and not a research project — register the
+     commands you ALREADY RAN to verify yourself, each with the substring you ALREADY
+     asserted on, written as a **direction, not a literal** (an expectation like
+     `5374 tests` is falsified by the next honest release).
+  3. **When NOT to register one** — because a contract that only ever says MORE gets
+     padded. Skip, and say why, when the command cannot run unattended, depends on a
+     human-only step (an interactive command, a merge, an approval), or asserts only
+     what a permanent test already covers.
+- **`claims --none '<reason>'`** — the mechanism the skip rule depends on. Records that a
+  task DELIBERATELY registers no claims, and why. Without it the only way to clear the
+  new exit 3 would be to invent a claim, which is the thing the contract forbids. The
+  reason is mandatory and must be a sentence (three words), for the same reason
+  `memo ack --noop`'s is: an escape hatch you can take without saying anything is one
+  everybody takes, and `n/a` teaches the next reader nothing. Registering a claim
+  RETRACTS it — the two are contradictory statements about one task.
+- **`<n>` in a report contract becomes the child's own task ref at prompt time**
+  (`cmds/loop.CHILD_REF_TOKEN`), so a contract that names a command hands the child one
+  it can paste rather than one more thing to resolve. Left standing when no ref is known:
+  a visible placeholder beats a wrong number.
+
+### Changed
+
+- **`claims verify` has three exit codes, because it always had three outcomes.** `0`
+  green · `1` a claim was refuted · **`3` nothing ran**. It is `3` rather than `1`
+  because nothing was refuted — there was nothing to refute — and a gate needs to tell
+  "your claim broke" from "you registered none". `verify --id C9` against a task whose
+  claim is C1 now exits 3 as well: one wrong character used to run nothing and report
+  success.
+- `skills/grade` now reads the three codes as three verdicts. Exit 3 is a **G4 finding**,
+  not a red gate — grade the work on what it did and name the missing claims as the
+  demerit. A task that records `--none` with a reason exits 0 and prints the reason;
+  judge the reason, not the absence.
+
+### Fixed
+
+- **`claims verify` no longer exits 0 on a task with no claims registered.** It printed
+  "has no claims registered" and returned success — a PASS handed out for the absence of
+  the very thing being checked. That is the same shape this codebase keeps finding:
+  unittest printing `OK` on zero tests, a condition green at registration, an absence
+  read as a pass. The gate that told #567, #569 and #570 they were fine is the gate that
+  graded them down for it.
+- `tests/test_spawn_resolver.py` asserted the emitted report contract as a **raw
+  substring of the shell line**. Any contract containing a single quote — the claims
+  clause names two commands — is correctly rewritten by `shlex.quote` on the way in, so a
+  perfectly emitted contract failed. It now asserts against `shlex.split(cmd)[-1]`, which
+  is the question that was meant: does the ARGUMENT the child receives carry the table's
+  contract verbatim.
+
+### Verified against the three tasks that failed it
+
+Not on a fixture. The claims #567, #569 and #570 *should* have registered were extracted
+from their own report memos — from the commands each actually ran and the output each
+actually asserted on — and registered retroactively. **8 claims across the three tasks,
+all 8 passing.** The extraction was mechanical in every case, which is the test the
+wording had to pass: if a claim cannot be read off a strong report, the wording is still
+wrong. Two of #569's end-to-end probes were **skipped** under the new skip rule, each
+with its reason — the shape the contract asks for, exercised on real material.
+
 ## [3.27.0] — 2026-08-27
 
 **THE TIER-LINT MOVED A REFERENCE SURVEY INTO MEMORY, WHICH IS THE ONE PLACE IT DOES

@@ -40,7 +40,9 @@ python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" exit-tick --task <child>
 python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" claims verify --task <child>
 ```
 
-…plus whatever the work itself demands: the suite, the build, the scrub, an unauthenticated hit on the deployed URL. `exit-tick` exits **1** if anything is not met; `claims verify` exits **1** on a failing claim.
+…plus whatever the work itself demands: the suite, the build, the scrub, an unauthenticated hit on the deployed URL. `exit-tick` exits **1** if anything is not met.
+
+**`claims verify` has three exit codes and they are three different verdicts.** **0** green · **1** a claim was refuted — something the child proved is no longer true · **3** *nothing ran*: the child registered no claims and gave no reason, so the gate has nothing to re-run and nothing was proved. Exit 3 is a **G4 finding**, not a red gate — grade the work on what it actually did and name the missing claims as the demerit. A task that deliberately registers none records why (`claims --task <n> --none '<reason>'`) and exits **0** with that reason printed; judge the reason, not the absence.
 
 **Verify everything mechanical, not only what the child listed as unverified.** The child's `unverified` list is a statement about what it *knows* it did not check. The interesting failures are the ones it did not know about.
 
@@ -57,7 +59,7 @@ And when you run a suite yourself, **pin a positive count**: `unittest discover 
 
 ### 2. Read the child's report
 
-**Look on the memo ledger of the child's own task first** — that is the rail `invoke` tells the child to use, and the only one that survives its window closing. A child that worked and left **no** report memo is `silent-exit`: it is neither "failed" nor "unknown", and the missing report is itself a G4 finding the turn already raised. Then the durable report file `delegate` wrote (worktree root, `HANDOFF-*.md` shape), then the task's own digest (`/todo <n>` — the decisions and the checklist are the record). A report should carry: what changed · the fingerprints/numbers with the commands that produced them · claims registered · **the mandatory `unverified` list** · what the next chunk inherits.
+**Look on the memo ledger of the child's own task first** — that is the rail `invoke` tells the child to use, and the only one that survives its window closing. A child that worked and left **no** report memo is `silent-exit`: it is neither "failed" nor "unknown", and the missing report is itself a G4 finding the turn already raised. Then the durable report file `delegate` wrote (worktree root, `HANDOFF-*.md` shape), then the task's own digest (`/todo <n>` — the decisions and the checklist are the record). A report should carry: what changed · the fingerprints/numbers with the commands that produced them · claims registered (or the one line saying why none) · **the mandatory `unverified` list** · what the next chunk inherits.
 
 A report with **no `unverified` section at all** is itself a G4 finding. Nobody's work is fully verified; a report claiming otherwise has not looked.
 
@@ -68,7 +70,7 @@ A report with **no `unverified` section at all** is itself a G4 finding. Nobody'
 | **G1 Gate integrity** | did verification run **from outside** — suite unmodified, fresh clone, live URL, hand-verified on the real system? |
 | **G2 Measurement fidelity** | were the numbers re-derived **at execution time, with their measuring commands** — and staleness caught rather than trusted? |
 | **G3 Contract preservation** | frozen surfaces untouched; behaviours covered by **behavioural** tests (never markup-presence)? |
-| **G4 Finding capture** | deviations ledgered **with why**, corrections folded back the same session, claims registered/refreshed? |
+| **G4 Finding capture** | deviations ledgered **with why**, corrections folded back the same session, claims registered/refreshed? **Claims are the commands the child already ran, with the substring it already asserted on** — if its report quotes real output and `claims verify` exits 3, the claims were extractable and were not registered. If the child says why it registered none and the reason holds, that is not a demerit. |
 | **G5 Scope & ask-gate discipline** | settled rulings honored, ask gates hit **before** the work, no creep? |
 | **G6 Ops efficiency** | worker discipline held, wall-clock lost to infra bounded, recovery diagnosed from ground truth? |
 
