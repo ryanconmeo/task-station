@@ -3,6 +3,75 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.21.0] — 2026-08-27
+
+**A LONG PROSE VALUE NO LONGER HAS TO SURVIVE SHELL QUOTING, BECAUSE IT NO LONGER HAS TO
+GO THROUGH IT.** Every prose-bearing flag had exactly one input path: a shell word. A
+shell word is not a string — it is a string the shell has already rewritten. Backticks
+inside a double-quoted argument run as command substitution, so
+
+```sh
+task-station update --task 12 --decision "the `turn` command found it"
+```
+
+stored `the  command found it`. The word and its backticks were gone before this process
+started; a stray `turn: command not found` went to stderr, and the write then reported
+**success** and exited 0. That last part is why it went unnoticed for so long: there was no
+corruption for anything downstream to detect, only a shorter sentence that parses fine.
+
+### Added
+- **`-` (stdin) and `@PATH` (a file) on every prose-bearing flag (`lib/board/prose_input.py`).**
+  `--decision`, `--note`, `--summary`, `--append-summary`, `--state`, `--goal`, `--ask`,
+  `--why`, `memo send --text`, and the prose flags on `channel`, `add-event`, `add-ledger`
+  and `capture-artifacts` — 25 flag definitions across 12 subcommands. Neither path passes
+  through the shell, so backticks, `$(...)`, `$VAR`, quotes and newlines arrive verbatim.
+
+  **`-` follows the convention this codebase already had.** `cmd_post_compact` reads the
+  compaction summary from stdin the same way; a second spelling for the same idea would
+  have been a second thing to keep correct.
+
+  **ONE file spelling, deliberately.** There is no `--decision-file` alongside `@PATH`.
+  `@PATH` composes with a repeatable flag — `update --decision` is `action="append"`, so
+  each element resolves independently — where a paired `--<flag>-file` cannot, and a test
+  asserts no such twin exists.
+
+  **`@@` escapes a literal leading `@`**, so `@@claude mentioned it` stores
+  `@claude mentioned it`. It is the one ambiguity the sigil creates, and it is resolved by
+  spelling rather than by guessing from whether a file happens to exist.
+
+  **Every failure is LOUD, because the bug survived by being quiet.** A missing `@PATH`
+  file, a `-` with no pipe behind it, a second `-` in one command, and an input that read
+  zero bytes are all exit-2 refusals that write nothing. Storing `@/tmp/typo.md` as though
+  it were the prose would be the same silent-success bug in a new costume.
+
+- **`tests/test_prose_input.py` — 31 tests.** Each branch (plain string · stdin · file),
+  a payload carrying backticks, `$(...)`, `$VAR`, single and double quotes and newlines
+  round-tripping byte-exact, the ambiguous values ruled on explicitly (a literal lone `-`,
+  a value beginning with a dash, a value containing an `@`), a tty-stdin call with no `-`
+  proved not to read stdin at all, and every refusal. Two of them assert the table matches
+  the real parser tree, so the convention cannot document a flag it does not resolve.
+
+### Changed
+- **The help text for all 25 flags is now generated from the same table that resolves them**
+  (`annotate_prose_help`, called on the built parser tree before `parse_args`). The
+  documented convention and the implemented one are driven by one source and cannot drift.
+- **`heal`, `grade` and `brief` each carry one line** telling a model to use the stdin form
+  for long prose. These three hand these commands to a model most often, and `grade --note`
+  travels to the child inside the rejection memo — a note that quietly lost its key term is
+  a rejection the child cannot act on.
+- **README documents the convention** next to the existing content-hygiene rules, with the
+  failing call and both replacements.
+
+### Unchanged
+- **The plain-string path, exactly.** Only the single character `-` is the stdin reference
+  and only a *leading* `@` is the file sigil, so a value that starts with a dash (`-x`) or
+  merely contains an `@` (`rnguyen@example.com`) is still used verbatim. stdin is read only
+  when `-` was actually passed, so an interactive call with no `-` never blocks on a
+  terminal that will never send EOF. The full 5311-test suite passes unchanged.
+
+### Fixed
+- …
+
 ## [3.20.0] — 2026-08-27
 
 **A LEADER AT A COMPANY THIS TOOLCHAIN HAS NEVER HEARD OF CAN NOW RUN ONE COMMAND AND GET A

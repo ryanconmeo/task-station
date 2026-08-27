@@ -12,6 +12,7 @@ from board.cmds import *
 import argparse
 
 import decisions as _dec
+from board.prose_input import annotate_prose_help, resolve_prose_args
 
 g, set_g = _shared.g, _shared.set_g
 
@@ -1140,5 +1141,15 @@ def main(argv=None):
     sp.add_argument("--session", default=None)
     sp.set_defaults(fn=cmd_redact)
 
+    # Every prose-bearing flag ALSO accepts `-` (stdin) or `@PATH` (a file), so a
+    # value with backticks, $(...) or quotes in it never has to survive shell
+    # quoting — which it does not: the shell rewrites the word before argv exists,
+    # and the write then reports success on the corrupted text. Both halves are
+    # driven by ONE table in board.prose_input, so the help text and the behaviour
+    # cannot drift. The annotate call must precede parse_args (it edits help), and
+    # the resolve call must sit between parse_args and dispatch so no handler needs
+    # to know the convention exists.
+    annotate_prose_help(sub)
     a = p.parse_args(argv)
+    resolve_prose_args(a)
     a.fn(a)

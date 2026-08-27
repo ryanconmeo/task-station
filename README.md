@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-3.20.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.21.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -142,6 +142,23 @@ Every task carries a small, stored digest so a resume loads a briefing and the b
 **Lean current snapshot vs. on-demand history.** The default detail view (`/todo <n>`, and the resume recap) renders only the **current snapshot** — goal → state → steps → artifacts → summary — with decisions capped to the most recent few (a `… +K earlier — /todo <n> history` pointer when there are more) and recent activity capped to a short tail. The append-only `decisions` + `log` trail never loads on a normal resume, so resumes stay cheap. Pull the **full record** any time with `/todo <n> history` — a read-only time-machine showing the complete decisions log, the complete dated `log`, and the full activity log (the working session's full transcript is still one command away via `/todo <n> -s`). The HTML board mirrors the snapshot in each row's expansion.
 
 **Content hygiene:** `summary` is the **current** description — rewrite it to the present truth (`--summary` replaces it wholesale), and never let it become a running log. The trail goes in `--decision` (why) and `--log` (dated milestones/findings); both are retrievable via `/todo <n> history`.
+
+**Long prose goes in on stdin, not as a shell word.** Every prose-bearing flag — `--decision`, `--note`, `--summary`, `--append-summary`, `--state`, `--goal`, `--ask`, `--why`, `memo send --text` — also accepts `-` to read its value from **stdin** and `@PATH` to read it from a **file** (`@@` for a value that really begins with `@`). Use one of those for anything containing backticks, `$(...)`, quotes or newlines. As a quoted shell argument that text does not survive: backticks inside double quotes run as command substitution, so
+
+```sh
+task-station update --task 12 --decision "the `turn` command found it"
+```
+
+stores `the  command found it` — the word and its backticks were gone before the CLI started — and then reports **success** and exits 0, which is why this went unnoticed. The file-and-stdin forms are the only input paths a shell cannot rewrite:
+
+```sh
+task-station update --task 12 --decision - <<'EOF'
+the `turn` command found it: $(whoami)'s "quoted" text, verbatim.
+EOF
+task-station update --task 12 --decision @/tmp/decision.md
+```
+
+A plain string still behaves exactly as before, including one that starts with a dash or contains an `@`. A missing `@PATH`, a `-` with no pipe behind it, and an input that read zero bytes are all refused with exit 2 rather than stored.
 
 **A replaced summary is never lost.** `--summary` overwrites the first field a resuming session reads, so the text it replaces is preserved append-only: `update --task <n> --restore-summary` puts the previous one back (`--restore-summary <k>` for an older version), and `/todo <n> history` lists every version. The restore is itself reversible — nothing here is ever deleted, the same rule the decision verbs follow.
 
