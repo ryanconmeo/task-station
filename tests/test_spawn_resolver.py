@@ -461,7 +461,14 @@ class TheRoleTableIsReadOnlyHere(_ResolverTest):
 
     def test_invoke_emits_exactly_the_resolvers_answer(self):
         """Same rule as `test_each_path_emits_exactly_the_resolvers_answer_for_its_own
-        _kind`, extended to the three new fields: the spawner does not adjust them."""
+        _kind`, extended to the three new fields: the spawner does not adjust them.
+
+        THE CONTRACT IS CHECKED AFTER `shlex.split`, NOT AS A RAW SUBSTRING OF THE
+        COMMAND LINE. A contract that names a command the child should run — the claims
+        clause names two — carries single quotes, and `shlex.quote` correctly rewrites
+        those on the way into the shell line, so a raw `assertIn` fails on a contract
+        that is being emitted perfectly. Splitting asks the question that was meant: does
+        the ARGUMENT the child receives carry the table's contract, verbatim."""
         for role in sorted(_loop.roles()):
             with self.subTest(role=role):
                 r = ws.resolve_spawn(ws.SPAWN_WINDOW, role=role,
@@ -470,7 +477,8 @@ class TheRoleTableIsReadOnlyHere(_ResolverTest):
                 self.assertEqual(_flag_str(cmd, "--effort"), r["effort"])
                 self.assertEqual(_flag_str(cmd, "--disallowed-tools"),
                                  ",".join(r["deny_tools"]) or None)
-                self.assertIn(r["report"], cmd)
+                prompt = shlex.split(cmd)[-1]
+                self.assertIn(r["report"], prompt)
 
     def test_moving_the_tables_grant_moves_what_invoke_emits(self):
         """The SOURCE test — retune the effective table and the emitted flag follows. A

@@ -142,8 +142,9 @@ def main(argv=None):
     # two actions are, rather than argparse's usage dump and exit code 2.
     sp.add_argument("action", nargs="?", default="show",
                     help="show (default: the bound doc, the claims, the last result — "
-                         "runs nothing) | verify (RUN the registered commands; exits "
-                         "non-zero if any claim fails, so it can gate a step)")
+                         "runs nothing) | verify (RUN the registered commands; exits 0 "
+                         "green, 1 on a refuted claim, 3 when NOTHING RAN — so a gate "
+                         "can tell a broken claim from a task that registered none)")
     sp.add_argument("--task", default=None,
                     help="task by seq/id (default: the attached task)")
     sp.add_argument("--session", default=None)
@@ -172,6 +173,16 @@ def main(argv=None):
                          "list, instead of upserting into it")
     sp.add_argument("--remove", action="append", default=None, metavar="ID",
                     help="drop a registered claim by id (repeatable)")
+    sp.add_argument("--none", default=None, metavar="REASON",
+                    help="record that this task DELIBERATELY registers no claims, and "
+                         "why. Turns `verify`'s exit 3 into a pass that prints the "
+                         "reason. The reason is mandatory and is a sentence — it is what "
+                         "the next reader gets instead of a command they can run, and "
+                         "\"n/a\" teaches them nothing. Use it when the commands you "
+                         "ran cannot run unattended, need a human-only step (an "
+                         "interactive command, a merge, an approval), or assert only "
+                         "what a permanent test already covers. Registering a claim "
+                         "retracts it.")
     sp.add_argument("--id", default=None, metavar="ID",
                     help="with verify: run just this one claim")
     sp.add_argument("--timeout", type=int, default=None, metavar="SECONDS",

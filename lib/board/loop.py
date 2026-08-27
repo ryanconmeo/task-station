@@ -729,6 +729,48 @@ PERMISSION_MODES = ("plan", "acceptEdits", "default", "bypassPermissions")
 # `claude --effort` levels, verbatim.
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
+# WHAT A CLAIM IS, SAID IN THE CONTRACT ITSELF — because for three children in a row it
+# was said nowhere. #567, #569 and #570 each did A-grade work, each ran real commands and
+# quoted their real output in the report, and each was held to A- on the same dimension
+# for the same single reason: no claims registered. #570 named the defect outright rather
+# than guessing — "I did not want to guess at the shape mid-flight. If the report contract
+# wants them, tell me what to register and I will." Three identical misses across three
+# children and two subject areas is a contract defect, not three lapses of judgement, and
+# declining to invent a claim was the CORRECT instinct: a claim invented to satisfy a
+# contract is worse than no claim.
+#
+# So this says three things, in this order, and each one is load-bearing:
+#   1. WHAT A CLAIM IS FOR — a command plus its expected output, re-runnable LATER. The
+#      child that does not know this cannot tell a claim from a summary, and correctly
+#      declines rather than filing a summary.
+#   2. THE DEFAULT SHAPE — the commands you already ran, with the substring you already
+#      asserted on. This is a floor, not a research project. Every one of the three
+#      children had already produced the material; nobody told them the rail existed.
+#   3. WHEN NOT TO REGISTER ONE — because a contract that only ever says MORE gets padded,
+#      and a registered claim nobody can re-run is worse than none.
+#
+# `<n>` IS SUBSTITUTED with the child's own task ref at prompt time — see
+# `cmds/loop._child_prompt`. A contract carrying a placeholder the child has to resolve
+# for itself is one more thing to get wrong on the way to doing what was asked.
+CLAIMS_CONTRACT = (
+    "CLAIMS — a claim is A COMMAND PLUS THE OUTPUT SUBSTRING IT MUST PRINT, registered "
+    "on your task so a LATER session can re-run it and find out whether what you proved "
+    "is STILL true. It is not a summary, not a test name, and not a restatement of the "
+    "work. THE DEFAULT SHAPE, which is the floor and not a research project: register "
+    "the commands you ALREADY RAN to verify yourself, each with the output substring you "
+    "ALREADY asserted on — `task-station claims --task <n> --register "
+    "'C1|<command>|<expected substring>'`, repeatable. Write each one as a DIRECTION, "
+    "not a literal: put the floor or the ceiling in the COMMAND and expect its pass "
+    "token, because an expectation like `5374 tests` is falsified by the next honest "
+    "release. SKIP one — and say in the report which and why, the same discipline the "
+    "unverified list uses — when its command cannot run unattended, depends on a "
+    "human-only step (an interactive command, a merge, an approval), or asserts only "
+    "what a permanent test already covers. If that is true of ALL of them, record it: "
+    "`task-station claims --task <n> --none '<why nothing here can be re-run>'`. "
+    "Registering nothing and saying nothing is the one option that is not open: "
+    "`claims verify` exits 3 on it, and the gate reads that as a finding."
+)
+
 ROLE_DEFAULTS = {
     "scout": {
         "model": "sonnet", "permission_mode": "plan", "effort": "medium",
@@ -740,7 +782,7 @@ ROLE_DEFAULTS = {
         "model": "opus", "permission_mode": "acceptEdits", "effort": "high",
         "deny_tools": [],
         "report": ("what changed file by file, the verification you ran with its actual "
-                   "output, and anything you left undone"),
+                   "output, and anything you left undone. " + CLAIMS_CONTRACT),
         "why": "the worktree worker — one per task+repo"},
     "reviewer": {
         "model": "opus", "permission_mode": "plan", "effort": "high",
