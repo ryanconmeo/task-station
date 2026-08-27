@@ -495,8 +495,10 @@ def _open_jump_window(cmd):
     CLAUDE_* set, which turns the child's transcript off and leaves it answering to the
     parent's session id and messaging socket. `env=` on the subprocess below would set
     the environment of `bash`/`osascript` and never of Terminal.app, so the unset has to
-    ride INSIDE the string that becomes `do script`. Putting it at the transport rather
-    than in each caller's command builder means a new caller cannot forget it.
+    ride INSIDE THE COMMAND — since 3.22.0 that means inside the launch script the opener
+    writes and the new window sources, which is the same thing one indirection further
+    on. Putting it at the transport rather than in each caller's command builder means a
+    new caller cannot forget it.
 
     WHICH TERMINAL IS NOT THIS FUNCTION'S BUSINESS. `open-session-window.sh` asks
     `core.termhost`, which reads the host out of the environment and then out of the
