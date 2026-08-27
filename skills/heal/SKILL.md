@@ -17,6 +17,8 @@ Measured on one real task before this existed: **72 decisions, 68 still current,
 
 **A heal is one conversation, not a sequence of flags the user types** — and not a sequence of questions either. The CLI is one-shot and cannot ask anything, so dry-run-as-default is all the safety it can offer; the ordering, the judgement and the finishing are **yours**. `/heal` runs the whole pass and reports when it is done. Follow these five steps exactly.
 
+**Pass long prose on stdin, never as a shell word.** Every prose flag below (`--decision`, `--note`, `--why`, `--goal`, `--state`) also takes `-` to read its value from stdin, or `@PATH` to read a file. Use it for anything with backticks, `$(...)`, quotes or newlines in it: as a quoted argument the shell runs the backticks as a command and the word is gone before the CLI starts, and the write then reports **success** on the shortened text. A superseding decision that quietly lost its key term is worse than no heal at all.
+
 **There is no approval gate, deliberately.** You do not present a plan and wait for a yes. What replaces the gate is the **undo trail**: the CLI prints the exact reversing command for every write it makes, and step 5 requires you to surface those lines verbatim. Removing the question is only defensible because taking a wrong call back now costs one paste — so never soften those commands into "this is reversible", which is the version nobody can act on.
 
 ### 1. Run `heal --scan` FIRST — with `--probe-ado` whenever the task claims work items

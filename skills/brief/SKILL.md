@@ -41,6 +41,8 @@ state · Limits · Plan), and the voice.
 5. **Write** the HTML to the path from `task-station brief path --task <n>`.
 6. **Report** the path. `--publish` mints a Claude Artifact.
 
+**Recording anything from this brief back onto the task — a decision, a state line, a goal — goes in on stdin, not as a shell word.** `update --decision -` (or `@PATH`) reads the value verbatim; the same sentence quoted on the command line has its backticked terms executed by the shell and silently removed, and this document's whole rule is that a claim carries its evidence.
+
 ## Vocabulary is forced, not suggested
 
 The glossary terms are the document's only names for those things. Use them **verbatim**,

@@ -12,6 +12,7 @@ from board.cmds import *
 import argparse
 
 import decisions as _dec
+from board.prose_input import annotate_prose_help, resolve_prose_args
 
 g, set_g = _shared.g, _shared.set_g
 
@@ -1140,5 +1141,30 @@ def main(argv=None):
     sp.add_argument("--session", default=None)
     sp.set_defaults(fn=cmd_redact)
 
+    # THE PROSE-INPUT CONVENTION, in full, because this is the seam that applies it.
+    #
+    # Every prose-bearing flag — `--decision`, `--log`, `--note`, `--title`,
+    # `--summary`, `--append-summary`, `--state`, `--goal`, `--ask`, `--why`,
+    # `memo send --text` and the rest of board.prose_input.PROSE_FLAGS (31 flags
+    # across 13 subcommands) — takes its value three ways:
+    #
+    #   --decision 'text'    the plain string, used verbatim (unchanged, always)
+    #   --decision -         read it from stdin
+    #   --decision @PATH     read it from a file
+    #   --decision @@text    a literal value that begins with @ (one @ dropped)
+    #
+    # WHY THE LAST THREE EXIST. A shell word is not a string; it is a string the
+    # shell has already rewritten. Backticks inside a double-quoted argument run as
+    # command substitution, so `--decision "the `turn` command found it"` stored
+    # `the  command found it` — the word gone before argv existed — and the write
+    # then reported SUCCESS and exited 0. Reading from stdin or from a file are the
+    # only input paths a shell cannot touch.
+    #
+    # Both halves are driven by ONE table in board.prose_input, so the help text a
+    # caller reads and the behaviour they get cannot drift apart. The annotate call
+    # must precede parse_args (it edits help); the resolve call must sit between
+    # parse_args and dispatch, so no handler needs to know any of this exists.
+    annotate_prose_help(sub)
     a = p.parse_args(argv)
+    resolve_prose_args(a)
     a.fn(a)
