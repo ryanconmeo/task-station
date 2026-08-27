@@ -25,6 +25,11 @@ source preserved, a tombstone line at the origin, the MEMORY.md index line
 moved). It NEVER deletes content, NEVER auto-promotes to org brain, and NEVER
 creates hooks or rules — those are suggestions for a human to act on.
 
+THE MEMORY TIER IS GOVERNED BY DECLARATION, NOT BY CUES. An item may only be
+re-filed INTO memory when it already declares ``type: feedback`` or ``type:
+user`` (:data:`MEMORY_TYPES`) — the same contract ``heal_lint``'s ``memory-type``
+check enforces. Cues can suggest the move; only the declaration authorises it.
+
 Layer rule: brain may import core and its own siblings, never board. Stdlib +
 the sibling ``config`` / ``notes`` modules only. Python 3.9+.
 """
@@ -35,6 +40,7 @@ import sys
 from pathlib import Path
 
 from . import config
+from . import heal_lint
 from . import notes
 
 # --- heuristic cue lexicons (lowercase; single words match on word-boundary,
@@ -62,6 +68,11 @@ PERSONAL = ["i prefer", "i like", "i usually", "when i", "my ", "remind me", "as
 TEAM = ["team", "everyone", "org", "org-wide", "org wide", "all devs", "we should",
         "standard", "everybody", "the team", "our team"]
 
+# The memory tier's membership rule, not a cue: memory/ holds ONLY facts about
+# how to work with its owner, declared `feedback` or `user`. Same tuple the
+# heal_lint `memory-type` check enforces — these two lints must not disagree.
+MEMORY_TYPES = ("feedback", "user")
+
 
 def _count(cues, text):
     n = 0
@@ -80,9 +91,12 @@ def _mech(text):
     return n
 
 
-def classify(text, current):
+def classify(text, current, declared=None):
     """Return a finding dict for one item's text, given its ``current`` tier
-    ('memory' or 'note')."""
+    ('memory' or 'note') and its ``declared`` frontmatter type.
+
+    ``declared`` is the item's own declaration of what kind of fact it is, and it
+    GOVERNS the memory tier — see the guard at the end of this function."""
     t = (text or "").lower()
     imp, saf, mech = _count(IMPERATIVE, t), _count(SAFETY, t), _mech(t)
     comp, pers, team = _count(COMPANY, t), _count(PERSONAL, t), _count(TEAM, t)
@@ -117,10 +131,39 @@ def classify(text, current):
             kind = ("personal how-to-work → memory" if cand == "memory"
                     else "company knowledge → vault note")
 
+    # --- the memory contract governs the destination; cues only inform it -----
+    # memory/ holds ONLY how-to-work-with-its-owner facts, declared `feedback`
+    # or `user`. Cue counting cannot establish that. First-person VOICE ("my ",
+    # "for me") is not the claim "this is a fact about the owner", and on
+    # 2026-08-21 conflating the two moved a survey of three THIRD-PARTY plugins
+    # into memory and tombstoned the note it came from: personal 2 / company 0,
+    # scored `high`, auto-applied. The move was also self-refuting — the memory
+    # it minted carried `type: reference` (write_memory_note's default), which
+    # is precisely the type heal_lint's `memory-type` check refuses.
+    declared_ok = (declared or "").strip().lower() in MEMORY_TYPES
+    if suggested == "memory" and current == "note" and not declared_ok:
+        # Keep the signal; remove the machine's authority to act on it. A human
+        # re-types the note first, and that re-type IS the assertion tier-lint
+        # cannot make for itself.
+        conf, applied = "low", False
+        kind = (f"cues read personal, but the note declares `type: "
+                f"{declared or 'missing'}` — re-type it to feedback|user first; "
+                f"tier-lint will not mint a memory outside the contract")
+    elif current == "memory" and suggested == "memory" and not declared_ok:
+        # The same rule read from inside memory/: a declaration outside the
+        # contract is a finding, not an 'aligned'. heal_lint owns the counted
+        # bucket, so this reports and never auto-moves.
+        suggested = "note"
+        conf, applied = "medium", False
+        kind = (f"memory declares `type: {declared or 'missing'}` — memory/ holds "
+                f"only feedback|user; re-file to a vault note, or re-type it if it "
+                f"really is a fact about working with its owner")
+
     return {"scores": {"imperative": imp, "safety": saf, "mechanizable": mech,
                        "company": comp, "personal": pers, "team": team},
             "current": current, "suggested": suggested, "kind": kind,
-            "confidence": conf, "applied_eligible": applied, "team": team}
+            "declared": declared, "confidence": conf, "applied_eligible": applied,
+            "team": team}
 
 
 # --------------------------------------------------------------------------- #
@@ -154,7 +197,12 @@ def _read_item(path):
     if m:
         src = notes.parse_scalar(m.group(1).strip())
     is_tombstone = "tier-lint" in body.lower() and "moved" in body.lower()
-    return {"description": desc, "body": body,
+    # The declared type, read through heal_lint.memory_type — the ONE reader, so
+    # tier-lint's view of an item's type can never disagree with the check that
+    # enforces it. It handles both shapes (harness `metadata:\n  type:` and a
+    # top-level note `type:`), frontmatter only.
+    declared = heal_lint.memory_type(path)
+    return {"description": desc, "body": body, "type": declared,
             "promote": notes.switch({"promote": raw_promote}, "promote"),
             "source": src, "tombstone": is_tombstone}
 
@@ -181,7 +229,7 @@ def scan(cfg):
         if item["tombstone"]:
             continue  # already re-filed
         text = f"{item['description']}\n{item['body']}"
-        f = classify(text, tier)
+        f = classify(text, tier, declared=item["type"])
         f.update({"slug": path.stem, "path": str(path),
                   "description": item["description"], "body": item["body"],
                   "promote": item["promote"], "source": item["source"]})
@@ -320,7 +368,13 @@ def apply_moves(findings, cfg, date, commit=True):
             _add_index_line(vault, slug, desc)
             applied.append(f"memory→note: {slug}")
         elif f["current"] == "note" and f["suggested"] == "memory":
+            # mtype comes from the note's own declaration, never the
+            # write_memory_note default of "reference" — minting a memory typed
+            # `reference` is the contract violation this direction used to
+            # commit on every single move. classify() has already refused any
+            # note whose declaration is outside MEMORY_TYPES, so this is legal.
             notes.write_memory_note(memory_dir, slug, description=desc, body=body,
+                                    mtype=(f.get("declared") or "feedback"),
                                     source=f["source"] or f"notes/{slug}.md",
                                     vault=vault, commit=commit, overwrite=True)
             (Path(vault) / "notes" / f"{slug}.md").write_text(_note_tombstone(slug, desc, f"memory/{slug}.md", date))
