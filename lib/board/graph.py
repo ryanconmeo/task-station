@@ -442,11 +442,14 @@ def _board_hub_cards(task, live_sids=None):
         all_prompts = own_prompts + [p for w in workers for p in w["prompts"]]
         all_prompts.sort(key=lambda p: (p.get("ts") is None, p.get("ts") or 0))
         reported = reported_by_sid.get(sid, 0.0) + sum(w["reported"] for w in workers)
-        # 3-tier liveness: running (a real live process — pid in live_sids), resumable
-        # (has a transcript on disk, live_flag; resume works but nothing is running), else
-        # linked (recorded, no live transcript). `live` stays as the strict RUNNING bit
-        # so any legacy reader means "actually running", not "survived a crash".
+        # 4-tier liveness: running (a real live process — pid in live_sids), resumable
+        # (has a transcript on disk, live_flag; resume works but nothing is running),
+        # spawn-failed (the board minted it and it never ran), else linked (recorded, no
+        # live transcript). `live` stays as the strict RUNNING bit so any legacy reader
+        # means "actually running", not "survived a crash".
         state = "running" if sid in live else ("resumable" if live_flag else "linked")
+        if state == "linked" and spawn_failed(sid, m):
+            state = "spawn-failed"          # never ran — not a child that failed
         return {
             "sid8": sid[:8], "session_id": sid, "pinned": pinned, "main": main,
             "live": sid in live, "state": state, "role": "hub", "msgs": msgs,
@@ -1137,9 +1140,13 @@ def _worker_name(w):
 def _session_block_lines(task):
     """The terminal-detail `Sessions:` block (hubs with workers nested under their
     spawning hub), using the canonical session-state vocabulary: ● running (a Claude
-    process is alive now) / ◐ resumable (saved transcript, nothing running) / ○ gone
-    (no transcript found). Returns [] when the task has no recorded sessions — so a
-    bare task stays exactly as it renders today."""
+    process is alive now) / ◐ resumable (saved transcript, nothing running) / ✖ SPAWN
+    FAILED (minted, never ran) / ○ gone (no transcript found). Returns [] when the task has no recorded sessions — so a
+    bare task stays exactly as it renders today.
+
+    A FOURTH state joins the three above: ✖ SPAWN FAILED — never ran, for an entry the
+    board minted and that never reached a turn. It is deliberately not "gone", because
+    nothing was ever there to go."""
     if not task.get("session_meta"):
         return []
     tree = session_tree(task)
@@ -1164,6 +1171,12 @@ def _session_block_lines(task):
             glyph, word = "●", "running"
         elif h.get("live"):
             glyph, word = "◐", "resumable"
+        elif h.get("spawn_failed"):
+            # A FOURTH STATE, AND THE POINT OF IT: "gone" reads as a session that was
+            # here and left, so a spawn that never produced a session at all was
+            # indistinguishable from a child that ran and failed. Two of these in a row
+            # read as two children failing when they were one spawn bug twice.
+            glyph, word = "✖", "SPAWN FAILED — never ran"
         else:
             glyph, word = "○", "gone"
         ordn = h.get("ordinal")
