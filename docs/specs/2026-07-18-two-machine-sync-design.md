@@ -1,6 +1,30 @@
 # Two-machine sync — design (v1)
 
-**Status:** accepted (Fable-architected, reconciled with 1.96.0 by the 387 session, ratified 2026-07-18).
+**Status:** accepted 2026-07-18 — **partly SUPERSEDED, see the box below.** Implemented
+in 3.30.0 as `lib/board/sync.py` + `lib/board/station.py`; the shipped behaviour is
+documented in [docs/SYNC.md](../SYNC.md), which is the one to read first.
+
+> **Three clauses of this document were corrected after it was ratified. The
+> implementation follows the corrections, not the text below.**
+>
+> 1. **The handle is `<owner>-<uuid>`, NOT `<owner>-<origin-seq>`** (stored full,
+>    displayed as the shortest unambiguous prefix). `<owner>-<seq>` does not meet
+>    "there cannot be a conflict": the collision axis is the STATION, not the owner —
+>    one owner on two unsynced machines hands out the same next number, and two
+>    different tasks both become `kosei-512`.
+> 2. **A partition is `owners/<owner>/station-<n>/`, numbered from 0** — not one
+>    directory per owner. Same reason: two machines of one owner need two write
+>    targets, or they are back to sharing a path.
+> 3. **The merge is FIELD-level, not record-level LWW.** Lists union, element flags
+>    merge per field, and a scalar takes the newest by that field's OWN timestamp
+>    while preserving what it replaced. Record-level last-writer-wins would drop a
+>    whole machine's offline work on one field's contest.
+>
+> Still exactly right, and unchanged: full-state JSON over an owner-partitioned git
+> exchange, SQLite staying authoritative, the journal not being the sync substrate,
+> machine-local `seq`/`stream_n`/`_rev`, relation-edge uuid normalization, tombstones,
+> and the rejected-alternatives analysis.
+
 **Problem:** one logical task board across two Macs (same user, both on Tailscale), offline-capable,
 no id conflicts, a human-readable cross-machine reference, per-task context that travels, no data loss.
 

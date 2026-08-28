@@ -13,6 +13,8 @@ import sys
 
 import checker as _checker
 import decisions as _dec
+import station as _station
+import sync as _sync
 import heal as _heal
 from board import heal_ado as _heal_ado
 import loop as _loop
@@ -33,7 +35,7 @@ __all__ = [
     "_CLAIMS_ACTIONS",
     "_claims_target", "_claims_writes", "_claims_show", "_claims_verify",
     "VERIFY_PASSED", "VERIFY_FAILED", "VERIFY_NOTHING",
-    "cmd_claims", "cmd_heal", "cmd_session_start",
+    "cmd_claims", "cmd_heal", "cmd_session_start", "cmd_sync",
 ]
 
 
@@ -1079,6 +1081,65 @@ def cmd_claims(a):
         save_task(task)
     head = "Claims — task #%s %s" % (task.get("seq") or task["id"][:8], task.get("title"))
     print("\n".join([head] + ["  " + ln for ln in lines] + _claims_show(task)))
+
+
+def cmd_sync(a):
+    """`task-station sync [--init [DIR]] [--dir DIR] [--dry-run] [--no-net] [--status]`
+
+    The two-machine transport. Each station writes ONE directory in the exchange — its
+    own `owners/<owner>/station-<n>/` — and reads every other, so two machines can
+    never write the same path and a merge conflict is not possible rather than merely
+    unlikely. Inside a task the merge is PER FIELD: lists union, element flags merge,
+    and a scalar takes the newest by that field's own timestamp while preserving what
+    it replaced.
+
+    SYNC DOES MECHANICS; HEAL DOES MEANING. Two machines can each add a decision that
+    contradicts the other and the union keeps both — so the report is a THREE-ROW
+    VERDICT and the third row says which tasks now need reconciling. "0 conflicts" is
+    not a statement about whether the record makes sense.
+
+    NETWORK IS OPT-IN. With no git remote on the exchange this commits locally and
+    sends nothing; `--init` creates a LOCAL repo and never a remote."""
+    root = getattr(a, "dir", None)
+    root = os.path.expanduser(root) if root else None
+    if getattr(a, "init", None) is not None:
+        target = getattr(a, "init") or root or _sync.sync_root()
+        if not target:
+            print("sync --init needs a directory (or set `sync_dir` in config first).")
+            return
+        target = os.path.expanduser(target)
+        info = _sync.init_root(target)
+        if getattr(a, "init"):
+            _config.set("sync_dir", target)
+        print("sync: exchange ready at %s" % info["root"])
+        print("  this station: %s / %s   (%s)"
+              % (_station.owner(), _station.dirname(), _station.display()))
+        print("  partition:    %s" % info["partition"])
+        print("  git:          %s" % ("repo present" if info["git"] else "none (plain dir)"))
+        print("  NO REMOTE is configured and none is created here — adding one is a "
+              "deliberate step (docs/SYNC.md).")
+        return
+    if getattr(a, "status", False):
+        r = root or _sync.sync_root()
+        if not r:
+            print("sync is OFF — no exchange configured. `task-station sync --init <dir>`.")
+            return
+        print("sync: %s" % r)
+        print("  this station: %s / %s   (%s)"
+              % (_station.owner(), _station.dirname(), _station.display()))
+        print("  git: %s · remote: %s"
+              % (_sync.is_git_repo(r), _sync.has_remote(r)))
+        for p in _sync.list_partitions(r):
+            print("  %s %s/%s  %s" % ("*" if p["own"] else " ", p["owner"],
+                                      _station.dirname(p["number"]), p["label"]))
+        return
+    self_mod = sys.modules.get(g("__name__"))
+    if self_mod is None:
+        import types as _types
+        self_mod = _types.SimpleNamespace(**_shared._G)
+    rep = _sync.run_sync(self_mod, root=root, dry_run=getattr(a, "dry_run", False),
+                         no_net=getattr(a, "no_net", False))
+    print(_sync.format_report(rep))
 
 
 def cmd_heal(a):
