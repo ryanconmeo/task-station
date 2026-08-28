@@ -39,11 +39,43 @@ have empty intersection — which is the claim itself, not a proxy for it.
 | `handle` `<owner>-<uuid>` | global, synced, write-once | the human cross-machine reference |
 | `seq` (`#444`) | **local only, never synced** | this machine's shortcut; it MAY differ per machine |
 
+### The handle, and why it is not `<owner>-<seq>`
+
 `seq` is handed out machine-locally, so an unsynced laptop and desktop both hand out
 the same next number. That is why it never leaves the machine as an identifier, and
 why relation edges are stripped of it on export and re-stamped with the local number
 on import — a synced edge carrying the origin's `seq` would silently point at
 whatever local task owns that number.
+
+The handle is **stamped once at creation and never changed** — not even by a sync, and
+not even when the task arrives carrying a name someone else minted. It needs **zero
+coordination**: no allocator, no block claim, no bootstrap, no exhaustion policy. Two
+machines can create tasks simultaneously while disconnected with no possibility of
+collision, because neither is choosing from a shared space. (Block-allocated ranges —
+Hi-Lo — were rejected for exactly that: they need a claim to *land* before a task can
+be created, which fails precisely when you are offline on the second machine.)
+
+**It is stored in full and displayed abbreviated, and the width is collision-driven.**
+
+```
+stored     kosei-e6440959-b7f1-4066-8d21-cd7512f4e9fd
+displayed  kosei-e6440959
+```
+
+The display starts at 8 uuid characters and **lengthens exactly as far as ambiguity
+forces** — the same rule git uses for abbreviated commit hashes. Eight is a floor, not
+a maximum: measured on a real 371-task store, a 4-character prefix already had two
+collision groups while 6 and 8 had none, so a fixed width is a bug waiting for the
+store to grow. An abbreviated handle that names two tasks resolves to **nothing** —
+returning the first would hand you a different task from the one you meant.
+
+Set it and read it:
+
+```sh
+task-station config --self-alias kosei        # the owner half
+task-station config --station-number 1        # which machine (from 0)
+task-station config --station-label "desk"    # display only; nothing computes on it
+```
 
 ## What the merge does, field by field
 
