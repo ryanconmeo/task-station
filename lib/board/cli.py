@@ -455,6 +455,28 @@ def main(argv=None):
                     help="how the caller is spelled in the refusal (default 'delegate run')")
     sp.set_defaults(fn=cmd_orchestrator_check)
 
+    # sync — the two-machine transport. Owner-partitioned: this station writes ONE
+    # directory in the exchange and reads every other, so a merge conflict between two
+    # machines is structurally impossible. See lib/board/sync.py.
+    sp = sub.add_parser("sync",
+                        help="exchange tasks with this owner's other stations — "
+                             "owner-partitioned, so no merge conflict is possible")
+    sp.add_argument("--init", nargs="?", const="", default=None, metavar="DIR",
+                    help="create the exchange directory + this station's partition "
+                         "(and a LOCAL git repo when git is available). With DIR, also "
+                         "records it as `sync_dir`. Creates NO remote and contacts no "
+                         "network — provisioning a remote is a deliberate human step.")
+    sp.add_argument("--dir", default=None, metavar="DIR",
+                    help="use this exchange directory for THIS run, ignoring config")
+    sp.add_argument("--status", action="store_true",
+                    help="show the exchange, this station, and every partition present "
+                         "— runs no sync")
+    sp.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="report what a sync WOULD do; writes nothing, stores nothing")
+    sp.add_argument("--no-net", dest="no_net", action="store_true",
+                    help="never pull or push, even when the exchange has a remote")
+    sp.set_defaults(fn=cmd_sync)
+
     # heal — the RECONCILE pass: turn the append-only decision log into current state.
     # Per-task by default; a DRY RUN by default. See cmd_heal and lib/heal.py.
     sp = sub.add_parser("heal",
