@@ -2,8 +2,10 @@
 
 A *feed* is a read-only, per-brain view-model of tasks, serialized as a `.js` sidecar.
 Feeds are the seam between machines: the board renders them, and the two-machine sync
-transport (J-track, not yet built) will produce and consume exactly this format. This
-module is the ONLY implementation of it — writer, wire form, parser, and loader.
+transport (`board/sync.py`, shipped 3.30.0) will materialise peer feeds in exactly this
+format. This module is the ONLY implementation of it — writer, wire form, parser, and
+loader. Sync moves TASKS today; wiring its imports through to `feeds/peers/` is the
+next step, and until then `peers/` stays empty and `demo/` is what renders.
 
 FEED ROOT — one place, `<data_dir>/feeds/`:
 
@@ -11,7 +13,7 @@ FEED ROOT — one place, `<data_dir>/feeds/`:
       self.js           this machine's tasks (written on every `/todo board`)
       self-archive.js   closed tasks beyond the newest 50 (the lazy shard)
       peers/*.js        feeds received from other people/machines (the sync transport
-                        drops them here; nothing writes them yet)
+                        will drop them here; nothing writes them yet)
       demo/*.js         persistent DEMO peer fixtures — `tools/seed_demo.py`, which is
                         how peer rendering is exercised until the transport lands
 
@@ -71,22 +73,14 @@ SELF_COLOR = {"light": "#cf8a22", "dark": "#b97e1f"}   # the SELF fill (was the 
 def self_alias():
     """Self identity — the user's alias (e.g. an Entra/AD local-part). Arrives
     from runtime config, never from code: env TASK_STATION_SELF_ALIAS >
-    config.json `self_alias` > the OS username. Display + feed identity only."""
-    env = os.environ.get("TASK_STATION_SELF_ALIAS")
-    if env and env.strip():
-        return env.strip()
-    try:
-        import config as _config
-        v = _config.get("self_alias")
-        if v and str(v).strip():
-            return str(v).strip()
-    except Exception:
-        pass
-    try:
-        import getpass
-        return getpass.getuser() or "self"
-    except Exception:
-        return "self"
+    config.json `self_alias` > the OS username. Display + feed identity only.
+
+    DELEGATES to `station.owner()`. The feed alias and the sync partition name must
+    be the same string or a machine would publish its feed under one identity and
+    its tasks under another; sharing one function makes that true by construction
+    rather than by two copies of the same precedence chain agreeing."""
+    import station as _station
+    return _station.owner()
 
 
 # DEMO peer + org fills — CVD-validated set (always paired with the alias label in
