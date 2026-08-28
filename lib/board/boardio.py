@@ -618,6 +618,7 @@ def _format_list(closed_limit=MAX_CLOSED_IN_LIST):
     # (`/todo closed` / `/todo closed N`). The default keeps the bare `/todo`
     # list short.
     ensure_seqs()                      # guarantee every task has its stable number
+    ensure_handles()                   # …and its write-once cross-machine handle
     listing = sorted_tasks()
     if not listing:
         return ("No tasks yet. One will be tracked automatically once the work "

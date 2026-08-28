@@ -14,7 +14,7 @@ __all__ = [
     "task_status", "is_closed",
     "_backend", "_ensure_dirs", "_iso", "_iso_to_ts", "_local_iso",
     "load_task", "RevConflict", "save_task", "mutate", "create_with_seq",
-    "delete_task", "all_tasks", "search_tasks",
+    "delete_task", "all_tasks", "search_tasks", "ensure_handles", "task_handles",
     "_stream_alloc_n", "_stream_emit", "_stream_digest",
     "_stream_updated_data", "_stream_created_data",
     "sorted_tasks", "_max_seq", "ensure_seqs",
@@ -274,6 +274,35 @@ def ensure_seqs():
         save_task(t)
 
 
+def ensure_handles(tasks=None):
+    """Backfill the WRITE-ONCE `<owner>-<uuid>` handle onto every task that predates
+    it, exactly once. Mirrors `ensure_seqs` — idempotent, and cheap after the first
+    pass because it only writes the tasks that are missing one.
+
+    THE STAMP IS THIS MACHINE'S OWNER, and that is correct for a backfill: a task that
+    existed before handles did was created here. A task that arrived over sync already
+    carries its origin owner's handle and `handles.ensure` refuses to touch it —
+    write-once means write-once even when the writer was somebody else."""
+    try:
+        import handles as _handles
+        import station as _station
+    except Exception:
+        return 0
+    owner = _station.owner()
+    wrote = 0
+    for t in (all_tasks() if tasks is None else tasks):
+        if _handles.ensure(t, owner):
+            save_task(t)
+            wrote += 1
+    return wrote
+
+
+def task_handles(tasks=None):
+    """Every handle known to this machine — the pool ambiguity is judged against."""
+    scan = tasks if tasks is not None else all_tasks()
+    return [t.get("handle") for t in scan if t.get("handle")]
+
+
 # ------------------------------------------------------------------ links ----
 
 def get_link(session):
@@ -374,7 +403,34 @@ def resolve_ref(ref):
     for t in listing:
         if t["id"] == ref or t["id"].startswith(ref):
             return t
-    return None
+    return _resolve_handle_ref(ref, listing)
+
+
+def _resolve_handle_ref(ref, listing):
+    """A `<owner>-<uuid prefix>` HANDLE ref → its task, or None.
+
+    LAST in the order, deliberately. A handle contains a hyphen and so does a uuid,
+    so trying it first would let `kosei-…` shadow a seq or an id prefix that someone
+    actually meant. Reached only when nothing else matched, it can never change how an
+    existing ref resolves.
+
+    AMBIGUITY RESOLVES TO NOTHING, not to a guess. An abbreviated handle that names two
+    tasks is the one case abbreviation exists to make VISIBLE; silently picking the
+    first would hand the caller a different task from the one they meant, which is
+    strictly worse than "no such task"."""
+    try:
+        import handles as _handles
+    except Exception:
+        return None
+    # Backfill LAZILY and only from the listing already in hand: a handle ref is the
+    # one moment the pool has to be complete, and paying a full-table write on every
+    # `/todo 12` to keep it complete would be a cost with no reader.
+    if any(not t.get("handle") for t in listing):
+        ensure_handles(listing)
+    hits = _handles.resolve(ref, [t.get("handle") for t in listing if t.get("handle")])
+    if len(hits) != 1:
+        return None
+    return next((t for t in listing if t.get("handle") == hits[0]), None)
 
 
 def _parse_ordinal_ref(ref):

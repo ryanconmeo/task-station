@@ -1509,6 +1509,27 @@ def board_rows():
           "and a parallel suite run is a source of false red. Two orchestrators contend",
           "for the SAME slots — the lock is machine-wide, never per-task."],
          'TASK_STATION_LOOP_BUILDS_MAX=<n>  ·  or "loop_builds_max": <n> in config.json'),
+        ("--self-alias", (lambda: __import__("station").owner())(), None,
+         "This OWNER's alias — the prefix of every handle minted here (default: the OS username)",
+         ["It also names this owner's directory in the sync exchange, so it is a PATH:",
+          "letters, digits, dot, dash, underscore only. TASK_STATION_SELF_ALIAS wins."],
+         "task-station config --self-alias <name>"),
+        ("--station-number", str((lambda: __import__("station").number())()), None,
+         "WHICH of this owner's machines this is, numbered FROM 0 (default: 0)",
+         ["Two machines of one owner MUST differ: they are separate write partitions,",
+          "and separate partitions are what make a sync merge conflict impossible.",
+          "Station 0 is a REAL machine — never treat it as 'unset'."],
+         "task-station config --station-number <n>"),
+        ("--station-label", (lambda: __import__("station").label())(), None,
+         "Friendly name for this machine — DISPLAY ONLY (default: the device LocalHostName)",
+         ["Nothing ever computes on it — not a path, not a filter, not a cache key —",
+          "which is what keeps renaming a station a one-field edit that cannot conflict."],
+         "task-station config --station-label <name>"),
+        ("--sync-dir", (lambda: __import__("sync").sync_root() or "unset — sync is OFF")(), None,
+         "The sync exchange directory (default: unset, i.e. sync is off)",
+         ["`sync --init <dir>` creates it and records it here. It creates a LOCAL repo",
+          "and NO remote — nothing leaves this machine until you add one yourself."],
+         "task-station config --sync-dir <path>  ·  or task-station sync --init <path>"),
         ("--workspace-dirs", ":".join(get("workspace_dirs") or []) or "unset", None,
          "Repo root folders so 'delegate --project <name>' can find your repos (default: unset)", None, None),
         ("--artifacts-root", artifacts_root(), None,
@@ -1920,6 +1941,10 @@ RESET_KEYS = [
     "obsidian_prompts", "obsidian_category_hubs", "obsidian_subgroups",
     "obsidian_story_groups",
     "knowledge_graph", "knowledge_plane", "owner",
+    # Station identity + the sync exchange. Popped by --reset for the same reason as
+    # everything else here: a reset that left a station NUMBER behind would leave the
+    # machine claiming a partition the user had just cleared.
+    "self_alias", "station_number", "station_label", "sync_dir",
     "usage_tracking", "usage_prompts", "usage_billing_mode",
     "recap", "recap_curator_cmd",
     "editor_scheme",
@@ -2380,6 +2405,60 @@ def cmd_config(a):
         else:
             unset("editor_scheme")           # no value → restore auto-detect
         print("editor_scheme = %s" % editor_scheme()); return
+    if getattr(a, "self_alias_get", False):
+        import station as _station
+        print(_station.owner()); return
+    if getattr(a, "self_alias", None) is not None:
+        import station as _station
+        v = (a.self_alias or "").strip()
+        if v and not _station.valid_alias(v):
+            print("self_alias %r cannot name a directory in the sync exchange — allowed: "
+                  "a letter or digit, then letters, digits, dot, dash, underscore. It is "
+                  "a PATH, so it is constrained at the source rather than escaped at "
+                  "every use." % v)
+            return
+        set("self_alias", v) if v else unset("self_alias")
+        print("self_alias = %s" % _station.owner()); return
+    if getattr(a, "station_number_get", False):
+        import station as _station
+        print(_station.number()); return
+    if getattr(a, "station_number", None) is not None:
+        import station as _station
+        raw = (a.station_number or "").strip()
+        if raw:
+            try:
+                n = int(raw)
+            except ValueError:
+                n = -1
+            if n < 0:
+                print("station_number must be an integer from 0 (stations are numbered "
+                      "FROM ZERO — station 0 is a real machine, not 'unset')")
+                return
+            set("station_number", n)
+        else:
+            unset("station_number")
+        print("station_number = %d   (%s)"
+              % (_station.number(), _station.display())); return
+    if getattr(a, "station_label_get", False):
+        import station as _station
+        print(_station.label()); return
+    if getattr(a, "station_label", None) is not None:
+        import station as _station
+        v = (a.station_label or "").strip()
+        set("station_label", v) if v else unset("station_label")
+        print("station_label = %s   (%s)" % (_station.label(), _station.display())); return
+    if getattr(a, "sync_dir_get", False):
+        import sync as _sync
+        print(_sync.sync_root() or "unset — sync is OFF"); return
+    if getattr(a, "sync_dir", None) is not None:
+        import sync as _sync
+        v = (a.sync_dir or "").strip()
+        set("sync_dir", v) if v else unset("sync_dir")
+        root = _sync.sync_root()
+        print("sync_dir = %s" % (root or "unset — sync is OFF"))
+        if root and not os.path.isdir(root):
+            print("  (nothing there yet — `task-station sync --init` creates it)")
+        return
     if getattr(a, "editor_scheme_get", False):
         print(editor_scheme()); return
     if getattr(a, "category_pack", None) is not None:
