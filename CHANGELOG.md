@@ -95,6 +95,24 @@ live — the commands are in `docs/SYNC.md`.
 ### Fixed
 - …
 
+## [3.29.0] — 2026-08-28
+
+### Fixed
+- **`heal_lint` reported every memory link as dangling once the memory store sat
+  outside the vault.** `all_note_basenames()` built the wikilink-resolution
+  namespace by walking `vault/"memory"`, so a memory store configured anywhere
+  else contributed no stems and every memory-to-memory `[[link]]` was misreported
+  as `memory-dangling` — 26 of them on a real vault, all resolving on disk. It now
+  takes the resolved `cfg["memory"]` that `scan()` already had, and falls back to
+  `vault/"memory"` only when no memory path is given, so the default layout is
+  unchanged.
+
+### Added
+- Three regression tests for the above, covering all three branches: memory
+  outside the vault, memory configured inside it, and the `memory=None` fallback.
+  The third exists because deleting the fallback outright left the other two
+  passing — a guard nobody had proved could fail.
+
 ## [3.28.0] — 2026-08-27
 
 **THE REPORT CONTRACT ASKED FOR CLAIMS WITHOUT EVER SAYING WHAT A CLAIM IS, AND THE GATE
