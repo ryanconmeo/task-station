@@ -17,6 +17,8 @@ The check classes, and where each is asserted:
 
   broken wikilinks   BrokenLinkTest      (incl. the three exemptions: code
                                           fences, plans/, memory → warn tier)
+  memory namespace   MemoryNamespaceTest (#578 — memory resolves whether it
+                                          sits inside or outside the vault)
   orphan notes       OrphanTest
   INDEX drift        IndexDriftTest      (both directions)
   frontmatter        FrontmatterTest     (missing name, name≠filename, bad date)
@@ -148,6 +150,48 @@ class BrokenLinkTest(HealLintFixture):
         self.assertEqual(issues["broken-links"], [])
         self.assertEqual(len(info["memory-dangling"]), 1)
         self.assertIn("[[nowhere]]", info["memory-dangling"][0])
+
+
+class MemoryNamespaceTest(HealLintFixture):
+    """A [[wikilink]] between two REAL memory entries must resolve regardless
+    of where the memory store lives relative to the vault (#578) — the
+    resolution namespace has to look inside the resolved ``cfg["memory"]``
+    path, not the vault-relative ``vault/"memory"`` guess."""
+
+    def test_memory_to_memory_links_resolve_when_memory_is_outside_the_vault(self):
+        """``HealLintFixture``'s default layout: memory is a sibling of the
+        vault, never nested inside it — the shape this machine actually runs."""
+        self.mem("how-i-work", "see [[who-ryan-is]] for background")
+        self.mem("who-ryan-is", "the other half")
+        issues, info = self.scan()
+        self.assertEqual(issues["broken-links"], [])
+        self.assertEqual(info["memory-dangling"], [])
+
+    def test_memory_to_memory_links_resolve_when_memory_is_inside_the_vault(self):
+        """The shipped default (memory nested under the vault) must keep
+        working — a fix that only special-cased the outside path would pass
+        the sibling test above while silently breaking this one instead."""
+        self.memory = self.vault / "memory"
+        self.memory.mkdir(parents=True, exist_ok=True)
+        self.cfg["memory"] = self.memory
+        self.mem("how-i-work", "see [[who-ryan-is]] for background")
+        self.mem("who-ryan-is", "the other half")
+        issues, info = self.scan()
+        self.assertEqual(issues["broken-links"], [])
+        self.assertEqual(info["memory-dangling"], [])
+
+
+    def test_the_vault_relative_fallback_still_finds_memory_when_none_is_passed(self):
+        """The ONLY branch the two tests above never reach. Both of them set
+        ``cfg["memory"]``, so ``memory`` is never None and the
+        ``else vault / "memory"`` fallback is dead in their runs — I deleted that
+        fallback outright and the whole 43-test suite still passed, which is what
+        exposed the hole. This calls the function directly with no memory
+        argument, which is the only way to exercise it."""
+        (self.vault / "memory").mkdir(parents=True, exist_ok=True)
+        (self.vault / "memory" / "how-i-work.md").write_text("body\n")
+        names = heal_lint.all_note_basenames(self.vault)
+        self.assertIn("how-i-work", names)
 
 
 class OrphanTest(HealLintFixture):

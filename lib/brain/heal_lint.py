@@ -45,13 +45,19 @@ SECRET_RX = re.compile(
 DEFAULT_STALE_DAYS = 90
 
 
-def all_note_basenames(vault):
+def all_note_basenames(vault, memory=None):
     names = {}
-    for d in (*CONTENT_DIRS, "raw", "task-station", "memory", "org-brain"):
+    for d in (*CONTENT_DIRS, "raw", "task-station", "org-brain"):
         p = vault / d
         if p.exists():
             for f in p.rglob("*.md"):
                 names[f.stem.lower()] = f
+    # cfg["memory"] commonly resolves OUTSIDE the vault (#578) — fall back to the
+    # legacy vault/memory nesting only when no memory path was given at all.
+    mem_dir = memory if memory is not None else vault / "memory"
+    if mem_dir.exists():
+        for f in mem_dir.rglob("*.md"):
+            names[f.stem.lower()] = f
     for f in (vault / "CLAUDE.md", vault / "INDEX.md", vault / "LOG.md"):
         if f.exists():
             names[f.stem.lower()] = f
@@ -127,7 +133,7 @@ def scan(cfg, stale_days=DEFAULT_STALE_DAYS, today=None):
     memory = Path(cfg["memory"]) if cfg.get("memory") else None
     day = datetime.date.fromisoformat(today) if today else datetime.date.today()
 
-    names = all_note_basenames(vault)
+    names = all_note_basenames(vault, memory=memory)
     contract = naming.load_contract(
         str(cfg["org_brain_clone"]) if cfg.get("org_brain_clone") else None)
     issues = {
