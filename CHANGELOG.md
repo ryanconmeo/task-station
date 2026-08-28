@@ -3,6 +3,83 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.31.0] — 2026-08-28
+
+**THE HANDLE IS NOW THE ONE NAME THAT MEANS THE SAME THING ON EVERY MACHINE.** Until
+now the "cross-machine handle" was `<owner>-<seq>` — and `seq` is handed out
+machine-locally, so it named a *different task* on each machine. An unsynced laptop and
+desktop both hand out the same next number, and two different tasks both became
+`kosei-512`. The transport landed in 3.30.0; this is the identifier it needed.
+
+```
+stored     kosei-e6440959-b7f1-4066-8d21-cd7512f4e9fd
+displayed  kosei-e6440959
+```
+
+**It needs zero coordination.** No allocator, no block claim, no bootstrap, no
+exhaustion policy — so two machines can create tasks simultaneously while disconnected
+with no possibility of collision, because neither is choosing from a shared space.
+Block-allocated ranges (Hi-Lo) were rejected for exactly that reason: they need a claim
+to *land* before a task can be created, which fails precisely when you are offline on
+the second machine, which is precisely when that machine is assigning numbers. Hi-Lo
+delivers "unique" but not "cannot conflict".
+
+**The display width is collision-driven — that is the defect being fixed.** It used to
+be hardcoded at 8. Eight is fine until it isn't: measured on a real 371-task store, a
+4-character prefix ALREADY had two collision groups while 6 and 8 had none, so a fixed
+width is a bug waiting for the store to grow. The display now starts at 8 and lengthens
+exactly as far as ambiguity forces, the same rule git uses for abbreviated commit
+hashes. Today's rendering is byte-identical to yesterday's; what changed is that it can
+grow instead of silently becoming ambiguous.
+
+**An ambiguous handle resolves to nothing, not to a guess.** Returning the first match
+would hand the caller a different task from the one they meant — the failure
+abbreviation exists to make visible, not to hide.
+
+**Three identifiers, three jobs**, and conflating any two is how this went wrong before:
+`seq` is purely local ergonomics and never leaves the machine as an identifier; `uuid`
+is the join key; `handle` is the human cross-machine name. A bonus that matters:
+`kosei-e6440959` cannot be mistaken for a work-item number, which is the exact hazard
+the ADO numbering rule exists to prevent — `kosei-444` still reads like one.
+
+### Added
+
+- **`lib/board/handles.py`** — mint, split, collision-driven `display_map`, and a
+  `resolve` that returns *every* candidate so an ambiguous ref can be refused rather
+  than guessed. `split` matches the uuid as a TAIL, so an owner alias may itself contain
+  a hyphen (`mary-jane-e6440959…` splits correctly; splitting on the first hyphen would
+  have called the owner `mary`).
+- **The handle is stamped at creation** (`model.new_task`) and **backfilled once** for
+  every task that predates it (`state.ensure_handles`, run on the board path and lazily
+  when a handle ref is first used). Write-once holds even against another owner's handle
+  — a task received over sync keeps the name its origin minted, or the same task becomes
+  two different things on two machines.
+- **`resolve_ref` accepts a handle**, exact or abbreviated: `task-station update --task
+  kosei-e6440959` works on every machine. It is tried LAST, so it cannot shadow a seq or
+  an id prefix that someone actually meant.
+- **A `Handle:` line in the task detail**, with the reason attached — `(this machine's
+  #12 — seq NEVER crosses machines)`.
+- **Identity is now settable from the CLI**: `config --self-alias`, `--station-number`,
+  `--station-label`, `--sync-dir`, each with a `-get` and each on the config board.
+  Identity still arrives from runtime config and never from code. `--self-alias` refuses
+  a value that could not safely name a directory, because the alias *is* a path in the
+  sync exchange.
+- **`tests/test_handles.py`** — 26 tests, including the property `<owner>-<seq>` could
+  not provide: two stations creating tasks offline cannot collide.
+
+### Changed
+
+- **The feed's `handle` field now carries the real handle**, abbreviated, instead of
+  `<owner>-<seq>`. The board's handle chip renders it unchanged. Tasks written before
+  handles existed and not yet backfilled fall back to the old form rather than rendering
+  blank.
+- `config --reset` now clears `self_alias`, `station_number`, `station_label` and
+  `sync_dir` along with everything else — a reset that left a station NUMBER behind
+  would leave the machine claiming a partition the user had just cleared.
+
+### Fixed
+- …
+
 ## [3.30.0] — 2026-08-28
 
 **TWO MACHINES, ONE BOARD, AND A MERGE CONFLICT THAT CANNOT HAPPEN.** Until now nothing
