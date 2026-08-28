@@ -216,6 +216,23 @@ def _task_tokens(backend, task):
     return (tokens, False, round(cost, 4), fams)
 
 
+def _handle_pool(ts):
+    """Every handle this machine knows, memoised for one feed build. Ambiguity is a
+    property of the whole set, so it cannot be judged a task at a time — and rebuilding
+    the set per task would make a 450-task feed do 450 full scans."""
+    pool = getattr(ts, "_HANDLE_POOL", None)
+    if pool is None:
+        try:
+            pool = [t.get("handle") for t in ts.all_tasks() if t.get("handle")]
+        except Exception:
+            pool = []
+        try:
+            ts._HANDLE_POOL = pool
+        except Exception:
+            pass
+    return pool
+
+
 def _live_ids(ts):
     """The set of session ids with a RUNNING process right now (self feed only —
     liveness is never federated; foreign rows never show live)."""
@@ -239,7 +256,22 @@ def self_view_model(ts, backend, task, live_ids, cfg=None):
     tid = task.get("id") or ""
     uuid8 = tid[:8]
     seq = task.get("seq")
-    handle = "%s-%s" % (alias, seq if seq is not None else uuid8)
+    # THE HANDLE IS `<owner>-<uuid>`, ABBREVIATED — not `<owner>-<seq>`, which is what
+    # this line used to build. `seq` is handed out machine-locally, so two unsynced
+    # machines both hand out the same next number and `kosei-512` would name two
+    # different tasks; the uuid needs no coordination at all. The width is
+    # COLLISION-DRIVEN (`handles.display_map`), not the old hardcoded 8, so it grows
+    # exactly as far as ambiguity forces and no further. Tasks written before handles
+    # existed have none yet, and fall back to the old form rather than rendering blank.
+    handle = task.get("handle") or ""
+    if handle:
+        try:
+            import handles as _handles
+            handle = _handles.display(handle, _handle_pool(ts))
+        except Exception:
+            pass
+    else:
+        handle = "%s-%s" % (alias, seq if seq is not None else uuid8)
     sessions = set(task.get("sessions") or [])
     live = bool(sessions & live_ids)
     done, total = ts.step_progress(task)
@@ -379,6 +411,13 @@ def build_self_feed(ts, backend, cfg=None):
     Read-only; no store writes."""
     tasks = list(backend.all_tasks())
     live_ids = _live_ids(ts)
+    # Rebuild the ambiguity pool for THIS build. Caching it across builds inside one
+    # process would abbreviate against a set that no longer includes tasks created
+    # since — the one input that must be complete.
+    try:
+        ts._HANDLE_POOL = [t.get("handle") for t in tasks if t.get("handle")]
+    except Exception:
+        pass
 
     def upd(t):
         return t.get("updated_ts") or 0

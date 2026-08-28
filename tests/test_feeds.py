@@ -328,7 +328,10 @@ class ViewModelTest(_Base):
         by_title = {t["title"]: t for t in self._self_feed()["tasks"]}
         c = by_title["Child"]
         self.assertEqual(len(c["uuid8"]), 8)
-        self.assertEqual(c["handle"], "rnguyen-%s" % child["seq"])
+        # THE HANDLE IS <owner>-<uuid>, NOT <owner>-<seq>. `seq` is handed out
+        # machine-locally, so the old form named a different task on every machine.
+        self.assertEqual(c["handle"], "rnguyen-%s" % child["id"][:8])
+        self.assertNotEqual(c["handle"], "rnguyen-%s" % child["seq"])
         rel = c["relations"][0]
         self.assertEqual(rel["uuid8"], parent["id"][:8])
         self.assertNotIn("seq", rel)
@@ -397,7 +400,8 @@ class SelfAliasTest(_Base):
         self.assertEqual(feed["color"], feeds.SELF_COLOR["light"])
         self.assertEqual(feed["color_dark"], feeds.SELF_COLOR["dark"])
         vm = [x for x in feed["tasks"] if x["title"] == "Aliased"][0]
-        self.assertEqual(vm["handle"], "kdoe-%s" % t["seq"])
+        self.assertEqual(vm["handle"], "kdoe-%s" % t["id"][:8])
+        self.assertNotEqual(vm["handle"], "kdoe-%s" % t["seq"])
         self.assertEqual(vm["participants"], ["kdoe"])
         self.assertEqual(vm["owner"], "kdoe")
 

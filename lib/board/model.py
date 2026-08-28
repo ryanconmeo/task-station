@@ -660,6 +660,17 @@ def new_task(title, summary, color=None, effort=None, status=STATUS_DEFAULT):
         "sessions": [],
         "log": [],
     }
+    # The WRITE-ONCE cross-machine name, minted HERE and never again. It needs no
+    # coordination — no allocator, no block claim — so a second machine that is
+    # offline right now can create tasks with no possibility of colliding with this
+    # one. `seq` cannot do that job: it is handed out machine-locally, so two unsynced
+    # machines both hand out the same next number. See lib/board/handles.py.
+    try:
+        import handles as _handles
+        import station as _station
+        t["handle"] = _handles.mint(_station.owner(), tid)
+    except Exception:
+        pass
     c = cat_color(color)
     if c is not None:
         t["color"] = c

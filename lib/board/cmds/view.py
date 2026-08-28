@@ -25,7 +25,7 @@ g, set_g = _shared.g, _shared.set_g
 
 __all__ = [
     "_children_recap", "CHILDREN_RECAP_MAX",
-    "_format_detail", "_replaced_suffix", "_format_history",
+    "_format_detail", "_replaced_suffix", "_format_history", "_handle_line",
     "_open_jump_window", "_format_detail_session",
     "_hub_ordinals", "_hub_sid_for_ordinal", "_ordinal_resume",
     "_jump_ordinal", "_jump_one",
@@ -122,6 +122,28 @@ def _children_recap(task):
     return out
 
 
+
+def _handle_line(task):
+    """`Handle:  kosei-e6440959   (this machine's #12 — seq NEVER crosses machines)`,
+    or "" for a task written before handles existed and not yet backfilled.
+
+    The parenthetical is the whole point of showing it: `seq` is handed out
+    machine-locally, so quoting `#12` to another machine names whatever task owns 12
+    over there. The handle is the one name that means the same thing everywhere."""
+    h = task.get("handle")
+    if not h:
+        return ""
+    try:
+        import handles as _handles
+        shown = _handles.display(h, task_handles())
+    except Exception:
+        shown = h
+    seq = task.get("seq")
+    tail = ("   (this machine's #%s — seq NEVER crosses machines)" % seq) \
+        if seq is not None else ""
+    return "Handle:  %s%s" % (shown, tail)
+
+
 def _format_detail(task, session, attached=True):
     out = []
     cur = task_status(task)
@@ -134,6 +156,13 @@ def _format_detail(task, session, attached=True):
     eff = task.get("effort")
     if eff in EFFORT_GAUGE:
         out.append("Effort:  %s %s (%s)" % (EFFORT_GAUGE[eff], eff, EFFORT_WORD[eff]))
+    # The cross-machine name, abbreviated only as far as ambiguity forces. Shown as a
+    # line of its own rather than folded into the header because it is the thing you
+    # QUOTE to another machine — `#12` means a different task over there, and the id in
+    # brackets is this machine's internal one.
+    hdl = _handle_line(task)
+    if hdl:
+        out.append(hdl)
     out.append("Created: %s (%s)" % (rel_time(task.get("created_ts")), _local_iso(task.get("created_at", ""))))
     out.append("Updated: %s" % rel_time(task.get("updated_ts")))
     # Live = sessions still attached right now (link resolves back to this task);

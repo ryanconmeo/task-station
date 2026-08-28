@@ -1087,6 +1087,32 @@ def _add_config_args(sp):
     """Attach the config command's flags to a parser/subparser. Shared by main()'s
     `config` subcommand AND the `/todo config` dispatch (which parses the tokens
     after the keyword with the SAME spec), so the two stay identical."""
+    # STATION IDENTITY — who this machine belongs to and which of that owner's
+    # machines it is. It arrives from runtime config, NEVER from code, so it can never
+    # be baked into the public tree; these flags are the supported way to set it.
+    sp.add_argument("--self-alias", dest="self_alias", nargs="?", const="", default=None,
+                    help="this OWNER's alias — the prefix of every handle minted here "
+                         "and the name of this owner's directory in the sync exchange "
+                         "(default: the OS username; no value clears the override)")
+    sp.add_argument("--self-alias-get", dest="self_alias_get", action="store_true")
+    sp.add_argument("--station-number", dest="station_number", nargs="?", const="",
+                    default=None, metavar="N",
+                    help="which of this owner's MACHINES this is, numbered FROM 0. Two "
+                         "machines of one owner MUST differ — they are separate write "
+                         "partitions, and that is what makes a sync conflict impossible "
+                         "(no value clears the override, back to 0)")
+    sp.add_argument("--station-number-get", dest="station_number_get", action="store_true")
+    sp.add_argument("--station-label", dest="station_label", nargs="?", const="",
+                    default=None, metavar="NAME",
+                    help="friendly name for this machine — DISPLAY ONLY; nothing ever "
+                         "computes on it, which is what keeps renaming free (default: "
+                         "the device's LocalHostName)")
+    sp.add_argument("--station-label-get", dest="station_label_get", action="store_true")
+    sp.add_argument("--sync-dir", dest="sync_dir", nargs="?", const="", default=None,
+                    metavar="DIR",
+                    help="the sync exchange directory. UNSET BY DEFAULT — sync is off "
+                         "until you point it somewhere (no value turns it off again)")
+    sp.add_argument("--sync-dir-get", dest="sync_dir_get", action="store_true")
     sp.add_argument("--workspace-dirs", dest="workspace_dirs", default=None)
     sp.add_argument("--workspace-dirs-get", dest="workspace_dirs_get", action="store_true")
     sp.add_argument("--artifacts-root", dest="artifacts_root", nargs="?", const="", default=None,
