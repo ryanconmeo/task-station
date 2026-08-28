@@ -3,6 +3,98 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.30.0] — 2026-08-28
+
+**TWO MACHINES, ONE BOARD, AND A MERGE CONFLICT THAT CANNOT HAPPEN.** Until now nothing
+had ever crossed a machine boundary: peer rows on the board were demo fixtures, and a
+task created on the laptop existed only on the laptop. `task-station sync` is the
+transport — a directory of JSON files, one per task, that every machine reads in full
+and writes exactly one corner of.
+
+**The corner is the whole design.** A station writes only its own
+`owners/<owner>/station-<n>/` and reads every other one, so two machines never name the
+same path. Git therefore has nothing to three-way merge and `pull` can never stop on a
+conflict — that is a property of the layout, not care taken at merge time.
+`tests/test_sync.py:NoSharedWritePathTest` asserts the claim itself: the set of paths one
+station writes and the set the other writes have **empty intersection**. Proved end to
+end as well — two clones diverging from a shared base wrote 0 shared paths and `git
+merge` reported 0 conflicted paths.
+
+**Why the station, not the owner, is the axis.** Two owners colliding was never the hole;
+one owner on TWO MACHINES is. `seq` is handed out machine-locally, so an unsynced laptop
+and desktop both hand out the same next number and two different tasks both become
+`kosei-512`. Hence a partition per (owner, station), numbered from 0, and `seq` that
+never leaves the machine as an identifier.
+
+**The merge is per FIELD, not per record.** Measured on a real task blob, the record is
+mostly append-only lists plus a handful of conflictable scalars. Lists union by element
+identity; a matched element's flags merge per field, so one machine superseding a
+decision while the other pins it applies BOTH, and a step ticked on either machine stays
+ticked. A scalar takes the newest **by that field's own timestamp** — one `updated_ts`
+per task cannot say which field is newer — and pushes what it replaced onto
+`<field>_history`, so a sync can never destroy something a human wrote. Per-field stamps
+are DERIVED, not instrumented: the exporter diffs the task against the payload it last
+wrote, so a hundred call sites cannot drift out of step with it.
+
+**Sync does mechanics; heal does meaning.** Two machines can each add a decision that
+contradicts the other; the union keeps both and the digest then briefs two contradictory
+current decisions as if both were true — zero conflicts reported, record silently
+incoherent. So the report is a **three-row verdict**, because "0 conflicts" alone reads
+as "the record is fine":
+
+```
+  Mechanical  clean — 0 conflicts possible (each station writes only its own partition)
+  Judgment    1 task(s) merged · 3 field(s) taken · 4 unioned · 1 value(s) preserved
+  Heal-due    1 task(s) flagged — run `/heal` : a union is a re-fragmentation event …
+```
+
+**Nothing leaves this machine unless you make it.** `--init` creates a LOCAL git repo and
+no remote, and no code path here ever adds one; with no remote, `sync` commits locally
+and says so. Provisioning is a human decision about where personal and work data may
+live — the commands are in `docs/SYNC.md`.
+
+### Added
+
+- **`task-station sync`** — `--init [DIR]`, `--status`, `--dry-run`, `--no-net`, `--dir`.
+  Pull, import, export, commit, and push only when a remote exists.
+- **`lib/board/sync.py`** — the partition layout and its guard, the wire payload, the
+  pure `merge_task()`, tombstones, and the three-row report. `own_write_path()` is the
+  ONLY way the module names a file to write and it raises `PartitionViolation` rather
+  than writing outside the partition, so the invariant lives at one choke point instead
+  of in everyone's memory.
+- **`lib/board/station.py`** — the one owner of station identity: alias, number (from
+  **0**), and a label that is decoration only. Nothing may ever compute on the label,
+  which is what keeps renaming a station a one-field edit in one file that cannot
+  conflict.
+- **`docs/SYNC.md`** — the layout, the three identifiers, what the merge does field by
+  field, and the exact provisioning commands for a personal and a work remote.
+- **`tests/test_sync.py`** — 37 tests. `StationZeroTest` exists because numbering starts
+  at 0 and every `if station:` is a bug that silently drops the first real machine — the
+  same trap hub ordinal 0 needed its own test for.
+
+### Fixed
+
+- **A delete no longer comes back on the next sync.** Found by the round-trip test rather
+  than by reasoning: the local-delete sweep originally ran AFTER the import, so every
+  peer still publishing the task re-created it and the delete was silently undone. The
+  sweep now runs first, and a station's own tombstones suppress its own imports —
+  tombstones win ties and are kept forever.
+- **A relation edge no longer carries the origin machine's `seq` across the wire.** The
+  graph renderer prefers `seq`, so a synced edge would have pointed at whatever local
+  task happened to own that number. Export strips it; import re-derives the local one.
+
+### Changed
+
+- `feeds.self_alias()` now delegates to `station.owner()`, so a machine's feed identity
+  and its sync partition are the same string by construction rather than by two copies of
+  one precedence chain agreeing.
+- `docs/specs/2026-07-18-two-machine-sync-design.md` is marked partly superseded, naming
+  the three clauses the implementation deliberately does not follow (handle shape,
+  partition shape, record-level LWW) and the much larger part that still stands.
+
+### Fixed
+- …
+
 ## [3.29.0] — 2026-08-28
 
 ### Fixed
@@ -528,7 +620,7 @@ corruption for anything downstream to detect, only a shorter sentence that parse
 ### Unchanged
 - **The plain-string path, exactly.** Only the single character `-` is the stdin reference
   and only a *leading* `@` is the file sigil, so a value that starts with a dash (`-x`) or
-  merely contains an `@` (`rnguyen@example.com`) is still used verbatim. stdin is read only
+  merely contains an `@` (`kosei@example.com`) is still used verbatim. stdin is read only
   when `-` was actually passed, so an interactive call with no `-` never blocks on a
   terminal that will never send EOF. The full suite passes unchanged (5313 tests).
 
@@ -3089,7 +3181,7 @@ permanently invisible.
   registration, pure data). They were IIFE-wrapped — written for the retired preview's
   *client-side* rendering, where a browser evaluated them — so the server-side path skipped
   all four and `seed_demo.py` produced federation-switched-on with **zero peer rows**. Two
-  further blockers went with it: `rnguyen-demo.js` was `kind: "self"`, which
+  further blockers went with it: `kosei-demo.js` was `kind: "self"`, which
   `foreign_view_models` deliberately drops as "the local brain" (now `kind: "peer"`, with
   its tasks on `brain: "demo"`), and the category objects lacked `key`, which
   `_foreign_view_model` reads for the row/graph accent (derived from each fixture's own hex).
