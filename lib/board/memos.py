@@ -569,14 +569,31 @@ def _subs_throttled():
 #
 # ONLY TERMINAL STATES, and only on a TRANSITION. A memo per exit-tick would train the
 # reader to ignore the rail, which costs more than the signal is worth.
+#
+# AND THE MEMO WAS NOT ENOUGH. Everything above is true and it still left the parent
+# uninformed, because every surface that shows a memo waits for a human: the ack nag rides
+# UserPromptSubmit, the arrival block rides SessionStart, and an orchestrator driving a
+# loop neither starts a session nor gets typed into. Its remaining move was to poll
+# `sessions --task <child>`, which answers "is a process up" and says "busy" about a child
+# that finished an hour ago with its window left open. Measured twice — about an hour on
+# #532, seven hours on #536 — with nothing broken either time.
+#
+# So the same terminal transition files a PICKUP on the parent as well: a durable row on
+# the parent's own record that the parent's Stop gate refuses to end a turn on. The memo
+# is unchanged and still carries the words; the pickup is what makes somebody read them.
+# See the pickup-rail section of lib/board/channel.py for why it is a task-addressed
+# record and not a session-addressed order.
 
 def report_to_parent(task, headline, session=None):
-    """Write one memo onto `task`'s parent saying a terminal state was reached. Returns
-    the parent's seq (or None when there is no parent, or the send failed).
+    """Write one memo onto `task`'s parent saying a terminal state was reached, AND file
+    the pickup that will not let the parent's turn end until it is taken. Returns the
+    parent's seq (or None when there is no parent, or the send failed).
 
     FAIL-OPEN AND SILENT. This runs on the tail of `done` and `exit-tick`; a memo that
     cannot be written must never turn a successful close into an error, so every failure
-    returns None and the caller says nothing."""
+    returns None and the caller says nothing. The pickup is filed inside the same try for
+    the same reason — a rail that could break a close would be worse than one that
+    occasionally fails to fire."""
     try:
         pid = _loop.parent_id(task)
         if not pid:
@@ -586,6 +603,7 @@ def report_to_parent(task, headline, session=None):
             return None
         memo_send(parent, "CHILD #%s — %s" % (task.get("seq"), headline),
                   from_sid=session, routine=True)
+        _channel.pickup_file(parent, task, headline, from_sid=session)
         parent["updated_ts"] = _now()
         save_task(parent)
         return parent.get("seq")
