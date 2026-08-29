@@ -7,7 +7,7 @@ The shared brain is a per-person mirror repo: org-readable, owner-writable. It
 holds the notes the owner chooses to publish. Publishing is **opt-IN**: a note
 in ``<vault>/notes/`` publishes ONLY when its frontmatter carries
 ``publish: true``. A note with no such field — which is every note by default —
-stays in the private vault. ``memory/``, ``raw/``, ``plans/`` and ``reports/``
+stays in the private vault. ``memory/``, ``inbox/``, ``docs/`` and ``mirror/``
 NEVER publish; this engine only ever reads ``notes/``.
 
 Before a note is mirrored it passes a blocking **publish-lint** (per note): a
@@ -160,7 +160,7 @@ def run(cfg, *, mirror=None, owner=None, commit=True, today=None, withdraw=False
 
     vault = Path(cfg["vault"])
     mirror = Path(mirror)
-    notes_dir = vault / "notes"
+    notes_dir = vault / notes.NOTES_DIR
     if not notes_dir.exists():
         summary["status"] = "no-notes"
         return summary

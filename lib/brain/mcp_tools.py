@@ -68,7 +68,7 @@ SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"]
 TOOLS = [
     {
         "name": "brain_search",
-        "description": "Ranked zero-token search across the user's private brain vault (notes, hubs, reports, plans, raw, agent memory, org-brain clone if linked). Returns paths + descriptions; read the top hits for detail.",
+        "description": "Ranked zero-token search across the user's private brain vault (notes and hubs, docs, inbox, agent memory, org-brain clone if linked). Returns paths + descriptions; read the top hits for detail.",
         "inputSchema": {"type": "object", "properties": {
             "query": {"type": "string", "description": "search terms (space-separated)"},
             "episodic": {"type": "boolean", "description": "include task-station episodic mirror"},

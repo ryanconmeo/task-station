@@ -23,51 +23,92 @@ import os
 import unittest
 from pathlib import Path
 
-from tests.brain.base import BrainTestCase, PRIMARY_CONFIG_REL
+from tests.brain.base import BrainTestCase, HOME_CONFIG_REL, PRIMARY_CONFIG_REL
 
 import brain.config as bconfig
 import brain.init_home as init_home
 
 
 class FreshInitTest(BrainTestCase):
-    def test_creates_home_dirs_config_and_pointer(self):
+    """A fresh install lands the knowledge container ratified 2026-08-27.
+
+    These cases are the product-side counterpart of the thing that made the
+    redesign urgent: the layout existed on one machine, by hand, and a fresh
+    ``brain-init`` still built the old one."""
+
+    def test_creates_the_knowledge_container(self):
         init_home.run()
-        root = self.home / "brains"
-        self.assertTrue((root / "brain").is_dir())
-        self.assertTrue((root / "org-brain").is_dir())
+        brains = self.home / "knowledge/brains"
+        self.assertTrue((brains / "org/private").is_dir())    # the work vault
+        self.assertTrue((brains / "org/shared").is_dir())     # the org-readable mirror
+        self.assertTrue((brains / "org/org").is_dir())        # the org-brain clone
+        self.assertTrue((brains / "peers").is_dir())          # teammates, read-only
+        self.assertEqual(len(list((brains / "personal").iterdir())), 1)
         # scaffold landed
-        self.assertTrue((root / "brain/INDEX.md").exists())
+        self.assertTrue((brains / "org/private/INDEX.md").exists())
         # no stray .gitkeep survived
-        self.assertEqual(list((root / "brain").rglob(".gitkeep")), [])
-        # home config written with lowercase home-relative paths
-        cfg = json.loads((root / "config.json").read_text())
-        self.assertEqual(cfg["vault"], "~/brains/brain")
+        self.assertEqual(list((brains / "org/private").rglob(".gitkeep")), [])
+        # home config written with home-relative paths
+        cfg = json.loads((self.home / HOME_CONFIG_REL).read_text())
+        self.assertEqual(cfg["vault"], "~/knowledge/brains/org/private")
         # primary rewritten as a pointer
         primary = json.loads((self.home / PRIMARY_CONFIG_REL).read_text())
-        self.assertEqual(primary, {"config": "~/brains/config.json"})
+        self.assertEqual(primary, {"config": "~/knowledge/config.json"})
+
+    def test_memory_lands_beside_the_brains_inside_none_of_them(self):
+        """THE load-bearing property. Memory is about the person, so it has to
+        outlive any one brain — a brain-local memory dir was rejected for exactly
+        that reason. Asserted as containment so a future move still has to obey
+        it, not as a path literal."""
+        init_home.run()
+        memory = self.home / "knowledge/memory"
+        self.assertTrue(memory.is_dir())
+        brains = self.home / "knowledge/brains"
+        self.assertNotIn(brains, memory.parents)
+        self.assertEqual(list(brains.rglob("memory")), [])
 
     def test_resolution_chain_end_to_end(self):
         init_home.run()
-        self.assertEqual(bconfig.load()["vault"], self.home / "brains/brain")
-        self.assertEqual(bconfig.load()["org_brain_clone"], self.home / "brains/org-brain")
+        cfg = bconfig.load()
+        self.assertEqual(cfg["vault"], self.home / "knowledge/brains/org/private")
+        self.assertEqual(cfg["org_brain_clone"], self.home / "knowledge/brains/org/org")
+        self.assertEqual(cfg["memory"], self.home / "knowledge/memory")
+
+    def test_no_old_home_root_is_created(self):
+        init_home.run()
+        self.assertFalse((self.home / "brains").exists())
 
     def test_prelinks_native_memory(self):
         init_home.run()
         native = self.home / ".claude/projects" / str(self.home).replace(os.sep, "-") / "memory"
         self.assertTrue(native.is_symlink())
         self.assertEqual(os.path.realpath(native),
-                         os.path.realpath(self.home / "brains/brain/memory"))
+                         os.path.realpath(self.home / "knowledge/memory"))
 
     def test_the_whole_scaffold_lands(self):
         """ADDED — the four documents a fresh vault must have. The source asserted
         only INDEX.md; the scaffold is now a shipped asset inside the package and
         a missing file would surface as a confusing empty vault."""
         init_home.run()
-        vault = self.home / "brains/brain"
+        vault = self.home / "knowledge/brains/org/private"
         for name in ("INDEX.md", "LOG.md", "CLAUDE.md", "team-rules.md", ".gitignore"):
             self.assertTrue((vault / name).exists(), name)
-        for d in ("notes", "projects", "plans", "raw", "reports/health"):
+        for d in ("notes", "docs", "inbox", "mirror/health"):
             self.assertTrue((vault / d).is_dir(), d)
+
+    def test_the_pre_fold_folders_are_gone(self):
+        """The fold, asserted from the outside: five genre folders became four
+        question folders, and a fresh vault must not ship the old five."""
+        init_home.run()
+        vault = self.home / "knowledge/brains/org/private"
+        for d in ("projects", "plans", "raw", "reports"):
+            self.assertFalse((vault / d).exists(), d)
+
+    def test_an_org_slug_names_the_org_folder(self):
+        init_home.run(profile={"org_slug": "acme-co"})
+        brains = self.home / "knowledge/brains"
+        self.assertTrue((brains / "acme-co/private/INDEX.md").exists())
+        self.assertEqual(bconfig.load()["vault"], brains / "acme-co/private")
 
 
 class ScaffoldSourceTest(BrainTestCase):
@@ -108,8 +149,9 @@ class ConfigContractTest(BrainTestCase):
         self.assertEqual(Path(os.path.expanduser(cfg["vault"])), bconfig.DEFAULT_VAULT())
         self.assertEqual(Path(os.path.expanduser(cfg["org_brain_clone"])),
                          bconfig.DEFAULT_ORG_BRAIN())
-        self.assertEqual(Path(os.path.expanduser(cfg["memory"])),
-                         bconfig.DEFAULT_MEMORY(bconfig.DEFAULT_VAULT()))
+        self.assertEqual(Path(os.path.expanduser(cfg["memory"])), bconfig.DEFAULT_MEMORY())
+        self.assertEqual(Path(os.path.expanduser(cfg["personal_brain"])),
+                         bconfig.DEFAULT_PERSONAL_BRAIN())
 
     def test_init_writes_the_file_config_reads(self):
         init_home.run()
@@ -120,7 +162,7 @@ class ConfigContractTest(BrainTestCase):
 class ProfileTest(BrainTestCase):
     def _run_with_profile(self, profile):
         init_home.run(profile=profile)
-        return json.loads((self.home / "brains/config.json").read_text())
+        return json.loads((self.home / HOME_CONFIG_REL).read_text())
 
     def test_github_profile_wires_labels_forge_keywords(self):
         cfg = self._run_with_profile({
@@ -158,11 +200,11 @@ class ProfileTest(BrainTestCase):
         init_home.run()  # no profile
         on_disk = json.dumps(
             {k: v for k, v in json.loads(
-                (self.home / "brains/config.json").read_text()).items()},
+                (self.home / HOME_CONFIG_REL).read_text()).items()},
             sort_keys=True)
         self.assertEqual(on_disk, with_profile)
         # forge_* keys are NOT written without a profile
-        cfg = json.loads((self.home / "brains/config.json").read_text())
+        cfg = json.loads((self.home / HOME_CONFIG_REL).read_text())
         self.assertNotIn("forge_kind", cfg)
         self.assertNotIn("labels", cfg)
 
@@ -171,7 +213,7 @@ class ProfileTest(BrainTestCase):
         runtime from an OrgProfile, never from a literal in this repo. The source
         shipped one org's ADO url and one org's product names as DEFAULTS."""
         init_home.run()
-        cfg = json.loads((self.home / "brains/config.json").read_text())
+        cfg = json.loads((self.home / HOME_CONFIG_REL).read_text())
         self.assertNotIn("ado_org", cfg)
         self.assertEqual(cfg["inject_keywords"], [])
         self.assertEqual(init_home.ORG_KEYWORDS, [])
@@ -201,9 +243,9 @@ class ProfileTest(BrainTestCase):
 class RerunTest(BrainTestCase):
     def test_rerun_is_noop(self):
         init_home.run()
-        cfg1 = (self.home / "brains/config.json").read_text()
+        cfg1 = (self.home / HOME_CONFIG_REL).read_text()
         lines, conflicts = init_home.run()
-        cfg2 = (self.home / "brains/config.json").read_text()
+        cfg2 = (self.home / HOME_CONFIG_REL).read_text()
         self.assertEqual(cfg1, cfg2)
         self.assertEqual(conflicts, [])
         # second run must not create a .bak (primary is already a pointer)
@@ -216,15 +258,15 @@ class MigrateThenLinkTest(BrainTestCase):
         native = self.make_native_memory(str(self.home), memory_md="- fact A\n")
         (native / "note.md").write_text("a native note\n")
         init_home.run()
-        vm = self.home / "brains/brain/memory"
+        vm = self.home / "knowledge/memory"
         self.assertTrue((vm / "note.md").exists())
         self.assertEqual((vm / "note.md").read_text(), "a native note\n")
         self.assertTrue(native.is_symlink())
         self.assertEqual(os.path.realpath(native), os.path.realpath(vm))
 
     def test_memory_md_line_union_merge(self):
-        # pre-populate the vault memory so scaffolding is skipped and a merge happens
-        vm = self.home / "brains/brain/memory"
+        # pre-populate the memory store so a merge happens rather than a move
+        vm = self.home / "knowledge/memory"
         vm.mkdir(parents=True)
         (vm / "MEMORY.md").write_text("- fact A\n- fact B\n")
         self.make_native_memory(str(self.home), memory_md="- fact B\n- fact C\n")
@@ -233,7 +275,7 @@ class MigrateThenLinkTest(BrainTestCase):
         self.assertEqual(merged, ["- fact A", "- fact B", "- fact C"])
 
     def test_refuse_clobber_on_conflict(self):
-        vm = self.home / "brains/brain/memory"
+        vm = self.home / "knowledge/memory"
         vm.mkdir(parents=True)
         (vm / "note.md").write_text("vault content\n")
         native = self.make_native_memory(str(self.home))
@@ -245,10 +287,10 @@ class MigrateThenLinkTest(BrainTestCase):
         self.assertTrue((native / "note.md").exists())
         self.assertTrue(conflicts)
 
-    def test_undo_leaves_vault_intact(self):
+    def test_undo_leaves_the_memory_store_intact(self):
         native = self.make_native_memory(str(self.home), memory_md="- fact A\n")
         init_home.run()
-        vm = self.home / "brains/brain/memory"
+        vm = self.home / "knowledge/memory"
         self.assertTrue(native.is_symlink())
         # undo == remove only the link
         native.unlink()
@@ -268,7 +310,7 @@ class BackupTest(BrainTestCase):
         primary = json.loads((self.home / PRIMARY_CONFIG_REL).read_text())
         self.assertIn("config", primary)
         # soft preference carried into the new config
-        newcfg = json.loads((self.home / "brains/config.json").read_text())
+        newcfg = json.loads((self.home / HOME_CONFIG_REL).read_text())
         self.assertIs(newcfg["inject_context"], False)
 
 
@@ -276,7 +318,7 @@ class DryRunTest(BrainTestCase):
     def test_dry_run_makes_no_changes(self):
         lines, conflicts = init_home.run(dry_run=True)
         self.assertTrue(lines)
-        self.assertFalse((self.home / "brains").exists())
+        self.assertFalse((self.home / "knowledge").exists())
         self.assertFalse((self.home / PRIMARY_CONFIG_REL).exists())
 
 
@@ -292,7 +334,7 @@ class ClaudeMdImportTest(BrainTestCase):
         init_home.run()
         text = self._claude_md().read_text()
         self.assertIn(init_home.TR_MARKER_START, text)
-        self.assertIn("@~/brains/org-brain/team-rules.md", text)
+        self.assertIn("@~/knowledge/brains/org/org/team-rules.md", text)
         self.assertEqual(text.count(init_home.TR_MARKER_START), 1)
         init_home.run()  # rerun must not duplicate
         self.assertEqual(self._claude_md().read_text().count(init_home.TR_MARKER_START), 1)
@@ -358,22 +400,22 @@ class CustomisedInstallTest(BrainTestCase):
         """Primary = pointer, with a customised config at the far end of it."""
         (self.home / PRIMARY_CONFIG_REL).parent.mkdir(parents=True, exist_ok=True)
         (self.home / PRIMARY_CONFIG_REL).write_text(
-            json.dumps({"config": "~/brains/config.json"}) + "\n")
-        (self.home / "brains").mkdir(parents=True, exist_ok=True)
-        (self.home / "brains/config.json").write_text(
+            json.dumps({"config": "~/knowledge/config.json"}) + "\n")
+        (self.home / HOME_CONFIG_REL).parent.mkdir(parents=True, exist_ok=True)
+        (self.home / HOME_CONFIG_REL).write_text(
             json.dumps(self.CUSTOM, indent=2) + "\n")
 
     def test_rerun_preserves_every_customised_key(self):
         self._seed_customised()
         init_home.run()
-        after = json.loads((self.home / "brains/config.json").read_text())
+        after = json.loads((self.home / HOME_CONFIG_REL).read_text())
         for k, v in self.CUSTOM.items():
             self.assertEqual(after[k], v, f"{k} was not preserved")
 
     def test_rerun_keeps_keys_init_home_knows_nothing_about(self):
         self._seed_customised()
         init_home.run()
-        after = json.loads((self.home / "brains/config.json").read_text())
+        after = json.loads((self.home / HOME_CONFIG_REL).read_text())
         self.assertEqual(after["publish_mirror"], self.CUSTOM["publish_mirror"])
         self.assertEqual(after["tasks_db"], self.CUSTOM["tasks_db"])
 
@@ -382,34 +424,34 @@ class CustomisedInstallTest(BrainTestCase):
         missing defaults, it just never has its own values overwritten."""
         (self.home / PRIMARY_CONFIG_REL).parent.mkdir(parents=True, exist_ok=True)
         (self.home / PRIMARY_CONFIG_REL).write_text(
-            json.dumps({"config": "~/brains/config.json"}) + "\n")
-        (self.home / "brains").mkdir(parents=True, exist_ok=True)
-        (self.home / "brains/config.json").write_text(
-            json.dumps({"vault": "~/brains/only-this"}, indent=2) + "\n")
+            json.dumps({"config": "~/knowledge/config.json"}) + "\n")
+        (self.home / HOME_CONFIG_REL).parent.mkdir(parents=True, exist_ok=True)
+        (self.home / HOME_CONFIG_REL).write_text(
+            json.dumps({"vault": "~/elsewhere/only-this"}, indent=2) + "\n")
         init_home.run()
-        after = json.loads((self.home / "brains/config.json").read_text())
-        self.assertEqual(after["vault"], "~/brains/only-this")     # kept
-        self.assertEqual(after["org_brain_clone"], "~/brains/org-brain")  # filled
+        after = json.loads((self.home / HOME_CONFIG_REL).read_text())
+        self.assertEqual(after["vault"], "~/elsewhere/only-this")            # kept
+        self.assertEqual(after["org_brain_clone"], "~/knowledge/brains/org/org")  # filled
 
     def test_config_is_backed_up_before_any_rewrite(self):
         self._seed_customised()
         # force a real change so the write path (not the no-op path) is taken
         cfg = dict(self.CUSTOM)
         cfg.pop("inject_context")
-        (self.home / "brains/config.json").write_text(json.dumps(cfg, indent=2) + "\n")
+        (self.home / HOME_CONFIG_REL).write_text(json.dumps(cfg, indent=2) + "\n")
         init_home.run()
-        bak = self.home / "brains/config.json.bak"
+        bak = self.home / (HOME_CONFIG_REL + ".bak")
         self.assertTrue(bak.exists(), "no backup of the config that was rewritten")
         self.assertEqual(json.loads(bak.read_text())["vault"], self.CUSTOM["vault"])
 
     def test_unchanged_config_is_not_rewritten_or_backed_up(self):
         self._seed_customised()
         init_home.run()                       # normalises the file
-        first = (self.home / "brains/config.json").read_text()
-        (self.home / "brains/config.json.bak").unlink(missing_ok=True)
+        first = (self.home / HOME_CONFIG_REL).read_text()
+        (self.home / (HOME_CONFIG_REL + ".bak")).unlink(missing_ok=True)
         lines, _ = init_home.run()            # second run: nothing to do
-        self.assertEqual((self.home / "brains/config.json").read_text(), first)
-        self.assertFalse((self.home / "brains/config.json.bak").exists())
+        self.assertEqual((self.home / HOME_CONFIG_REL).read_text(), first)
+        self.assertFalse((self.home / (HOME_CONFIG_REL + ".bak")).exists())
         self.assertTrue(any("already correct" in ln for ln in lines))
 
     def test_team_rules_import_follows_the_configured_clone(self):
@@ -417,7 +459,7 @@ class CustomisedInstallTest(BrainTestCase):
         init_home.run()
         text = (self.home / ".claude/CLAUDE.md").read_text()
         self.assertIn("@~/brains/acme/acme-brain/team-rules.md", text)
-        self.assertNotIn("@~/brains/org-brain/team-rules.md", text)
+        self.assertNotIn("@~/knowledge/brains/org/org/team-rules.md", text)
 
     def test_stale_import_block_is_repointed_not_left_alone(self):
         """The block is declared auto-managed, so 'a block exists' was never
@@ -426,13 +468,13 @@ class CustomisedInstallTest(BrainTestCase):
         cm.parent.mkdir(parents=True, exist_ok=True)
         cm.write_text("# My own rules\n\n- keep me\n\n"
                       f"{init_home.TR_MARKER_START}\n<!-- auto -->\n"
-                      f"@~/brains/org-brain/team-rules.md\n"
+                      f"@~/knowledge/brains/org/org/team-rules.md\n"
                       f"{init_home.TR_MARKER_END}\n")
         self._seed_customised()
         init_home.run()
         text = cm.read_text()
         self.assertIn("@~/brains/acme/acme-brain/team-rules.md", text)
-        self.assertNotIn("@~/brains/org-brain/team-rules.md", text)
+        self.assertNotIn("@~/knowledge/brains/org/org/team-rules.md", text)
         self.assertIn("- keep me", text)                       # user content kept
         self.assertEqual(text.count(init_home.TR_MARKER_START), 1)
 
