@@ -6,6 +6,7 @@ No LLM, stdlib-only."""
 import importlib.util
 import io
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -161,7 +162,11 @@ class DigestTest(unittest.TestCase):
             self.assertIn("d%d" % i, detail)
         self.assertNotIn("earlier decision", detail)
         block = detail[detail.index("Decisions:"):].split("\n\n")[0]
-        self.assertEqual(block.count("  • "), 40)
+        # NUMBERED with the log's own 1-based indices — the numbers `--supersedes` and
+        # `--pin-decision` take. Unnumbered bullets left the number reachable only from
+        # the line echoed at write time, so no reader could name a decision to a verb.
+        numbers = [int(m) for m in re.findall(r"^\s+(\d+)\. ", block, re.M)]
+        self.assertEqual(numbers, list(range(1, 41)))
 
     def test_detail_does_not_render_the_log_field(self):
         t = self._task()
