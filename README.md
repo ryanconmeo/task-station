@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-3.33.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.34.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -350,6 +350,53 @@ handed down becomes durable, and it binds the session **and its task**, so a suc
 session inherits the refusal instead of having to rediscover it. Note what the rule is
 not: a plan-mode reviewer handing findings to an implementer is the loop working — it was
 never *denied* an edit, it was never granted one.
+
+### Learning a child finished — the pickup rail
+
+The channel above points one way: a **parent reaching down** to a child that is already
+running. The expensive failure ran the other way. A child that finished wrote its report
+as a memo and the lifecycle minted a notice on the parent — both durable, both correct,
+and both surfaced only when a human **types**. An orchestrator driving the loop starts no
+new session and is typed into by nobody, so its only remaining move was to poll
+`sessions --task <child>`, which answers a different question: is a *process* up. A child
+that finishes and leaves its window open is a live process with nothing to do, and the
+harness's word for that is `busy`. Measured twice on one board in one week: one child sat
+about an hour, another sat seven, with nothing broken either time.
+
+```text
+task-station pickup list --task 12                 # children that handed work back, and how to read each report
+task-station pickup take --task 12 --id ab12cd34   # this one is dealt with
+```
+
+**Same transport, opposite direction.** A child reaching a terminal state files a
+**pickup** on its parent's task, and the *parent's* Stop hook refuses to end a turn while
+one is unclaimed. It is a record on the task rather than an order addressed to a session,
+because a child usually finishes while its parent is between sessions and an order queued
+to nobody is a fact that was never recorded. It blocks at most three times, then stays
+pending and visible without holding the turn; a **new** fact about the same child — a
+green checklist becoming a close — re-arms that budget, because the cap exists so a notice
+cannot trap a session, not so a second thing can be missed by having ignored the first.
+
+**It retires itself when the parent engages — and not when the child closes.** Grading
+the work or parking the child retires the notice; **closure does not**, because `done` is
+the verb a finished child *runs*, so the commonest hand-back this rail carries is a
+closure, and retiring on that would cancel the notice before anyone read it. The
+disposition is recorded (`taken` · `graded` · `parked`). Taking one is **not** grading it —
+`turn` still runs the mechanical gate and emits the grade command.
+
+**And `turn` stopped waiting on finished work.** An unacked report already outranked
+liveness; a **demonstrably green checklist** now does too. A child can forget to file a
+report and cannot fake a set of exit conditions somebody wrote down before the work
+started, so either one takes it out of `WAIT` — while the gate still raises the missing
+hand-back as a finding, because proving the work is done is not the same as handing it
+back. The `WAIT` action's command is no longer `scan`: a real wait now means there is
+genuinely nothing yet, and the rail will say when there is. `sessions` says
+`HANDED BACK (report filed)` beside `busy` for the same reason.
+
+**It adopts rather than rebuilds.** There is no poller and no second fan-out engine here.
+Liveness stays `ListAgents`, reaching a live child stays `SendMessage`, cadence stays
+`/loop` or Cron — the rail carries the one fact that makes reaching for any of them worth
+doing.
 
 ### The orchestrator flag
 

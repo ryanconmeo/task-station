@@ -27,7 +27,7 @@ count) and simply stops holding the turn hostage — the same anti-wedge rule th
 gate has had since it existed, for the same reason: a gate that can trap a session is a
 gate people turn off.
 
-FOUR THINGS LIVE HERE, and the module is deliberately PURE over the task dict — it
+FIVE THINGS LIVE HERE, and the module is deliberately PURE over the task dict — it
 mutates what it is handed and never saves, never writes an event, never loads a task.
 The seams that call it persist and narrate. (`exits.py` is the same shape, and for the
 same reason: a mover that reached into the seams would bind to one facade generation.)
@@ -35,10 +35,12 @@ same reason: a mover that reached into the seams would bind to one facade genera
   1. REACHABILITY (`live`, `live_sids`) — who is running right now, from the harness's
      OWN per-process record.
   2. ORDERS (`order_queue` … `order_settle`) — the queue, its delivery marks, and the
-     Stop-gate text.
-  3. THE VERBS (`stand_down`, `announce_spec`, `on_memo`) — the three things a parent
+     Stop-gate text. THE PARENT REACHING DOWN.
+  3. THE PICKUP RAIL (`pickup_file` … `pickup_take`) — the same transport, pointing the
+     other way: THE CHILD REACHING UP. See the section head below.
+  4. THE VERBS (`stand_down`, `announce_spec`, `on_memo`) — the three things a parent
      needs to say.
-  4. THE PERMISSION BOUNDARY (`record_denial`, `launder_reason`) — the refusal that
+  5. THE PERMISSION BOUNDARY (`record_denial`, `launder_reason`) — the refusal that
      makes the channel safe to have at all.
 
 --------------------------------------------------------------------------------------
@@ -581,6 +583,269 @@ def block_reason(task, orders_, sid):
         lines.append(order_line(task, o, sid))
     lines.append("  Settle each one above. `task-station channel orders --task %s` "
                  "lists them again." % ref)
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ the pickup rail ----
+#
+# THE CHANNEL POINTING THE OTHER WAY. Everything above is a PARENT reaching DOWN to a
+# child that is already running. This is a CHILD reaching UP to a parent that is already
+# running, and it is the same rail for the same reason: the end of a turn is the one
+# moment a live session arrives at by itself, with no human in the loop, and the Stop
+# hook can refuse to let it pass.
+#
+# WHAT WAS ACTUALLY BROKEN. A child that finished wrote its report as a memo and the
+# lifecycle minted a notice on the parent — and BOTH of those wait for somebody to type.
+# `memo_pending_brief` and `child_reports_brief` ride UserPromptSubmit and SessionStart;
+# an orchestrator driving a loop starts no new session and is typed into by nobody. So
+# the parent's only remaining move was to poll `sessions --task <child>`, which answers a
+# different question — is a process up — and answers it "busy" for a child that finished
+# an hour ago and left its window open. MEASURED TWICE: #532 sat about an hour, #536 sat
+# seven. Nothing was broken either time. There was simply no signal.
+#
+# WHY THIS IS NOT AN ORDER. An order is addressed to a SESSION (`to_sid`) and is queued
+# only to sessions that are running RIGHT NOW — `_fanout` over `live_sids`. A child
+# usually finishes when the parent is between sessions, mid-compaction, or momentarily
+# unreadable, and an order queued to nobody is a fact that was never recorded at all. A
+# pickup is addressed to the TASK. It is filed whether or not anything is up, it survives
+# the parent's session ending and being resumed, and any session that later attaches to
+# that parent meets it. That is the whole of "build the durable record and the gate".
+#
+# IT BLOCKS, AND THAT REVERSES A PRIOR RULING. `ROUTINE_FIELD` above says a lifecycle
+# notice must not hold a turn, and that ruling stands for what it was written about:
+# subscription diffs, close mirrors, correspondence the reader will meet on the ledger
+# anyway. A child handing work back is not that. It is the one fact that changes what the
+# parent should do next — stop waiting, start gating — and it is the fact the parent
+# provably cannot get any other way while it is running. The routine memo still rides the
+# ledger, unchanged; the pickup rides the gate.
+#
+# IT CANNOT WEDGE, by the same rule everything else here obeys: `PICKUP_MAX_BLOCKS`
+# turn-ends, after which the row stays pending and fully visible (`pickup list`, every
+# count, the SessionStart nag) and simply stops holding the turn. A NEW fact about the
+# same child — a different headline, i.e. "conditions met" becoming "CLOSED" — re-arms
+# the count, because that is a second thing the parent has not heard and not a repeat of
+# the first.
+#
+# IT RETIRES ITSELF — BUT NOT ON "CLOSED", AND THAT DISTINCTION IS THE WHOLE RAIL. The
+# obvious auto-retirement is "the child is closed, so there is nothing to pick up", and it
+# is wrong in the exact case this exists for: `done` is what a finished child RUNS, so the
+# commonest hand-back headline is literally "CLOSED — ready for the gate". A rail that
+# retired on that would file a notice and cancel it before anyone read it — every stall it
+# was built to stop, restored, with a mechanism in place claiming otherwise. (Caught by the
+# end-to-end probe in tests/e2e_pickup_rail.sh, which is why that probe drives the CLI from
+# outside instead of asserting on the same functions the unit suite already holds.)
+#
+# What "dealt with" actually means is that the PARENT ENGAGED — it graded the work, or it
+# parked the child, or a session said so with `pickup take`. Those are the three, and each
+# is recorded (`how`) rather than inferred, because "the parent picked this up" and "the
+# child was parked and never came back" are different histories and a later reader auditing
+# a silent loop needs to tell them apart. The seam does the reconciliation, since it is the
+# half that may load a task.
+
+PICKUPS_FIELD = "pickups"
+PICKUPS_KEEP = 100             # bounded like every other per-task feed
+PICKUP_MAX_BLOCKS = 3          # the anti-wedge cap, same value and same reason as orders
+PICKUP_HEADLINE_MAX = 300      # a headline is a pointer to the report, not the report
+
+# How a pickup retired. Recorded rather than inferred: "the parent picked this up" and
+# "the child closed, so there was nothing left to pick up" are different histories, and a
+# later reader auditing a silent loop needs to tell them apart.
+PICKUP_TAKEN = "taken"         # a session ran `pickup take`
+PICKUP_GRADED = "graded"       # the parent graded the work — the engagement itself
+PICKUP_PARKED = "parked"       # the child is parked — never handed back to the loop
+PICKUP_HOWS = (PICKUP_TAKEN, PICKUP_GRADED, PICKUP_PARKED)
+
+
+def pickups(task):
+    """Every pickup filed on `task`, oldest first. Empty for a task written before the
+    field existed — the field is created on first file, exactly like `orders`."""
+    return list((task or {}).get(PICKUPS_FIELD) or [])
+
+
+def pickups_pending(task):
+    """The pickups nobody has taken. What every surface means by "waiting"."""
+    return [p for p in pickups(task) if not p.get("taken_ts")]
+
+
+def pickups_blocking(task):
+    """The pending pickups the Stop gate may still BLOCK on.
+
+    A row past `PICKUP_MAX_BLOCKS` is deliberately absent here and present in
+    `pickups_pending` — it is still waiting, it has just stopped being allowed to hold
+    the turn. Same split as `deliverable` vs `orders_for`, so a reader who has learned
+    one has learned both."""
+    return [p for p in pickups_pending(task)
+            if int(p.get("blocks") or 0) < PICKUP_MAX_BLOCKS]
+
+
+def _trim_pickups(task):
+    rows = task.setdefault(PICKUPS_FIELD, [])
+    if len(rows) > PICKUPS_KEEP:
+        keep = [p for p in rows if not p.get("taken_ts")]
+        taken = [p for p in rows if p.get("taken_ts")]
+        room = max(0, PICKUPS_KEEP - len(keep))
+        task[PICKUPS_FIELD] = sorted(keep + taken[-room:], key=lambda p: p.get("ts") or 0)
+
+
+def open_pickup_for(task, child_id):
+    """The one UNTAKEN pickup on `task` for child `child_id`, or None.
+
+    One open row per child, always. A child reports more than once — `exit-tick` when its
+    conditions go green, `done` when it closes — and two rows for one child is two nags
+    for one thing to do, which is how a rail earns being ignored."""
+    for p in reversed(pickups(task)):
+        if p.get("child_id") == child_id and not p.get("taken_ts"):
+            return p
+    return None
+
+
+def pickup_file(parent, child, headline, memo_id=None, from_sid=None, ts=None):
+    """File one pickup on `parent` saying `child` handed work back. Returns
+    `(row, created)` — `created` is False when an open row for this child was UPDATED
+    instead. Mutates `parent`; does NOT save. Never raises on ordinary input.
+
+    `(None, False)` when there is nothing to file: no parent, no child, no headline.
+
+    RE-FILING WITH A NEW HEADLINE RE-ARMS THE BLOCK COUNT and re-filing with the same one
+    does not. The cap exists so a notice cannot trap a session, not so a parent can miss
+    a second, different fact by having ignored the first."""
+    if not isinstance(parent, dict) or not isinstance(child, dict):
+        return None, False
+    headline = " ".join(str(headline or "").split())[:PICKUP_HEADLINE_MAX]
+    child_id = child.get("id")
+    if not headline or not child_id:
+        return None, False
+    now = float(ts) if ts is not None else time.time()
+    row = open_pickup_for(parent, child_id)
+    if row is not None:
+        if row.get("headline") != headline:
+            row["headline"] = headline
+            row["ts"] = now
+            row["blocks"] = 0              # a NEW fact gets its own delivery budget
+            row["delivered_ts"] = None
+            if memo_id:
+                row["memo_id"] = memo_id
+        return row, False
+    row = {"id": uuid.uuid4().hex, "ts": now,
+           "child_id": child_id, "child_seq": child.get("seq"),
+           "child_title": child.get("title"), "headline": headline,
+           "memo_id": memo_id, "from_sid": from_sid,
+           "delivered_ts": None, "blocks": 0,
+           "taken_ts": None, "taken_by": None, "how": None}
+    parent.setdefault(PICKUPS_FIELD, []).append(row)
+    _trim_pickups(parent)
+    return row, True
+
+
+def pickup_by_prefix(task, prefix):
+    """Resolve an id-prefix to one pickup on `task`. Same contract as
+    `order_by_prefix` — `(row, None)` on a unique match, `(None, error-line)` otherwise."""
+    prefix = str(prefix or "").strip()
+    if not prefix:
+        return None, "pickup: an --id (or id prefix) is required"
+    hits = [p for p in pickups(task) if (p.get("id") or "").startswith(prefix)]
+    if not hits:
+        return None, "pickup: no pickup matching id %r on this task" % prefix
+    if len(hits) > 1:
+        return None, ("pickup: id %r is ambiguous — candidates: %s"
+                      % (prefix, ", ".join(p["id"][:8] for p in hits)))
+    return hits[0], None
+
+
+def pickup_mark_delivered(task, rows):
+    """Stamp first delivery and count this block against each pickup. Mutates; no save.
+
+    `delivered_ts` records the FIRST time the notice actually reached a session, never
+    advanced on a re-block — the second block is the same delivery, insisted upon. Same
+    rule as `mark_delivered`, and deliberately the same words."""
+    now = time.time()
+    for p in rows:
+        if not p.get("delivered_ts"):
+            p["delivered_ts"] = now
+        p["blocks"] = int(p.get("blocks") or 0) + 1
+    return rows
+
+
+def pickup_take(task, row, sid=None, how=PICKUP_TAKEN):
+    """Retire one pickup. Returns `(status, error)` — `("taken", None)`,
+    `("already", None)`, or `(None, error-line)`. Mutates; does NOT save.
+
+    No report is required and that is deliberate: unlike a stand-down, nothing is lost by
+    taking one. The child's own account is already durable on the child's memo ledger —
+    the pickup is a POINTER to it, and `pickup_line` prints the command that reads it."""
+    if not isinstance(row, dict):
+        return None, "pickup: nothing to take."
+    if how not in PICKUP_HOWS:
+        return None, ("pickup: %r is not a disposition. They are %s."
+                      % (how, ", ".join(PICKUP_HOWS)))
+    if row.get("taken_ts"):
+        return "already", None
+    row["taken_ts"] = time.time()
+    row["taken_by"] = sid
+    row["how"] = how
+    return "taken", None
+
+
+def pickup_command(task, row):
+    """The exact one-liner that takes this pickup. Printed with every pickup everywhere,
+    for the same reason `settle_command` is: an instruction whose next step has to be
+    looked up is an instruction that gets guessed at."""
+    ref = task.get("seq") or (task.get("id") or "")[:8]
+    return ("task-station pickup take --task %s --id %s"
+            % (ref, (row.get("id") or "")[:8]))
+
+
+def pickup_read_command(row):
+    """How to read the child's actual report — the memo it filed on its OWN task.
+
+    A notice that says a report exists without saying how to read it is half a rail, and
+    the memo is on the CHILD's ledger, which nothing on the parent's surfaces shows."""
+    ref = row.get("child_seq") or (row.get("child_id") or "")[:8]
+    mid = (row.get("memo_id") or "")[:8]
+    if mid:
+        return "task-station memo show --task %s --id %s" % (ref, mid)
+    return "task-station memo list --task %s" % ref
+
+
+def pickup_line(task, row, indent="  "):
+    """One pickup as the gate and the `pickup list` view both render it."""
+    seq = row.get("child_seq")
+    who = ("#%s" % seq) if seq is not None else (row.get("child_id") or "?")[:8]
+    title = row.get("child_title") or ""
+    head = "%s%s  CHILD %s%s" % (indent, (row.get("id") or "")[:8], who,
+                                 (" — %s" % title) if title else "")
+    return ("%s\n%s    %s\n%s    read:   %s\n%s    take:   %s"
+            % (head, indent, row.get("headline") or "",
+               indent, pickup_read_command(row),
+               indent, pickup_command(task, row)))
+
+
+def pickup_reason(task, rows):
+    """The Stop-hook `reason` for a parent with children waiting to be picked up — the
+    text the orchestrator actually reads.
+
+    IT NAMES THE NEXT MOVE AND THE RAILS THAT ALREADY EXIST. `turn` is the command that
+    gates and grades what came back; `ListAgents`/`SendMessage` are the harness's own
+    liveness and reach, which is what a parent wants next if the child is still up. This
+    rail deliberately builds neither — it delivers the fact that makes reaching for them
+    worth doing."""
+    ref = task.get("seq") or (task.get("id") or "")[:8]
+    n = len(rows)
+    lines = [
+        "[task-station] %d CHILD(REN) OF #%s HAVE HANDED WORK BACK and nobody has picked "
+        "it up. This turn does not end until each is taken. A child's report lands on the "
+        "CHILD's task and its session may still be sitting there idle, so neither this "
+        "task's ledger nor `sessions --task <child>` would tell you — polling liveness "
+        "reads a finished child as busy, which is exactly how one sat for seven hours."
+        % (n, ref),
+    ]
+    for p in rows:
+        lines.append(pickup_line(task, p))
+    lines.append("  Gate and grade what came back:  task-station turn --task %s" % ref)
+    lines.append("  Still need the child's session? `ListAgents` says what is live and "
+                 "`SendMessage` reaches it — neither needs this rail, and this rail does "
+                 "not duplicate them.")
+    lines.append("  `task-station pickup list --task %s` lists these again." % ref)
     return "\n".join(lines)
 
 

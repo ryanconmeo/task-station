@@ -3,6 +3,73 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.34.0] — 2026-08-29
+
+**A FINISHED CHILD TOLD THE RECORD, AND NOTHING WOKE THE PARENT.** Every piece already
+existed and every piece worked. A child reaching a terminal state wrote its report as a
+memo on its own task, and the lifecycle minted a notice memo on the parent. Both durable,
+both correct — and both surfaced only when a human **types** (`memo_pending_brief` rides
+UserPromptSubmit, `child_reports_brief` rides UserPromptSubmit and SessionStart). An
+orchestrator driving the loop starts no new session and is typed into by nobody, so its
+only remaining move was to poll `sessions --task <child>`, which answers a different
+question: is a *process* up. A child that finishes and leaves its window open is a live
+process with nothing to do, and the harness's word for that is `busy`. Measured twice on
+one board in one week — about an hour, then seven hours — with nothing broken either time.
+
+The rail is the one the control channel already proved: the end of a turn is the moment a
+running session reaches by itself, with no human in it, and the Stop hook can refuse to
+let it pass. The channel points that at a child. This points it at the **parent**.
+
+### Added
+- **The pickup rail — a parent learns a child finished without being asked.** A child
+  reaching a terminal state files a **pickup** on its parent's task, and the parent's Stop
+  hook refuses to end a turn while one is unclaimed. A record on the TASK, not an order
+  addressed to a session: a child usually finishes while its parent is between sessions,
+  and an order queued to nobody is a fact that was never recorded at all. Blocks at most
+  three times, then stays pending and visible without holding the turn — the same
+  anti-wedge cap orders have had since they existed. A **new** fact about the same child (a
+  green checklist becoming a close) re-arms that budget; a repeat of the same one does not.
+- **It retires itself when the parent ENGAGES — graded, or parked — and deliberately NOT
+  when the child closes.** That distinction is the whole rail: `done` is the verb a finished
+  child RUNS, so the commonest hand-back headline it carries is literally "CLOSED — ready
+  for the gate", and retiring on closure would file the notice and cancel it before anyone
+  read it. The disposition is recorded (`taken` · `graded` · `parked`) rather than inferred,
+  because "the parent picked this up" and "the child was parked and never came back" are
+  different histories.
+- **`pickup list` / `pickup take`.** `list` shows what is waiting with the child's own
+  report text inline and the command that reads it in full; `take` retires one. Taking is
+  **not** grading — `turn` still runs the mechanical gate and emits the grade command.
+- **`turn.landed_work`** — has a child's own checklist demonstrably gone green, and since
+  its launch? Strict by inheritance from `exits.satisfied`: at least one registered
+  condition, every one MET, no live step left both uncovered and unticked — and the verdict
+  must post-date the launch being judged, or a task whose conditions were already green
+  would read as finished the second it was invoked.
+
+### Changed
+- **`turn` stops printing WAIT for work that has demonstrably landed.** An unacked report
+  already outranked liveness; a green checklist now does too. A child can forget to file a
+  report and cannot fake a set of exit conditions somebody wrote down before the work
+  started, so either one takes it out of `WAIT`.
+- **The WAIT action's command is no longer `scan`.** Polling every few minutes is how a
+  parent read "busy" about a finished child. A `WAIT` now means the child has neither
+  reported nor gone green — genuinely nothing yet — so the command points at
+  `pickup list` and the `reach` line names `SendMessage`. Do something else; you will be told.
+- **`sessions` stops saying only "busy".** `status` is the harness's word for "the model is
+  mid-turn". A row whose task has finished now reads `busy · HANDED BACK (report filed)` or
+  `(exit conditions green)`. Live rows carry `task_id` so a reader can ask the task a
+  question without re-resolving its seq against the whole store.
+- **The Stop gate resolves the session's task once for all three limbs** (orders, pickups,
+  untracked edits) instead of twice. This is the hottest path in the plugin — every turn
+  end of every session — and an idle turn now costs one link read and one field lookup.
+- **The `no-report` gate finding is keyed on the fact, not the state name.** `SILENT_EXIT`
+  used to be the only way to arrive with no report, so testing the state was the same as
+  testing for one. A green checklist can now also take a child out of WAIT, and such a
+  child must not buy a quiet pass on the hand-back rail.
+
+### Fixed
+- A child that finished, filed its report and left its session idle could be reported by
+  every parent-facing surface as still working, for as long as nobody thought to look.
+
 ## [3.33.0] — 2026-08-29
 
 **WIDENING IS THE ONE THING YOU CANNOT TAKE BACK.** 3.32.0 made sharing private by

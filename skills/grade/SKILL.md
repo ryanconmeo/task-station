@@ -29,6 +29,15 @@ Two things it decides that you should not re-decide by hand:
 - **What came back is gated first.** Grading a finished child can release a wave and hands its slot back to the budget; invoking first spends the slot the gate was about to return.
 - **One invoke per pass.** Two children in flight in one repo means two version bumps and a rebase for whoever lands second; three means a three-way conflict. The turn spends the remaining budget one child at a time.
 
+**Do not poll for a finished child, and do not trust `sessions` to tell you.** `sessions --task <child>` answers whether a *process* is up, and a child that finishes and leaves its window open is a live process with nothing to do — the harness's word for it is `busy`. Two children were left sitting on that word, one for about an hour and one for seven, with nothing broken either time. A child reaching a terminal state now files a **pickup** on this orchestrator, and your own Stop hook will not let a turn end while one is unclaimed:
+
+```
+python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" pickup list --task <orchestrator>
+python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" pickup take --task <orchestrator> --id <id8>
+```
+
+`turn` no longer prints `WAIT` for a child whose report is filed **or** whose exit conditions have gone green since its launch, so a `WAIT` you do see means there is genuinely nothing yet. Go do something else; you will be told. Taking a pickup is not grading it — it retires the notice, and one retires itself the moment you **grade** or park that child (not when the child merely closes: `done` is what a finished child runs, so closure is the hand-back, not the answer to it).
+
 `--json` carries the mechanical findings per child (`gates`), each tagged with the rubric dimension it lands on — so step 3 starts from evidence rather than from prose.
 
 ### 1. The mechanical gate — RUN IT YOURSELF, before reading the report
