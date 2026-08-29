@@ -281,31 +281,34 @@ def _build_config(old_full, profile=None, org_slug=None):
     return cfg
 
 
-def _make_symlink(native, vault_memory, lines, dry_run):
+def _make_symlink(native, memory_dir, lines, dry_run):
     if sys.platform == "win32":
         lines.append(f"  WINDOWS: create the junction manually: "
-                     f'mklink /J "{native}" "{vault_memory}"')
+                     f'mklink /J "{native}" "{memory_dir}"')
         return
-    lines.append(f"  link {native} -> {vault_memory}")
+    lines.append(f"  link {native} -> {memory_dir}")
     if not dry_run:
         native.parent.mkdir(parents=True, exist_ok=True)
-        os.symlink(vault_memory, native)
+        os.symlink(memory_dir, native)
 
 
-def _migrate_memory(home, vault_memory, lines, conflicts, dry_run):
+def _migrate_memory(home, memory_dir, lines, conflicts, dry_run):
+    """Move the harness's native memory dir INTO ``memory_dir``, then replace it
+    with a symlink. ``memory_dir`` used to be ``<vault>/memory`` and is now a
+    sibling of the brains — the mechanics are unchanged, only the destination."""
     native = _native_memory_dir(home)
 
-    if vault_memory.is_symlink():
-        lines.append(f"WARNING: {vault_memory} is a symlink, expected a real dir — skipping memory migration")
+    if memory_dir.is_symlink():
+        lines.append(f"WARNING: {memory_dir} is a symlink, expected a real dir — skipping memory migration")
         return
-    if not vault_memory.exists():
-        lines.append(f"create memory dir: {vault_memory}")
+    if not memory_dir.exists():
+        lines.append(f"create memory dir: {memory_dir}")
         if not dry_run:
-            vault_memory.mkdir(parents=True, exist_ok=True)
+            memory_dir.mkdir(parents=True, exist_ok=True)
 
     if native.is_symlink():
-        if _same_target(native, vault_memory):
-            lines.append(f"memory already linked: {native} -> {vault_memory}")
+        if _same_target(native, memory_dir):
+            lines.append(f"memory already linked: {native} -> {memory_dir}")
         else:
             lines.append(f"WARNING: {native} is a symlink elsewhere ({os.path.realpath(str(native))}) "
                          f"— leaving it; remove it manually to relink")
@@ -313,13 +316,13 @@ def _migrate_memory(home, vault_memory, lines, conflicts, dry_run):
 
     if not native.exists():
         lines.append(f"no native hub memory dir; pre-linking for future writes")
-        _make_symlink(native, vault_memory, lines, dry_run)
+        _make_symlink(native, memory_dir, lines, dry_run)
         return
 
     # native is a real dir: migrate then link
-    lines.append(f"migrate memory: {native} -> {vault_memory}")
+    lines.append(f"migrate memory: {native} -> {memory_dir}")
     for entry in sorted(native.iterdir()):
-        dest = vault_memory / entry.name
+        dest = memory_dir / entry.name
         if entry.name == "MEMORY.md" and dest.exists():
             lines.append("  merge MEMORY.md (line-union)")
             if not dry_run:
@@ -335,18 +338,18 @@ def _migrate_memory(home, vault_memory, lines, conflicts, dry_run):
             if not dry_run:
                 entry.unlink()
         else:
-            lines.append(f"  CONFLICT {entry.name}: differs from vault copy — left in native")
+            lines.append(f"  CONFLICT {entry.name}: differs from the store's copy — left in native")
             conflicts.append(str(entry))
 
     if dry_run:
         if conflicts:
             lines.append(f"  would REFUSE to link: {len(conflicts)} conflict(s)")
         else:
-            lines.append(f"  would remove emptied {native} and link -> {vault_memory}")
+            lines.append(f"  would remove emptied {native} and link -> {memory_dir}")
         return
     if _is_empty(native):
         native.rmdir()
-        _make_symlink(native, vault_memory, lines, dry_run)
+        _make_symlink(native, memory_dir, lines, dry_run)
     else:
         lines.append(f"  REFUSED to link: {native} still holds unmigrated files "
                      f"{sorted(p.name for p in native.iterdir())} — resolve conflicts, then re-run")
