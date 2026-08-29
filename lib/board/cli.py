@@ -481,6 +481,22 @@ def main(argv=None):
                     help="report what a sync WOULD do; writes nothing, stores nothing")
     sp.add_argument("--no-net", dest="no_net", action="store_true",
                     help="never pull or push, even when the exchange has a remote")
+    sp.add_argument("--check", action="store_true",
+                    help="ask which peer partitions have MOVED since this machine last "
+                         "pulled them — reads `rev.json` in each partition, syncs "
+                         "nothing, records nothing. Exits 3 when nothing changed, so a "
+                         "hook or a timer can branch on it.")
+    sp.add_argument("--if-changed", dest="if_changed", action="store_true",
+                    help="sync only when --check says a peer moved. The cheap cadence "
+                         "form: safe to run often, does nothing almost every time.")
+    sp.add_argument("--preview", action="store_true",
+                    help="show EXACTLY what would become visible to peers — every task, "
+                         "its audience, its trail level and the field names published — "
+                         "and write nothing at all")
+    sp.add_argument("--confirm-share", dest="confirm_share", action="store_true",
+                    help="accept a widening. A share run that would make something "
+                         "NEWLY visible is HELD and prints the preview instead; "
+                         "narrowing never asks, because taking something back is safe.")
     sp.set_defaults(fn=cmd_sync)
 
     # heal — the RECONCILE pass: turn the append-only decision log into current state.
