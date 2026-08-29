@@ -3,6 +3,66 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.37.0] — 2026-08-29
+
+**A FAILED READ MUST NOT LOOK LIKE AN EMPTY ONE, AND A NUMBER YOU HAVE TO ACT ON HAS
+TO BE PRINTED SOMEWHERE.** Two defects with one shape: the board knew something and
+the reader had no way to get at it.
+
+`history` was advertised in ten places and wired to no parser. argparse reports an
+unknown subcommand on **stderr** and exits 2 — and almost nothing that drives this
+engine reads stderr. The hook wrappers pipe stdout into the session, the MCP server
+returns stdout as the tool result, `$(task-station …)` captures stdout, an agent reads
+stdout. So `history --task 444` reached every one of them as **zero bytes and a
+non-zero exit**, which is exactly what a command that ran fine and found nothing looks
+like from the outside.
+
+**Wiring the missing command would have left the trap armed for the next typo**, so
+the parser itself is what changed. Every usage error now writes a **non-empty message
+to STDOUT** and still **exits non-zero** — stdout, not stderr, and not both, because
+duplicating it in a terminal that merges the streams helps nobody and the whole defect
+was the message going where the reader is not looking. An unknown subcommand also gets
+a **did-you-mean** line built from the real command list, and skips argparse's
+seventy-name usage blob: on a hook path that blob would land in a session's context and
+answer nothing. `--help` is untouched — it was never an error and still exits 0.
+
+**`history` now exists as a command**, not only as `/todo <n> history`. Same read-only
+view — every decision including the replaced ones, the retired steps, the dated
+milestone log, memos, activity, worker provenance — but reachable without a session id,
+which is what a reader who just wants to read actually has. Its exit codes keep the two
+answers apart: **0** printed a trail, **1** the ref matched no task, **2** no ref and
+nothing attached to default to.
+
+**THE DECISION NUMBER NOW ROUND-TRIPS.** `--supersedes N`, `--pin-decision N`,
+`heal --split N`, `heal --merge N1,N2` and the contradiction check all name a decision
+by its 1-based index in the append-only log. Every read surface printed an unnumbered
+bullet, so the index was known only to whoever had *just written one* — it is echoed
+back at write time — and every reconcile verb was reachable by that decision's author,
+for a few minutes, and by nobody else afterwards. `search --detail` / `/todo <n>` and
+the exported note now carry the index, and it is the same index `history` prints and
+the same one the write accepts.
+
+**The numbers are the LOG's, not the rendered list's, so they SKIP.** A gap is a
+replaced decision. Closing it by renumbering would silently repoint every command a
+reader is already holding — the same reason the step checklist has always shown gaps.
+
+### Added
+- `task-station history [<ref>] | --task <ref> [--session <sid>]` — the full read-only
+  trail for one task, reachable without a session id. Defaults to the acting session's
+  attached task.
+- `board.cliguard.LoudParser` — an `ArgumentParser` whose usage errors land on stdout
+  and still exit 2, with a did-you-mean line for a mistyped subcommand. Subparsers
+  inherit it, so every subcommand's own flag errors are covered by the one swap.
+
+### Changed
+- `search --detail` / `/todo <n>` numbers each current decision with its 1-based log
+  index (`  3. …`), and closes the block with the one-line command that retires one.
+- The exported / vault note numbers each current decision in brackets (`- [3] …`).
+
+### Fixed
+- A mistyped, removed or never-wired subcommand no longer produces zero bytes on
+  stdout — the failure that made a broken read indistinguishable from a true negative.
+
 ## [3.33.0] — 2026-08-29
 
 **WIDENING IS THE ONE THING YOU CANNOT TAKE BACK.** 3.32.0 made sharing private by
