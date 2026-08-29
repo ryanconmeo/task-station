@@ -3,7 +3,7 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
-## [3.36.0] — 2026-08-29
+## [3.37.0] — 2026-08-29
 
 **A FAILED READ MUST NOT LOOK LIKE AN EMPTY ONE, AND A NUMBER YOU HAVE TO ACT ON HAS
 TO BE PRINTED SOMEWHERE.** Two defects with one shape: the board knew something and
@@ -62,6 +62,7 @@ reader is already holding — the same reason the step checklist has always show
 ### Fixed
 - A mistyped, removed or never-wired subcommand no longer produces zero bytes on
   stdout — the failure that made a broken read indistinguishable from a true negative.
+
 ## [3.35.0] — 2026-08-29
 
 **ONE VOICE CANNOT ARRIVE AS TWO.** `relay --spawn` builds the successor's prompt out of
