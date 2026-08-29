@@ -66,6 +66,7 @@ credibility of the whole block, and this one is read on every single save.
 Stdlib only. Imports `decisions` and `steps` (both leaves) — task-station.py imports
 THIS, never the other way around.
 """
+import re
 import time
 
 import decisions as _dec
@@ -102,6 +103,121 @@ def leads_with_next(state):
     leading-whitespace-tolerant, because the distinction being drawn is "does this
     open with a concrete first move", not "was it typed in capitals"."""
     return str(state or "").strip().upper().startswith(NEXT_PREFIX)
+
+
+# -- the OUTWARD IMPERATIVE in a state line ----------------------------------------
+#
+# WHY THIS EXISTS, and it is the highest-consequence defect this programme has produced:
+# a session wrote the state line `NEXT: WATCH PR 1615 AND MERGE IT — I have approved it`
+# and relayed. The relay BUILDS THE SUCCESSOR'S PROMPT FROM THE STATE LINE, so the
+# successor woke holding that sentence, received the same words again by peer message
+# from the same predecessor, read one voice as two agreeing, and merged another
+# engineer's PR on a shared repo. Nothing crashed. Every component did its job.
+#
+# THE STATE LINE HAS TWO AUDIENCES AND ONE STRING. A resuming session reads it as
+# orientation; a relayed session reads it as an order — and the format's own template
+# demands `NEXT: <the concrete first move>`, so every author will eventually write an
+# imperative there. "Just write better state lines" is therefore not a fix.
+#
+# WHAT COUNTS AS OUTWARD: an action that reaches past this task and cannot be taken
+# back by the session that takes it — merging, approving, abandoning, closing,
+# deleting, reverting, deploying, force-pushing. A wrong `NEXT: read the parser` costs
+# a few minutes; a wrong `NEXT: merge it` costs somebody else's branch.
+OUTWARD_VERBS = ("merge", "approve", "abandon", "close", "delete", "revert",
+                 "deploy", "force-push", "force push")
+
+# A verb only counts in its BARE form, which is what makes the check quiet enough to
+# believe. `\b` does the discriminating and it does most of the work here: `merged`,
+# `merges` and `merging` all fail it, so every past-tense REPORT — the shape a good
+# state line uses, "merged PR 20, CHANGELOG landed" — is invisible to this check by
+# construction rather than by exemption. #444's and #532's whole state lines read clean
+# for exactly that reason.
+_VERB_RE = re.compile(r"\b(%s)\b" % "|".join(re.escape(v) for v in OUTWARD_VERBS),
+                      re.IGNORECASE)
+# A LEAD TOKEN MAY START WITH A DIGIT, unlike `heal.qualifier`'s, whose empty answer
+# has to mean "a bare `#8` opens this". Here a number in front of the verb is a label
+# (`387 deploy flow`), which is precisely NOT an order.
+_WORD_BEFORE_RE = re.compile(r"(\w[\w.-]*)\s*$")
+_WORD_AFTER_RE = re.compile(r"\s+([A-Za-z][\w-]*)")
+# Glued to a `-`, `/`, `+` or `_` on either side, the word is half a compound and not a
+# verb at all: `merge-tree`, `review/merge`, `auto-merge`, `restart/close`,
+# `merge=succeeded`. Cheap, and it accounted for five of the false positives the
+# real-store measurement turned up.
+_GLUE = "-/+_="
+
+# An imperative OPENS ITS CLAUSE. So the word standing in front of the verb decides
+# the reading, and there are only two answers that mean "an order":
+#   nothing  — the verb opens the text, a line, or a clause (after `NEXT:`, a dash, a
+#              colon, a comma, a bullet). `NEXT: merge PR 20` lands here.
+#   a lead-in — the conjunctions and adverbs that string orders together. This is the
+#              one the incident needed: `WATCH PR 1615 AND MERGE IT` puts `and` in
+#              front of the verb.
+# EVERYTHING ELSE IS EXEMPT, and each exemption is a real sentence somebody writes:
+# `to merge` and `ready to merge` (an infinitive, not an order), `do not merge` and
+# `never delete` (a prohibition — the safe direction), `we merge` / `it can deploy`
+# (a subject or modal, so a report or a possibility), `the merge` / `a delete`
+# (a determiner, so a noun), `387 deploy flow` (a number, so a label).
+IMPERATIVE_LEAD = frozenset((
+    "", "and", "then", "next", "also", "now", "please", "first", "finally", "so",
+    "or", "immediately"))
+
+# THE SUBORDINATOR WINDOW, and it is what took this check from unbelievable to quiet.
+# Measured over the 121 real state lines in the author's own store, the lead-word rule
+# alone flagged 31 — a quarter of every state line ever written — and most were reports
+# with an intervening phrase between the subordinator and the verb: `user to merge PR
+# 1080 + delete orphan branch` describes what somebody ELSE will do, but `delete` opens
+# its own clause. So a subordinator counts anywhere in the ~30 characters in front of
+# the verb, which is the same adjacency anchoring #583's checker settled on for the same
+# reason: a bare unpositioned keyword either exempts everything or nothing.
+# A MODAL BELONGS HERE for the same reason a subject does: `#444 should GATE and CLOSE
+# it` and `PR 1413 needs review + merge` are both saying what OUGHT to happen, which is
+# a report about an obligation and not an instruction from anybody.
+SUBORDINATORS = ("to", "not", "never", "whether", "until", "unless", "await",
+                 "awaiting", "wait", "waiting", "ready", "pending", "cannot", "if",
+                 "when", "once", "who", "should", "must", "will", "would", "can",
+                 "could", "may", "might", "need", "needs")
+SUBORDINATOR_WINDOW = 30
+_SUBORDINATOR_RE = re.compile(r"\b(%s)\b" % "|".join(SUBORDINATORS), re.IGNORECASE)
+
+# `merge` is the one verb whose bare form is also a common noun-modifier in this
+# repository's own prose — "a merge conflict you discover at merge time" is a sentence
+# from the record that filed this check. A following noun from this list means the word
+# is naming a THING, not commanding an action. Edit the list HERE.
+_COMPOUND_NOUN = {"merge": frozenset(("conflict", "conflicts", "commit", "commits",
+                                      "base", "queue", "window", "strategy", "train",
+                                      "time"))}
+
+
+def outward_imperatives(text):
+    """The OUTWARD_VERBS `text` uses as ORDERS, in `OUTWARD_VERBS` order; `[]` when it
+    reads as a report. See the block above for the two-answer rule this applies.
+
+    A BACKSTOP THAT WARNS AND NEVER GATES, biased the same way every other language
+    check in this codebase is: a missed warning costs one reminder, a warning nobody
+    believes costs all of them. The bias is affordable here only because the warning is
+    not the last line of defence — the relay prompt ATTRIBUTES the state line whether
+    or not this fires, so a missed imperative still reaches the successor labelled as
+    its predecessor's record rather than as an instruction."""
+    flat = str(text or "")
+    hits = set()
+    for m in _VERB_RE.finditer(flat):
+        verb = m.group(1).lower()
+        prev_ch = flat[m.start() - 1] if m.start() else ""
+        next_ch = flat[m.end()] if m.end() < len(flat) else ""
+        if (prev_ch and prev_ch in _GLUE) or (next_ch and next_ch in _GLUE):
+            continue
+        before = flat[:m.start()].rsplit("\n", 1)[-1]
+        wb = _WORD_BEFORE_RE.search(before)
+        lead = wb.group(1).lower().strip(".,:;") if wb else ""
+        if lead not in IMPERATIVE_LEAD:
+            continue
+        if _SUBORDINATOR_RE.search(before[-SUBORDINATOR_WINDOW:]):
+            continue
+        after = _WORD_AFTER_RE.match(flat[m.end():])
+        if after and after.group(1).lower() in _COMPOUND_NOUN.get(verb, ()):
+            continue
+        hits.add(verb)
+    return [v for v in OUTWARD_VERBS if v in hits]
 
 
 def link_count(task):

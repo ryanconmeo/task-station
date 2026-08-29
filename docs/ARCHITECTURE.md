@@ -164,7 +164,12 @@ Pinning a **replaced** decision (superseded, split or merged) is an error; repla
 pinned one clears the pin. A bad or already-replaced index is a **loud error, never a
 silent no-op** — a dropped supersession leaves the wrong decision live, which is the whole
 bug. Indices are 1-based and stable (the log is append-only), and they are exactly the
-numbers `history` prints. Supersession is only the **capture-side** half of this: the
+numbers **every read surface prints** — `history`, `search --detail`/`/todo <n>`, and the
+exported note (`- [3] …`). That is a 3.37.0 correction: the digest and the export used to
+print unnumbered bullets, so the index existed only in the line echoed back at **write**
+time and every reconcile verb was reachable by the decision's author and by nobody else.
+The numbers **skip** where a decision was replaced; closing the gap by renumbering would
+repoint a command a reader is already holding. Supersession is only the **capture-side** half of this: the
 reconcile pass that goes back over an already-drifted log, and the other two verbs it
 needs, are the next section.
 
