@@ -13,12 +13,13 @@ is configured: the board never notices if you skip this page.
 /brain-init
 ```
 
-One run, idempotent and reversible. It preflights the tooling, creates the vault from the
-bundled scaffold (`lib/brain/vault-scaffold/` — schema rules in its `CLAUDE.md`, an
-`INDEX.md` catalog, a `notes/ plans/ projects/ raw/ reports/` tree), and writes the
-runtime config. It can also migrate-then-link your agent-memory directory into the vault
-(`memory/` becomes a real directory inside the vault; the harness path symlinks into it),
-so memory notes and knowledge notes share one graph. Then:
+One run, idempotent and reversible. It preflights the tooling, creates the knowledge
+container at `~/knowledge` (layout below), scaffolds the vault from the bundled template
+(`lib/brain/vault-scaffold/` — schema rules in its `CLAUDE.md`, an `INDEX.md` catalog, and
+a `notes/ docs/ inbox/ mirror/` tree), and writes the runtime config. It also
+migrate-then-links your agent-memory directory to `~/knowledge/memory` — beside the brains
+and inside none of them — so memory notes and knowledge notes share one graph without
+memory belonging to any one brain. Then:
 
 ```text
 /brain what do we know about <topic>?   # search with [[slug]] citations
@@ -38,16 +39,49 @@ vault) deliberately stays with Claude's native memory.
 Resolution order, per key: **environment override → config file → default.**
 
 The pointer file `~/.claude/brain-station.json` holds one line —
-`{"config": "<path>"}` — naming the real config (default `~/brains/config.json`).
-Defaults put the vault at `~/brains/brain` and the org-brain clone at
-`~/brains/org-brain`; mutable state (throttles, error log) lives in the station's data
-home, the same one the board uses (`$TASK_STATION_HOME`, default
-`~/.claude/task-station-data`).
+`{"config": "<path>"}` — naming the real config (default `~/knowledge/config.json`).
+Mutable state (throttles, error log) lives in the station's data home, the same one the
+board uses (`$TASK_STATION_HOME`, default `~/.claude/task-station-data`).
+
+### The knowledge container
+
+Everything you know lives under one directory, `~/knowledge`:
+
+```text
+~/knowledge/
+  config.json                        the config the pointer above names
+  memory/                            your agent memory — beside the brains, in NONE of them
+  brains/
+    <org-slug>/private               the work vault (config key `vault`)
+    <org-slug>/shared                the org-readable mirror (`publish_mirror`)
+    <org-slug>/org                   the org-brain clone (`org_brain_clone`)
+    personal/<username>-brain        a brain that outlives the employer (`personal_brain`)
+    peers/                           teammates' shared brains, read-only (`peers_dir`)
+```
+
+**`<org-slug>` is the `org_slug` config key** (default `org`; an org profile sets the real
+one). It names the folder and nothing else, so an install that sets `vault`,
+`publish_mirror` and `org_brain_clone` explicitly never needs it.
+
+**Memory sits beside the brains, inside none of them.** Memory is about the *person* —
+how to work with you — and a person may keep more than one brain, so a memory dir living
+inside one of them would die with that brain. A brain-local memory was considered and
+rejected on this ground.
+
+**The employer boundary is the storage boundary.** Everything under `brains/<org-slug>/`
+is on org infrastructure; `brains/personal/` is not. A fact belongs in the personal brain
+if it would still be true, and still yours, after a change of employer.
+
+Every path above is a *default*. An explicit value in the config always wins, which is
+what lets an existing install keep whatever layout it already has — there is no migration
+step and nothing moves on disk.
 
 | config key | env override | what it is |
 |---|---|---|
 | `vault` | `TASK_STATION_BRAIN_VAULT` | the personal vault (the **private brain**) |
-| `memory` | `TASK_STATION_BRAIN_MEMORY` | agent-memory dir (default: `<vault>/memory`) |
+| `memory` | `TASK_STATION_BRAIN_MEMORY` | agent-memory dir (default: `~/knowledge/memory` — beside the brains, inside none) |
+| `org_slug` | `TASK_STATION_BRAIN_ORG_SLUG` | names the `brains/<org-slug>/` folder (default `org`) |
+| `personal_brain` | `TASK_STATION_BRAIN_PERSONAL_BRAIN` | the brain that outlives the employer |
 | `org_brain_clone` | `TASK_STATION_BRAIN_ORG_BRAIN_CLONE` | local clone of the org tier (read-only; contribute via promote) |
 | `publish_mirror` | `TASK_STATION_BRAIN_PUBLISH_MIRROR` | your published-subset repo, if you share one |
 | `peers_dir` | `TASK_STATION_BRAIN_PEERS_DIR` | where subscribed peers' published subsets live |

@@ -5,7 +5,19 @@ allowed-tools: Bash
 disable-model-invocation: true
 ---
 
-!`python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" repos $ARGUMENTS`
+```!
+IFS= read -r -d '' TS_ARGV <<'TS_ARGV_END'
+$ARGUMENTS
+TS_ARGV_END
+TS_ARGV="${TS_ARGV%$'\n'}"
+TS_RC=0
+TS_OUT="$( ( set -f; python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" repos $TS_ARGV ) 2>&1 )" || TS_RC=$?
+[ -n "$TS_OUT" ] && printf '%s\n' "$TS_OUT"
+[ "$TS_RC" -eq 0 ] || printf '%s\n' "[task-station] THE SKILL WAS NOT INVOKED. /repos exited $TS_RC without producing the repo index; nothing was read and nothing was changed. Any text above this line is the failure, not the repo index."
+:
+```
+
+> **If the block above is not the command's own output** — it is empty, it is a raw shell error, or it carries `THE SKILL WAS NOT INVOKED` — then `/repos` **DID NOT RUN**. Say exactly that to the user in one line, show the failure verbatim, and stop. Do not reconstruct the output by hand, and do not describe anything as done.
 
 The block above is the live output of the hub **repo index** — a deterministic, regenerable map of the repos under your configured workspace roots. It is built **on demand**, lives next to the task store at `<data_dir>/repos.{md,json}` (with an auto-maintained `repos.config.json` manifest), and is **not** part of `/todo` or `tasks.db` — repos aren't tasks.
 

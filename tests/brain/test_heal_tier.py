@@ -126,7 +126,7 @@ class CorpusTest(TierLintFixture):
 
     def test_report_shape(self):
         result = heal_tier.run(self.cfg, apply=False, today=DATE)
-        report = (self.vault / "reports/health" / f"tier-lint-{DATE}.md").read_text()
+        report = (self.vault / "mirror/health" / f"tier-lint-{DATE}.md").read_text()
         for header in ("# Tier-lint", "## Re-filings", "## Suggestions", "## Aligned"):
             self.assertIn(header, report)
         self.assertIn("company-fact", report)

@@ -120,12 +120,13 @@ def _clone(cfg):
 # private-note loading
 # --------------------------------------------------------------------------- #
 def _load_private(cfg, slug):
-    for folder in ("notes", "projects"):
+    for folder in notes.KNOWLEDGE_FOLDERS:
         p = Path(cfg["vault"]) / folder / f"{slug}.md"
         if p.exists():
             fm, body = notes.parse_note(p.read_text(errors="ignore"))
             return p, fm, body
-    raise PromoteError(f"note {slug!r} not found under notes/ or projects/")
+    raise PromoteError("note %r not found under %s"
+                       % (slug, " or ".join(f"{d}/" for d in notes.KNOWLEDGE_FOLDERS)))
 
 
 def _queue(cfg, slug, fm, body, day, action):
