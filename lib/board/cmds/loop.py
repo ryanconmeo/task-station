@@ -37,6 +37,7 @@ __all__ = [
     "cmd_scan", "cmd_invoke", "cmd_grade", "cmd_orchestrator_check",
     "cmd_decompose", "cmd_relay",
     "_live_seqs", "_announce_spec_change", "_channel_report_back", "cmd_channel",
+    "cmd_pickup", "_pickup_report_text", "_subscribe_lines",
     "cmd_turn",
 ]
 
@@ -663,6 +664,46 @@ def _invoke_command(base, role, model, permission_mode, ask, effort=None, ref=No
     return " ".join(parts)
 
 
+# THE OTHER HALF OF THE PICKUP RAIL, AND THE ENGINE CANNOT PERFORM IT.
+#
+# The pickup gate delivers a hand-back at the parent's NEXT TURN END. That bounds the
+# delay by the parent's own cadence rather than by when a human next asks, which is the
+# whole fix — but if the parent has nothing to do it may not take a turn for a while, and
+# the fastest honest edge is the harness's own: `SendMessage(notify_when_idle: true)` is a
+# one-shot, opt-in subscription that fires exactly once when a named session next goes
+# idle or exits. No polling, and a pure subscription (no `message`) costs the target
+# session nothing. Proven on this machine on 2026-08-27, waiting on a peer before a heal.
+#
+# ONLY THE MODEL CAN CALL IT. It is a harness tool, not a shell command, so no engine
+# function can emit it — which is exactly why this is a printed instruction rather than a
+# feature. Adopt, do not rebuild: the engine spawns and records, the harness notifies.
+#
+# AND THE NOTICE IS A PROMPT TO LOOK, NOT PROOF OF ANYTHING. `idle` means the session
+# finished a turn, and a child that pauses mid-work is idle too — so a subscription alone
+# would report a thinking child as finished, which is the same lie liveness always told,
+# arriving faster. The two halves compose in one direction only: the harness says WHEN to
+# look, and the record — the pickup, the report memo, the exit conditions — says WHETHER
+# anything actually landed. The wording below says so, because a reader who takes the
+# notice as the answer has re-created the bug.
+
+def _subscribe_lines(child, sid):
+    """The two lines that tell the spawning MODEL to subscribe to this child's idle edge.
+
+    Printed with every real launch, addressed to whoever is reading the invoke output —
+    which is a model with the tool, not a shell."""
+    ref = child.get("seq") or (child.get("id") or "")[:8]
+    return [
+        "  wake yourself when it stops (harness rail — do this now, in one tool call):",
+        "    SendMessage(to: \"<its name from ListAgents>\", notify_when_idle: true)  "
+        "— omit `message`: a pure subscription costs it nothing, fires ONCE, and needs "
+        "no polling.",
+        "    Its window is titled #%s. The notice means LOOK, not done — a child that "
+        "pauses mid-turn is idle too. `task-station turn --task %s` says whether anything "
+        "landed, and a real hand-back also files a pickup your own Stop gate will not let "
+        "you past." % (ref, ref),
+    ]
+
+
 def _record_launch(child, orch, role, ask, manual, session=None, forced=None):
     """Write the invoke's trail entries — AFTER the launch decision, never before it.
 
@@ -860,6 +901,8 @@ def cmd_invoke(a):
     else:
         print("  could not open a window (macOS/Terminal only) — run it yourself:")
         print("    %s" % cmd)
+    for line in _subscribe_lines(child, sid):
+        print(line)
     forced = ("FORCED over the cap (loop_children_max=%d, %d running)"
               % (budget["max"], len(budget["running"]))) if budget["over"] else None
     _record_launch(child, orch, role, ask, manual, session=getattr(a, "session", None),
@@ -1490,3 +1533,127 @@ def cmd_channel(a):
         return
 
     print("channel: use `reach`, `orders`, `stand-down`, `settle`, or `deny`.")
+
+
+# ----------------------------------------------------------------- the pickup rail ----
+#
+# The surface for the other direction of the channel: what a PARENT does about a child
+# that handed work back. Two verbs, because there are exactly two things to do with a
+# pending pickup — read it, and be finished with it. The record and the gate are in
+# lib/board/channel.py and lib/board/cmds/sub.py respectively; this is the view.
+
+def _pickup_report_text(row, limit=400):
+    """The child's own report, as text, or None — resolved HERE rather than stamped on
+    the row at file time.
+
+    `turn.report_memo` is the definition of "the child's hand-back", including the sender
+    discrimination that keeps a PARENT's rejection memo from being read as the child's
+    report. A second copy of that rule would answer differently the first time either was
+    tuned, and lib/board/channel.py cannot ask for it — it never loads a task. So the
+    seam asks, where a task load is already happening."""
+    try:
+        child = load_task(row.get("child_id")) if row.get("child_id") else None
+        if not child:
+            return None
+        launch = _turn.last_launch(child)
+        memo = _turn.report_memo(child, after=(launch["ts"] if launch else None))
+        if not memo:
+            return None
+        text = " ".join(str(memo.get("text") or "").split())
+        return text[:limit - 1] + "…" if len(text) > limit else text
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def cmd_pickup(a):
+    """`task-station pickup list|take [--task <ref>] [--id ID8] [--all]`
+
+    A pickup is the durable record that a CHILD handed work back to this task, and the
+    thing the parent's Stop gate refuses to end a turn on until it is taken.
+
+      list   what is waiting, each with the command that reads the child's own report
+      take   this one has been dealt with — stop holding the turn for it
+
+    TAKING ONE IS NOT GRADING IT. `take` retires the notice and nothing else; the work
+    still has to be gated and graded, and `turn --task <ref>` is the command that does
+    both. A pickup also retires ITSELF when its child closes or parks, so the ordinary
+    loop never has to run this at all — it exists for the child that reported and is
+    still open, which is precisely the case that used to be invisible."""
+    sub = getattr(a, "sub", None)
+    session = getattr(a, "session", None)
+    task, err = _loop_target(a, "pickup")
+    if err:
+        print(err)
+        sys.exit(2)
+    ref = task.get("seq") or task["id"][:8]
+
+    if sub == "list":
+        rows = _channel.pickups(task) if getattr(a, "all", False) \
+            else _channel.pickups_pending(task)
+        if getattr(a, "as_json", False):
+            print(json.dumps(rows, indent=2, sort_keys=True, default=str))
+            return
+        if not rows:
+            print("(no pickup waiting on task #%s — no child of it has handed work back "
+                  "that nobody has taken)" % ref)
+            return
+        print("Pickups — task #%s %s" % (ref, task.get("title")))
+        for p in rows:
+            state = ("taken %s (%s)" % (rel_time(p["taken_ts"]), p.get("how") or "?")) \
+                if p.get("taken_ts") else \
+                ("delivered, waiting" if p.get("delivered_ts") else "waiting")
+            print("  %s → child #%s  [%s]"
+                  % (p["id"][:8], p.get("child_seq"), state))
+            print("      %s" % (p.get("headline") or ""))
+            report = _pickup_report_text(p)
+            if report:
+                print("      report: %s" % report)
+            print("      read: %s" % _channel.pickup_read_command(p))
+            if not p.get("taken_ts"):
+                print("      take: %s" % _channel.pickup_command(task, p))
+        pend = len([p for p in rows if not p.get("taken_ts")])
+        if pend:
+            print("  %d waiting. Gate and grade what came back: task-station turn "
+                  "--task %s" % (pend, ref))
+        return
+
+    if sub == "take":
+        rows = _channel.pickups_pending(task)
+        if getattr(a, "all", False):
+            targets = rows
+        else:
+            row, err = _channel.pickup_by_prefix(task, getattr(a, "id", None))
+            if err:
+                print(err)
+                sys.exit(2)
+            targets = [row]
+        if not targets:
+            print("(nothing waiting on task #%s)" % ref)
+            return
+        took = []
+        for row in targets:
+            status, err = _channel.pickup_take(task, row, sid=session,
+                                               how=_channel.PICKUP_TAKEN)
+            if err:
+                print(err)
+                sys.exit(2)
+            if status == "already":
+                print("pickup %s was already taken by %s."
+                      % (row["id"][:8], (row.get("taken_by") or "?")[:8]))
+                continue
+            took.append(row)
+        if not took:
+            return
+        add_event(task, "child", "picked up %d child hand-back(s): %s"
+                  % (len(took), ", ".join("#%s" % r.get("child_seq") for r in took)),
+                  session)
+        task["updated_ts"] = _now()
+        save_task(task)
+        for row in took:
+            print("pickup %s taken — child #%s." % (row["id"][:8], row.get("child_seq")))
+        left = len(_channel.pickups_pending(task))
+        print("  %d still waiting. Taking one does NOT grade it — `task-station turn "
+              "--task %s` runs the mechanical gate and emits the grade command." % (left, ref))
+        return
+
+    print("pickup: use `list` or `take`.")

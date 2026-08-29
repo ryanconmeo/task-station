@@ -35,7 +35,7 @@ __all__ = [
     "worker_targets", "worker_lines", "_is_resumable", "_fresh_session_cwd",
     "SPAWN_GRACE_S", "session_ran", "spawn_failed",
     "fresh_resume_command", "_resume_target", "resume_command", "session_tree",
-    "_live_session_index", "_live_note",
+    "_live_session_index", "_live_note", "handed_back", "handed_back_note",
     "_mirror_child_close", "_delegate_module", "_reap_task_workers",
     "_live_session_ids", "_orphaned_workers", "sweep_orphan_workers",
     "_record_orphan_reap", "cmd_sweep_orphans",
@@ -1386,13 +1386,69 @@ def _live_session_index():
         return {}
 
 
+# BUSY IS A FACT ABOUT A PROCESS, NOT ABOUT THE WORK.
+#
+# `status` comes straight out of the harness's own session file and means the model is
+# mid-turn. A child that finishes, files its report and leaves its window open is a live
+# process with nothing to do, and the sessions file has no word for that — so the surface
+# said "busy" about a child that had been done for an hour (#532) and for seven (#536),
+# and it said it every time somebody polled, which was the only reason anybody polled.
+#
+# The task itself can answer the question the process cannot. `turn.landed_work` and
+# `turn.report_memo` are the two pieces of evidence `child_state` already ranks above
+# liveness; asking them here is what stops this surface disagreeing with `turn` about
+# the same child. Fail-open and lazy-imported: this is decoration on a listing, and a
+# listing that raises is worse than one that is merely terse.
+
+def handed_back(task):
+    """Has the work on `task` demonstrably finished, whatever its sessions are doing?
+
+    `("report", memo)` when the child filed a hand-back memo since its launch,
+    `("conditions", None)` when its exit conditions are green and fresher than the
+    launch, `None` when neither — which is the ordinary case for a task still in flight.
+    Never raises."""
+    try:
+        import turn as _turn_mod
+        if not isinstance(task, dict):
+            return None
+        launch = _turn_mod.last_launch(task)
+        after = launch["ts"] if launch else None
+        memo = _turn_mod.report_memo(task, after=after)
+        if memo:
+            return ("report", memo)
+        if launch and _turn_mod.landed_work(task, after=after):
+            return ("conditions", None)
+        return None
+    except Exception:                                       # noqa: BLE001
+        return None
+
+
+def handed_back_note(task_id):
+    """The `  · HANDED BACK (report filed)` suffix for a live row whose task is finished,
+    or ''. Takes an id rather than a dict because every caller has the id and not all of
+    them have paid to load the task."""
+    try:
+        if not task_id:
+            return ""
+        got = handed_back(load_task(task_id))
+        if not got:
+            return ""
+        why = "report filed" if got[0] == "report" else "exit conditions green"
+        return "  · HANDED BACK (%s)" % why
+    except Exception:                                       # noqa: BLE001
+        return ""
+
+
 def _live_note(row):
     """The `  ● busy · 1m ago` annotation appended to a resume/worker line whose
     session is live, or '' when the row is None (session not running). The ● marks
-    it as a real process; the busy/idle + age come straight from the sessions file."""
+    it as a real process; the busy/idle + age come straight from the sessions file —
+    and `handed_back_note` says when that word is about to mislead."""
     if not row:
         return ""
-    return "  ● %s · %s" % (row.get("status") or "live", rel_time(row.get("updated_ts")))
+    return "  ● %s · %s%s" % (row.get("status") or "live",
+                              rel_time(row.get("updated_ts")),
+                              handed_back_note(row.get("task_id")))
 
 
 # --- WS2 child-close mirror --------------------------------------------------

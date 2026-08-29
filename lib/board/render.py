@@ -317,10 +317,16 @@ def _tildify(path):
 def _format_session_row(r):
     """One live-session table line:
     `● <pid> · task <seq> · <role> · <status> · <age> · <cwd~> · <resume>`.
-    The leading ● marks it as a real running process; missing joins collapse to '—'."""
+    The leading ● marks it as a real running process; missing joins collapse to '—'.
+
+    A row whose TASK has demonstrably finished carries `· HANDED BACK (…)` as well, and
+    that suffix is the whole point of it being here: `status` is the harness's word for
+    "the model is mid-turn", and a child that finished and left its window open is a live
+    process with nothing to do. Reading "busy" off this line is how one finished child sat
+    unnoticed for an hour and another for seven."""
     seq = r.get("task_seq")
     task_col = ("task %s" % seq) if seq is not None else "task —"
-    return "● %-8s · %s · %-6s · %-4s · %-8s · %s · %s" % (
+    return "● %-8s · %s · %-6s · %-4s · %-8s · %s · %s%s" % (
         r.get("pid", "?"),
         task_col,
         r.get("role") or "—",
@@ -328,4 +334,5 @@ def _format_session_row(r):
         rel_time(r.get("updated_ts")),
         _tildify(r.get("cwd")),
         r.get("resume_command") or "—",
+        handed_back_note(r.get("task_id")),
     )

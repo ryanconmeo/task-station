@@ -799,6 +799,32 @@ def main(argv=None):
                     help="orders: the raw records")
     sp.set_defaults(fn=cmd_channel)
 
+    # pickup — THE CHANNEL POINTING THE OTHER WAY. An order reaches DOWN to a running
+    # child; a pickup is a CHILD reaching UP, and it is a record on the PARENT's task
+    # rather than an order addressed to a session — a child usually finishes while its
+    # parent is between sessions, and an order queued to nobody is a fact never recorded.
+    # The parent's Stop gate refuses to end a turn while one is waiting, which is the
+    # whole signal: before it, an orchestrator's only move was to poll `sessions --task
+    # <child>`, which says "busy" about a child that finished an hour ago.
+    sp = sub.add_parser("pickup",
+                        help="children of this task that handed work back and nobody "
+                             "has picked up (the parent's half of the channel)")
+    sp.add_argument("sub", choices=["list", "take"],
+                    help="list (what is waiting, and how to read each report) | take "
+                         "(this one is dealt with — stop holding the turn for it)")
+    sp.add_argument("--task", default=None,
+                    help="the PARENT task (seq/id; default: the session's attached task)")
+    sp.add_argument("--session", default=None,
+                    help="the acting session id — recorded as who took it")
+    sp.add_argument("--id", default=None, metavar="ID8",
+                    help="pickup id-prefix (take)")
+    sp.add_argument("--all", action="store_true",
+                    help="list: include the ones already taken · take: take every one "
+                         "waiting")
+    sp.add_argument("--json", dest="as_json", action="store_true",
+                    help="list: the raw records")
+    sp.set_defaults(fn=cmd_pickup)
+
     # F5 correspondence: link a peer pair · fork a peer node into my own task ·
     # subscribe to a peer's feed (mints memos when it advances).
     sp = sub.add_parser("link")

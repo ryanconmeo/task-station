@@ -134,7 +134,7 @@ def _role(rec, winfo):
 def running():
     """Every ACTUALLY-running Claude Code session as a list of row dicts:
 
-        {session_id, pid, task_seq, task_title, role, label, status,
+        {session_id, pid, task_id, task_seq, task_title, role, label, status,
          updated_ts, cwd, resume_command}
 
     Enumerates the sessions dir, keeps only rows whose pid is alive (dead/stale
@@ -182,6 +182,10 @@ def running():
         rows.append({
             "session_id": sid,
             "pid": int(rec.get("pid")),
+            # The id as well as the seq: a reader that needs to ask the task a QUESTION
+            # (has this child handed its work back?) would otherwise have to re-resolve
+            # the seq against the whole store to reach the dict this loop already loaded.
+            "task_id": task_id,
             "task_seq": task_seq,
             "task_title": task_title,
             "role": _role(rec, winfo),

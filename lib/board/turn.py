@@ -64,10 +64,22 @@ here rather than a paragraph somewhere.
    three means a three-way conflict. `loop_children_max` caps the total, and the turn
    spends what is left ONE CHILD AT A TIME — a stagger, not just a cap.
 
-7. A ROUTINE NOTICE MUST NOT HOLD A TURN (see `channel.BLOCKING_KINDS`). The channel's
-   Stop gate fires at every turn end; holding a turn hostage for "your child closed"
-   costs more than it delivers. The blocking rail is reserved for the kinds that change
-   what the child should be doing.
+7. A ROUTINE NOTICE MUST NOT HOLD A TURN (see `channel.blocks_turn`). The channel's
+   Stop gate fires at every turn end; holding a turn hostage for a subscription diff or a
+   close mirror costs more than it delivers. The blocking rail is reserved for what
+   changes what the receiver should be doing next.
+
+8. …AND A CHILD HANDING WORK BACK IS EXACTLY THAT (`landed_work`, and the pickup rail in
+   lib/board/channel.py). The two most expensive stalls this loop has had were not
+   failures: #532 sat about an hour and #536 for seven, both finished, both with a live
+   idle session, both with a parent polling `sessions --task <child>` and reading "busy".
+   Two mechanisms, because there were two lies. WAIT no longer outranks the child's own
+   evidence — an unacked report or a demonstrably green checklist takes a child out of
+   WAIT whatever its liveness says. And the parent is no longer required to look: the
+   terminal transition files a pickup on the parent, and the PARENT's Stop gate refuses
+   to end a turn while one is unclaimed. That is finding 7's rule honoured rather than
+   broken — a pickup is not bookkeeping the reader will meet anyway; it is the one fact
+   the parent provably cannot get any other way while it is running.
 
 Stdlib only. Imports `config`, `exits` and `loop`; nothing in the engine imports it back
 — the CLI seam is the only caller.
@@ -327,6 +339,41 @@ def worked_since(task, ts):
     return bool(last and float(last) > ts)
 
 
+# -- (d) LIVENESS IS NOT THE ONLY THING THAT OUTRANKS LIVENESS ------------------------
+#
+# An unacked report already beats a live session (see `child_state`). It is not enough on
+# its own, because a report is a thing the child has to REMEMBER to file, and the two
+# incidents that cost the most were both children that had demonstrably finished: #532
+# for about an hour, #536 for seven. In both, the parent polled `sessions --task <child>`
+# and read "busy", because a child that finishes and leaves its window open is a live
+# process with nothing to do — and liveness cannot tell that apart from thinking.
+#
+# The child's OWN CHECKLIST can. `exits.satisfied` is already the predicate the wave scan
+# releases dependent work on, and it is deliberately strict: at least one registered
+# condition, EVERY registered condition MET, and no live step left both uncovered and
+# unticked. A child that clears that bar has demonstrated its plan is finished against
+# commands somebody wrote down in advance, which is a stronger claim than a memo saying so.
+#
+# FRESHNESS IS PART OF THE CLAIM. A verdict computed before this launch says nothing about
+# this launch — a task whose conditions were green when the child started would otherwise
+# read as finished the second it was invoked, which is the false-positive direction and
+# the expensive one. So the verdict must post-date the launch that is being judged.
+
+def landed_work(task, after=None):
+    """Has this child's own checklist demonstrably gone green, and since `after`?
+
+    The other half of "a finished child must not be waited on". `False` for a task that
+    registers no conditions, that has any unmet or unrun one, that leaves a live step both
+    uncovered and unticked, or whose green verdict predates the launch in question — every
+    one of those is a claim nobody computed, and an uncomputed claim is not evidence."""
+    if not _exits.satisfied(task):
+        return False
+    last = _exits.last_run_ts(task)
+    if not last:
+        return False
+    return after is None or float(last) >= float(after)
+
+
 def child_state(task, live=(), worked=None):
     """Which of the eight states this child is in, right now.
 
@@ -349,12 +396,21 @@ def child_state(task, live=(), worked=None):
     UNACKED, specifically. An acked report has already been engaged, so a child that is live
     again after one is working rather than waiting — otherwise a graded-and-retried child
     would be gated forever on the report it filed last time round. And a PARKED child is
-    never dragged back by its report: that rule predates this one and outranks it."""
+    never dragged back by its report: that rule predates this one and outranks it.
+
+    AND A GREEN CHECKLIST COUNTS THE SAME AS A REPORT (`landed_work`). Filing one is the
+    child SAYING it is done; a satisfied set of exit conditions is the record PROVING it,
+    against commands written down before the work started. A child can forget the first and
+    cannot fake the second, so either one takes it out of WAIT. The gate still asks for the
+    report — a proven-done child that filed nothing gets the `no-report` finding, exactly as
+    a SILENT_EXIT does, because a parent that cannot read what happened has not been handed
+    the work."""
     if _loop.is_closed(task):
         return SETTLED
     launch = last_launch(task)
     if launch and not _loop.parked(task) \
-            and report_memo(task, after=launch["ts"], unacked_only=True):
+            and (report_memo(task, after=launch["ts"], unacked_only=True)
+                 or landed_work(task, after=launch["ts"])):
         return DONE_PENDING_MERGE if _exits.merge_gate(task)["all_merge_gated"] \
             else REPORTED
     if live and task.get("seq") in set(live):
@@ -672,10 +728,19 @@ def gate(task, live=(), worked=None, landed=None, installed=None, version=None):
                          "line": "nothing has been invoked on this task, so there is "
                                  "nothing to grade. A gate that scores unstarted work is "
                                  "a false green about work nobody did."})
-    if state == SILENT_EXIT:
+    # THE FINDING IS KEYED ON THE FACT, NOT ON THE STATE NAME. SILENT_EXIT used to be the
+    # only way to arrive here with no report, so testing the state was the same as testing
+    # whether a report existed. It stopped being the same the moment a GREEN CHECKLIST could
+    # also take a child out of WAIT (`landed_work`): such a child reads REPORTED — its next
+    # action is gate-then-grade, which is what a state is for — while having filed nothing a
+    # parent can read. Asking the question directly keeps SILENT_EXIT's behaviour identical
+    # and stops the new path from buying a quiet pass on the hand-back rail.
+    _launch = last_launch(task)
+    _has_report = bool(_launch and report_memo(task, after=_launch["ts"]))
+    if state in (SILENT_EXIT, REPORTED, DONE_PENDING_MERGE) and not _has_report:
         findings.append({"code": "no-report", "dim": "G4",
-                         "line": "the child worked and stopped without leaving a report "
-                                 "memo on this task. The hand-back rail is a MEMO — "
+                         "line": "the child did the work and left no report memo on "
+                                 "this task. The hand-back rail is a MEMO — "
                                  "durable, and on the record the gate loads — so a "
                                  "report written anywhere else is a report the parent "
                                  "cannot read. `memo send --task %s --text '<report>'`."
@@ -857,7 +922,6 @@ def plan(orch, children, live=(), resolve=None, cap=None, retry_max=None, worked
     live = set(live or ())
     report = _loop.scan(children, resolve, live=live)
     rows = {r["seq"]: r for r in report["rows"]}
-    budget = _loop.children_budget(orch, population, live=live, cap=cap)
     retry_max = _config.loop_retry_max() if retry_max is None else int(retry_max)
     threshold = threshold or _config.loop_accept_threshold()
 
@@ -876,6 +940,26 @@ def plan(orch, children, live=(), resolve=None, cap=None, retry_max=None, worked
             waits.append(child)
         elif st == UNSTARTED and rows.get(seq, {}).get("ready"):
             ready.append(child)
+
+    # THE CAP COUNTS WORKING CHILDREN, NOT LIVE PROCESSES — and it has to be computed
+    # HERE, after the states, for that to be possible.
+    #
+    # `children_budget` counts process liveness, deliberately: a stored flag survives a
+    # crash, so a cap counting records lets one crashed child spend a slot forever. That
+    # reasoning is still right and is not touched. What it cannot see is the OTHER
+    # direction — a child that finished, filed its report and left its window open is a
+    # live process with nothing left to do, and it holds a slot for as long as somebody
+    # leaves the window open. MEASURED: #532 sat "running" for hours with its work done,
+    # and the orchestrator had to --force past the cap three times to keep the loop moving.
+    # A cap that silently shrinks is worse than a smaller cap, because nobody configured it.
+    #
+    # So the budget is handed the same reconciliation every other answer here uses: a child
+    # whose state is not RUNNING is not spending a slot, whatever its process is doing.
+    # Liveness still decides for everything the states cannot speak about — a live seq that
+    # is not a child of this orchestrator is passed through untouched, and
+    # `children_budget` filters it out on its own.
+    working = {q for q in set(live or ()) if states.get(q, RUNNING) == RUNNING}
+    budget = _loop.children_budget(orch, population, live=working, cap=cap)
 
     # (1) what came back — the mechanical gate, then the judgement it feeds.
     for child in back:
@@ -948,10 +1032,21 @@ def plan(orch, children, live=(), resolve=None, cap=None, retry_max=None, worked
             % (_ref(child), _ref(orch) if orch else "<orch>", ask or "<the request>")))
 
     # (4) the honest report that somebody else is making progress.
+    #
+    # AND THE COMMAND IS NO LONGER A POLL. It used to be `scan`, which is how a parent
+    # ended up asking the same question every few minutes and reading "busy" about a child
+    # that had finished — the loop's most expensive habit, twice over. A WAIT here now
+    # means the child has neither filed a report NOR turned its checklist green, i.e. there
+    # is genuinely nothing yet; and when either of those changes the child files a PICKUP,
+    # which the parent's own Stop gate will not let a turn end on. So the honest next step
+    # is to do something else and be told, not to look again.
     for child in waits:
         actions.append(_act(
-            WAIT, child, "a live session is attached — the loop is working, not stuck",
-            "task-station scan --task %s" % (_ref(orch) if orch else _ref(child))))
+            WAIT, child,
+            "a live session is attached AND it has neither reported nor turned its exit "
+            "conditions green — the loop is working, not stuck",
+            "task-station pickup list --task %s" % (_ref(orch) if orch else _ref(child)),
+            reach=reach_command(_ref(child), seq=_ref(child))))
 
     parked = [c for c in children if states.get(c.get("seq")) == PARKED]
     halt = None
