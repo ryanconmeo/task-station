@@ -25,7 +25,10 @@ class GlossaryCommandFileTest(unittest.TestCase):
         self.assertIn("disable-model-invocation: true", self.text)
 
     def test_bang_line_runs_engine_glossary_with_arguments(self):
-        self.assertIn("glossary $ARGUMENTS", self.text)
+        # `$TS_ARGV`, not `$ARGUMENTS`: the typed text is captured by a quoted
+        # heredoc first, so it splits into words without being re-read as shell.
+        self.assertIn("<<'TS_ARGV_END'", self.text)
+        self.assertIn("glossary $TS_ARGV", self.text)
         self.assertIn("task-station.py", self.text)
         self.assertIn("--session", self.text)
 
