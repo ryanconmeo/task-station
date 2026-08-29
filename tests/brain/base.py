@@ -38,6 +38,8 @@ ENV_KEYS = [
     "TASK_STATION_BRAIN_VAULT",
     "TASK_STATION_BRAIN_MEMORY",
     "TASK_STATION_BRAIN_ORG_BRAIN_CLONE",
+    "TASK_STATION_BRAIN_ORG_SLUG",
+    "TASK_STATION_BRAIN_PERSONAL_BRAIN",
     "TASK_STATION_BRAIN_TASKS_DB",
     "TASK_STATION_BRAIN_EPISODIC_STREAM",
     "TASK_STATION_BRAIN_STATE",
@@ -75,7 +77,7 @@ CONTENT_DIRS = ("notes", "projects", "reports", "plans", "raw")
 # The brain's primary config file, relative to $HOME (genericized from the
 # source's org-branded filename). One spelling for the whole suite.
 PRIMARY_CONFIG_REL = ".claude/brain-station.json"
-HOME_CONFIG_REL = "brains/config.json"
+HOME_CONFIG_REL = "knowledge/config.json"
 
 
 class BrainTestCase(unittest.TestCase):
@@ -119,7 +121,7 @@ class BrainTestCase(unittest.TestCase):
         return target
 
     def write_home_config(self, data):
-        """Write ``~/brains/config.json`` (dict -> JSON, str -> verbatim)."""
+        """Write ``~/knowledge/config.json`` (dict -> JSON, str -> verbatim)."""
         target = self.home / HOME_CONFIG_REL
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(data if isinstance(data, str) else json.dumps(data))

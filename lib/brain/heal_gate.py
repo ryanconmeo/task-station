@@ -10,8 +10,8 @@ A heal is DUE when BOTH hold:
   1. more than 24h have passed since the last *completed* heal (the completion
      stamp records the timestamp), and
   2. the vault is dirty — something changed since that stamp: the vault git
-     HEAD moved, OR a file is newer than the stamp in any of raw/ (captures),
-     reports/health/ (lint), the task-station/ mirror, or the task-station
+     HEAD moved, OR a file is newer than the stamp in any of inbox/ (captures),
+     mirror/health/ (lint), the task-station/ mirror, or the task-station
      tasks.db. A missing source is simply "not dirty" (graceful, never an error).
 
 Clean days — and days inside the 24h window — skip at $0; that is the whole
@@ -34,6 +34,7 @@ from pathlib import Path
 
 from . import config
 from . import errorlog
+from . import notes as _notes
 
 DUE_AFTER_SECONDS = 24 * 3600
 STAMP_NAME = ".last-heal"
@@ -97,8 +98,10 @@ def compute(cfg, now=None):
     if head and prev.get("head") and head != prev["head"]:
         reasons.append(f"vault HEAD moved ({str(prev['head'])[:8]} -> {head[:8]})")
     for label, path in (
-        ("new raw/ captures", vault / "raw"),
-        ("newer lint report", vault / "reports/health"),
+        ("new inbox/ captures", vault / _notes.INBOX_DIR),
+        ("new raw/ captures", vault / "raw"),                    # pre-fold vaults
+        ("newer lint report", vault / _notes.HEALTH_DIR),
+        ("newer lint report", vault / _notes.LEGACY_HEALTH_DIR),  # pre-fold vaults
         ("task-station mirror changed", vault / "task-station"),
         ("tasks_db changed", cfg.get("tasks_db")),
         ("episodic stream changed", cfg.get("episodic_stream")),

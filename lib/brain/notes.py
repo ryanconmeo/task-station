@@ -6,10 +6,10 @@ org-agnostic frontmatter SYNTAX half out to ``lib/core/frontmatter.py`` and left
 everything that knows what a *note* is — which is this module.
 
 Every mutation of a vault note MUST go through :func:`write_note`. Nothing else
-in the brain plane is permitted to ``path.write_text`` a note. (A ``raw/`` drop
+in the brain plane is permitted to ``path.write_text`` a note. (An ``inbox/`` drop
 is not a note: it is an untrusted, un-schema'd capture that the heal pass reads
 and deletes — ``brain.distill`` writes those directly by design, as do the
-ingest INDEX.md line and the heal pass's ``reports/health/`` + LOG.md output.
+ingest INDEX.md line and the heal pass's ``mirror/health/`` + LOG.md output.
 The guarantee covers schema'd notes.) Centralising
 writes here buys five guarantees the scattered writers could not:
 
@@ -67,13 +67,50 @@ import core.frontmatter as _frontmatter
 
 SLUG_RX = re.compile(r"^[a-z0-9][a-z0-9-]{1,80}$")
 
-# Folders write_note is allowed to target — the vault content tree plus raw/, the
-# health report subdir, and references/ (reference-record stubs). notes/ is the
-# curated default; raw/ is untrusted drops (auto-distill); reports/health holds
-# deterministic-tool reports. Every target is containment-checked, so the
-# traversal fix holds for all of them.
-WRITABLE_FOLDERS = ("notes", "projects", "reports", "reports/health", "plans",
-                    "raw", "references")
+# --------------------------------------------------------------------------- #
+# THE VAULT'S FOLDER VOCABULARY — four folders, one question each (fold ratified
+# 2026-08-27). Defined HERE, in the one module every write goes through, so the
+# writer, the linter, the search roots and the publish filter cannot disagree
+# about what a vault is shaped like.
+#
+#   notes/   atomic durable facts — INCLUDING hubs. A hub is a NOTE carrying
+#            ``type: hub``, not a folder of its own: a map of content is a fact
+#            about how an area hangs together, and keeping it in notes/ means one
+#            place to look and one set of rules.
+#   docs/    dated long-form — syntheses worth re-reading, and plans.
+#   inbox/   undigested, untrusted capture awaiting distillation into a note.
+#   mirror/  machine-written output (``mirror/health/`` holds lint reports).
+#
+# The five-folder set this replaced (notes/ projects/ plans/ raw/ reports/) split
+# by GENRE, which meant every write needed a judgment call and half the folders
+# held one file.
+NOTES_DIR = "notes"
+DOCS_DIR = "docs"
+INBOX_DIR = "inbox"
+MIRROR_DIR = "mirror"
+HEALTH_DIR = "mirror/health"
+
+#: The folder that held hubs before the fold. Still READ everywhere (a vault
+#: created earlier keeps working untouched); never written to.
+LEGACY_HUB_DIR = "projects"
+#: Every pre-fold folder name, in the order they were introduced. Read paths
+#: accept them so an existing vault stays fully searchable, lintable and
+#: promotable; nothing writes to them any more.
+LEGACY_FOLDERS = (LEGACY_HUB_DIR, "reports", "plans", "raw")
+#: ...and the pre-fold home of lint output.
+LEGACY_HEALTH_DIR = "reports/health"
+
+#: Curated prose a reader is meant to trust — what the linter walks and search
+#: ranks first. inbox/ is excluded on purpose: it is untrusted by definition.
+CONTENT_FOLDERS = (NOTES_DIR, DOCS_DIR, LEGACY_HUB_DIR, "reports", "plans")
+
+# Folders write_note is allowed to target — the content tree plus inbox/ (untrusted
+# drops from auto-distill), mirror/ + mirror/health (deterministic-tool output) and
+# references/ (reference-record stubs). notes/ is the curated default. The legacy
+# names stay writable so a pre-fold vault's own files can still be corrected in
+# place. Every target is containment-checked, so the traversal fix holds for all.
+WRITABLE_FOLDERS = ((NOTES_DIR, DOCS_DIR, INBOX_DIR, MIRROR_DIR, HEALTH_DIR,
+                     "references") + LEGACY_FOLDERS + (LEGACY_HEALTH_DIR,))
 
 # Canonical frontmatter key order; unknown keys are emitted after, in order seen.
 # The knowledge fields (tags/contributors/provenance) and the reference-record
@@ -88,10 +125,11 @@ _FM_ORDER = ["name", "description", "area", "plane", "type", "publish", "promote
              "converged-with", "distinct-from",
              "org_node", "org_rev", "tasks", "fetched", "org_brain"]
 
-# Folders whose files ARE knowledge nodes, so they carry area: + plane:. reports/
-# plans/ raw/ references/ hold dated artifacts, undigested capture and org
-# pointers — not standing claims — and are stamped with neither.
-KNOWLEDGE_FOLDERS = ("notes", "projects")
+# Folders whose files ARE knowledge nodes, so they carry area: + plane:. docs/
+# inbox/ mirror/ references/ hold dated artifacts, undigested capture, tool output
+# and org pointers — not standing claims — and are stamped with neither. The
+# legacy hub folder is here because a pre-fold vault's hubs ARE knowledge nodes.
+KNOWLEDGE_FOLDERS = (NOTES_DIR, LEGACY_HUB_DIR)
 KNOWLEDGE_PLANE = "knowledge"
 
 # Frontmatter keys whose value is a LIST OF STRINGS (flat, overlapping) — tags
@@ -304,9 +342,9 @@ def knowledge_stamp(slug, folder="notes", *, contract=None, area=None, plane=Non
     exactly what the org schema forbids, so this raises rather than writing one.
     That is the same ERROR-severity condition ``naming.slug_findings`` reports,
     and the message carries the same helpful fix — the nearest registered domain.
-    Note this refuses for ``projects/`` too, which the slug-shape gate does not
-    cover: ``domainRequiredIn`` lists the folders whose NAMES must carry a domain,
-    while this is about the FIELD every knowledge node must carry.
+    Note this refuses for the legacy hub folder too, which the slug-shape gate
+    does not cover: ``domainRequiredIn`` lists the folders whose NAMES must carry a
+    domain, while this is about the FIELD every knowledge node must carry.
 
     Returns ``{}`` for a non-knowledge folder (nothing to stamp), honouring an
     explicit ``area``/``plane`` there if the caller insists on one.
