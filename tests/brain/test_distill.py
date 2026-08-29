@@ -17,7 +17,7 @@ module actually makes:
   * WHAT GETS CAPTURED — ``_transcript_tail`` (both message content shapes, bad
     lines skipped) and ``main``'s refusal to write on an empty / ``NONE`` /
     heading-less model reply.
-  * WHERE IT LANDS — ``<vault>/raw/<today>-auto-<session>.md``, with the
+  * WHERE IT LANDS — ``<vault>/inbox/<today>-auto-<session>.md``, with the
     provenance header, and the once-per-session stamp written BEFORE the model
     call so a failed distill can never be retried in a loop.
 
@@ -151,7 +151,10 @@ class DistillTestCase(BrainTestCase):
         return fake, buf.getvalue()
 
     def raw_files(self):
-        return sorted((self.vault / "raw").glob("*.md"))
+        """The capture folder. Named ``inbox/`` since the 2026-08-27 fold — a
+        capture is untrusted input awaiting distillation, which is what an inbox
+        is for."""
+        return sorted((self.vault / "inbox").glob("*.md"))
 
 
 class DecisionTest(DistillTestCase):
@@ -241,7 +244,7 @@ class TranscriptTailTest(DistillTestCase):
 class CaptureTest(DistillTestCase):
     """Where it lands, and when nothing lands."""
 
-    def test_a_capture_writes_one_provenance_headed_raw_file(self):
+    def test_a_capture_writes_one_provenance_headed_inbox_file(self):
         fake, _ = self.run_main(stdout="### the-fact\nSomething durable happened.\n")
         found = self.raw_files()
         self.assertEqual(len(found), 1)
@@ -252,7 +255,7 @@ class CaptureTest(DistillTestCase):
         self.assertIn("### the-fact", text)
         self.assertIn("Something durable happened.", text)
         self.assertTrue(text.endswith("\n"))
-        # the capture is a raw drop, not a curated note
+        # the capture is an untrusted drop, not a curated note
         self.assertEqual(list((self.vault / "notes").glob("*.md")), [])
         self.assertEqual(len(fake.calls), 1)
 

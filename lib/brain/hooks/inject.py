@@ -57,6 +57,7 @@ import time
 from pathlib import Path
 
 from .. import config
+from .. import notes
 from .. import search
 from .. import errorlog
 
@@ -96,10 +97,14 @@ def _routing_text():
 
 
 def _inject_roots(cfg):
-    """Curated surfaces for prompt injection (notes/projects/reports), all one
-    tier — search_hits handles ranking + dedup. NEVER the peers tier: see the
-    module docstring."""
-    roots = [(search.TIER_NOTES, cfg["vault"] / d) for d in ("notes", "projects", "reports")]
+    """Curated surfaces for prompt injection, all one tier — search_hits handles
+    ranking + dedup. NEVER the peers tier: see the module docstring.
+
+    The list is the vault's own CONTENT folders (``brain.notes.CONTENT_FOLDERS``),
+    so it follows the folder vocabulary rather than re-listing it; capture folders
+    are deliberately absent, since injecting undistilled input is how a guess ends
+    up quoted back as a fact."""
+    roots = [(search.TIER_NOTES, cfg["vault"] / d) for d in notes.CONTENT_FOLDERS]
     return [(t, p) for t, p in roots if p.exists()]
 
 

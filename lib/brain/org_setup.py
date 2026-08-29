@@ -70,12 +70,13 @@ arrives at runtime from the leader's answers or a scan.
 Layer rule: brain may import core, never board. Stdlib only here.
 """
 import argparse
-import getpass
 import json
 import os
 import re
 import sys
 from pathlib import Path
+
+from . import config as _config
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 SCHEMA_FILE = DATA_DIR / "org-profile-schema.json"
@@ -715,23 +716,12 @@ def merge_vocabulary(scans, vertical_pack=None):
 
 
 # ------------------------------------------------ the mirror template ----
-def host_username():
-    """The host identity the per-person mirror name is derived from.
-
-    ``TASK_STATION_BRAIN_ALIAS`` wins so a machine whose login differs from the
-    org alias can say so once; otherwise the OS login. Never a value anyone types
-    into a profile — that is the whole point of the 2026-08-15 ruling."""
-    alias = os.environ.get("TASK_STATION_BRAIN_ALIAS")
-    if alias and alias.strip():
-        return alias.strip()
-    for var in ("USER", "LOGNAME", "USERNAME"):
-        v = os.environ.get(var)
-        if v and v.strip():
-            return v.strip()
-    try:
-        return getpass.getuser()
-    except Exception:
-        return "unknown"
+#: The host identity the per-person mirror name is derived from (ruling
+#: 2026-08-15: resolved from the host, never typed into a profile). It moved to
+#: :mod:`brain.config` when the personal-brain DEFAULT PATH needed the same
+#: identity — one resolver, re-exported here so this module's callers and its
+#: docs keep the name they always used.
+host_username = _config.host_username
 
 
 def resolve_mirror_template(template=None, username=None):

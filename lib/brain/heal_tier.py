@@ -18,7 +18,7 @@ memory holds the long tail.
 
 Scans (a) the memory store (``<memory>/*.md`` + ``MEMORY.md`` index) and
 (b) the vault ``notes/``. Emits a findings report to
-``reports/health/tier-lint-<date>.md`` (via ``brain.notes`` — reports/health is a
+``mirror/health/tier-lint-<date>.md`` (via ``brain.notes`` — mirror/health is a
 writable folder). ``--apply`` executes ONLY high-confidence ``memory→note`` and
 ``note→memory`` re-filings (lossless: create at destination via ``brain.notes``,
 source preserved, a tombstone line at the origin, the MEMORY.md index line
@@ -389,9 +389,9 @@ def run(cfg, apply=False, today=None, commit=True):
     findings = scan(cfg)
     body = render_report(findings, date)
     slug = f"tier-lint-{date}"
-    exists = notes.resolve_note_path(cfg["vault"], slug, "reports/health").exists()
+    exists = notes.resolve_note_path(cfg["vault"], slug, notes.HEALTH_DIR).exists()
     report_path = notes.write_note(
-        cfg["vault"], slug, folder="reports/health",
+        cfg["vault"], slug, folder=notes.HEALTH_DIR,
         mode="replace" if exists else "create",
         description=f"Tier-lint findings {date}", body=body,
         type="reference", source="tier-lint", actor="agent", commit=commit,

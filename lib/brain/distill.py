@@ -6,7 +6,7 @@ module-name rule). Behaviour is unchanged; the imports are relative siblings and
 the recursion-guard env var is namespaced (see :data:`DISTILL_ENV`).
 
 When a Claude Code session ends, extract 0-3 durable atomic facts from the
-transcript with a cheap Haiku pass and drop them into the vault's raw/ dir
+transcript with a cheap Haiku pass and drop them into the vault's inbox/ dir
 (provenance-headed) for the next heal pass to distill into notes.
 
 Guards (ALL mandatory — this module must be impossible to loop or spam):
@@ -31,6 +31,7 @@ from pathlib import Path
 
 from . import config
 from . import errorlog
+from . import notes as _notes
 
 MIN_MSGS = 30          # ~15 exchanges
 TAIL_CHARS = 24000     # transcript tail given to Haiku
@@ -123,7 +124,7 @@ def main():
         if not out or out == "NONE" or "### " not in out:
             sys.exit(0)
         today = datetime.date.today().isoformat()
-        dest = cfg["vault"] / "raw" / f"{today}-auto-{session}.md"
+        dest = cfg["vault"] / _notes.INBOX_DIR / f"{today}-auto-{session}.md"
         dest.parent.mkdir(parents=True, exist_ok=True)
         header = (f"<!-- auto-distill: session {session}, {today}. "
                   "Untrusted until distilled by /brain-heal. -->\n\n")

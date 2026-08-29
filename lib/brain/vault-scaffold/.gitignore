@@ -5,7 +5,8 @@
 
 # Optional symlinked stores — never commit their contents from the vault
 /memory
+/org-brain
 /task-station
 
 # Lint bookkeeping
-reports/health/.last-lint
+mirror/health/.last-lint

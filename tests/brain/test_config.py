@@ -56,7 +56,7 @@ class ConfigFilePathTest(BrainTestCase):
                          self.home / ".claude/brain-station.json")
 
     def test_home_config_path(self):
-        self.assertEqual(bconfig._home_config_path(), self.home / "brains/config.json")
+        self.assertEqual(bconfig._home_config_path(), self.home / "knowledge/config.json")
 
     def test_fixture_writes_where_the_module_reads(self):
         written = self.write_primary_config({"vault": str(self.home / "v")})
