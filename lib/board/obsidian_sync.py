@@ -467,9 +467,18 @@ def render_note(task, usage=None, prompts=None, include_usage=True,
     body.append("## Decisions")
     # Still-current decisions only — an exported note is a present-tense view, and a
     # superseded decision leaving for the vault is exactly the resurfacing this guards.
-    decisions = [t for t in (s.strip() for s in _dec.live_texts(task.get("decisions"))) if t]
-    if decisions:
-        body.extend("- %s" % d for d in decisions)
+    #
+    # EACH CARRIES ITS LOG NUMBER, in brackets. That number is the 1-based index of the
+    # decision in the task's append-only log, which is what `update --supersedes N`,
+    # `--pin-decision N` and `heal --split/--merge` all take. An export used to print a
+    # bare bullet, so a reader holding the note could name a decision in prose and could
+    # not act on it — the number was echoed only at WRITE time, to whoever wrote it.
+    # The numbers SKIP where a decision was replaced; the gap is the point, and closing
+    # it by renumbering would repoint commands that are already in someone's hand.
+    rows = [(i, _dec.text(e).strip()) for i, e in _dec.live(task.get("decisions"))]
+    rows = [(i, t) for i, t in rows if t]
+    if rows:
+        body.extend("- [%d] %s" % (i, t) for i, t in rows)
     else:
         body.append("_(none)_")
 
