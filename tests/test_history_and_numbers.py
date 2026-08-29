@@ -156,6 +156,7 @@ class HistoryCommand(_Base):
         t = self._seed(decisions=["first ruling"])
         by_flag, _ = self._run(["history", "--task", str(t["seq"])])
         by_pos, _ = self._run(["history", str(t["seq"])])
+        self.assertIn("History — Task #%s" % t["seq"], by_pos)   # not two identical errors
         self.assertEqual(by_flag, by_pos)
 
     def test_an_id_prefix_resolves_too(self):
@@ -254,12 +255,15 @@ class DecisionNumberRoundTrip(_Base):
         pairs = dict((int(n), ln) for n, ln in
                      ((_ROW.match(ln).group(1), ln)
                       for ln in hblock.splitlines() if _ROW.match(ln)))
+        checked = 0
         for ln in detail.splitlines():
             m = _ROW.match(ln)
             if not m:
                 continue
             n = int(m.group(1))
             self.assertIn(_dec.text(t["decisions"][n - 1]), pairs[n])
+            checked += 1
+        self.assertEqual(checked, 3)   # an unnumbered digest would match nothing and "pass"
 
     def test_detail_tells_the_reader_what_the_number_is_for(self):
         t = self._seed(decisions=["alpha"])
