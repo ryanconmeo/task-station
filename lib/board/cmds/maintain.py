@@ -1173,10 +1173,6 @@ def cmd_sync(a):
                 print("  %s %s/%s  %s" % ("*" if p["own"] else " ", p["owner"],
                                           _station.dirname(p["number"]), p["label"]))
         return
-    self_mod = sys.modules.get(g("__name__"))
-    if self_mod is None:
-        import types as _types
-        self_mod = _types.SimpleNamespace(**_shared._G)
     try:
         dests = _sync_targets(root)
     except _sync.DestinationMismatch as e:
@@ -1185,9 +1181,62 @@ def cmd_sync(a):
     if not dests:
         print("sync is OFF — no exchange configured. `task-station sync --init <dir>`.")
         return
+    self_mod = sys.modules.get(g("__name__"))
+    if self_mod is None:
+        import types as _types
+        self_mod = _types.SimpleNamespace(**_shared._G)
+    if getattr(a, "check", False) or getattr(a, "if_changed", False):
+        try:
+            dests = _sync_targets(root)
+        except _sync.DestinationMismatch as e:
+            print("sync: %s" % e)
+            return
+        if not dests:
+            print("sync is OFF — no exchange configured. "
+                  "`task-station sync --init <dir>`.")
+            sys.exit(3)
+        moved = []
+        for d in dests:
+            for c in _sync.check_changes(d["root"]):
+                c["root"] = d["root"]
+                c["kind"] = d["kind"]
+                moved.append(c)
+        if not moved:
+            print("sync --check: nothing moved — every peer partition is at the rev "
+                  "this machine already pulled.")
+            if getattr(a, "check", False):
+                sys.exit(3)      # a branchable "no work", not a failure
+            return
+        for c in moved:
+            print("changed: %s/%s  %s  rev %s (last pulled %s)"
+                  % (c["owner"], _station.dirname(c["number"]), c["label"], c["rev"],
+                     c["seen"] or "never"))
+        print("%d partition(s) moved." % len(moved))
+        if getattr(a, "check", False):
+            return
+        reps = [_sync.run_sync(self_mod, root=d["root"], kind=d["kind"],
+                               dry_run=getattr(a, "dry_run", False),
+                               no_net=getattr(a, "no_net", False),
+                               confirm_share=getattr(a, "confirm_share", False))
+                for d in dests]
+        print("\n\n".join(_sync.format_report(r) for r in reps))
+        return
+    if getattr(a, "preview", False):
+        shares = [d for d in dests if d["kind"] == _sync.KIND_SHARE]
+        if not shares:
+            print("sync --preview shows what would become VISIBLE, and no share "
+                  "exchange is configured — so nothing would. "
+                  "`task-station sync --init-share <dir>` creates one.")
+            return
+        for d in shares:
+            plan = _sync.share_plan(self_mod, d["root"])
+            print(_sync.format_share_plan(plan, d["root"]))
+        return
     reps = [_sync.run_sync(self_mod, root=d["root"], kind=d["kind"],
                            dry_run=getattr(a, "dry_run", False),
-                           no_net=getattr(a, "no_net", False)) for d in dests]
+                           no_net=getattr(a, "no_net", False),
+                           confirm_share=getattr(a, "confirm_share", False))
+            for d in dests]
     print("\n\n".join(_sync.format_report(r) for r in reps))
 
 

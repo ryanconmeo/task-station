@@ -74,6 +74,7 @@ sync root is a git repo that HAS a remote. With no remote it commits locally and
 so. Nothing here provisions a remote, and nothing here can: `sync --init` creates a
 LOCAL repo, and adding a remote is a deliberate human step (see docs/SYNC.md).
 """
+import hashlib
 import json
 import os
 import re
@@ -555,6 +556,127 @@ def share_payload(ts, backend, task, cfg, now=None):
             "task": view}
 
 
+# ----------------------------------------------------------- the share preview ----
+#
+# WIDENING IS THE ONE THING YOU CANNOT TAKE BACK. Un-sharing deletes the file, but it
+# cannot un-read what somebody already read, so the moment that needs a human is the
+# moment visibility GROWS — a task published for the first time, an audience gaining a
+# member, or a trail visibility going up a level.
+#
+# So a share run that would WIDEN refuses, prints exactly what would become visible,
+# and names the command that accepts it. NARROWING NEVER ASKS: taking something back
+# is always safe, and a transport that stopped to confirm a retraction would be
+# training people to confirm without reading.
+#
+# The baseline is THE PUBLISHED STATE ITSELF — what is already in this station's own
+# partition — not a separate ledger of what was acknowledged. That means the record of
+# "what I agreed to share" cannot drift from what is actually shared, because they are
+# the same bytes.
+
+VIS_RANK = {"private": 0, "checkpoints": 1, "full": 2}
+
+
+def _vis_rank(v):
+    return VIS_RANK.get(str(v or "private").lower(), 0)
+
+
+def _widened(prev, new):
+    """True when `new` makes a task MORE visible than `prev` — a wider audience, or a
+    trail visibility a level up. A narrower audience or a lower level is not widening,
+    and neither is an edit to a field that was already published."""
+    if prev is None:
+        return True
+    gained = set(new.get("audience") or []) - set(prev.get("audience") or [])
+    if gained:
+        return True
+    return _vis_rank(new.get("visibility")) > _vis_rank(prev.get("visibility"))
+
+
+def share_plan(ts, root, cfg=None, now=None):
+    """What a share run WOULD publish, without publishing any of it.
+
+    Returns `{"publish": [...], "widening": [...], "retract": [...], "withheld": n,
+    "first": bool}`. Each publish entry carries the handle, the title, the audience,
+    the visibility and THE EXACT FIELD NAMES that would become visible — "exactly what
+    becomes visible" has to mean the fields, not a count, or the preview is just a
+    number to click past."""
+    cfg = _brains_cfg() if cfg is None else cfg
+    backend = ts._backend()
+    published = {}
+    try:
+        tdir = own_write_path(root, TASKS_DIR)
+        for name in sorted(os.listdir(tdir)):
+            if name.endswith(TASK_EXT):
+                p = read_payload(os.path.join(tdir, name))
+                if p:
+                    published[name[:-len(TASK_EXT)]] = p
+    except (OSError, PartitionViolation):
+        pass
+    plan = {"publish": [], "widening": [], "retract": [], "withheld": 0,
+            "first": not published}
+    live = _local_index(ts)
+    for uid, task in sorted(live.items()):
+        payload = share_payload(ts, backend, task, cfg, now=now)
+        if payload is None:
+            plan["withheld"] += 1
+            if uid in published:
+                plan["retract"].append({"uuid": uid,
+                                        "title": task.get("title") or uid[:8]})
+            continue
+        view = payload.get("task") or {}
+        entry = {"uuid": uid,
+                 "handle": view.get("handle") or "",
+                 "title": view.get("title") or "",
+                 "goal": (view.get("digest") or {}).get("goal") or "",
+                 "audience": list(payload.get("audience") or []),
+                 "visibility": payload.get("visibility") or "private",
+                 "fields": sorted(view.keys()),
+                 "new": uid not in published}
+        plan["publish"].append(entry)
+        if _widened(published.get(uid), payload):
+            plan["widening"].append(entry)
+    for uid, prev in sorted(published.items()):
+        if uid not in live:
+            plan["retract"].append({"uuid": uid,
+                                    "title": (prev.get("task") or {}).get("title") or uid[:8]})
+    return plan
+
+
+def format_share_plan(plan, root, confirmed=False):
+    """The preview a human reads before anything becomes visible."""
+    out = ["SHARING PREVIEW — %s" % root, ""]
+    if not plan["publish"] and not plan["retract"]:
+        out.append("  Nothing is shared and nothing would become visible.")
+        out.append("  %d task(s) withheld — no sharing rule names an audience for them, "
+                   "which is the default." % plan["withheld"])
+        return "\n".join(out)
+    if plan["publish"]:
+        out.append("  WOULD BE VISIBLE — %d task(s):" % len(plan["publish"]))
+        for e in plan["publish"]:
+            flag = "NEW  " if e["new"] else "     "
+            out.append("    %s%s  %s" % (flag, e["handle"] or e["uuid"][:8], e["title"]))
+            out.append("           to: %s   ·   trail: %s"
+                       % (", ".join(e["audience"]) or "(nobody)", e["visibility"]))
+            if e["goal"]:
+                out.append("           goal (published verbatim): %s" % e["goal"])
+            out.append("           fields: %s" % ", ".join(e["fields"]))
+    if plan["retract"]:
+        out.append("")
+        out.append("  WOULD BE WITHDRAWN — %d task(s): %s"
+                   % (len(plan["retract"]),
+                      ", ".join(e["title"] for e in plan["retract"])))
+    out.append("")
+    out.append("  %d task(s) stay private (no sharing rule)." % plan["withheld"])
+    if plan["widening"] and not confirmed:
+        out.append("")
+        out.append("  THIS WOULD WIDEN VISIBILITY on %d task(s) and has NOT been "
+                   "performed." % len(plan["widening"]))
+        out.append("  Publishing cannot be undone by un-publishing — a retraction "
+                   "deletes the file, it does not un-read what was read.")
+        out.append("  Re-run with --confirm-share to accept exactly the above.")
+    return "\n".join(out)
+
+
 def _canon(v):
     """A comparable, order-stable rendering of a field value — used only to answer
     'did this field change since the last export?'."""
@@ -996,6 +1118,158 @@ def _local_index(ts):
     return {t.get("id"): t for t in ts.all_tasks() if t.get("id")}
 
 
+# --------------------------------------------------------------- the thin relay ----
+#
+# "STATION X IS AT REV Y." That sentence is the entire relay protocol, and it is a
+# FILE, not a service: after a sync each station writes the content revision of its own
+# partition into `rev.json` inside that partition. A subscriber compares the revs it
+# can see against the ones it has already pulled, and pulls only when they differ.
+#
+# WHY A FILE AND NOT A DAEMON. The programme's standing ruling is to ADOPT transport
+# rather than build a second one: git already delivers bytes between machines, already
+# has auth, and already works offline. A relay daemon would be a second replication
+# engine to run, secure and debug, for the sole benefit of lower latency. So the
+# DURABLE part is built here — the rev, the seen-ledger, and the changed-detection —
+# and the delivery stays adopted. An optional push relay can later feed exactly this
+# same rev signal without any of the below changing.
+#
+# THREE TIERS, AND THE FLOOR IS ALWAYS AVAILABLE:
+#   manual        `sync` — always works, needs nothing, and is the floor.
+#   on change     `sync --if-changed` — the cheap poll. Reads revs, syncs only if one
+#                 moved. This is what a hook or a timer should call.
+#   on ping       a relay pushing the same rev signal. Not built; not needed for
+#                 correctness; the seam is here when it is.
+#
+# THE BOARD NEVER MAKES A NETWORK CALL, AND THAT IS TESTED RATHER THAN INTENDED.
+# board.html is a static `file://` page; its refresh polls a LOCAL script sidecar. See
+# tests/test_relay.py:BoardMakesNoNetworkCallsTest, which greps the RENDERED page for
+# fetch/XHR/WebSocket/EventSource/sendBeacon — the artifact, not the source.
+
+REV_FILE = "rev.json"
+SEEN_FILE = "sync-seen.json"
+
+
+def partition_rev(part_path):
+    """A stable content revision for one partition — it changes exactly when that
+    station's published task data changes, and not when a timestamp moves."""
+    h = hashlib.sha1()
+    tdir = os.path.join(part_path, TASKS_DIR)
+    try:
+        names = sorted(os.listdir(tdir))
+    except OSError:
+        return ""
+    seen = 0
+    for n in names:
+        if not (n.endswith(TASK_EXT) or n.endswith(TOMBSTONE_EXT)):
+            continue
+        try:
+            with open(os.path.join(tdir, n), "rb") as f:
+                body = f.read()
+        except OSError:
+            continue
+        seen += 1
+        h.update(n.encode("utf-8"))
+        h.update(hashlib.sha1(body).hexdigest().encode("ascii"))
+    # An EMPTY partition has no rev, deliberately — not the hash of nothing. A station
+    # that has published nothing yet has nothing to pull, and reporting it as "moved"
+    # would make the very first `--check` on a fresh exchange claim work that does not
+    # exist, which is how a cadence hook learns to be ignored.
+    return h.hexdigest()[:16] if seen else ""
+
+
+def write_own_rev(root, now=None):
+    """Publish this station's rev — the ping, as a file. Written INSIDE this station's
+    own partition, so it is subject to the same one-writer rule as everything else and
+    cannot conflict."""
+    rev = partition_rev(own_partition_dir(root))
+    path = own_write_path(root, REV_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _atomic_write(path, json.dumps(
+        {"rev": rev, "owner": _station.owner(), "station": _station.number(),
+         "ts": time.time() if now is None else now}, indent=1) + "\n")
+    return rev
+
+
+def read_partition_rev(part_path):
+    """A partition's published rev. Falls back to COMPUTING it when `rev.json` is
+    absent — a station that has not published one yet is still readable, and a missing
+    ping must never mean "nothing changed"."""
+    try:
+        with open(os.path.join(part_path, REV_FILE), encoding="utf-8") as f:
+            rev = (json.load(f) or {}).get("rev")
+        if rev:
+            return str(rev)
+    except Exception:
+        pass
+    return partition_rev(part_path)
+
+
+def _seen_path():
+    try:
+        import paths as _paths
+        return os.path.join(_paths.data_dir(), SEEN_FILE)
+    except Exception:
+        return None
+
+
+def load_seen():
+    """Which foreign revs this machine has already pulled. LOCAL state: it says what
+    THIS machine has seen, so it never belongs in the shared exchange."""
+    p = _seen_path()
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_seen(seen):
+    p = _seen_path()
+    if not p:
+        return
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        _atomic_write(p, json.dumps(seen, indent=1, sort_keys=True) + "\n")
+    except Exception:
+        pass
+
+
+def _seen_key(root, owner, number):
+    return "%s|%s|%d" % (os.path.realpath(os.path.expanduser(root)), owner, int(number))
+
+
+def check_changes(root, seen=None):
+    """Foreign partitions whose rev has moved since this machine last pulled them:
+    `[{"owner", "number", "label", "rev", "seen"}, …]`.
+
+    A READ. It never records anything — a check that marked things seen would make the
+    next real sync skip work it never did."""
+    seen = load_seen() if seen is None else seen
+    out = []
+    for p in foreign_partitions(root):
+        rev = read_partition_rev(p["path"])
+        if not rev:
+            continue
+        was = seen.get(_seen_key(root, p["owner"], p["number"]))
+        if rev != was:
+            out.append({"owner": p["owner"], "number": p["number"],
+                        "label": p["label"], "rev": rev, "seen": was})
+    return out
+
+
+def mark_seen(root, seen=None):
+    """Record every foreign partition's CURRENT rev as pulled. Called only after a
+    sync that actually ran, never after a check."""
+    seen = load_seen() if seen is None else seen
+    for p in foreign_partitions(root):
+        rev = read_partition_rev(p["path"])
+        if rev:
+            seen[_seen_key(root, p["owner"], p["number"])] = rev
+    save_seen(seen)
+    return seen
+
+
 def _brains_cfg():
     """The loaded brains.json — where every sharing rule lives. A hiccup degrades to
     the DEFAULT config, which has no rules at all, so a failure to read the sharing
@@ -1013,7 +1287,7 @@ def _brains_cfg():
             return {"brains": {}, "assign": {}}
 
 
-def _export_share(ts, root, live, tombs, now, dry_run, rep):
+def _export_share(ts, root, live, tombs, now, dry_run, rep, confirm=False):
     """Write this station's SHARE partition: the shared subset, and nothing else.
 
     Three outcomes per task, all counted:
@@ -1024,6 +1298,15 @@ def _export_share(ts, root, live, tombs, now, dry_run, rep):
                  back, or "I removed the rule" would be a lie the repository contradicts."""
     cfg = _brains_cfg()
     backend = ts._backend()
+    # THE WIDENING GATE. Computed BEFORE anything is written, so a run that would make
+    # something newly visible writes nothing at all rather than writing most of it and
+    # then asking. Narrowing is never gated — see the note above VIS_RANK.
+    plan = share_plan(ts, root, cfg=cfg, now=now)
+    rep["plan"] = plan
+    if plan["widening"] and not confirm:
+        rep["blocked"] = True
+        rep["withheld"] = plan["withheld"]
+        return
     published = set()
     for uid, task in sorted(live.items()):
         if uid in tombs:
@@ -1077,7 +1360,8 @@ def _export_share(ts, root, live, tombs, now, dry_run, rep):
         pass
 
 
-def run_sync(ts, root=None, now=None, dry_run=False, no_net=False, kind=None):
+def run_sync(ts, root=None, now=None, dry_run=False, no_net=False, kind=None,
+             confirm_share=False):
     """One full sync pass. Returns the report dict `format_report` renders.
 
     ORDER MATTERS. Pull, then IMPORT, then EXPORT: importing first means this
@@ -1096,7 +1380,8 @@ def run_sync(ts, root=None, now=None, dry_run=False, no_net=False, kind=None):
            "tombstoned": [], "violations": [], "unreadable": 0,
            "fields": {"taken": 0, "unioned": 0, "preserved": 0, "filled": 0},
            "clashes": {}, "heal_due": [], "partitions": [],
-           "kind": kind or KIND_BACKUP, "shared": 0, "withheld": 0, "retracted": []}
+           "kind": kind or KIND_BACKUP, "shared": 0, "withheld": 0, "retracted": [],
+           "blocked": False, "plan": None}
     if not root:
         rep["error"] = ("sync is OFF — no exchange directory configured. "
                         "`task-station sync --init <dir>` creates one, or set "
@@ -1130,7 +1415,7 @@ def run_sync(ts, root=None, now=None, dry_run=False, no_net=False, kind=None):
     # out of somebody's redacted digest. Reading peers' shared views is a RENDER
     # concern (peer feeds), not a store concern, so it does not belong on this path.
     if rep["kind"] == KIND_SHARE:
-        _export_share(ts, root, local, {}, now, dry_run, rep)
+        _export_share(ts, root, local, {}, now, dry_run, rep, confirm=confirm_share)
         return _finish(root, rep, dry_run)
 
     # -- LOCAL DELETES FIRST, and the order is the whole point. A uuid this station
@@ -1215,7 +1500,7 @@ def run_sync(ts, root=None, now=None, dry_run=False, no_net=False, kind=None):
     # only the first guard still came back GREEN, which is exactly what a second guard
     # is for and exactly why one of them alone is not enough to trust.
     if rep["kind"] == KIND_SHARE:
-        _export_share(ts, root, live, tombs, now, dry_run, rep)
+        _export_share(ts, root, live, tombs, now, dry_run, rep, confirm=confirm_share)
         return _finish(root, rep, dry_run)
     for uid, task in sorted(live.items()):
         if uid in tombs or not exports_here(task):
@@ -1240,8 +1525,15 @@ def run_sync(ts, root=None, now=None, dry_run=False, no_net=False, kind=None):
 
 
 def _finish(root, rep, dry_run):
-    """Commit; push only when there is somewhere to push to. Shared by both kinds so
-    the share path cannot drift into a different transport."""
+    """Publish this station's rev, record what it pulled, commit, and push only when
+    there is somewhere to push to. Shared by both kinds so the share path cannot drift
+    into a different transport."""
+    if not dry_run and not rep.get("blocked"):
+        try:
+            rep["rev"] = write_own_rev(root)
+            mark_seen(root)
+        except Exception:
+            pass
     if rep["git"]["repo"] and not dry_run:
         _git(root, "add", "-A")
         st = _git(root, "status", "--porcelain")
@@ -1259,7 +1551,8 @@ def _finish(root, rep, dry_run):
     return rep
 
 
-def run_all(ts, backup=None, share=None, now=None, dry_run=False, no_net=False):
+def run_all(ts, backup=None, share=None, now=None, dry_run=False, no_net=False,
+            confirm_share=False):
     """Sync every configured destination, BACKUP FIRST. Returns a list of reports.
 
     Backup first is deliberate: durability before visibility. If the process dies
@@ -1275,7 +1568,7 @@ def run_all(ts, backup=None, share=None, now=None, dry_run=False, no_net=False):
                            "`task-station sync --init <dir>` creates one, or set "
                            "`sync_dir` in config / %s in the environment." % SYNC_ENV)}]
     return [run_sync(ts, root=d["root"], now=now, dry_run=dry_run, no_net=no_net,
-                     kind=d["kind"]) for d in dests]
+                     kind=d["kind"], confirm_share=confirm_share) for d in dests]
 
 
 def _merge_field_ts(local, payload):
@@ -1342,6 +1635,20 @@ def format_report(rep):
     mech = ("REFUSED %d write(s) outside this station's partition" % len(viol)) if viol \
         else "clean — 0 conflicts possible (each station writes only its own partition)"
     f = rep.get("fields") or {}
+    if rep.get("kind") == KIND_SHARE and rep.get("blocked"):
+        # A blocked run wrote NOTHING. Saying "0 shared" and stopping there would read
+        # as "there was nothing to share", which is the opposite of what happened.
+        plan = rep.get("plan") or {}
+        return "\n".join([
+            format_share_plan(plan, rep.get("root")),
+            "",
+            "  Mechanical  nothing was written — this run is HELD, not failed",
+            "  Judgment    %d task(s) would become visible, %d of them NEWLY "
+            "(%d withheld)" % (len(plan.get("publish") or []),
+                               len(plan.get("widening") or []),
+                               plan.get("withheld", 0)),
+            "  Heal-due    nothing to reconcile",
+        ])
     if rep.get("kind") == KIND_SHARE:
         # The judgment a SHARE run makes is "who may see what", so that is what its
         # judgment row says. WITHHELD is stated as a number rather than left implicit:

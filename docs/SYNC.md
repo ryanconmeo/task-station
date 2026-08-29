@@ -186,6 +186,72 @@ share view in the first place, so no stripper bug can fail to remove them.
 file and leaves a tombstone, so "I removed the rule" is true of the repository and not
 only of the config.
 
+## Before anything becomes visible: the preview
+
+**Widening is the one thing you cannot take back.** Un-sharing deletes the file; it
+does not un-read what somebody already read. So the moment that needs a human is the
+moment visibility *grows* — a task published for the first time, an audience gaining a
+member, a trail level going up.
+
+A share run that would do any of those is **held**. It writes nothing, prints exactly
+what would become visible, and names the command that accepts it:
+
+```
+SHARING PREVIEW — ~/task-share
+
+  WOULD BE VISIBLE — 1 task(s):
+    NEW  kosei-787bcc6b  Q3 release plan
+           to: org   ·   trail: private
+           goal (published verbatim): ship the migration behind a flag
+           fields: brain, category, digest, effort, handle, live, owner, …
+
+  1 task(s) stay private (no sharing rule).
+
+  THIS WOULD WIDEN VISIBILITY on 1 task(s) and has NOT been performed.
+  Re-run with --confirm-share to accept exactly the above.
+```
+
+`sync --preview` shows the same thing on demand and writes nothing either way.
+
+**Narrowing never asks.** Taking something back is always safe, and a transport that
+stopped to confirm a retraction would be training you to click through the prompt that
+matters. The **backup** destination is never held by a sharing question — durability
+does not wait on a visibility decision.
+
+The baseline for "wider than before" is **the published state itself**, not a separate
+ledger of what you acknowledged, so what you agreed to share cannot drift from what is
+actually shared. They are the same bytes. Once accepted, later syncs run unattended
+until something widens again.
+
+## Pulling only when something moved
+
+"Station X is at rev Y" is the whole relay protocol, and it is a **file**. After a sync
+each station writes the content revision of its own partition into `rev.json` inside
+that partition. A subscriber compares the revs it can see against the ones it has
+already pulled.
+
+```sh
+task-station sync --check        # which peers moved? syncs nothing, records nothing
+task-station sync --if-changed   # sync only if one did — the cheap cadence form
+task-station sync                # the floor: always works, needs nothing
+```
+
+`--check` exits **3** when nothing moved, so a hook or a timer can branch on it without
+parsing output.
+
+There is no daemon and no socket. Git already delivers bytes between machines, already
+has auth and already works offline, so what is built here is the durable part — the
+rev, the seen-ledger, the changed-detection — and delivery stays adopted. A push relay
+can later feed this same rev signal without any of the above changing.
+
+The seen-ledger is **local** (`<data dir>/sync-seen.json`): it records what *this*
+machine has pulled, so it never enters the shared exchange.
+
+**The board never makes a network call.** It is a static `file://` page whose refresh
+polls a local script sidecar. `tests/test_relay.py:BoardMakesNoNetworkCallsTest` greps
+the *rendered* page for `fetch`/`XMLHttpRequest`/`WebSocket`/`EventSource`/
+`sendBeacon` — the artifact, not the renderer's source.
+
 ## Everyday use
 
 ```sh
