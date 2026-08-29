@@ -10,7 +10,7 @@
 # the thing worth catching. So the FLOOR lives in the COMMAND, here, where it is readable
 # and can be raised deliberately, and the claim expects a pass token.
 #
-# Usage:  bash tests/claims.sh <suite|rail|pickup|nowait>
+# Usage:  bash tests/claims.sh <suite|rail|pickup|nowait|pushlimb>
 # Each prints exactly one token on the last line. Never exits non-zero for a failed
 # assertion — the token is the verdict, and `claims verify` reads the token.
 set -u
@@ -77,6 +77,13 @@ print("GREEN-CHECKLIST-BEATS-LIVENESS-OK" if ok
       else "LIVENESS-STILL-WINS (landed=%s working=%s)" % (landed, working))
 PY
     ;;
+  pushlimb)
+    # THE PUSH IS WIRED, asserted against the LOADED module rather than by grepping a
+    # file: a definition nothing calls is the exact shape of a rail that ships and never
+    # fires. Settles in milliseconds, which is why it is an exit condition while the whole
+    # suite is a claim — `exits.command_timeout` is tuned for a grep, deliberately.
+    python3 -c 'import inspect, sys; sys.path.insert(0, "lib"); import board.cmds.sub as sub; print("PUSH-LIMB-WIRED-OK" if "_pickup_block(" in inspect.getsource(sub.cmd_stop_gate) else "PUSH-LIMB-MISSING")'
+    ;;
   *)
-    echo "usage: claims.sh <suite|rail|pickup|nowait>"; exit 2 ;;
+    echo "usage: claims.sh <suite|rail|pickup|nowait|pushlimb>"; exit 2 ;;
 esac
