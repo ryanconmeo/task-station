@@ -37,7 +37,7 @@ __all__ = [
     "cmd_scan", "cmd_invoke", "cmd_grade", "cmd_orchestrator_check",
     "cmd_decompose", "cmd_relay",
     "_live_seqs", "_announce_spec_change", "_channel_report_back", "cmd_channel",
-    "cmd_pickup", "_pickup_report_text",
+    "cmd_pickup", "_pickup_report_text", "_subscribe_lines",
     "cmd_turn",
 ]
 
@@ -664,6 +664,46 @@ def _invoke_command(base, role, model, permission_mode, ask, effort=None, ref=No
     return " ".join(parts)
 
 
+# THE OTHER HALF OF THE PICKUP RAIL, AND THE ENGINE CANNOT PERFORM IT.
+#
+# The pickup gate delivers a hand-back at the parent's NEXT TURN END. That bounds the
+# delay by the parent's own cadence rather than by when a human next asks, which is the
+# whole fix — but if the parent has nothing to do it may not take a turn for a while, and
+# the fastest honest edge is the harness's own: `SendMessage(notify_when_idle: true)` is a
+# one-shot, opt-in subscription that fires exactly once when a named session next goes
+# idle or exits. No polling, and a pure subscription (no `message`) costs the target
+# session nothing. Proven on this machine on 2026-08-27, waiting on a peer before a heal.
+#
+# ONLY THE MODEL CAN CALL IT. It is a harness tool, not a shell command, so no engine
+# function can emit it — which is exactly why this is a printed instruction rather than a
+# feature. Adopt, do not rebuild: the engine spawns and records, the harness notifies.
+#
+# AND THE NOTICE IS A PROMPT TO LOOK, NOT PROOF OF ANYTHING. `idle` means the session
+# finished a turn, and a child that pauses mid-work is idle too — so a subscription alone
+# would report a thinking child as finished, which is the same lie liveness always told,
+# arriving faster. The two halves compose in one direction only: the harness says WHEN to
+# look, and the record — the pickup, the report memo, the exit conditions — says WHETHER
+# anything actually landed. The wording below says so, because a reader who takes the
+# notice as the answer has re-created the bug.
+
+def _subscribe_lines(child, sid):
+    """The two lines that tell the spawning MODEL to subscribe to this child's idle edge.
+
+    Printed with every real launch, addressed to whoever is reading the invoke output —
+    which is a model with the tool, not a shell."""
+    ref = child.get("seq") or (child.get("id") or "")[:8]
+    return [
+        "  wake yourself when it stops (harness rail — do this now, in one tool call):",
+        "    SendMessage(to: \"<its name from ListAgents>\", notify_when_idle: true)  "
+        "— omit `message`: a pure subscription costs it nothing, fires ONCE, and needs "
+        "no polling.",
+        "    Its window is titled #%s. The notice means LOOK, not done — a child that "
+        "pauses mid-turn is idle too. `task-station turn --task %s` says whether anything "
+        "landed, and a real hand-back also files a pickup your own Stop gate will not let "
+        "you past." % (ref, ref),
+    ]
+
+
 def _record_launch(child, orch, role, ask, manual, session=None, forced=None):
     """Write the invoke's trail entries — AFTER the launch decision, never before it.
 
@@ -861,6 +901,8 @@ def cmd_invoke(a):
     else:
         print("  could not open a window (macOS/Terminal only) — run it yourself:")
         print("    %s" % cmd)
+    for line in _subscribe_lines(child, sid):
+        print(line)
     forced = ("FORCED over the cap (loop_children_max=%d, %d running)"
               % (budget["max"], len(budget["running"]))) if budget["over"] else None
     _record_launch(child, orch, role, ask, manual, session=getattr(a, "session", None),
