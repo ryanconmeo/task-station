@@ -25,6 +25,7 @@ Isolation copies the `_repoint` idiom from tests/test_memo.py.
 import importlib.util
 import io
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -510,10 +511,18 @@ class TestPinnedDecisions(_Base):
                        + ["recent r%d" % i for i in range(1, 7)]):
             self.assertIn(marker, detail)
         self.assertNotIn("wrong w3", detail)             # superseded → still gone
-        # 13 stored, 1 superseded → 12 rendered bullets, 3 of them pinned.
+        # 13 stored, 1 superseded → 12 rendered rows, 3 of them pinned.
         block = detail[detail.index("Decisions:"):].split("\n\n")[0]
-        self.assertEqual(block.count("  • "), 12)
+        numbers = [int(m) for m in re.findall(r"^\s+(\d+)\. ", block, re.M)]
+        self.assertEqual(len(numbers), 12)
         self.assertEqual(block.count(ts.DECISION_PIN_MARK), 3)
+        # The numbers are the LOG's, so they SKIP the superseded entry (3) rather than
+        # closing the gap — renumbering would repoint a command a reader already holds.
+        self.assertNotIn(3, numbers)
+        self.assertEqual(sorted(numbers), [1, 2] + list(range(4, 14)))
+        # Pinned sort first, so reading order is not numeric order; the number a row
+        # carries still has to be its own.
+        self.assertIn("the correction", block.splitlines()[numbers.index(13) + 1])
 
     def test_history_still_carries_the_retired_decisions_the_digest_drops(self):
         # The other half of the contract: removing truncation must not have quietly

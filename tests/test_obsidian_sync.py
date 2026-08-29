@@ -81,7 +81,9 @@ class ObsidianSync(unittest.TestCase):
         self.assertIn("NEXT: reproduce", text)
         self.assertIn("## Summary", text)
         self.assertIn("## Decisions", text)
-        self.assertIn("- Refresh tokens server-side", text)
+        # The bracketed number is the decision's 1-based index in the task's log — the
+        # one `update --supersedes N` takes, so a reader holding the note can act on it.
+        self.assertIn("- [1] Refresh tokens server-side", text)
         self.assertIn("## History", text)
         # dated entry, append order preserved (exact date is tz-local, so match loosely)
         self.assertRegex(text, r"- \d{4}-\d{2}-\d{2} — Root-caused the 401\.")
