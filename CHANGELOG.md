@@ -3,6 +3,58 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.38.0] — 2026-08-29
+
+**A SLASH-COMMAND ARGUMENT WAS SHELL SOURCE, NOT A STRING.** Every command file ran
+its live block through `$ARGUMENTS`, which Claude Code splices in as plain text — no
+quoting, no escaping — and then executes. So `/repos don't` did not run at all: the
+apostrophe opened a quote nothing closed, and the user got a raw eval message about
+an unmatched quote instead of their repo index. And the same hole ran things:
+``/todo `whoami` `` and `/todo $(whoami)` executed, because command substitution
+fires *inside* double quotes; a `;` in a bare `$ARGUMENTS` was a second command
+outright, and a `*` globbed against whatever directory the session was in.
+
+### Fixed
+- **The typed text is now data before it is anything else.** Each command captures it
+  with a quoted heredoc (`<<'TS_ARGV_END'`) — the one shell construct that expands
+  nothing — and spends it from a variable, whose value is never re-scanned. An
+  apostrophe, a double quote, a backtick, a `$(…)` and a `;` all reach the CLI as the
+  literal characters typed, and the command still runs.
+- **Blocks are fenced (`` ```! ``) rather than inline (`` !`…` ``).** An inline
+  marker's body may not contain a backtick, so a backtick in the arguments truncated
+  the command mid-flight — the command failed *and* the surviving fragment ran.
+- **Word-splitting survives without globbing.** Commands whose CLI wants several argv
+  words (`/repos`, `/config`, `/glossary`, `/heal`) split inside a
+  `( set -f; … $TS_ARGV )` subshell: IFS still splits, filename expansion cannot, and
+  `set -f` cannot leak out.
+- **Not `$(cat <<'EOF' … )`.** macOS ships bash 3.2, whose `$( )` parser dies on an
+  unbalanced `'` inside a nested heredoc — which would have reintroduced the
+  apostrophe bug on the platform this plugin mostly runs on.
+
+### Changed
+- **A failure says, in words, that nothing happened.** A non-zero exit now prints
+  `THE SKILL WAS NOT INVOKED`, naming the command and its exit code, instead of
+  leaving a raw shell diagnostic to be read as output. A block killed by a syntax
+  error never reaches its own banner, so every command body also tells the model that
+  an unusable block means the command did not run and must be reported that way — not
+  reconstructed by hand.
+- All eleven command files carry the same idiom: `config`, `done`, `glossary`, `heal`,
+  `history`, `prompts`, `repos`, `todo`, `unpin` take arguments; `pin` and `save` take
+  none and gained only the honest-failure banner. No skill uses a shell block at all.
+
+### Added
+- `tests/test_command_arg_quoting.py` — the guard, and it does not take the fix on
+  trust. It reproduces Claude Code's own argument substitution and shell-block
+  extraction (regexes transcribed from the shipped binary), then actually runs the
+  result under `bash` with `python3` replaced by a shim that records argv, asserting
+  the hostile text arrived intact and the payload it tried to run did not. It
+  re-derives the audit list from the tree, so a new command file that grows a shell
+  block and an argument placeholder cannot land unnoticed.
+- *What a slash-command argument is (and what it is not)* in `docs/ARCHITECTURE.md`,
+  including the one hole no command file can close: the harness scans the whole
+  substituted body for `` !`cmd` `` markers, so a user who types that sequence
+  literally creates one. It needs the person at the keyboard to type their own
+  exploit; the quoting closes every path that fires from text merely pasted in.
 ## [3.37.0] — 2026-08-29
 
 **A FAILED READ MUST NOT LOOK LIKE AN EMPTY ONE, AND A NUMBER YOU HAVE TO ACT ON HAS
