@@ -63,7 +63,11 @@ class HistoryCommandFileTest(unittest.TestCase):
         self.assertIn("disable-model-invocation: true", self.text)
 
     def test_bang_line_forwards_arguments_and_appends_history(self):
-        self.assertIn('${ARGUMENTS:+$ARGUMENTS }history', self.text)
+        # The typed arguments reach the shell as the value of TS_ARGV, never as
+        # shell source — see tests/test_command_arg_quoting.py. The route word
+        # is still appended to whatever the user typed.
+        self.assertIn("<<'TS_ARGV_END'", self.text)
+        self.assertIn('${TS_ARGV:+$TS_ARGV }history', self.text)
         self.assertIn("task-station.py", self.text)
 
     def test_body_is_read_only(self):

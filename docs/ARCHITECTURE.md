@@ -622,8 +622,9 @@ retro-disposition, which a heal never overwrites — and its line says so and na
 pre-heal blob instead of inventing a command. **Removing the gate did not widen what gets
 applied**: merge candidates are still proposals, never ops.
 
-**The task may be named positionally.** `commands/heal.md` passes `$ARGUMENTS` straight
-through, so `/heal 12` reaches the CLI as a bare `12` — and with no positional on the
+**The task may be named positionally.** `commands/heal.md` passes the typed arguments
+straight through (as words, via `$TS_ARGV` — see *What a slash-command argument is*
+below), so `/heal 12` reaches the CLI as a bare `12` — and with no positional on the
 subparser argparse exited with `unrecognized arguments: 12`, killing the one form a person
 actually types. The fix cannot live in the command file, because `$ARGUMENTS` legitimately
 carries `--task <n>`, `--all` or nothing. `_heal_positional_ref` folds the ref into
@@ -632,6 +633,83 @@ them: alongside `--all` (different scopes), and alongside a `--task` naming a di
 task (a silent precedence rule would reconcile the wrong record; the *same* ref twice is
 accepted, since `/todo heal 12` fills both slots itself). Nothing is resolved here —
 `_heal_targets` still does every lookup, so both spellings behave identically.
+
+### What a slash-command argument is (and what it is not)
+
+It is not a string. It is **shell source**, until something makes it data.
+
+A command file's `!` block is a shell command Claude Code runs *before* the prompt
+reaches the model, and the harness splices `$ARGUMENTS` into it as plain text — no
+quoting, no escaping. Claude Code documents this against itself: its Gemini-command
+importer refuses to translate any prompt whose shell block holds an argument
+placeholder, because "Gemini shell-escapes `{{args}}` inside `!{…}`, Claude Code's
+`$ARGUMENTS` substitution doesn't, so importing would let typed arguments inject
+shell commands."
+
+Every task-station command was written the obvious way — `--arg "$ARGUMENTS"`, or a
+bare `$ARGUMENTS` where the CLI wanted several words — and both spellings were wrong
+in the same two ways:
+
+- **`/repos don't` did not run.** The apostrophe opened a quote nothing closed, the
+  shell rejected the whole line, and the user got an eval message about an unmatched
+  quote where their repo index should have been.
+- **``/todo `whoami` `` and `/todo $(whoami)` ran.** Command substitution fires
+  *inside* double quotes, so quoting the interpolation was never a defence. A
+  semicolon in a bare `$ARGUMENTS` was a second command outright, and a `*` globbed
+  against whatever directory the session happened to be in.
+
+**The fix is a quoted heredoc** — the one construct that expands nothing at all:
+
+```
+IFS= read -r -d '' TS_ARGV <<'TS_ARGV_END'
+$ARGUMENTS
+TS_ARGV_END
+TS_ARGV="${TS_ARGV%$'\n'}"
+```
+
+The typed text lands in a variable, and **a variable's value is never re-scanned**
+for backticks, `$(`, quotes or `;`. From there each command spends it the way its CLI
+wants it: as one string (`--arg "$TS_ARGV"`), or as several words inside a
+`( set -f; … $TS_ARGV )` subshell — unquoted so IFS still splits it into argv
+entries, `set -f` so the split stops short of filename expansion, a subshell so that
+`set -f` cannot leak into anything else. It is the same reasoning that put
+`--flag @PATH` and `--flag -` in `board.prose_input`: a shell word is not a string,
+it is a string the shell has already rewritten.
+
+Three details are load-bearing and each was found the hard way:
+
+- **The blocks are fenced (`` ```! ``), not inline (`` !`…` ``).** The inline marker's
+  body may not contain a backtick, so a backtick in the arguments truncates the
+  command mid-flight — the skill still fails, and the fragment that *does* run is
+  text the block never consented to. A fenced block is closed only by a fence.
+- **Not `TS_ARGV="$(cat <<'TS_ARGV_END' … )"`.** macOS still ships bash 3.2, whose
+  `$( )` parser tracks quotes naively and dies on an unbalanced `'` inside a nested
+  heredoc — which would have reintroduced the apostrophe bug on the platform this
+  plugin mostly runs on. `read` takes the heredoc directly and is unaffected.
+- **No `` ` `` and no `!` anywhere inside a block.** Either one can pair with a
+  character from the arguments to assemble a fresh shell-exec marker after
+  substitution.
+
+**A failure says so in words.** Each block captures the CLI's output and exit code and,
+on non-zero, prints `THE SKILL WAS NOT INVOKED` naming the command and the code, so the
+user is never left reading a raw shell diagnostic and guessing whether anything
+happened. A block killed by a *syntax* error never reaches that banner — nothing in it
+runs — so every command body also carries a line telling the model that an unusable
+block means the command did not run, and must be reported as such rather than
+reconstructed by hand.
+
+`tests/test_command_arg_quoting.py` is the guard. It reproduces the harness's own
+substitution and shell-block extraction (the regexes are transcribed from the shipped
+binary), then actually runs the result under `bash` with `python3` replaced by a shim
+that records argv — asserting that hostile text arrives intact and that the payload it
+tried to run did not. It also re-derives the audit list from the tree, so a new command
+file that grows a shell block and an argument placeholder cannot land unnoticed.
+
+**One hole is not ours to close.** The harness scans the *whole* substituted body for
+`` !`cmd` `` markers, so a user who types that sequence literally creates one no matter
+what the command file does. It requires the person at the keyboard to type their own
+exploit, and no command file can prevent it; the quoting above closes every path that
+fires from text merely pasted in.
 
 **`Heal due?` is rendered as three rows, not one** (`heal.summary_lines`, shared by the
 scan report, the dry-run brief and the zero-operation refusal). `Mechanical` is what the
