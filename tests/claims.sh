@@ -73,8 +73,8 @@ def child(ran):
 landed = turn.child_state(child(True), live={9})
 working = turn.child_state(child(False), live={9})
 ok = landed == turn.REPORTED and working == turn.RUNNING
-print("NO-WAIT-FOR-LANDED-OK" if ok
-      else "NO-WAIT-BROKEN (landed=%s working=%s)" % (landed, working))
+print("GREEN-CHECKLIST-BEATS-LIVENESS-OK" if ok
+      else "LIVENESS-STILL-WINS (landed=%s working=%s)" % (landed, working))
 PY
     ;;
   *)
