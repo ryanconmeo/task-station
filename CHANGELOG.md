@@ -3,6 +3,79 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.32.0] — 2026-08-29
+
+**PRIVATE BY DEFAULT, ENFORCED WHEN THE FILE IS WRITTEN.** 3.30.0 gave the transport
+one destination: a backup that carries every task, unfiltered, because a task that
+never leaves the machine cannot be restored onto a new one. This adds the *other*
+destination — a SHARE exchange, readable by other people — and the two are kept apart
+on purpose.
+
+**A task reaches a share exchange only because a sharing rule on its brain names an
+audience for it. With no rule there is NO FILE** — not a hidden one, not a redacted
+one. `brains.json` ships with no rules, so a fresh install shares nothing at all, and
+the only thing that widens that is a `brains share` the owner ran.
+
+**Filtering on WRITE rather than on read is the whole safety property.** A read-side
+filter leaves the bytes sitting in a repository other people can read, and then every
+reader, every future reader and every tool that walks the tree is a place the leak can
+happen. A write-side filter means the bytes are not there. The tests read the written
+tree rather than the flags that were supposed to govern it — `_grep_tree` walks the
+exchange on disk, which is the only way to tell "we filtered it" from "we meant to" —
+and every privacy test asserts **both directions in one run**: the private task is
+absent from the share exchange AND present in the backup. Either half alone passes on
+badly broken code.
+
+**What a shared task publishes is an ALLOW-LIST, not a deny-list.** A deny-list leaks
+every field added after it was written, silently and by default, which is not a shape a
+privacy filter can have. At the default trail visibility a shared task publishes its
+identity, its goal and its step counts. Never published at any visibility: the owner's
+cost and token spend, sessions, work-mix and usage, file paths and repo names, and the
+summary/history/glossary narrative — and those are not *stripped*, they are never BUILT
+into a share view, so no stripper bug can fail to remove them.
+
+**Sharing a task is not sharing its trail.** `trail_visibility` governs that
+separately: `private` (the default) publishes no state and no decisions, `checkpoints`
+adds the digest, `full` adds the prompt trail.
+
+**Two filters, deliberately.** The allow-list projection and `feeds.strip_local_only`
+both run. A red probe that broke only the allow-list's trail branch came back GREEN
+because the second filter caught it; breaking both turned the test red. One of them
+being wrong should not be enough.
+
+### Added
+
+- **`task-station sync --init-share <dir>`** — a SHARE exchange beside the backup one.
+  `sync` runs both, **backup first**: durability before visibility, so if the process
+  dies between them the copy that survived is the one that loses nothing.
+- **An exchange declares its own kind** in `exchange.json`, written once at `--init`
+  and never rewritten by a sync. The destination's own bytes say what it is, so aiming
+  a backup run at a share exchange is **refused** rather than silently un-filtered —
+  that mistake is one wrong flag away and would publish every private task at once.
+- **`sync_dir` and `share_dir` may not be the same directory**, refused outright. One
+  path that is both the unfiltered backup and the readable share is the single worst
+  misconfiguration available here.
+- **Un-sharing retracts.** Remove the rule and the next sync deletes the published file
+  and leaves a tombstone — "I removed the rule" has to be true of the repository, not
+  just of the config. Re-sharing clears the tombstone, so a peer is never told two
+  opposite things at once.
+- **The share report says how many were WITHHELD**, not just how many were shared. "3
+  shared" alone never tells you whether the other forty were considered.
+- **`tests/test_sync_share.py`** — 26 tests.
+
+### Changed
+
+- `feeds.self_view_model` takes `rich=False`, which omits the self-only block —
+  sessions, usage, cost, work-mix, prompt trail, resume path — entirely rather than
+  building it and stripping it afterwards. `live` is forced False on that path:
+  liveness is never federated, and a foreign row must never claim to be running.
+- A share exchange is **export only**. Every file in it is a stripped one-way view, and
+  importing a view as if it were a record would fabricate tasks out of somebody's
+  redacted digest.
+
+### Fixed
+- …
+
 ## [3.31.0] — 2026-08-28
 
 **THE HANDLE IS NOW THE ONE NAME THAT MEANS THE SAME THING ON EVERY MACHINE.** Until
