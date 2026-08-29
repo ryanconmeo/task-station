@@ -393,7 +393,8 @@ class PromptsCommandFileTest(unittest.TestCase):
         self.assertIn("description:", text)
         self.assertIn("allowed-tools: Bash", text)
         self.assertIn("disable-model-invocation: true", text)
-        self.assertIn('${ARGUMENTS:+$ARGUMENTS }prompts', text)   # routes like history
+        self.assertIn("<<'TS_ARGV_END'", text)                    # args are data
+        self.assertIn('${TS_ARGV:+$TS_ARGV }prompts', text)       # routes like history
         self.assertIn("task-station.py", text)
         self.assertIn("READ-ONLY", text)
         self.assertIn("verbatim", text)
