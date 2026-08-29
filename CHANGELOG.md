@@ -86,7 +86,120 @@ let it pass. The channel points that at a child. This points it at the **parent*
 ### Fixed
 - A child that finished, filed its report and left its session idle could be reported by
   every parent-facing surface as still working, for as long as nobody thought to look.
-||||||| 949cd50
+## [3.39.0] — 2026-08-29
+
+**THE PRODUCT COULD NOT MAKE THE SHAPE ITS OWN OWNER RUNS.** A fresh `/brain-init`
+built `~/brains/` with your agent memory tucked *inside* the vault — the arrangement the
+2026-08-24 redesign rejected, and the one nobody is running any more. This release makes
+the defaults the redesigned shape, so the layout you get on install is the layout the
+design ratified.
+
+**One container, `~/knowledge`.** The brains live under `brains/` — `<org-slug>/private`
+(your work vault), `<org-slug>/shared` (the org-readable mirror), `<org-slug>/org` (the
+org-brain clone), `personal/<username>-brain`, and read-only `peers/`. `<org-slug>` comes
+from the new `org_slug` config key; it names the folder and nothing else, so an install
+that sets its three paths explicitly never needs it.
+
+**Memory sits beside the brains, inside none of them.** Memory is about the *person* —
+how to work with you — and a person may keep more than one brain, so a memory folder
+living inside one of them dies with that brain. A brain-local memory was considered and
+rejected on exactly that ground. `brain-init` now migrate-then-links the harness's
+native memory dir to `~/knowledge/memory`, and a test asserts containment rather than a
+path literal, so a future relocation still has to keep memory out of every brain.
+
+**Five genre folders became four question folders.** A vault now ships
+`notes/ docs/ inbox/ mirror/` instead of `notes/ projects/ plans/ raw/ reports/`. Notes
+are atomic facts — **hubs included**: a hub is a note carrying `type: hub`, because a map
+of content is a fact about how an area hangs together and does not need a folder of its
+own. `docs/` is dated long-form (syntheses and plans), `inbox/` is untrusted capture
+awaiting distillation, `mirror/` is machine-written output and holds the lint reports.
+The old split asked for a genre judgment on every write and left half the folders holding
+one file.
+
+**Nothing on disk moves, and there is no migrator.** Every path above is a *default*, and
+an explicit `vault`/`memory`/`org_brain_clone` in the config still wins — which is what
+leaves an existing install exactly where it is. The pre-fold folder names stay fully
+readable, so a vault created earlier is still searched, linted and promoted from without
+being touched.
+
+### Added
+- `org_slug` and `personal_brain` config keys (`TASK_STATION_BRAIN_ORG_SLUG`,
+  `TASK_STATION_BRAIN_PERSONAL_BRAIN`), plus `config.DEFAULT_PERSONAL_BRAIN()` and a
+  shared `host_username()` — one host-identity resolver for both the per-person mirror
+  template and the personal-brain path, rather than two that can drift.
+- One folder vocabulary in `brain.notes` (`NOTES_DIR`/`DOCS_DIR`/`INBOX_DIR`/`MIRROR_DIR`,
+  `CONTENT_FOLDERS`, `LEGACY_FOLDERS`), so the writer, the linter, the search roots, the
+  injection surfaces and the publish filter cannot disagree about a vault's shape.
+- `tests/brain/test_knowledge_layout.py` — the shipped scaffold is the four folded
+  folders and none of the five it replaced, and no shipped document still describes the
+  retired `~/brains` home.
+
+### Changed
+- Defaults: vault `~/knowledge/brains/<org-slug>/private`, mirror `…/shared`, org clone
+  `…/org`, peers `~/knowledge/brains/peers`, memory `~/knowledge/memory`, home config
+  `~/knowledge/config.json`.
+- `brain-init` derives every directory it creates from the config it writes, so "what init
+  creates" and "what the loader reads" are the same thing by construction; it creates the
+  shared, personal and peers folders too, and still declines to *write* `publish_mirror`
+  (writing it would arm the auto-publish heal step for someone who never set a mirror up).
+- Lint output moved to `mirror/health/`; auto-distill captures land in `inbox/`; a plan
+  declares itself with `type: plan` (which exempts its forward references from the
+  broken-link lint) instead of being identified by the folder it sat in.
+- README, `docs/BRAIN.md`, `skills/brain-{init,heal,save}/SKILL.md`, the `brain` skill,
+  the vault-scaffold `CLAUDE.md`/`INDEX.md`/`.gitignore`, `team-rules.md`, the naming
+  contract and the org-brain templates all describe the shipped shape.
+## [3.38.0] — 2026-08-29
+
+**A SLASH-COMMAND ARGUMENT WAS SHELL SOURCE, NOT A STRING.** Every command file ran
+its live block through `$ARGUMENTS`, which Claude Code splices in as plain text — no
+quoting, no escaping — and then executes. So `/repos don't` did not run at all: the
+apostrophe opened a quote nothing closed, and the user got a raw eval message about
+an unmatched quote instead of their repo index. And the same hole ran things:
+``/todo `whoami` `` and `/todo $(whoami)` executed, because command substitution
+fires *inside* double quotes; a `;` in a bare `$ARGUMENTS` was a second command
+outright, and a `*` globbed against whatever directory the session was in.
+
+### Fixed
+- **The typed text is now data before it is anything else.** Each command captures it
+  with a quoted heredoc (`<<'TS_ARGV_END'`) — the one shell construct that expands
+  nothing — and spends it from a variable, whose value is never re-scanned. An
+  apostrophe, a double quote, a backtick, a `$(…)` and a `;` all reach the CLI as the
+  literal characters typed, and the command still runs.
+- **Blocks are fenced (`` ```! ``) rather than inline (`` !`…` ``).** An inline
+  marker's body may not contain a backtick, so a backtick in the arguments truncated
+  the command mid-flight — the command failed *and* the surviving fragment ran.
+- **Word-splitting survives without globbing.** Commands whose CLI wants several argv
+  words (`/repos`, `/config`, `/glossary`, `/heal`) split inside a
+  `( set -f; … $TS_ARGV )` subshell: IFS still splits, filename expansion cannot, and
+  `set -f` cannot leak out.
+- **Not `$(cat <<'EOF' … )`.** macOS ships bash 3.2, whose `$( )` parser dies on an
+  unbalanced `'` inside a nested heredoc — which would have reintroduced the
+  apostrophe bug on the platform this plugin mostly runs on.
+
+### Changed
+- **A failure says, in words, that nothing happened.** A non-zero exit now prints
+  `THE SKILL WAS NOT INVOKED`, naming the command and its exit code, instead of
+  leaving a raw shell diagnostic to be read as output. A block killed by a syntax
+  error never reaches its own banner, so every command body also tells the model that
+  an unusable block means the command did not run and must be reported that way — not
+  reconstructed by hand.
+- All eleven command files carry the same idiom: `config`, `done`, `glossary`, `heal`,
+  `history`, `prompts`, `repos`, `todo`, `unpin` take arguments; `pin` and `save` take
+  none and gained only the honest-failure banner. No skill uses a shell block at all.
+
+### Added
+- `tests/test_command_arg_quoting.py` — the guard, and it does not take the fix on
+  trust. It reproduces Claude Code's own argument substitution and shell-block
+  extraction (regexes transcribed from the shipped binary), then actually runs the
+  result under `bash` with `python3` replaced by a shim that records argv, asserting
+  the hostile text arrived intact and the payload it tried to run did not. It
+  re-derives the audit list from the tree, so a new command file that grows a shell
+  block and an argument placeholder cannot land unnoticed.
+- *What a slash-command argument is (and what it is not)* in `docs/ARCHITECTURE.md`,
+  including the one hole no command file can close: the harness scans the whole
+  substituted body for `` !`cmd` `` markers, so a user who types that sequence
+  literally creates one. It needs the person at the keyboard to type their own
+  exploit; the quoting closes every path that fires from text merely pasted in.
 ## [3.37.0] — 2026-08-29
 
 **A FAILED READ MUST NOT LOOK LIKE AN EMPTY ONE, AND A NUMBER YOU HAVE TO ACT ON HAS

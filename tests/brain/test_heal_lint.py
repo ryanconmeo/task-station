@@ -361,7 +361,7 @@ class ReportsHealthTest(HealLintFixture):
         """The report quotes every finding VERBATIM — including the broken links
         and the secret snippets. Linting it would make each run manufacture the
         next run's findings, and the count would climb forever."""
-        out = self.vault / "reports/health" / f"{DATE}-lint.md"
+        out = self.vault / "mirror/health" / f"{DATE}-lint.md"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text("# Lint\n\n- notes/x.md: [[nowhere]]\n"
                        "- ghp_0123456789abcdefghijABCDEFGHIJ\n")
@@ -463,7 +463,7 @@ class RunTest(HealLintFixture):
         self.note("data-ledger-import", "see [[nowhere]]")
         out = heal_lint.run(self.cfg, today=DATE)
         self.assertEqual(self.exit_code(out), 1)
-        self.assertEqual(out["report_path"], self.vault / "reports/health" / f"{DATE}-lint.md")
+        self.assertEqual(out["report_path"], self.vault / "mirror/health" / f"{DATE}-lint.md")
         self.assertTrue(out["report_path"].exists())
         self.assertEqual(out["report_path"].read_text(), out["report"])
         log = (self.vault / "LOG.md").read_text()
@@ -476,7 +476,7 @@ class RunTest(HealLintFixture):
         self.assertEqual(self.exit_code(out), 0)
         self.assertIsNone(out["report_path"])
         self.assertIn("clean", out["report"])
-        self.assertFalse((self.vault / "reports/health").exists())
+        self.assertFalse((self.vault / "mirror/health").exists())
         self.assertEqual((self.vault / "LOG.md").read_text(), "# LOG\n")
 
     def test_the_warn_tier_never_moves_the_total(self):

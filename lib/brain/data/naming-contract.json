@@ -62,15 +62,19 @@
     "no-domain": "warn"
   },
   "datesAllowedIn": [
+    "docs",
+    "inbox",
+    "mirror",
     "reports",
     "plans",
     "raw"
   ],
+  "$comment_datesAllowedIn": "The first three are the post-fold folders (2026-08-27); the last three are their pre-fold names, kept so a vault created earlier is still linted correctly. docs/ is dated long-form, inbox/ is dated capture, mirror/ is dated tool output.",
   "domainRequiredIn": [
     "notes",
     "memory"
   ],
-  "$comment_domainRequiredIn": "Only knowledge nodes carry a domain. reports/ and plans/ are dated artifacts and raw/ is undigested capture — requiring a domain there would flag correct names.",
+  "$comment_domainRequiredIn": "Only knowledge nodes carry a domain — and after the fold every knowledge node lives in notes/, hubs included. docs/ holds dated artifacts, inbox/ undigested capture and mirror/ machine output; requiring a domain there would flag correct names.",
   "claimShape": {
     "$comment": "A name that states a verdict is unstable by construction: correct the claim and the name lies. Three signals, measured at 19% of a 126-node corpus.",
     "leadingImperative": [

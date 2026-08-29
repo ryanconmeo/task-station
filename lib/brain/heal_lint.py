@@ -8,7 +8,7 @@ stale ``verified:`` dates, secret-looking strings, MEMORY.md index rot, memory
 entries typed outside the feedback|user contract, and (informational)
 reference records whose org node has moved on.
 
-Exit 0 = clean, 1 = issues (report written to ``reports/health/``). Paths
+Exit 0 = clean, 1 = issues (report written to ``mirror/health/``). Paths
 resolve at runtime via ``brain.config`` — nothing baked in at install time, and
 nothing resolved at IMPORT time either: the source held the vault in module
 globals filled by a ``pb_config.load()`` at import, which froze the config for
@@ -32,9 +32,19 @@ from pathlib import Path
 
 from . import config
 from . import naming
+from . import notes as _notes
 from . import references
 
-CONTENT_DIRS = ("notes", "projects", "reports", "plans")  # raw/ is untrusted, not linted
+#: What the linter walks. Sourced from the one folder vocabulary (``brain.notes``)
+#: rather than re-listed, so a vault's shape is defined in exactly one place.
+#: inbox/ (and the pre-fold raw/) are untrusted capture and are NOT linted.
+CONTENT_DIRS = _notes.CONTENT_FOLDERS
+CAPTURE_DIRS = (_notes.INBOX_DIR, "raw")
+#: Lint output quotes the issues it found verbatim, so linting it would report
+#: every quoted problem a second time. Both spellings — a pre-fold vault keeps
+#: its reports where it put them.
+HEALTH_DIRS = (tuple(_notes.HEALTH_DIR.split("/")),
+               tuple(_notes.LEGACY_HEALTH_DIR.split("/")))
 LINK_RX = re.compile(r"\[\[([^\]\|#]+)")
 CODE_RX = re.compile(r"```.*?```|`[^`\n]*`", re.S)
 SECRET_RX = re.compile(
@@ -47,7 +57,7 @@ DEFAULT_STALE_DAYS = 90
 
 def all_note_basenames(vault, memory=None):
     names = {}
-    for d in (*CONTENT_DIRS, "raw", "task-station", "org-brain"):
+    for d in (*CONTENT_DIRS, *CAPTURE_DIRS, "task-station", "org-brain"):
         p = vault / d
         if p.exists():
             for f in p.rglob("*.md"):
@@ -157,7 +167,7 @@ def scan(cfg, stale_days=DEFAULT_STALE_DAYS, today=None):
             rel = f.relative_to(vault)
         except ValueError:
             pass
-        if rel and rel.parts[:2] == ("reports", "health"):
+        if rel and rel.parts[:2] in HEALTH_DIRS:
             continue  # lint output quotes issues verbatim; never lint it
         fm, text = frontmatter(f)
         prose = CODE_RX.sub("", text)  # links/secrets inside code blocks are examples
@@ -165,7 +175,11 @@ def scan(cfg, stale_days=DEFAULT_STALE_DAYS, today=None):
         links = [t[:-3] if t.endswith(".md") else t for t in links if "<" not in t and "{" not in t]
         outbound[f] = links
         in_memory = bool(memory) and memory in f.parents
-        is_plan = bool(rel) and rel.parts[0] == "plans"  # plans reference future artifacts by design
+        # A plan names artifacts that do not exist yet, by design, so its dangling
+        # links are not findings. Post-fold a plan lives in docs/ alongside
+        # reports (whose broken links ARE findings), so it declares itself with
+        # ``type: plan``; the pre-fold plans/ folder still counts on its own.
+        is_plan = (bool(rel) and rel.parts[0] == "plans") or fm.get("type") == "plan"
         for t in links:
             if t in names:
                 inbound.add(t)
@@ -173,7 +187,7 @@ def scan(cfg, stale_days=DEFAULT_STALE_DAYS, today=None):
                 info["memory-dangling"].append(f"{f.name}: [[{t}]]")
             elif not is_plan:
                 issues["broken-links"].append(f"{f.parent.name}/{f.name}: [[{t}]]")
-        if rel and rel.parts[0] in ("notes", "projects") and not f.stem.startswith("_"):
+        if rel and rel.parts[0] in _notes.KNOWLEDGE_FOLDERS and not f.stem.startswith("_"):
             if not fm.get("name"):
                 issues["frontmatter"].append(f"{rel}: missing frontmatter/name")
             elif fm["name"] != f.stem:
@@ -268,7 +282,7 @@ def render(issues, info, today):
 
 def run(cfg, stale_days=DEFAULT_STALE_DAYS, today=None, notify_on=False):
     """Scan, render, and — when anything is COUNTED — write the report to
-    ``reports/health/<date>-lint.md`` and append a LOG.md line.
+    ``mirror/health/<date>-lint.md`` and append a LOG.md line.
 
     Returns ``{issues, info, total, report, report_path}``; ``report_path`` is
     ``None`` on a clean pass (a clean run writes nothing, as in the source)."""
@@ -279,12 +293,12 @@ def run(cfg, stale_days=DEFAULT_STALE_DAYS, today=None, notify_on=False):
     out = None
     if total:
         vault = Path(cfg["vault"])
-        out = vault / "reports/health" / f"{day}-lint.md"
+        out = vault / _notes.HEALTH_DIR / f"{day}-lint.md"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(report)
         with open(vault / "LOG.md", "a") as fh:
             fh.write(f"- {day} {datetime.datetime.now():%H:%M} · lint · "
-                     f"{total} issues → reports/health/{out.name}\n")
+                     f"{total} issues → {_notes.HEALTH_DIR}/{out.name}\n")
         if notify_on:
             notify(total)
     return {"issues": issues, "info": info, "total": total, "report": report,

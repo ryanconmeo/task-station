@@ -1,5 +1,5 @@
 {
-  "_comment": "Peer registry for the brain-station federation. Each entry in 'people' points at a teammate's SHARED BRAIN mirror repo (org-readable). `python3 -m brain.search peers add <alias>` clones it lazily under ~/brains/peers/<alias>; nothing here is ever auto-cloned or auto-pulled. Out-of-registry peers can be added per-machine via the peers_extra config key. Replace the example below with your org's real people; commit changes to the org brain via /brain-promote (a lead approves the PR).",
+  "_comment": "Peer registry for the brain-station federation. Each entry in 'people' points at a teammate's SHARED BRAIN mirror repo (org-readable). `python3 -m brain.search peers add <alias>` clones it lazily under ~/knowledge/brains/peers/<alias>; nothing here is ever auto-cloned or auto-pulled. Out-of-registry peers can be added per-machine via the peers_extra config key. Replace the example below with your org's real people; commit changes to the org brain via /brain-promote (a lead approves the PR).",
   "people": [
     {
       "alias": "example-teammate",

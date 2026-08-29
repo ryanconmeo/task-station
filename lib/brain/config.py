@@ -14,9 +14,27 @@ Order of precedence, per key:
      ``TASK_STATION_BRAIN_*``
   2. ``~/.claude/brain-station.json``  (a full config, OR a one-line pointer
      ``{"config": "<path>"}`` that is followed to the real config)
-  3. ``~/brains/config.json``          (the home config, if present)
-  4. built-in defaults (content under ``~/brains/``; mutable state under the
+  3. ``~/knowledge/config.json``       (the home config, if present)
+  4. built-in defaults (content under ``~/knowledge/``; mutable state under the
      task-station data home)
+
+THE KNOWLEDGE CONTAINER (redesign ratified 2026-08-27). ``~/knowledge`` holds
+``brains/`` and, BESIDE it and inside no brain, ``memory/``::
+
+    ~/knowledge/
+      memory/                         the person's agent memory — NOT in a brain
+      brains/
+        <org-slug>/private            the work vault (this config's ``vault``)
+        <org-slug>/shared             the org-readable mirror (``publish_mirror``)
+        <org-slug>/org                the org-brain clone (``org_brain_clone``)
+        personal/<username>-brain     a brain that outlives the employer
+        peers/                        teammates' shared brains, read-only
+
+Memory sits beside the brains rather than inside one because memory belongs to
+the PERSON, and a person may keep a second personal brain — a brain-local memory
+was considered and REJECTED for exactly that reason. Every path here is a
+DEFAULT: an explicit ``vault``/``memory``/… in the config still wins, which is
+what lets an existing install keep whatever layout it already has.
 
 Robustness contract:
   * A malformed config file is not fatal to *read* paths: :func:`load` prints ONE
@@ -39,8 +57,10 @@ every machine. Nothing here is computed at import time (all paths read
 
 Layer rule: brain may import core, never board. Stdlib + ``core.paths`` only.
 """
+import getpass
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -51,6 +71,12 @@ ENV = {
     "vault": "TASK_STATION_BRAIN_VAULT",
     "memory": "TASK_STATION_BRAIN_MEMORY",
     "org_brain_clone": "TASK_STATION_BRAIN_ORG_BRAIN_CLONE",
+    # The org's short identity. It NAMES the per-org brain folder
+    # (``brains/<org-slug>/…``) — nothing else derives from it, so an install
+    # that sets `vault`/`publish_mirror`/`org_brain_clone` explicitly never needs
+    # it. Default "org": generic, never an org literal in this file.
+    "org_slug": "TASK_STATION_BRAIN_ORG_SLUG",
+    "personal_brain": "TASK_STATION_BRAIN_PERSONAL_BRAIN",
     "tasks_db": "TASK_STATION_BRAIN_TASKS_DB",
     "episodic_stream": "TASK_STATION_BRAIN_EPISODIC_STREAM",
     "state_dir": "TASK_STATION_BRAIN_STATE",
@@ -97,24 +123,82 @@ def _primary_config_path():
 
 
 def _home_root():
-    return Path.home() / "brains"
+    """The knowledge container: everything the person knows, in one place."""
+    return Path.home() / "knowledge"
+
+
+def _brains_root():
+    """Where the notebooks live. ``memory/`` is deliberately NOT under here."""
+    return _home_root() / "brains"
 
 
 def _home_config_path():
     return _home_root() / "config.json"
 
 
-def DEFAULT_VAULT():
-    return _home_root() / "brain"
+#: The org-folder name when no org identity is configured. A generic word, never
+#: an org literal — the real slug arrives from the user's config (an OrgProfile
+#: writes it) at runtime.
+DEFAULT_ORG_SLUG = "org"
+
+_SLUG_STRIP = re.compile(r"[^a-z0-9-]+")
 
 
-def DEFAULT_MEMORY(vault):
-    """Memory lives inside the vault (init migrate-then-links the native dir here)."""
-    return vault / "memory"
+def slugify(text):
+    """kebab-case a name for use as a folder segment. Empty in, empty out."""
+    s = _SLUG_STRIP.sub("-", str(text or "").strip().lower())
+    return re.sub(r"-{2,}", "-", s).strip("-")
 
 
-def DEFAULT_ORG_BRAIN():
-    return _home_root() / "org-brain"
+def host_username():
+    """The host identity a per-person folder or mirror name is derived from.
+
+    ``TASK_STATION_BRAIN_ALIAS`` wins so a machine whose login differs from the
+    org alias can say so once; otherwise the OS login. Never a value anyone types
+    into a profile — that is the 2026-08-15 ruling, and it lives HERE (rather
+    than in ``org_setup``, its first caller) because the personal-brain default
+    path needs the same identity and two resolvers would drift apart."""
+    alias = os.environ.get(ENV["alias"])
+    if alias and alias.strip():
+        return alias.strip()
+    for var in ("USER", "LOGNAME", "USERNAME"):
+        v = os.environ.get(var)
+        if v and v.strip():
+            return v.strip()
+    try:
+        return getpass.getuser()
+    except Exception:
+        return "unknown"
+
+
+def _org_dir(org_slug=None):
+    return _brains_root() / (slugify(org_slug) or DEFAULT_ORG_SLUG)
+
+
+def DEFAULT_VAULT(org_slug=None):
+    """The work vault — the private brain, one per org."""
+    return _org_dir(org_slug) / "private"
+
+
+def DEFAULT_MEMORY():
+    """Agent memory lives BESIDE the brains, inside none of them.
+
+    Memory is about the PERSON (how to work with them), not about any one
+    notebook, and a person may keep a second personal brain — so a brain-local
+    memory dir was considered and rejected. ``brain-init`` migrate-then-links the
+    harness's native memory dir here."""
+    return _home_root() / "memory"
+
+
+def DEFAULT_PERSONAL_BRAIN(username=None):
+    """The brain that survives a change of employer: off org storage by
+    construction, because it is not under the org folder."""
+    name = slugify(username if username is not None else host_username()) or "personal"
+    return _brains_root() / "personal" / f"{name}-brain"
+
+
+def DEFAULT_ORG_BRAIN(org_slug=None):
+    return _org_dir(org_slug) / "org"
 
 
 def _data_home():
@@ -148,14 +232,16 @@ def DEFAULT_STATE():
     return _data_home() / "brain-state"
 
 
-def DEFAULT_PUBLISH_MIRROR():
+def DEFAULT_PUBLISH_MIRROR(org_slug=None):
     """The shared-brain mirror repo — org-readable, owner-writable."""
-    return _home_root() / "shared-brain"
+    return _org_dir(org_slug) / "shared"
 
 
 def DEFAULT_PEERS_DIR():
-    """Where teammates' shared brains are cloned lazily, one dir per alias."""
-    return _home_root() / "peers"
+    """Where teammates' shared brains are cloned lazily, one dir per alias.
+    A sibling of the org folders, not a child: a peer clone belongs to no org of
+    yours."""
+    return _brains_root() / "peers"
 
 
 # --- helpers ---------------------------------------------------------------
@@ -206,7 +292,7 @@ def _resolve():
     if isinstance(home, dict):
         cfg.update(home)
     if isinstance(primary, dict):
-        cfg.update(primary)  # ~/.claude config wins over ~/brains/config.json
+        cfg.update(primary)  # ~/.claude config wins over ~/knowledge/config.json
     return cfg, (perr or herr)
 
 
@@ -216,12 +302,12 @@ def _env(key):
     return v if v else None
 
 
-def _resolve_org_brain_clone(cfg):
+def _resolve_org_brain_clone(cfg, org_slug=None):
     """The org-brain clone path.
 
       env  TASK_STATION_BRAIN_ORG_BRAIN_CLONE
       json org_brain_clone
-      else DEFAULT_ORG_BRAIN()
+      else DEFAULT_ORG_BRAIN(org_slug)
 
     The retired org-tier aliases were dropped in the source's 0.14.0, along with
     the extractor whose rename table was the reason they survived.
@@ -230,7 +316,7 @@ def _resolve_org_brain_clone(cfg):
     if v is None and cfg.get("org_brain_clone") is not None:
         v = cfg["org_brain_clone"]
     if v is None:
-        return DEFAULT_ORG_BRAIN()
+        return DEFAULT_ORG_BRAIN(org_slug)
     return Path(os.path.expanduser(str(v)))
 
 
@@ -308,7 +394,9 @@ def discover_native_memory(cwd=None):
     return candidates[0][1]
 
 
-def _resolve_memory(cfg, vault):
+def _resolve_memory(cfg):
+    """Where agent memory lives. Note the default is BESIDE the brains and takes
+    no vault argument — memory is not a part of any brain (2026-08-27)."""
     ev = _env("memory")
     if ev is not None:
         return Path(os.path.expanduser(ev))
@@ -317,7 +405,7 @@ def _resolve_memory(cfg, vault):
     disc = discover_native_memory()
     if disc is not None:
         return disc
-    return DEFAULT_MEMORY(vault)
+    return DEFAULT_MEMORY()
 
 
 def _resolve_keywords(cfg):
@@ -353,19 +441,25 @@ def load(_warn=True):
     if problem and _warn:
         _warn_once(problem)
 
-    vault = _pick_path(cfg, "vault", DEFAULT_VAULT())
+    # The org slug names the per-org brain folder, so it must resolve BEFORE the
+    # three paths derived from it. An explicit path always wins over the derived
+    # default — the slug only ever fills in a blank.
+    org_slug = slugify(_pick(cfg, "org_slug", DEFAULT_ORG_SLUG)) or DEFAULT_ORG_SLUG
+    vault = _pick_path(cfg, "vault", DEFAULT_VAULT(org_slug))
     tasks_db = _pick_path(cfg, "tasks_db", DEFAULT_TASKS_DB())
     return {
+        "org_slug": org_slug,
         "vault": vault,
-        "memory": _resolve_memory(cfg, vault),
+        "personal_brain": _pick_path(cfg, "personal_brain", DEFAULT_PERSONAL_BRAIN()),
+        "memory": _resolve_memory(cfg),
         "tasks_db": tasks_db,
         "episodic_stream": _pick_path(cfg, "episodic_stream", DEFAULT_EPISODIC_STREAM(tasks_db)),
         "state_dir": _pick_path(cfg, "state_dir", DEFAULT_STATE()),
-        "org_brain_clone": _resolve_org_brain_clone(cfg),
+        "org_brain_clone": _resolve_org_brain_clone(cfg, org_slug),
         "inject_context": _parse_bool(_pick(cfg, "inject_context", True), True),
         "auto_distill": _parse_bool(_pick(cfg, "auto_distill", True), True),
         "inject_keywords": _resolve_keywords(cfg),
-        "publish_mirror": _pick_path(cfg, "publish_mirror", DEFAULT_PUBLISH_MIRROR()),
+        "publish_mirror": _pick_path(cfg, "publish_mirror", DEFAULT_PUBLISH_MIRROR(org_slug)),
         "peers_dir": _pick_path(cfg, "peers_dir", DEFAULT_PEERS_DIR()),
         "peers_extra": _resolve_peers_extra(cfg),
         # knowledge plane: string values, org-agnostic, defaults are safe generics
