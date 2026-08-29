@@ -10,7 +10,7 @@
 # the thing worth catching. So the FLOOR lives in the COMMAND, here, where it is readable
 # and can be raised deliberately, and the claim expects a pass token.
 #
-# Usage:  bash tests/claims.sh <suite|rail|pickup|nowait|pushlimb>
+# Usage:  bash tests/claims.sh <suite|rail|pickup|nowait|pushlimb|onmain|shipped>
 # Each prints exactly one token on the last line. Never exits non-zero for a failed
 # assertion — the token is the verdict, and `claims verify` reads the token.
 set -u
@@ -84,6 +84,28 @@ PY
     # suite is a claim — `exits.command_timeout` is tuned for a grep, deliberately.
     python3 -c 'import inspect, sys; sys.path.insert(0, "lib"); import board.cmds.sub as sub; print("PUSH-LIMB-WIRED-OK" if "_pickup_block(" in inspect.getsource(sub.cmd_stop_gate) else "PUSH-LIMB-MISSING")'
     ;;
+  onmain)
+    # MERGE-GATED, and reads the MERGE TARGET rather than this branch. Every other
+    # assertion here resolves the worktree first, so all of them would go green with
+    # nothing merged — a fair call from the gate. This one cannot: it reads origin/main's
+    # own copy of the shipped file, so it is red until PR 38 lands and green afterwards
+    # from any checkout, including one that has never seen this branch.
+    MAIN="${TS_MAIN:-$HOME/Workspace-Other/task-station}"
+    git -C "$MAIN" fetch -q origin 2>/dev/null
+    if git -C "$MAIN" show origin/main:lib/board/cmds/sub.py 2>/dev/null | grep -q "_pickup_block("; then
+      echo "RAIL-ON-MAIN-OK"
+    else
+      echo "RAIL-ABSENT-FROM-MAIN"
+    fi
+    ;;
+  shipped)
+    # THE DEEPER MERGE GATE. Deploy is bump-and-push-main and autoUpdate is VERSION-GATED,
+    # so a branch that merges BELOW main never reaches an install at all — it would land
+    # on main and ship to nobody. That is the real reason this branch renumbered from
+    # 3.34.0 to 3.40.0, and this is the assertion that would have caught it: the version
+    # the plugin actually RESOLVES on this machine, floored at the one this work ships in.
+    python3 -c 'import json,os,sys; sys.path.insert(0,"lib"); import turn; p=os.path.expanduser("~/.claude/task-station-engine/../.claude-plugin/plugin.json"); v=json.load(open(p))["version"] if os.path.exists(p) else "0.0.0"; print("SHIPPED-AT-OR-PAST-OK "+v if turn._version_key(v) >= turn._version_key("3.40.0") else "SHIPPED-BEHIND "+v)'
+    ;;
   *)
-    echo "usage: claims.sh <suite|rail|pickup|nowait|pushlimb>"; exit 2 ;;
+    echo "usage: claims.sh <suite|rail|pickup|nowait|pushlimb|onmain|shipped>"; exit 2 ;;
 esac
