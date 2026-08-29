@@ -121,6 +121,71 @@ record is fine", which is precisely the mis-read the third row exists to prevent
   Heal-due    1 task(s) flagged — run `/heal` : a union is a re-fragmentation event …
 ```
 
+## Two destinations: backup and share
+
+They are different things and the transport keeps them apart on purpose.
+
+|  | **backup** | **share** |
+|---|---|---|
+| what it is for | durability | visibility |
+| what goes in it | **every task, unfiltered** | **a chosen subset** |
+| who reads it | you | whoever it is shared with |
+| filtered? | **never** | **always, on write** |
+| merged back? | yes | no — it is a one-way view |
+
+**Backup is never filtered.** A task that never leaves the machine cannot be restored
+onto a new one, so filtering the backup would kill the guarantee it exists to provide.
+
+**Share is private by default, and the default is enforced when the file is written.**
+A task reaches a share exchange only because a sharing rule on its brain names an
+audience for it. With no rule there is **no file** — not a hidden one, not a redacted
+one. That matters more than it sounds: a read-side filter leaves the bytes sitting in
+a repository other people can read, and then every reader, every future reader and
+every tool that walks the tree is a place the leak can happen. A write-side filter
+means the bytes are not there at all.
+
+```sh
+task-station sync --init  ~/task-sync          # backup  — everything
+task-station sync --init-share ~/task-share    # share   — only what you share
+task-station brains share <brain> --with org   # the ONLY thing that widens it
+```
+
+`sync` runs both, **backup first** — durability before visibility, so if the process
+dies between them the copy that survived is the one that loses nothing.
+
+An exchange **declares its own kind** in `exchange.json`, written once at `--init` and
+never rewritten. Aiming a backup run at a share exchange is refused rather than
+silently un-filtered, and pointing both at one directory is refused outright — one
+path that is both the unfiltered backup and the readable share is the single worst
+misconfiguration available here, and it is one typo away.
+
+### What a shared task actually publishes
+
+An **allow-list**, not a deny-list — a deny-list leaks every field added after it was
+written. At the default trail visibility a shared task publishes its identity, its
+goal and its step counts:
+
+```json
+{"kind": "share", "audience": ["org"], "visibility": "private",
+ "task": {"handle": "kosei-787bcc6b", "title": "SHARED-release-plan",
+          "status": "open", "live": false,
+          "digest": {"goal": "the team sees this", "state": "",
+                     "decisions_tail": [], "steps_done": 0, "steps_total": 0}}}
+```
+
+Sharing a task is **not** sharing its trail. `trail_visibility` on the task governs
+that separately — `private` (the default) publishes no state and no decisions,
+`checkpoints` adds the digest, `full` adds the prompt trail.
+
+Never published at any visibility: your **cost and token spend**, your **sessions**,
+work-mix and usage, your **file paths and repo names**, and the summary/history/
+glossary narrative. Those are not stripped afterwards — they are never built into a
+share view in the first place, so no stripper bug can fail to remove them.
+
+**Un-sharing takes it back.** Remove the rule and the next sync deletes the published
+file and leaves a tombstone, so "I removed the rule" is true of the repository and not
+only of the config.
+
 ## Everyday use
 
 ```sh

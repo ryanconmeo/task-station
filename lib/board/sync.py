@@ -84,14 +84,46 @@ import decisions as _dec
 import station as _station
 from core.fsutil import atomic_write as _atomic_write
 
+# TWO DESTINATIONS, AND THEY MUST NEVER BECOME ONE.
+#
+#   BACKUP  durability. EVERY task, no exceptions, no reader but the owner. A task
+#           that never leaves the machine cannot be restored onto a new one, so the
+#           backup path is NEVER filtered — filtering it kills the guarantee it
+#           exists to provide.
+#   SHARE   visibility. A CHOSEN SUBSET, readable by someone else. Filtered ON WRITE:
+#           a task with no sharing rule has no file in the share exchange at all.
+#
+# Filtering on WRITE rather than on read is the safety property. A read-side filter
+# means the bytes are sitting in the shared repository and something has to remember
+# to hide them; every reader, every future reader, and every tool that walks the tree
+# is then a place the leak can happen. A write-side filter means THE BYTES ARE NOT
+# THERE, and no reader bug can leak what was never written.
+KIND_BACKUP = "backup"
+KIND_SHARE = "share"
+KINDS = (KIND_BACKUP, KIND_SHARE)
+
+# An exchange declares its OWN kind, in its own root, written at --init. The
+# destination's bytes say what it is, so pointing a backup run at a share repo cannot
+# silently un-filter it — the mistake that would put every private task into an
+# org-readable repository in one command.
+EXCHANGE_FILE = "exchange.json"
+
 OWNERS_DIR = "owners"
 TASKS_DIR = "tasks"
 TASK_EXT = ".json"
 TOMBSTONE_EXT = ".tombstone"
 SYNC_ENV = "TASK_STATION_SYNC_DIR"
+SHARE_ENV = "TASK_STATION_SHARE_DIR"
 
 PAYLOAD_SCHEMA = 1
 FIELD_TS = "field_ts"
+
+
+class DestinationMismatch(RuntimeError):
+    """A run was aimed at an exchange whose declared kind is not the one asked for.
+    Raised, never coerced: writing unfiltered backup records into a SHARE exchange is
+    the exact leak this module exists to prevent, and quietly doing the other thing
+    instead would hide the misconfiguration that caused it."""
 
 
 class PartitionViolation(RuntimeError):
@@ -196,6 +228,89 @@ def sync_root():
     if v and str(v).strip():
         return os.path.expanduser(str(v).strip())
     return None
+
+
+def share_root():
+    """The SHARE exchange, or None when nothing is shared (the default, and the point).
+    env TASK_STATION_SHARE_DIR > config `share_dir`."""
+    env = os.environ.get(SHARE_ENV)
+    if env and env.strip():
+        return os.path.expanduser(env.strip())
+    try:
+        import config as _config
+        v = _config.get("share_dir")
+    except Exception:
+        v = None
+    if v and str(v).strip():
+        return os.path.expanduser(str(v).strip())
+    return None
+
+
+def exchange_kind(root, default=KIND_BACKUP):
+    """What an exchange says it IS, read from its own `exchange.json`. An exchange
+    created before kinds existed carries no declaration and reads as `backup`, which
+    is the safe default: it means the unfiltered records already in it stay where they
+    are rather than a share filter being applied to a repository that never had one."""
+    try:
+        with open(os.path.join(root, EXCHANGE_FILE), encoding="utf-8") as f:
+            k = (json.load(f) or {}).get("kind")
+        return k if k in KINDS else default
+    except Exception:
+        return default
+
+
+def write_exchange_kind(root, kind, now=None):
+    """Stamp an exchange's kind. Written once at --init and never rewritten by a sync:
+    changing a backup repository into a share one is a decision with a blast radius,
+    not a side effect."""
+    if kind not in KINDS:
+        raise ValueError("exchange kind must be one of %s" % (KINDS,))
+    os.makedirs(root, exist_ok=True)
+    path = os.path.join(root, EXCHANGE_FILE)
+    if os.path.exists(path):
+        return exchange_kind(root)
+    _atomic_write(path, json.dumps(
+        {"kind": kind, "created_ts": time.time() if now is None else now}, indent=1) + "\n")
+    return kind
+
+
+def require_kind(root, kind):
+    """The exchange at `root`, proved to be the kind the caller intends. Raises
+    DestinationMismatch otherwise."""
+    actual = exchange_kind(root)
+    if actual != kind:
+        raise DestinationMismatch(
+            "%s is a %s exchange, but this run treats it as %s. Refusing: a %s run "
+            "writes %s, and putting those in the other kind of repository is the leak "
+            "this refusal exists to prevent."
+            % (root, actual, kind, kind,
+               "every task, unfiltered" if kind == KIND_BACKUP
+               else "only explicitly shared tasks"))
+    return actual
+
+
+def destinations(backup=None, share=None):
+    """Every configured destination, backup first, as
+    `[{"root", "kind"}, …]`. Empty when nothing is configured — sync is OFF by default
+    and sharing is off by default INSIDE that.
+
+    REFUSES TO LET THE TWO BE THE SAME DIRECTORY. One path that is both the
+    unfiltered backup and the readable share is the single worst misconfiguration
+    available here, and it is one typo away, so it is checked rather than trusted."""
+    b = backup if backup is not None else sync_root()
+    sh = share if share is not None else share_root()
+    if b and sh and os.path.realpath(os.path.expanduser(b)) == \
+            os.path.realpath(os.path.expanduser(sh)):
+        raise DestinationMismatch(
+            "sync_dir and share_dir are the SAME directory (%s). Backup is every task "
+            "and share is a chosen subset; one directory cannot be both, and treating "
+            "it as both publishes every private task to whoever can read it." % b)
+    out = []
+    if b:
+        out.append({"root": b, "kind": KIND_BACKUP})
+    if sh:
+        out.append({"root": sh, "kind": KIND_SHARE})
+    return out
 
 
 def owners_dir(root):
@@ -313,6 +428,131 @@ def export_payload(task, prev=None, now=None):
             ts[k] = base if prev is None else now
     return {"schema": PAYLOAD_SCHEMA, "owner": _station.owner(),
             "station": _station.number(), FIELD_TS: ts, "task": body}
+
+
+# ------------------------------------------------------- the share-side filter ----
+#
+# PRIVATE BY DEFAULT, ENFORCED ON WRITE. A task reaches a share exchange only if a
+# sharing rule on ITS BRAIN names an audience for it. No rule means no audience means
+# NO FILE — not a hidden file, not a redacted file, no file. brains.json ships with no
+# rules, so the default state of a brand-new install shares nothing at all, and the
+# only way to widen that is an explicit `brains share` the owner ran.
+#
+# THE SHARE PAYLOAD IS A VIEW, NOT A RECORD. It carries the feed view-model built with
+# `rich=False` — no sessions, no usage, no cost, no work-mix, no prompt trail, no
+# resume path, because those are never built for it in the first place — and then goes
+# through `feeds.strip_local_only`, the SAME stripper the feed export uses, so the
+# trail-visibility policy has one implementation rather than two that can drift apart.
+# It is deliberately not mergeable: sharing is one-way visibility, and a view that
+# could merge back into the owner's record would be a write path nobody asked for.
+
+
+def _task_tag(task):
+    """The task's category TAG — what a tag-scoped sharing rule matches on."""
+    try:
+        import categories
+        meta = categories.hub_meta(task.get("color")) if task.get("color") else None
+        return (meta or {}).get("tag")
+    except Exception:
+        return None
+
+
+def share_audience(task, cfg):
+    """WHO may see this task, resolved from its brain's sharing rules. Empty list =
+    nobody = it is never written to a share exchange.
+
+    A task belonging to ANOTHER OWNER is never shared onward by this station either.
+    Receiving someone's task does not make you entitled to republish it, and their
+    sharing decision is not yours to widen."""
+    if not exports_here(task):
+        return []
+    tid = task.get("uuid") or task.get("id")
+    if not tid:
+        return []
+    try:
+        import brains as _brains
+        return list(_brains.shares_for(cfg, tid, _task_tag(task)) or [])
+    except Exception:
+        return []
+
+
+# WHAT MAY LEAVE, BY NAME. An ALLOW-LIST, and the direction matters more than the
+# contents: a deny-list leaks every field added after it was written, silently and by
+# default, which is exactly the failure mode a privacy filter cannot have. A field
+# absent from these tuples does not cross, and adding one is a visible edit here.
+#
+# Three levels, matching the task's own `trail_visibility` and the policy
+# `feeds.strip_local_only` already enforces on feeds.
+SHARE_IDENTITY = ("uuid8", "handle", "title", "status", "owner", "participants",
+                  "brain", "shares", "shared_org", "category", "effort",
+                  "updated_ts", "trail_visibility", "forked_from")
+SHARE_DIGEST_ALWAYS = ("goal", "steps_done", "steps_total")
+SHARE_DIGEST_CHECKPOINTS = ("state", "decisions_tail")
+SHARE_CHECKPOINT_EXTRA = ("signals", "relations", "links")
+SHARE_FULL_EXTRA = ("prompts",)
+
+# NOT SHAREABLE AT ANY LEVEL, listed so the reasoning is on the record rather than in
+# the absence of a name: `tokens` / `cost_usd` / `models` are the owner's spend,
+# `summary` / `history` / `glossary` are narrative the trail-visibility levels govern
+# elsewhere, `files` / `repos` are paths and project names, and `sessions` /
+# `session_tree` / `usage` / `work_mix` / `resume` / `open_command` are machine-local
+# by construction. None of them is ever built into a share view.
+
+
+def share_view(ts, backend, task, cfg):
+    """The sync-safe VIEW of one task, or None when it must not leave.
+
+    THREE GATES, all of which must pass, and the first is the one that matters:
+
+      1. AN AUDIENCE EXISTS. No sharing rule → None → no file is ever written. This is
+         private-by-default, and it is enforced here rather than at read time so the
+         bytes never exist to be leaked.
+      2. THE VIEW IS BUILT WITHOUT THE SELF-ONLY BLOCK (`rich=False`) — sessions,
+         usage, cost, work-mix, prompt trail and resume path are never constructed, so
+         no stripper bug can fail to remove them.
+      3. THE RESULT IS PROJECTED THROUGH AN ALLOW-LIST at the task's own trail
+         visibility, and then still routed through `feeds.strip_local_only` — two
+         independent filters, because one of them being wrong should not be enough."""
+    audience = share_audience(task, cfg)
+    if not audience:
+        return None
+    import feeds as _feeds
+    vm = _feeds.self_view_model(ts, backend, task, set(), cfg, rich=False)
+    vis = (vm.get("trail_visibility") or "private").lower()
+
+    out = {k: vm[k] for k in SHARE_IDENTITY if k in vm}
+    out["live"] = False                     # liveness is never federated
+    digest = vm.get("digest") or {}
+    d = {k: digest.get(k) for k in SHARE_DIGEST_ALWAYS}
+    if vis in ("checkpoints", "full"):
+        d.update({k: digest.get(k) for k in SHARE_DIGEST_CHECKPOINTS})
+        for k in SHARE_CHECKPOINT_EXTRA:
+            if k in vm:
+                out[k] = vm[k]
+    else:
+        d["state"] = ""
+        d["decisions_tail"] = []
+    if vis == "full":
+        for k in SHARE_FULL_EXTRA:
+            if k in vm:
+                out[k] = vm[k]
+    out["digest"] = d
+    stripped = _feeds.strip_local_only({"tasks": [out],
+                                        "local_only": list(_feeds.LOCAL_ONLY_FIELDS)})
+    return (stripped.get("tasks") or [None])[0]
+
+
+def share_payload(ts, backend, task, cfg, now=None):
+    """The file this station writes into a SHARE exchange for one task, or None."""
+    view = share_view(ts, backend, task, cfg)
+    if view is None:
+        return None
+    return {"schema": PAYLOAD_SCHEMA, "kind": KIND_SHARE,
+            "owner": _station.owner(), "station": _station.number(),
+            "audience": share_audience(task, cfg),
+            "visibility": (task.get("trail_visibility") or "private"),
+            "shared_ts": time.time() if now is None else now,
+            "task": view}
 
 
 def _canon(v):
@@ -600,6 +840,23 @@ def ensure_own_partition(root):
     return p
 
 
+SHARE_README = """# task-station SHARE exchange
+
+A **chosen subset**, readable by the people it is shared with. It is not a backup and
+it is not a mirror of anybody's board.
+
+A task appears here only because a sharing rule on its brain names an audience for it.
+A task with no rule has **no file here at all** — not a hidden one, not a redacted one.
+The filter runs when the file is written, so there is nothing here for a reader bug to
+leak.
+
+Each file is a read-only VIEW, cut to the task's own trail visibility. It is
+deliberately not mergeable: sharing is one-way.
+
+Do not point a backup sync at this directory. `exchange.json` says what this is, and
+the transport refuses the mismatch.
+"""
+
 README = """# task-station sync repo
 
 One JSON file per task, under `owners/<owner>/station-<n>/tasks/<uuid>.json`.
@@ -614,19 +871,25 @@ the task from any peer that still holds it.
 """
 
 
-def init_root(root):
-    """Bring the exchange directory into existence: the layout, this station's
-    partition, a README, and a LOCAL git repo when git is available. Creates no
-    remote and contacts no network — adding a remote is a deliberate human step."""
+def init_root(root, kind=KIND_BACKUP):
+    """Bring an exchange into existence: its declared KIND, the layout, this station's
+    partition, a README that says which kind it is, and a LOCAL git repo when git is
+    available. Creates no remote and contacts no network — adding a remote is a
+    deliberate human step.
+
+    The kind is stamped FIRST and never rewritten, so an existing exchange keeps the
+    identity it already has and `--init` on it is a no-op rather than a conversion."""
     os.makedirs(owners_dir(root), exist_ok=True)
+    actual = write_exchange_kind(root, kind)
     ensure_own_partition(root)
     readme = os.path.join(root, "README.md")
     if not os.path.exists(readme):
-        _atomic_write(readme, README)
+        _atomic_write(readme, SHARE_README if actual == KIND_SHARE else README)
     created_repo = False
     if not os.path.isdir(os.path.join(root, ".git")) and _git_available():
         created_repo = _git(root, "init", "-q").ok
-    return {"root": root, "partition": own_partition_dir(root),
+    return {"root": root, "kind": actual, "requested_kind": kind,
+            "partition": own_partition_dir(root),
             "git": os.path.isdir(os.path.join(root, ".git")),
             "created_repo": created_repo}
 
@@ -733,7 +996,88 @@ def _local_index(ts):
     return {t.get("id"): t for t in ts.all_tasks() if t.get("id")}
 
 
-def run_sync(ts, root=None, now=None, dry_run=False, no_net=False):
+def _brains_cfg():
+    """The loaded brains.json — where every sharing rule lives. A hiccup degrades to
+    the DEFAULT config, which has no rules at all, so a failure to read the sharing
+    config shares NOTHING rather than sharing everything. The safe direction is not an
+    accident here; it is the only acceptable one."""
+    try:
+        import brains as _brains
+        import paths as _paths
+        return _brains.load(_paths.data_dir())
+    except Exception:
+        try:
+            import brains as _brains
+            return _brains._default()
+        except Exception:
+            return {"brains": {}, "assign": {}}
+
+
+def _export_share(ts, root, live, tombs, now, dry_run, rep):
+    """Write this station's SHARE partition: the shared subset, and nothing else.
+
+    Three outcomes per task, all counted:
+      SHARED     an audience exists → the stripped view is written;
+      WITHHELD   no audience → NO FILE IS WRITTEN. The default for every task.
+      RETRACTED  an audience USED to exist and no longer does → the file is removed and
+                 a tombstone left behind. Un-sharing has to actually take something
+                 back, or "I removed the rule" would be a lie the repository contradicts."""
+    cfg = _brains_cfg()
+    backend = ts._backend()
+    published = set()
+    for uid, task in sorted(live.items()):
+        if uid in tombs:
+            continue
+        try:
+            path = own_payload_path(root, uid)
+        except PartitionViolation as e:
+            rep["violations"].append(str(e))
+            continue
+        payload = share_payload(ts, backend, task, cfg, now=now)
+        if payload is None:
+            rep["withheld"] += 1
+            if os.path.exists(path):
+                if not dry_run:
+                    write_own_tombstone(root, uid, now=now)
+                rep["retracted"].append(_ref(task))
+            continue
+        published.add(uid)
+        # Re-sharing has to CLEAR the retraction, or the exchange carries the task and
+        # its tombstone at once and a peer is told two opposite things.
+        tomb = path[:-len(TASK_EXT)] + TOMBSTONE_EXT
+        if os.path.exists(tomb) and not dry_run:
+            try:
+                os.remove(tomb)
+            except OSError:
+                pass
+        prev = read_payload(path)
+        if prev is not None and _canon(prev.get("task")) == _canon(payload.get("task")) \
+                and (prev.get("audience") or []) == (payload.get("audience") or []):
+            rep["shared"] += 1
+            continue
+        if not dry_run:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            _atomic_write(path, json.dumps(payload, indent=1, sort_keys=True,
+                                           ensure_ascii=False, default=str) + "\n")
+        rep["shared"] += 1
+        rep["exported"].append(_ref(task))
+    # A file for a task that no longer exists locally is retracted too — the same
+    # sweep the backup path runs, for the same reason.
+    try:
+        for name in sorted(os.listdir(own_write_path(root, TASKS_DIR))):
+            if not name.endswith(TASK_EXT):
+                continue
+            uid = name[:-len(TASK_EXT)]
+            if uid in published or uid in live:
+                continue
+            if not dry_run:
+                write_own_tombstone(root, uid, now=now)
+            rep["retracted"].append(uid[:8])
+    except (OSError, PartitionViolation):
+        pass
+
+
+def run_sync(ts, root=None, now=None, dry_run=False, no_net=False, kind=None):
     """One full sync pass. Returns the report dict `format_report` renders.
 
     ORDER MATTERS. Pull, then IMPORT, then EXPORT: importing first means this
@@ -751,11 +1095,21 @@ def run_sync(ts, root=None, now=None, dry_run=False, no_net=False):
            "created": [], "merged": [], "deleted": [], "exported": [],
            "tombstoned": [], "violations": [], "unreadable": 0,
            "fields": {"taken": 0, "unioned": 0, "preserved": 0, "filled": 0},
-           "clashes": {}, "heal_due": [], "partitions": []}
+           "clashes": {}, "heal_due": [], "partitions": [],
+           "kind": kind or KIND_BACKUP, "shared": 0, "withheld": 0, "retracted": []}
     if not root:
         rep["error"] = ("sync is OFF — no exchange directory configured. "
                         "`task-station sync --init <dir>` creates one, or set "
                         "`sync_dir` in config / %s in the environment." % SYNC_ENV)
+        return rep
+    # WHAT THIS EXCHANGE IS comes from the exchange itself, not from the caller's
+    # intention. A caller that states a kind has it CHECKED against the declaration and
+    # refused on a mismatch — writing unfiltered records into a share repository is the
+    # leak, and it is one wrong flag away.
+    try:
+        rep["kind"] = require_kind(root, kind) if kind else exchange_kind(root)
+    except DestinationMismatch as e:
+        rep["error"] = str(e)
         return rep
     ensure_own_partition(root)
     rep["git"]["repo"] = is_git_repo(root)
@@ -766,6 +1120,18 @@ def run_sync(ts, root=None, now=None, dry_run=False, no_net=False):
         rep["git"]["pull"] = "ok" if r.ok else ("offline/failed: %s" % r.out[:200])
 
     local = _local_index(ts)
+    rep["partitions"] = [{"owner": p["owner"], "number": p["number"],
+                          "label": p["label"]} for p in list_partitions(root)]
+
+    # -- A SHARE EXCHANGE IS EXPORT ONLY, and it exits here.
+    #
+    # Nothing in it is imported into the store: every file in it is a stripped,
+    # one-way VIEW, and importing a view as if it were a record would fabricate tasks
+    # out of somebody's redacted digest. Reading peers' shared views is a RENDER
+    # concern (peer feeds), not a store concern, so it does not belong on this path.
+    if rep["kind"] == KIND_SHARE:
+        _export_share(ts, root, local, {}, now, dry_run, rep)
+        return _finish(root, rep, dry_run)
 
     # -- LOCAL DELETES FIRST, and the order is the whole point. A uuid this station
     #    published and no longer holds was deleted HERE. Every peer still publishes
@@ -786,8 +1152,6 @@ def run_sync(ts, root=None, now=None, dry_run=False, no_net=False):
         pass
 
     payloads, tombs = collect_remote(root)
-    rep["partitions"] = [{"owner": p["owner"], "number": p["number"],
-                          "label": p["label"]} for p in list_partitions(root)]
 
     # -- tombstones first: a delete must beat an older edit, and win ties, or the
     #    task resurrects on the very next pass from whoever still holds it.
@@ -845,6 +1209,14 @@ def run_sync(ts, root=None, now=None, dry_run=False, no_net=False):
 
     # -- export: this station's own partition, and only ever this station's
     live = _local_index(ts) if not dry_run else local
+    # THE SECOND SHARE GUARD, AND IT IS DELIBERATE. The run already returned above for
+    # a share exchange; this catches any future path that reaches the export without
+    # passing through that return. Do not "simplify" it away — a red probe that removed
+    # only the first guard still came back GREEN, which is exactly what a second guard
+    # is for and exactly why one of them alone is not enough to trust.
+    if rep["kind"] == KIND_SHARE:
+        _export_share(ts, root, live, tombs, now, dry_run, rep)
+        return _finish(root, rep, dry_run)
     for uid, task in sorted(live.items()):
         if uid in tombs or not exports_here(task):
             continue
@@ -864,13 +1236,19 @@ def run_sync(ts, root=None, now=None, dry_run=False, no_net=False):
                 ts.save_task(task)
         rep["exported"].append(_ref(task))
 
-    # -- commit; push only when there is somewhere to push to
+    return _finish(root, rep, dry_run)
+
+
+def _finish(root, rep, dry_run):
+    """Commit; push only when there is somewhere to push to. Shared by both kinds so
+    the share path cannot drift into a different transport."""
     if rep["git"]["repo"] and not dry_run:
         _git(root, "add", "-A")
         st = _git(root, "status", "--porcelain")
         if st.ok and st.out.strip():
             c = _git(root, "commit", "-q", "-m",
-                     "sync: %s %s" % (_station.owner(), _station.dirname()))
+                     "%s: %s %s" % (rep.get("kind") or KIND_BACKUP,
+                                    _station.owner(), _station.dirname()))
             rep["git"]["commit"] = "ok" if c.ok else c.out[:200]
         else:
             rep["git"]["commit"] = "nothing to commit"
@@ -879,6 +1257,25 @@ def run_sync(ts, root=None, now=None, dry_run=False, no_net=False):
             rep["git"]["push"] = "ok" if p.ok else ("queued (offline/failed): %s"
                                                     % p.out[:200])
     return rep
+
+
+def run_all(ts, backup=None, share=None, now=None, dry_run=False, no_net=False):
+    """Sync every configured destination, BACKUP FIRST. Returns a list of reports.
+
+    Backup first is deliberate: durability before visibility. If the process dies
+    between the two, what survived is the copy that loses nothing."""
+    try:
+        dests = destinations(backup=backup, share=share)
+    except DestinationMismatch as e:
+        return [{"root": None, "error": str(e), "kind": None,
+                 "git": {}, "partitions": []}]
+    if not dests:
+        return [{"root": None, "kind": KIND_BACKUP, "git": {}, "partitions": [],
+                 "error": ("sync is OFF — no exchange directory configured. "
+                           "`task-station sync --init <dir>` creates one, or set "
+                           "`sync_dir` in config / %s in the environment." % SYNC_ENV)}]
+    return [run_sync(ts, root=d["root"], now=now, dry_run=dry_run, no_net=no_net,
+                     kind=d["kind"]) for d in dests]
 
 
 def _merge_field_ts(local, payload):
@@ -926,7 +1323,7 @@ def format_report(rep):
     root = rep.get("root")
     parts = rep.get("partitions") or []
     mine = [p for p in parts if p]
-    out.append("Sync — %s" % root)
+    out.append("%s — %s" % ("Share" if rep.get("kind") == KIND_SHARE else "Sync", root))
     out.append("  %d partition(s): %s"
                % (len(mine), ", ".join("%s/%s" % (p["owner"], _station.dirname(p["number"]))
                                        for p in mine) or "none yet"))
@@ -945,25 +1342,41 @@ def format_report(rep):
     mech = ("REFUSED %d write(s) outside this station's partition" % len(viol)) if viol \
         else "clean — 0 conflicts possible (each station writes only its own partition)"
     f = rep.get("fields") or {}
-    judg = ("%d task(s) merged · %d field(s) taken · %d unioned · %d value(s) preserved"
-            % (len(rep.get("merged") or []), f.get("taken", 0), f.get("unioned", 0),
-               f.get("preserved", 0)))
-    clash = rep.get("clashes") or {}
-    if clash:
-        judg += " · %d element flag clash(es) kept local" % sum(clash.values())
-    heal = rep.get("heal_due") or []
-    healrow = ("%d task(s) flagged — run `/heal` : a union is a re-fragmentation "
-               "event and MEANING is checked by nothing here" % len(heal)) if heal \
-        else "nothing to reconcile"
+    if rep.get("kind") == KIND_SHARE:
+        # The judgment a SHARE run makes is "who may see what", so that is what its
+        # judgment row says. WITHHELD is stated as a number rather than left implicit:
+        # "3 shared" alone never tells you whether the other forty were considered.
+        judg = ("%d task(s) shared · %d WITHHELD (no sharing rule — private by "
+                "default, and no file was written) · %d retracted"
+                % (rep.get("shared", 0), rep.get("withheld", 0),
+                   len(rep.get("retracted") or [])))
+        healrow = ("nothing to reconcile — a share exchange is a one-way VIEW and is "
+                   "never merged back")
+    else:
+        judg = ("%d task(s) merged · %d field(s) taken · %d unioned · %d value(s) preserved"
+                % (len(rep.get("merged") or []), f.get("taken", 0), f.get("unioned", 0),
+                   f.get("preserved", 0)))
+        clash = rep.get("clashes") or {}
+        if clash:
+            judg += " · %d element flag clash(es) kept local" % sum(clash.values())
+        heal = rep.get("heal_due") or []
+        healrow = ("%d task(s) flagged — run `/heal` : a union is a re-fragmentation "
+                   "event and MEANING is checked by nothing here" % len(heal)) if heal \
+            else "nothing to reconcile"
     out.append("  Mechanical  %s" % mech)
     out.append("  Judgment    %s" % judg)
     out.append("  Heal-due    %s" % healrow)
     out.append("")
-    out.append("  in : %d created · %d merged · %d deleted"
-               % (len(rep.get("created") or []), len(rep.get("merged") or []),
-                  len(rep.get("deleted") or [])))
-    out.append("  out: %d exported · %d tombstoned"
-               % (len(rep.get("exported") or []), len(rep.get("tombstoned") or [])))
+    if rep.get("kind") == KIND_SHARE:
+        out.append("  out: %d written · %d retracted   (EXPORT ONLY — a share exchange "
+                   "is never imported into the store)"
+                   % (len(rep.get("exported") or []), len(rep.get("retracted") or [])))
+    else:
+        out.append("  in : %d created · %d merged · %d deleted"
+                   % (len(rep.get("created") or []), len(rep.get("merged") or []),
+                      len(rep.get("deleted") or [])))
+        out.append("  out: %d exported · %d tombstoned"
+                   % (len(rep.get("exported") or []), len(rep.get("tombstoned") or [])))
     for v in viol:
         out.append("  !! %s" % v)
     return "\n".join(out)
