@@ -35,7 +35,11 @@ FIVE PROPERTIES, ONE PER CLASS.
      now does too, because a child can forget to file a report and cannot fake a set of
      exit conditions somebody wrote down before the work started.
 
-  5. SessionsStopsSayingOnlyBusy — the surface that actually lied. `status` is the harness's
+  5. TheHarnessEdgeIsNamedNotRebuilt — the gate bounds the delay by the parent's own
+     cadence; the fastest edge is the harness's one-shot idle subscription, which only the
+     MODEL can call. `invoke` hands it over rather than the engine growing a poller.
+
+  6. SessionsStopsSayingOnlyBusy — the surface that actually lied. `status` is the harness's
      word for "mid-turn"; the task itself knows whether the work is finished, and the
      listing now says so.
 
@@ -635,7 +639,39 @@ class SessionsStopsSayingOnlyBusy(_PickupBase):
         self.assertIn("task_id", live_sessions.running.__doc__)
 
 
-# ---------------------------------------------------- (6) the cold-start contract ----
+# --------------------------------------------- (6) the harness edge, not rebuilt ----
+
+class TheHarnessEdgeIsNamedNotRebuilt(_PickupBase):
+    """The gate bounds the delay by the parent's own cadence. The FASTEST edge is the
+    harness's own one-shot idle subscription, and no engine function can call it — it is a
+    tool, not a shell command. So `invoke` tells the spawning model to, which is the whole
+    of "adopt, do not build"."""
+
+    def test_invoke_hands_the_parent_the_subscription_to_make(self):
+        child = self._task("kid")
+        lines = "\n".join(ts._subscribe_lines(child, "sid-1234"))
+        self.assertIn("notify_when_idle: true", lines)
+        self.assertIn("ListAgents", lines)
+        self.assertIn("costs it nothing", lines)
+
+    def test_it_says_the_notice_is_not_proof(self):
+        """A child that pauses mid-turn is idle too, so a subscription alone would report
+        a thinking child as finished — the same lie liveness told, arriving faster. The
+        record is what says whether anything landed."""
+        child = self._task("kid")
+        lines = "\n".join(ts._subscribe_lines(child, "sid-1234"))
+        self.assertIn("LOOK, not done", lines)
+        self.assertIn("turn --task %s" % child["seq"], lines)
+        self.assertIn("pickup", lines)
+
+    def test_no_polling_is_prescribed_anywhere_in_it(self):
+        child = self._task("kid")
+        lines = " ".join(ts._subscribe_lines(child, "sid-1234"))
+        self.assertIn("no polling", lines)
+        self.assertNotIn("scan --task", lines)
+
+
+# ---------------------------------------------------- (7) the cold-start contract ----
 
 class ColdStartProbe(unittest.TestCase):
     """The hook that runs in production is `python3 lib/task-station.py stop-gate` in a

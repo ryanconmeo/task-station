@@ -39,6 +39,13 @@ let it pass. The channel points that at a child. This points it at the **parent*
 - **`pickup list` / `pickup take`.** `list` shows what is waiting with the child's own
   report text inline and the command that reads it in full; `take` retires one. Taking is
   **not** grading — `turn` still runs the mechanical gate and emits the grade command.
+- **`invoke` hands the spawning model the harness's own idle edge.** The gate bounds the
+  delay by the parent's cadence; the fastest edge is `SendMessage(notify_when_idle: true)`,
+  a one-shot opt-in subscription that fires once when a session goes idle or exits, with no
+  polling and no cost to the target. Only a model can call a harness tool, so this is a
+  printed instruction rather than a feature — adopt, do not rebuild. It states plainly that
+  the notice means **look**, not done: a child pausing mid-turn is idle too, so the harness
+  says *when* to look and the record says *whether* anything landed.
 - **`turn.landed_work`** — has a child's own checklist demonstrably gone green, and since
   its launch? Strict by inheritance from `exits.satisfied`: at least one registered
   condition, every one MET, no live step left both uncovered and unticked — and the verdict

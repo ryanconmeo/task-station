@@ -396,7 +396,18 @@ genuinely nothing yet, and the rail will say when there is. `sessions` says
 **It adopts rather than rebuilds.** There is no poller and no second fan-out engine here.
 Liveness stays `ListAgents`, reaching a live child stays `SendMessage`, cadence stays
 `/loop` or Cron — the rail carries the one fact that makes reaching for any of them worth
-doing.
+doing. `invoke` now also prints the *fastest* edge for the spawning model to take itself:
+`SendMessage(to: <its name>, notify_when_idle: true)`, a one-shot opt-in subscription that
+fires once when that session next goes idle or exits, with no polling and no cost to the
+target. Only the model can call a harness tool, so the engine hands it over rather than
+growing a watcher.
+
+**The two halves compose in one direction only.** `idle` means the session finished a
+turn, and a child that pauses mid-work is idle too — a subscription alone would report a
+thinking child as finished, which is the same lie liveness always told, arriving faster.
+So the harness says **when to look** and the record — the pickup, the report memo, the
+exit conditions — says **whether anything landed**. The invoke output says so in as many
+words, because a reader who takes the notice as the answer has re-created the bug.
 
 ### The orchestrator flag
 
