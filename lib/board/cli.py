@@ -462,10 +462,16 @@ def main(argv=None):
                         help="exchange tasks with this owner's other stations — "
                              "owner-partitioned, so no merge conflict is possible")
     sp.add_argument("--init", nargs="?", const="", default=None, metavar="DIR",
-                    help="create the exchange directory + this station's partition "
-                         "(and a LOCAL git repo when git is available). With DIR, also "
-                         "records it as `sync_dir`. Creates NO remote and contacts no "
-                         "network — provisioning a remote is a deliberate human step.")
+                    help="create the BACKUP exchange + this station's partition (and a "
+                         "LOCAL git repo when git is available). With DIR, also records "
+                         "it as `sync_dir`. Creates NO remote and contacts no network — "
+                         "provisioning a remote is a deliberate human step.")
+    sp.add_argument("--init-share", dest="init_share", nargs="?", const="", default=None,
+                    metavar="DIR",
+                    help="create a SHARE exchange instead — a chosen subset, readable "
+                         "by others. A task appears there ONLY when a sharing rule on "
+                         "its brain names an audience, so a fresh install shares "
+                         "NOTHING. With DIR, records it as `share_dir`.")
     sp.add_argument("--dir", default=None, metavar="DIR",
                     help="use this exchange directory for THIS run, ignoring config")
     sp.add_argument("--status", action="store_true",

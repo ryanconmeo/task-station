@@ -244,14 +244,22 @@ def _live_ids(ts):
 
 # ---- view-model -------------------------------------------------------------
 
-def self_view_model(ts, backend, task, live_ids, cfg=None):
+def self_view_model(ts, backend, task, live_ids, cfg=None, rich=True):
     """One REAL task → the read-only feed view-model. `relations` are UUID-NORMALIZED
     (uuid8, never seq): the stored edge already carries the target's full `id`, so
     `id[:8]` is the join key that survives cross-machine sync.
 
     `brain` (where the task lives) and `shares` (resolved audience list) come from
     brains.json via `cfg` (default brain "main", no shares). `shared_org` is derived
-    (True iff the task is shared to `org`)."""
+    (True iff the task is shared to `org`).
+
+    `rich=False` OMITS the SELF-ONLY block entirely — sessions, usage, cost, work-mix,
+    history, glossary, the prompt trail, the resume one-liner. That block is what a
+    PEER feed has never carried, and a share export must not be the first thing to
+    carry it. Leaving it out is not the same as stripping it afterwards: a field that
+    was never built cannot survive a bug in the stripper, which is the whole reason
+    the share path filters ON WRITE. `live` is forced False for the same reason —
+    liveness is never federated, and a foreign row must never claim to be running."""
     alias = self_alias()
     tid = task.get("id") or ""
     uuid8 = tid[:8]
@@ -291,6 +299,7 @@ def self_view_model(ts, backend, task, live_ids, cfg=None):
         rid = e.get("id")
         if rid:
             rels.append({"uuid8": rid[:8], "kind": e.get("kind") or "related"})
+    live = live and rich          # liveness is never federated (see the docstring)
     tokens, estimated, cost_usd, models = _task_tokens(backend, task)
     cat = _category(task.get("color"))
     try:
@@ -299,7 +308,7 @@ def self_view_model(ts, backend, task, live_ids, cfg=None):
         shares = _brains.shares_for(cfg, tid, cat.get("tag")) if cfg is not None else []
     except Exception:
         brain, shares = "main", []
-    rich = _self_rich(ts, task, live_ids, seq)
+    extra = _self_rich(ts, task, live_ids, seq) if rich else {}
     vm = {
         "uuid8": uuid8,
         "handle": handle,
@@ -333,7 +342,7 @@ def self_view_model(ts, backend, task, live_ids, cfg=None):
         "owner": alias,
         "shared_org": ("org" in shares),
     }
-    vm.update(rich)
+    vm.update(extra)
     return vm
 
 
