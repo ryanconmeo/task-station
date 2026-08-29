@@ -922,7 +922,6 @@ def plan(orch, children, live=(), resolve=None, cap=None, retry_max=None, worked
     live = set(live or ())
     report = _loop.scan(children, resolve, live=live)
     rows = {r["seq"]: r for r in report["rows"]}
-    budget = _loop.children_budget(orch, population, live=live, cap=cap)
     retry_max = _config.loop_retry_max() if retry_max is None else int(retry_max)
     threshold = threshold or _config.loop_accept_threshold()
 
@@ -941,6 +940,26 @@ def plan(orch, children, live=(), resolve=None, cap=None, retry_max=None, worked
             waits.append(child)
         elif st == UNSTARTED and rows.get(seq, {}).get("ready"):
             ready.append(child)
+
+    # THE CAP COUNTS WORKING CHILDREN, NOT LIVE PROCESSES — and it has to be computed
+    # HERE, after the states, for that to be possible.
+    #
+    # `children_budget` counts process liveness, deliberately: a stored flag survives a
+    # crash, so a cap counting records lets one crashed child spend a slot forever. That
+    # reasoning is still right and is not touched. What it cannot see is the OTHER
+    # direction — a child that finished, filed its report and left its window open is a
+    # live process with nothing left to do, and it holds a slot for as long as somebody
+    # leaves the window open. MEASURED: #532 sat "running" for hours with its work done,
+    # and the orchestrator had to --force past the cap three times to keep the loop moving.
+    # A cap that silently shrinks is worse than a smaller cap, because nobody configured it.
+    #
+    # So the budget is handed the same reconciliation every other answer here uses: a child
+    # whose state is not RUNNING is not spending a slot, whatever its process is doing.
+    # Liveness still decides for everything the states cannot speak about — a live seq that
+    # is not a child of this orchestrator is passed through untouched, and
+    # `children_budget` filters it out on its own.
+    working = {q for q in set(live or ()) if states.get(q, RUNNING) == RUNNING}
+    budget = _loop.children_budget(orch, population, live=working, cap=cap)
 
     # (1) what came back — the mechanical gate, then the judgement it feeds.
     for child in back:

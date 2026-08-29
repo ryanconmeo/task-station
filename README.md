@@ -393,6 +393,13 @@ back. The `WAIT` action's command is no longer `scan`: a real wait now means the
 genuinely nothing yet, and the rail will say when there is. `sessions` says
 `HANDED BACK (report filed)` beside `busy` for the same reason.
 
+**And the cap stopped shrinking.** `loop_children_max` counts children with a live
+session, which is right for a crash — a record survives one, a process does not — and
+blind in the other direction: a child that finished and left its window open held a slot
+until somebody closed it. One sat "running" for hours that way, and the loop had to be
+`--force`d past its own cap three times. The budget now counts children whose *state* is
+running, using the same reconciliation everything else in `turn` uses.
+
 **It adopts rather than rebuilds.** There is no poller and no second fan-out engine here.
 Liveness stays `ListAgents`, reaching a live child stays `SendMessage`, cadence stays
 `/loop` or Cron — the rail carries the one fact that makes reaching for any of them worth
