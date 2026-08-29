@@ -101,7 +101,10 @@ HOSTILE = {
     "all_of_it": "don't \"stop\" `" + _T + "` $(" + _T + ") ; " + _T,
 }
 
-SHIM = """#!/bin/sh
+# `#!/usr/bin/env bash`, not `/bin/sh`: argv entries are recorded NUL-separated so
+# that a payload containing spaces, newlines or quotes stays one entry, and `\\0` in
+# a format string is only dependable in bash — on Linux `/bin/sh` is often dash.
+SHIM = """#!/usr/bin/env bash
 : > "$TS_TEST_ARGV"
 for a in "$@"; do printf '%s\\0' "$a" >> "$TS_TEST_ARGV"; done
 echo "FAKE-TASK-STATION-OUTPUT"
