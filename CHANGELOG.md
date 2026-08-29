@@ -3,6 +3,69 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.36.0] — 2026-08-29
+
+**THE PRODUCT COULD NOT MAKE THE SHAPE ITS OWN OWNER RUNS.** A fresh `/brain-init`
+built `~/brains/` with your agent memory tucked *inside* the vault — the arrangement the
+2026-08-24 redesign rejected, and the one nobody is running any more. This release makes
+the defaults the redesigned shape, so the layout you get on install is the layout the
+design ratified.
+
+**One container, `~/knowledge`.** The brains live under `brains/` — `<org-slug>/private`
+(your work vault), `<org-slug>/shared` (the org-readable mirror), `<org-slug>/org` (the
+org-brain clone), `personal/<username>-brain`, and read-only `peers/`. `<org-slug>` comes
+from the new `org_slug` config key; it names the folder and nothing else, so an install
+that sets its three paths explicitly never needs it.
+
+**Memory sits beside the brains, inside none of them.** Memory is about the *person* —
+how to work with you — and a person may keep more than one brain, so a memory folder
+living inside one of them dies with that brain. A brain-local memory was considered and
+rejected on exactly that ground. `brain-init` now migrate-then-links the harness's
+native memory dir to `~/knowledge/memory`, and a test asserts containment rather than a
+path literal, so a future relocation still has to keep memory out of every brain.
+
+**Five genre folders became four question folders.** A vault now ships
+`notes/ docs/ inbox/ mirror/` instead of `notes/ projects/ plans/ raw/ reports/`. Notes
+are atomic facts — **hubs included**: a hub is a note carrying `type: hub`, because a map
+of content is a fact about how an area hangs together and does not need a folder of its
+own. `docs/` is dated long-form (syntheses and plans), `inbox/` is untrusted capture
+awaiting distillation, `mirror/` is machine-written output and holds the lint reports.
+The old split asked for a genre judgment on every write and left half the folders holding
+one file.
+
+**Nothing on disk moves, and there is no migrator.** Every path above is a *default*, and
+an explicit `vault`/`memory`/`org_brain_clone` in the config still wins — which is what
+leaves an existing install exactly where it is. The pre-fold folder names stay fully
+readable, so a vault created earlier is still searched, linted and promoted from without
+being touched.
+
+### Added
+- `org_slug` and `personal_brain` config keys (`TASK_STATION_BRAIN_ORG_SLUG`,
+  `TASK_STATION_BRAIN_PERSONAL_BRAIN`), plus `config.DEFAULT_PERSONAL_BRAIN()` and a
+  shared `host_username()` — one host-identity resolver for both the per-person mirror
+  template and the personal-brain path, rather than two that can drift.
+- One folder vocabulary in `brain.notes` (`NOTES_DIR`/`DOCS_DIR`/`INBOX_DIR`/`MIRROR_DIR`,
+  `CONTENT_FOLDERS`, `LEGACY_FOLDERS`), so the writer, the linter, the search roots, the
+  injection surfaces and the publish filter cannot disagree about a vault's shape.
+- `tests/brain/test_knowledge_layout.py` — the shipped scaffold is the four folded
+  folders and none of the five it replaced, and no shipped document still describes the
+  retired `~/brains` home.
+
+### Changed
+- Defaults: vault `~/knowledge/brains/<org-slug>/private`, mirror `…/shared`, org clone
+  `…/org`, peers `~/knowledge/brains/peers`, memory `~/knowledge/memory`, home config
+  `~/knowledge/config.json`.
+- `brain-init` derives every directory it creates from the config it writes, so "what init
+  creates" and "what the loader reads" are the same thing by construction; it creates the
+  shared, personal and peers folders too, and still declines to *write* `publish_mirror`
+  (writing it would arm the auto-publish heal step for someone who never set a mirror up).
+- Lint output moved to `mirror/health/`; auto-distill captures land in `inbox/`; a plan
+  declares itself with `type: plan` (which exempts its forward references from the
+  broken-link lint) instead of being identified by the folder it sat in.
+- README, `docs/BRAIN.md`, `skills/brain-{init,heal,save}/SKILL.md`, the `brain` skill,
+  the vault-scaffold `CLAUDE.md`/`INDEX.md`/`.gitignore`, `team-rules.md`, the naming
+  contract and the org-brain templates all describe the shipped shape.
+
 ## [3.33.0] — 2026-08-29
 
 **WIDENING IS THE ONE THING YOU CANNOT TAKE BACK.** 3.32.0 made sharing private by

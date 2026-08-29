@@ -17,7 +17,7 @@ from tests.brain.base import LIB
 # name here should be a deliberate decision, which is the point of the list.
 STDLIB_OK = {
     "argparse", "ast", "collections", "contextlib", "datetime", "difflib",
-    "functools", "glob", "hashlib", "io", "itertools", "json", "math", "os",
+    "functools", "getpass", "glob", "hashlib", "io", "itertools", "json", "math", "os",
     "pathlib", "re", "shutil", "sqlite3", "string", "subprocess", "sys",
     "tempfile", "textwrap", "time", "typing", "unicodedata", "urllib", "uuid",
 }

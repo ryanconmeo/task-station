@@ -10,7 +10,7 @@ question. In the tier model:
 
 ## Where the canonical org rules live
 
-The org rules surface is the org-brain clone: **`~/brains/org-brain/team-rules.md`**.
+The org rules surface is the org-brain clone: **`~/knowledge/brains/<org-slug>/org/team-rules.md`**.
 `/brain-init` adds an `@import` of that file to your user-level `~/.claude/CLAUDE.md`
 (inside a `<!-- brain-station:team-rules -->` marker block), and the SessionStart
 hook keeps the clone fresh with a throttled `git pull`. Until org brain is linked the

@@ -40,7 +40,10 @@ from . import publish
 _CFG = config.load()
 VAULT = _CFG["vault"]
 MEMORY = _CFG["memory"]
-CONTENT_DIRS = ("notes", "projects", "reports", "plans", "raw")
+#: Every folder a vault search reads, sourced from the one folder vocabulary
+#: (``brain.notes``) rather than re-listed. Capture folders are included here —
+#: search ranks them last but must not pretend they are absent.
+CONTENT_DIRS = notes.CONTENT_FOLDERS + (notes.INBOX_DIR, "raw")
 
 
 # Tier priority for cross-tier dedup: lower wins.
@@ -323,13 +326,14 @@ def converge(target_slug, proposed_slug, text, source="manual"):
     node (a dated bullet under ``## Updates``) and the node is stamped
     ``converged-with:`` so the abandoned name is on the record and the next
     session does not re-litigate the same pair."""
-    for folder in ("notes", "projects"):
+    for folder in notes.KNOWLEDGE_FOLDERS:
         if (VAULT / folder / f"{target_slug}.md").exists():
             return notes.write_note(
                 VAULT, target_slug, mode="append", body=text, folder=folder,
                 source=source, actor="agent",
                 extra={"converged-with": proposed_slug})
-    sys.exit(f"brain: --update target {target_slug!r} not found under notes/ or projects/")
+    sys.exit("brain: --update target %r not found under %s"
+             % (target_slug, " or ".join(f"{d}/" for d in notes.KNOWLEDGE_FOLDERS)))
 
 
 def cmd_new(a):
@@ -379,10 +383,11 @@ def cmd_new(a):
 
 
 def find_target_dirs(cfg=None):
-    """Default node dirs for ``find-target``: the vault's own knowledge nodes
-    (notes/ + projects/). The promote pipeline passes the org-brain clone instead."""
+    """Default node dirs for ``find-target``: the vault's own knowledge nodes —
+    notes/, plus the pre-fold hub folder a legacy vault still keeps its hubs in.
+    The promote pipeline passes the org-brain clone instead."""
     cfg = cfg or _CFG
-    return [cfg["vault"] / "notes", cfg["vault"] / "projects"]
+    return [cfg["vault"] / d for d in notes.KNOWLEDGE_FOLDERS]
 
 
 def cmd_find_target(a):
@@ -539,7 +544,7 @@ def main(argv=None):
     s.add_argument("--folder", default="notes")
     s.add_argument("--tags", help="comma-separated flat tags (departments AND teams)")
     s.add_argument("--area", help="override the area derived from the slug's domain")
-    s.add_argument("--plane", help="override the plane (default: knowledge for notes/ and projects/)")
+    s.add_argument("--plane", help="override the plane (default: knowledge for notes/)")
     s.add_argument("--new", action="store_true",
                    help="graded lookup returned a candidate: this is a DISTINCT fact "
                         "(recorded as distinct-from:)")

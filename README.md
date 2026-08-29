@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-3.33.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.36.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -528,10 +528,13 @@ notes converge. Everything is opt-in and stdlib-only, like the rest of the plugi
 /ado 1234                  # read an Azure DevOps work-item tree in one zero-token call
 ```
 
-- **`/brain-init` scaffolds everything** from the bundled vault template: the vault
-  (default `~/brains/brain`), its `CLAUDE.md` schema rules, an `INDEX.md` catalog, and
-  the runtime config. It is idempotent and reversible, and it can migrate-then-link your
-  existing agent-memory directory into the vault so memory and knowledge share one graph.
+- **`/brain-init` scaffolds everything** into one knowledge container at `~/knowledge`:
+  the brains under `brains/` (`<org-slug>/{private,shared,org}`, a `personal/` brain that
+  outlives the employer, and read-only `peers/`) and, beside them and inside none of them,
+  your agent `memory/`. The vault comes from the bundled template — `CLAUDE.md` schema
+  rules, an `INDEX.md` catalog, a `notes/ docs/ inbox/ mirror/` tree — and the run is
+  idempotent and reversible. Memory sits outside every brain on purpose: it is about the
+  *person*, so it has to survive a second brain.
 - **Hooks keep the brain ambient.** On each prompt, relevant notes are injected as
   context (throttled per topic, keyword-gated, `inject_context` to disable); a Stop-hook
   distiller (opt-in, `auto_distill`) captures durable facts from the session; a daily
@@ -544,7 +547,7 @@ notes converge. Everything is opt-in and stdlib-only, like the rest of the plugi
   converts a marked note to the org schema and lands it as a PR a lead approves. An
   org-brain clone joins search read-only; peers' published subsets can be subscribed and
   searched, and a peer's copy never beats your own note.
-- **Configuration** resolves `~/.claude/brain-station.json` → `~/brains/config.json`
+- **Configuration** resolves `~/.claude/brain-station.json` → `~/knowledge/config.json`
   (vault, memory, org-brain clone, publish mirror, inject/distill toggles), and every
   key has a `TASK_STATION_BRAIN_*` environment override. Org values — labels, keywords,
   forge coordinates — arrive at runtime from an org profile
