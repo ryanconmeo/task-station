@@ -576,6 +576,36 @@ class NoWaitForALandedChild(unittest.TestCase):
         self.assertIn("neither reported nor turned its exit conditions green",
                       wait["why"])
 
+    def test_a_landed_child_stops_holding_a_concurrency_slot(self):
+        """MEASURED on #532: it sat "running" for hours with its work done, holding a slot,
+        and the orchestrator had to --force past the cap three times. A cap that silently
+        shrinks is worse than a smaller cap, because nobody configured it."""
+        landed = _blob("c1", 11, parent="o1", events=[_launch()],
+                       conditions={1: "met"})
+        waiting = _blob("c2", 12, parent="o1")
+        orch = _blob("o1", 1, "orch")
+        p = turn.plan(orch, [landed, waiting], live={11}, cap=1)
+        self.assertEqual(p["budget"]["running"], [],
+                         "a finished child is still spending a child slot")
+        self.assertFalse(p["budget"]["over"])
+
+    def test_a_child_genuinely_working_still_holds_its_slot(self):
+        """The direction that must not move. A cap that stopped counting real work would
+        spawn straight past `loop_children_max`, which is the whole reason it exists."""
+        working = _blob("c1", 11, parent="o1", events=[_launch()], conditions={1: None})
+        orch = _blob("o1", 1, "orch")
+        p = turn.plan(orch, [working], live={11}, cap=1)
+        self.assertEqual(p["budget"]["running"], [11])
+        self.assertTrue(p["budget"]["over"])
+
+    def test_a_crashed_child_still_frees_its_slot_as_before(self):
+        """`children_budget` counts process liveness so a crashed child cannot spend a slot
+        forever. Narrowing the set must not disturb that — it only ever removes seqs."""
+        dead = _blob("c1", 11, parent="o1", events=[_launch()], conditions={1: None})
+        orch = _blob("o1", 1, "orch")
+        p = turn.plan(orch, [dead], live=(), cap=1)
+        self.assertEqual(p["budget"]["running"], [])
+
     def test_an_unacked_report_still_outranks_liveness(self):
         """The half that already existed. Adding a source must never remove one."""
         child = _blob("c1", 11, parent="o1", events=[_launch()],

@@ -61,6 +61,16 @@ let it pass. The channel points that at a child. This points it at the **parent*
   parent read "busy" about a finished child. A `WAIT` now means the child has neither
   reported nor gone green — genuinely nothing yet — so the command points at
   `pickup list` and the `reach` line names `SendMessage`. Do something else; you will be told.
+- **The concurrency cap counts WORKING children, not live processes.** `children_budget`
+  counts liveness deliberately — a stored flag survives a crash, so a cap counting records
+  lets one crashed child spend a slot forever — and that reasoning is untouched. What it
+  could not see is the other direction: a child that finished and left its window open
+  holds a slot for as long as the window stays open. Measured on #532, which sat "running"
+  for hours with its work done while the orchestrator `--force`d past the cap three times.
+  The budget is now computed after the states and handed the same reconciliation every
+  other answer in `turn` uses, so a child whose state is not RUNNING is not spending a
+  slot. A cap that silently shrinks is worse than a smaller cap, because nobody
+  configured it.
 - **`sessions` stops saying only "busy".** `status` is the harness's word for "the model is
   mid-turn". A row whose task has finished now reads `busy · HANDED BACK (report filed)` or
   `(exit conditions green)`. Live rows carry `task_id` so a reader can ask the task a
