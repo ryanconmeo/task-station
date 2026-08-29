@@ -25,7 +25,8 @@ g, set_g = _shared.g, _shared.set_g
 
 __all__ = [
     "_children_recap", "CHILDREN_RECAP_MAX",
-    "_format_detail", "_replaced_suffix", "_format_history", "_handle_line",
+    "_format_detail", "_replaced_suffix", "_format_history", "cmd_history",
+    "_handle_line",
     "_open_jump_window", "_format_detail_session",
     "_hub_ordinals", "_hub_sid_for_ordinal", "_ordinal_resume",
     "_jump_ordinal", "_jump_one",
@@ -246,13 +247,23 @@ def _format_detail(task, session, attached=True):
     # not "old", they are no longer true, and showing them is the failure this exists to
     # fix. They survive only in `history`. Pinning sorts a decision into the leading
     # spine block (marked ★); it no longer decides whether it appears at all.
+    # NUMBERED, with each decision's own 1-based index in the append-only log — the
+    # exact number `--supersedes` / `--pin-decision` / `heal --split|--merge` take.
+    # It used to render an unnumbered bullet, so the number existed only in the line
+    # echoed back at WRITE time: whoever had just written one knew it, and no reader
+    # could recover it from any read surface. That made every reconcile verb reachable
+    # only by the author, minutes after the fact. The numbers are the LOG's, not this
+    # list's, so they are stable and they SKIP — a gap is a replaced decision, and
+    # renumbering to close it would silently repoint every command a reader is holding.
     shown_decisions = _dec.digest_order(decisions)
     if shown_decisions:
         out.append("")
         out.append("Decisions:")
-        for _i, d in shown_decisions:
-            out.append("  • %s%s" % (DECISION_PIN_MARK if _dec.is_pinned(d) else "",
-                                     _dec.text(d)))
+        for i, d in shown_decisions:
+            out.append("  %2d. %s%s" % (i, DECISION_PIN_MARK if _dec.is_pinned(d) else "",
+                                        _dec.text(d)))
+        out.append("  (`update --task %s --supersedes <n> --decision '<the correction>'` "
+                   "retires decision <n>.)" % task.get("seq", task["id"][:8]))
     # Memos: correspondence handed to this task — anything still awaiting THIS viewer's
     # ack is flagged first (ack it before acting so two sessions don't double-implement),
     # then the last few already-handled. Absent on a task with no memos feed.
@@ -511,6 +522,45 @@ def _format_history(task):
     out.append("(Read-only history view — this did NOT attach or reopen the task. "
                "Resume with /todo %s.)" % seq)
     return "\n".join(out)
+
+
+def cmd_history(a):
+    """`task-station history [<ref>] [--task <ref>]` — the full trail for one task.
+
+    THE COMMAND THE BOARD ALREADY ADVERTISED. `_format_history` has rendered this
+    view since 2.9.0, but only `/todo <n> history` reached it — a slash command,
+    routed through `render --session`, which needs a session id nobody has when
+    they are just reading. Ten help strings, this module's own included, told
+    people to run `history`, and there was no parser for it: `history --task 444`
+    printed nothing at all and exited 2. That silence is what board.cliguard now
+    makes impossible in general; this is the command it was pointing at.
+
+    READ-ONLY, exactly like the slash form: it renders, and never attaches,
+    reopens or mutates. The task is `--task`/the positional ref, else the acting
+    session's attached task.
+
+    EXIT CODES, because "found nothing" and "could not look" are different answers:
+      0  a task's history printed.
+      1  a ref was given and matched no task — a failed read, and it says so.
+      2  no ref given and no attached task to default to — a usage error.
+    Both non-zero paths print to stdout, so a caller reading only stdout still
+    learns what happened."""
+    ref = (getattr(a, "task", None) or getattr(a, "ref", None) or "").strip()
+    if ref:
+        task = resolve_ref(ref) or load_task(ref)
+        if not task:
+            print("No task matching '%s'." % ref)
+            print("  `task-station search <terms>` finds one; `--task` takes a #seq or an id.")
+            sys.exit(1)
+    else:
+        tid = get_link(getattr(a, "session", None))
+        task = load_task(tid) if (tid and tid != SKIP_SENTINEL) else None
+        if not task:
+            print("usage: task-station history <ref> | --task <ref>")
+            print("  No task given and this session has none attached, so there is no "
+                  "history to show.")
+            sys.exit(2)
+    print(_format_history(task))
 
 
 def _open_jump_window(cmd):
