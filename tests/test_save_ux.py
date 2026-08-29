@@ -575,5 +575,125 @@ class TestSaveModulePrimitives(_Base):
         self.assertEqual(task, before)
 
 
+# ---------------------------------------------------------------------------
+# THE OUTWARD IMPERATIVE — a state line that reads as an order to act outward.
+#
+# WHY IT IS CHECKED AT WRITE TIME. `relay --spawn` builds the successor's prompt out of
+# this text, so a state line is not only a note to yourself — it is a sentence a session
+# that was not there will read as an instruction. On 2026-08-29 one did: it woke holding
+# `NEXT: WATCH PR 1615 AND MERGE IT`, was sent the same words again by peer message from
+# the same predecessor, counted one voice as two agreeing, and merged another engineer's
+# PR on a shared repo. The write is the last moment the session that knows WHO ASKED is
+# still in the room, which is the same argument `memo send --corrects` rests on.
+#
+# THE HARD PART IS SILENCE, NOT DETECTION. Every state line on a PR-shaped task talks
+# about merging; a check that fires on all of them is a check nobody reads. Measured
+# over the 121 real state lines in the author's own store, the shipped rule flags 14% —
+# and the discrimination that got it there is that only the BARE form of the verb, in a
+# clause it opens, counts. `merged` is a report. `to merge` is an infinitive. `should
+# merge` is an obligation. `merge-tree` is a filename.
+# ---------------------------------------------------------------------------
+
+class TestOutwardImperativeDetector(_Base):
+    """The detector alone — `save.outward_imperatives`, no board, no CLI."""
+
+    def test_the_incident_sentence_is_an_order(self):
+        self.assertEqual(
+            sv.outward_imperatives("NEXT: WATCH PR 1615 AND MERGE IT — it is the fix "
+                                   "for the blocker and I have approved it (vote 10)."),
+            ["merge"])
+
+    def test_every_outward_verb_is_covered(self):
+        for verb in ("merge", "approve", "abandon", "close", "delete", "revert",
+                     "deploy", "force-push"):
+            self.assertEqual(sv.outward_imperatives("NEXT: %s it" % verb), [verb], verb)
+
+    def test_a_past_tense_report_is_silent(self):
+        """The shape a GOOD state line uses, and the reason the check is believable:
+        #444's and #532's own state lines report every merge in past tense and neither
+        trips this."""
+        for text in ("NEXT: merged PR 20; the CHANGELOG landed by hand.",
+                     "NEXT: PR 19 is merged and PR 20 is approved — nothing outstanding.",
+                     "NEXT: closing out; the branch was deleted after the deploy."):
+            self.assertEqual(sv.outward_imperatives(text), [], text)
+
+    def test_a_verb_somebody_else_owns_is_silent(self):
+        for text in ("NEXT: wait for the reviewer to merge it.",
+                     "NEXT: user to merge PR 1080 + delete orphan branch 3169.",
+                     "NEXT: #444 should GATE and CLOSE it.",
+                     "NEXT: PR 1413 needs review + merge.",
+                     "NEXT: we merge only once Ryan says so.",
+                     "NEXT: do not merge anything on this branch."):
+            self.assertEqual(sv.outward_imperatives(text), [], text)
+
+    def test_the_verb_as_a_noun_is_silent(self):
+        for text in ("NEXT: resolve the merge conflict in CHANGELOG.md",
+                     "NEXT: not a merge conflict you discover at merge time",
+                     "NEXT: wait for PR 9 review/merge, then re-run the conditions",
+                     "NEXT: run the merge-tree duplicate-V check",
+                     "PR 1402 addressed (head 6603c66, merge=succeeded, no conflicts)",
+                     "shipped via the 387 deploy flow"):
+            self.assertEqual(sv.outward_imperatives(text), [], text)
+
+    def test_an_order_strung_onto_another_still_counts(self):
+        """The incident's exact grammar: the verb sits behind `AND`, not at the start.
+        A rule that only looked at position 0 would have missed it."""
+        self.assertEqual(sv.outward_imperatives("NEXT: rebase, then force-push it"),
+                         ["force-push"])
+        self.assertEqual(sv.outward_imperatives("NEXT: tag the release and deploy"),
+                         ["deploy"])
+
+    def test_it_never_raises_on_junk(self):
+        for bad in (None, "", 17, "—", "\n\n"):
+            self.assertEqual(sv.outward_imperatives(bad), [])
+
+
+class TestOutwardImperativeWarnsAtWriteTime(_Base):
+    """The lint on the WRITE — `update --state`, the bare path, no checkpoint needed."""
+
+    INCIDENT = ("NEXT: WATCH PR 1615 AND MERGE IT — it is the fix for the blocker and "
+                "I have approved it (vote 10).")
+
+    def test_a_bare_state_write_warns_and_asks_who_authorised_it(self):
+        """THE BARE PATH IS THE POINT. A `--state` with no `--summary` stamps no
+        checkpoint and used to print nothing but `updated task N: state`, so the author
+        of a sentence like this got no signal at all — and the first thing anybody
+        noticed was a merged PR."""
+        t = self._task(state="NEXT: keep going")
+        out = self._update(t, state=self.INCIDENT)
+        self.assertIn("OUTWARD IMPERATIVE", out)
+        self.assertIn("`merge`", out)
+        self.assertIn("WHO AUTHORISED", out)
+
+    def test_it_warns_and_never_refuses(self):
+        """Unlike `memo send --corrects`, which gates: a state line naming an outward
+        action is often exactly right and merely needs its authority written down. The
+        write must land either way."""
+        t = self._task(state="NEXT: keep going")
+        self._update(t, state=self.INCIDENT)
+        self.assertEqual(self._reload(t)["state"], self.INCIDENT)
+
+    def test_an_ordinary_next_move_is_silent(self):
+        t = self._task(state="NEXT: keep going")
+        out = self._update(t, state="NEXT: land the parser change in lib/x.py.")
+        self.assertNotIn("OUTWARD IMPERATIVE", out)
+
+    def test_rewriting_the_identical_line_does_not_ask_again(self):
+        """The question is asked of the AUTHOR at the moment of authorship. Re-writing
+        the same text is not a new claim, and re-asking would turn the check into the
+        noise it is designed not to be."""
+        t = self._task(state="NEXT: keep going")
+        self._update(t, state=self.INCIDENT)
+        out = self._update(self._reload(t), state=self.INCIDENT)
+        self.assertNotIn("OUTWARD IMPERATIVE", out)
+
+    def test_it_fires_on_the_checkpoint_path_too(self):
+        """A `--summary` alongside is a checkpoint, not an exemption."""
+        t = self._task(state="NEXT: keep going")
+        out = self._update(t, state=self.INCIDENT, summary=GOOD_SUMMARY)
+        self.assertIn("OUTWARD IMPERATIVE", out)
+        self.assertIn("COLD-READ CHECK", out)      # both blocks, not one instead of the other
+
+
 if __name__ == "__main__":
     unittest.main()
