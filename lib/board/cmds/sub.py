@@ -17,6 +17,7 @@ import sys
 
 import channel as _channel
 import checker as _checker
+import loop as _loop
 import config_change as _config_change
 import decisions as _dec
 import heal as _heal
@@ -35,6 +36,7 @@ __all__ = [
     "cmd_terminal",
     "cmd_stop_gate", "cmd_post_compact", "cmd_stop_nudge",
     "_channel_task_for", "_channel_block", "_stop_gate_edit_reason",
+    "_pickup_block", "_pickup_retire",
     "_stand_down_pending",
     "cmd_config_change", "cmd_file_changed", "cmd_worktree_create",
     "_done_gate_line", "_close_one", "_maybe_close_session_window",
@@ -367,13 +369,16 @@ def cmd_touch_file(a):
         save_task(task)
 
 
-def _channel_task_for(session):
+def _channel_task_for(session, linked=None):
     """The task whose control channel might hold orders for `session`.
 
     THREE STEPS, CHEAPEST FIRST, because this runs on EVERY turn end of EVERY session.
 
     1. THE LINK. For a child that has attached — the overwhelming case at Stop — this is
-       one link read and we are done.
+       one link read and we are done. `linked` is that answer already loaded: the Stop
+       gate now has two limbs that both want the session's own task, and resolving it
+       twice would double the cost of the commonest turn end there is. Passing None means
+       "there is no linked task", which is exactly what step 1 would have concluded.
     2. THE ADDRESSEE INDEX. A session with no link is exactly the one the channel exists
        to reach, and the index says which tasks have ever addressed it. On a machine that
        has never used the channel the index file does not exist, so this whole path costs
@@ -383,6 +388,8 @@ def _channel_task_for(session):
        anything on a machine actually running the channel.
 
     Returns None when nothing claims the session."""
+    if linked is not None:
+        return linked
     link = get_link(session)
     if link and link != SKIP_SENTINEL:
         return load_task(link)
@@ -398,7 +405,7 @@ def _channel_task_for(session):
     return None
 
 
-def _channel_block(session):
+def _channel_block(session, linked=None):
     """The Stop-hook `reason` for a session with control-channel orders waiting, or None.
 
     Marks the orders delivered and persists BEFORE returning the text, so the block count
@@ -406,7 +413,7 @@ def _channel_block(session):
     forever because nobody recorded the attempt is the wedge the cap exists to prevent.
     Fail-open: a channel that raises must never stop a turn from ending."""
     try:
-        task = _channel_task_for(session)
+        task = _channel_task_for(session, linked=linked)
         if not task:
             return None
         # ROUTINE NOTICES ARE SETTLED HERE AND NEVER BLOCK. The gate fires at every turn
@@ -430,6 +437,97 @@ def _channel_block(session):
         task["updated_ts"] = _now()
         save_task(task)
         return _channel.block_reason(task, pending, session)
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def _pickup_retire(task):
+    """Retire the pickups on `task` whose child the parent has already ENGAGED. Mutates;
+    does NOT save. Returns the rows it retired.
+
+    THE HALF OF THE RAIL THAT LOADS A TASK, which is why it is here and not in
+    lib/board/channel.py. A rail that keeps demanding something already done is the
+    cry-wolf failure this codebase has paid for repeatedly, so a pickup has to be able to
+    stand down without anybody typing.
+
+    IT IS NOT "THE CHILD IS CLOSED", and that is the trap. `done` is the verb a FINISHED
+    CHILD RUNS — the commonest hand-back headline this rail carries is literally "CLOSED —
+    ready for the gate" — so retiring on closure would file the notice and cancel it before
+    the parent ever saw it, restoring the exact stall while looking like a fix. Engagement
+    is what counts, and there are two shapes of it the record can prove:
+
+      * A GRADE ENTRY NEWER THAN THE HAND-BACK. The parent ran the gate; the work has been
+        judged. Newer, specifically: a child rejected, sent back and reporting again has a
+        grade on its ledger and is waiting all over again, and `pickup_file` moves the row's
+        `ts` forward for exactly that reason.
+      * A PARK. The loop has stopped asking about this child, permanently. That rule
+        predates this rail and outranks it.
+
+    Costs nothing on the ordinary turn: `pickups_pending` is empty for every task with no
+    child mid-hand-back, and no child is loaded until it is not."""
+    retired = []
+    for row in _channel.pickups_pending(task):
+        child = load_task(row.get("child_id")) if row.get("child_id") else None
+        if not child:
+            continue                    # a child we cannot read is not a child we may retire
+        how = None
+        if _loop.parked(child):
+            how = _channel.PICKUP_PARKED
+        elif any(float(gr.get("ts") or 0) >= float(row.get("ts") or 0)
+                 for gr in _loop.grades(child)):
+            how = _channel.PICKUP_GRADED
+        if not how:
+            continue
+        status, err = _channel.pickup_take(task, row, sid=None, how=how)
+        if status == "taken" and not err:
+            retired.append(row)
+    return retired
+
+
+def _pickup_block(session, task=None):
+    """The Stop-hook `reason` for a PARENT whose children have handed work back, or None.
+
+    THE KEYSTONE OF THE LOOP, and the smallest thing that could possibly be it. A child
+    finishing already wrote a memo and already minted a lifecycle notice, and both of
+    those surface only when a human types (`memo_pending_brief` on UserPromptSubmit,
+    `child_reports_brief` on SessionStart). An orchestrator driving a loop is typed into
+    by nobody, so its only move was to poll `sessions --task <child>` — which answers
+    whether a process is up, and says "busy" about a child that finished an hour ago and
+    left its window open. That is how #532 sat for about an hour and #536 for seven, with
+    nothing broken either time.
+
+    So the fact rides the one transport that reaches a running session with no human in
+    it: the turn boundary. Same rail the control channel already uses to reach a child,
+    pointed the other way.
+
+    THE COST ON AN ORDINARY TURN IS ONE FIELD LOOKUP on a task the gate has already
+    loaded. There is no scan and no index here — unlike an order, a pickup is filed on the
+    parent's own task, and the session that must read it is by definition attached to that
+    task. A session with no pending pickups leaves before anything else is touched.
+    `task` is the gate's already-resolved answer; passing nothing makes this resolve the
+    link itself, so it is callable on its own.
+
+    Marks delivered and persists BEFORE returning the text, so the block count advances
+    even if the harness never shows the reason — the same anti-wedge rule the order gate
+    obeys, for the same reason. Fail-open: a rail that raises must never stop a turn from
+    ending."""
+    try:
+        if task is None:
+            link = get_link(session)
+            if not link or link == SKIP_SENTINEL:
+                return None
+            task = load_task(link)
+        if not task or not _channel.pickups_pending(task):
+            return None
+        dirty = bool(_pickup_retire(task))
+        rows = _channel.pickups_blocking(task)
+        if rows:
+            _channel.pickup_mark_delivered(task, rows)
+            dirty = True
+        if dirty:
+            task["updated_ts"] = _now()
+            save_task(task)
+        return _channel.pickup_reason(task, rows) if rows else None
     except Exception:                                   # noqa: BLE001
         return None
 
@@ -501,25 +599,38 @@ def cmd_terminal(a):
 
 
 def cmd_stop_gate(a):
-    """Stop hook: the turn-end gate. Two independent reasons to refuse, in this order.
+    """Stop hook: the turn-end gate. Three independent reasons to refuse, in this order.
 
     1. CONTROL-CHANNEL ORDERS. A parent reached this session while it was running; the
        end of a turn is the moment that delivery lands (see lib/board/channel.py). This
-       runs FIRST because it is the only one of the two that carries somebody else's
-       words — a tracking nag can wait a turn; a stand-down cannot.
-    2. UNTRACKED EDITS. This session edited files but never tracked a task. Self-healing
+       runs FIRST because it carries somebody's words ADDRESSED TO THIS SESSION — a
+       tracking nag can wait a turn; a stand-down cannot.
+    2. PICKUPS — a child of this session's task handed work back and nobody has taken it.
+       The same rail as (1) pointed the other way: a child reaching UP. It ranks below an
+       order because an order is an instruction and a pickup is a fact, and above the
+       edit nag because a pickup is somebody else's finished work waiting on this session
+       while a nag is this session's own housekeeping.
+    3. UNTRACKED EDITS. This session edited files but never tracked a task. Self-healing
        — clears its markers the moment a task is attached or the session is skipped — and
        capped at STOP_GATE_MAX_BLOCKS so a non-complying loop can't wedge the session.
 
-    BOTH reasons ride ONE block document when both fire: the harness reads a single JSON
-    object from this hook, and dropping one of two live reasons to fit that shape would
-    silently lose whichever lost the coin toss."""
+    ALL live reasons ride ONE block document: the harness reads a single JSON object from
+    this hook, and dropping one of several live reasons to fit that shape would silently
+    lose whichever lost the coin toss."""
     if os.environ.get("TASK_STATION_GATE") == "off":
         return
+    # RESOLVED ONCE FOR BOTH LIMBS. (1) and (2) both want the session's own task, and this
+    # is the hottest path in the plugin — every turn end of every session. Two independent
+    # resolutions would have doubled the cost of a turn where nothing at all is waiting.
+    link = get_link(a.session)
+    linked = load_task(link) if link and link != SKIP_SENTINEL else None
     reasons = []
-    ch = _channel_block(a.session)
+    ch = _channel_block(a.session, linked=linked)
     if ch:
         reasons.append(ch)
+    pick = _pickup_block(a.session, task=linked)
+    if pick:
+        reasons.append(pick)
     edit_reason = _stop_gate_edit_reason(a)
     if edit_reason:
         reasons.append(edit_reason)
