@@ -3,6 +3,73 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.33.0] — 2026-08-29
+
+**WIDENING IS THE ONE THING YOU CANNOT TAKE BACK.** 3.32.0 made sharing private by
+default and enforced it on write. This adds the two things that sit on top: a preview
+before anything becomes visible, and a way to pull only when a peer actually moved.
+
+Un-sharing deletes the file. It does not un-read what somebody already read. So the
+moment that needs a human is the moment visibility *grows* — a task published for the
+first time, an audience gaining a member, a trail level going up — and a share run that
+would do any of those is **held**, prints exactly what would become visible, and writes
+nothing at all.
+
+**"Exactly what becomes visible" means the fields and the values, not a count.** A
+preview that says "1 task" is a number to click past. The hold names the task, its
+audience, its trail level, the goal text that would be published verbatim, and the
+field names.
+
+**Narrowing never asks.** Taking something back is always safe, and a transport that
+stopped to confirm a retraction would be training people to click through the prompt
+that matters. The backup destination is never held by a sharing question either —
+durability does not wait on a visibility decision.
+
+**The baseline is the published state itself**, not a separate ledger of what was
+acknowledged, so the record of what you agreed to share cannot drift from what is
+actually shared: they are the same bytes. Once accepted, later syncs run unattended
+until something widens again.
+
+**"Station X is at rev Y" is the whole relay protocol, and it is a file.** After a sync
+each station writes the content revision of its own partition into `rev.json` inside
+that partition; a subscriber compares the revs it can see against the ones it has
+already pulled. No daemon, no socket, no service to run — git already delivers bytes
+between machines, already has auth and already works offline, so what is built here is
+the durable part (the rev, the seen-ledger, the changed-detection) and delivery stays
+adopted. A push relay can later feed this same signal without any of it changing.
+
+### Added
+
+- **`sync --preview`** — exactly what would become visible to peers, writing nothing.
+- **`sync --confirm-share`** — accept a widening. Without it, a run that would widen is
+  held.
+- **`sync --check`** — which peer partitions moved since this machine last pulled them.
+  Reads `rev.json`, syncs nothing, **records nothing** (a check that marked things seen
+  would make the next real sync skip work it never did). Exits **3** when nothing
+  moved, so a hook or timer can branch without parsing output.
+- **`sync --if-changed`** — sync only when `--check` says a peer moved. The cheap
+  cadence form: safe to run often, does nothing almost every time.
+- **`rev.json` per partition**, written inside that station's own partition so it obeys
+  the same one-writer rule as everything else and cannot conflict. An **empty partition
+  has no rev at all** — not the hash of nothing — because a station that has published
+  nothing has nothing to pull, and reporting it as moved is how a cadence hook learns to
+  be ignored.
+- **`<data dir>/sync-seen.json`** — what this machine has already pulled. Local by
+  construction; it never enters the shared exchange.
+- **`tests/test_share_preview.py`** (20 tests) and **`tests/test_relay.py`** (15),
+  including `BoardMakesNoNetworkCallsTest`, which greps the **rendered** board for
+  `fetch`/`XMLHttpRequest`/`WebSocket`/`EventSource`/`sendBeacon`. It scans the artifact
+  rather than the renderer's source because a probe that mutated a docstring mentioning
+  `<script>` passed a source-level version of the same check while the page was broken.
+
+### Changed
+
+- The share report distinguishes a **held** run from an empty one. "0 shared" alone
+  reads as "there was nothing to share", which is the opposite of what happened.
+
+### Fixed
+- …
+
 ## [3.32.0] — 2026-08-29
 
 **PRIVATE BY DEFAULT, ENFORCED WHEN THE FILE IS WRITTEN.** 3.30.0 gave the transport

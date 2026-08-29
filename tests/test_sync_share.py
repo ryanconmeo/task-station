@@ -187,6 +187,12 @@ class _Store(unittest.TestCase):
         self.cli("update", "--task", "2", "--state", "SHAREDSTATE",
                  "--decision", "SHAREDDECISION")
 
+    def sync(self):
+        """A share run that ACCEPTS the widening it is about to perform. Publishing is
+        held pending confirmation since 3.33.0 (the sharing preview), so a test that
+        expects something to become visible has to say so — which is the point."""
+        return self.cli("sync", "--confirm-share")
+
     def open_sharing(self):
         self.cli("brains", "add", "teamwork")
         self.cli("brains", "assign", "2", "teamwork")
@@ -196,7 +202,7 @@ class _Store(unittest.TestCase):
 class WriteSideFilterTest(_Store):
     def test_with_no_rules_the_share_exchange_holds_NO_task_at_all(self):
         self.seed()
-        self.cli("sync")
+        self.sync()
         self.assertEqual(_grep_tree(self.share, "PRIVATEPROBE"), 0)
         self.assertEqual(_grep_tree(self.share, "SHAREDPROBE"), 0)
         # …and both are in the backup, because backup is never filtered.
@@ -207,7 +213,7 @@ class WriteSideFilterTest(_Store):
         """Both directions in one run. Either half alone can pass on broken code."""
         self.seed()
         self.open_sharing()
-        self.cli("sync")
+        self.sync()
         self.assertEqual(_grep_tree(self.share, "PRIVATEPROBE"), 0)
         self.assertGreaterEqual(_grep_tree(self.backup, "PRIVATEPROBE"), 1)
         self.assertGreaterEqual(_grep_tree(self.share, "SHAREDPROBE"), 1)
@@ -215,7 +221,7 @@ class WriteSideFilterTest(_Store):
     def test_a_private_tasks_NARRATIVE_never_reaches_the_share_tree(self):
         self.seed()
         self.open_sharing()
-        self.cli("sync")
+        self.sync()
         for withheld in ("PRIVATESTATE", "PRIVATEDECISION", "nobody sees this"):
             self.assertEqual(_grep_tree(self.share, withheld), 0, withheld)
 
@@ -224,7 +230,7 @@ class WriteSideFilterTest(_Store):
         private, so the state and the decisions stay behind."""
         self.seed()
         self.open_sharing()
-        self.cli("sync")
+        self.sync()
         self.assertGreaterEqual(_grep_tree(self.share, "SHAREDPROBE"), 1)
         self.assertEqual(_grep_tree(self.share, "SHAREDSTATE"), 0)
         self.assertEqual(_grep_tree(self.share, "SHAREDDECISION"), 0)
@@ -232,7 +238,7 @@ class WriteSideFilterTest(_Store):
     def test_the_report_states_how_many_were_WITHHELD(self):
         self.seed()
         self.open_sharing()
-        out = self.cli("sync")
+        out = self.sync()
         self.assertIn("WITHHELD", out)
         self.assertIn("1 task(s) shared", out)
 
@@ -240,21 +246,21 @@ class WriteSideFilterTest(_Store):
         """"I removed the rule" has to be true of the repository, not just the config."""
         self.seed()
         self.open_sharing()
-        self.cli("sync")
+        self.sync()
         self.assertGreaterEqual(_grep_tree(self.share, "SHAREDPROBE"), 1)
         self.cli("brains", "unshare", "teamwork", "--with", "org")
-        out = self.cli("sync")
+        out = self.sync()
         self.assertEqual(_grep_tree(self.share, "SHAREDPROBE"), 0)
         self.assertIn("retracted", out)
 
     def test_re_sharing_clears_the_retraction_so_peers_are_not_told_two_things(self):
         self.seed()
         self.open_sharing()
-        self.cli("sync")
+        self.sync()
         self.cli("brains", "unshare", "teamwork", "--with", "org")
-        self.cli("sync")
+        self.sync()
         self.cli("brains", "share", "teamwork", "--with", "org")
-        self.cli("sync")
+        self.sync()
         part = os.path.join(self.share, "owners", "kosei", "station-0", "tasks")
         names = sorted(os.listdir(part))
         self.assertTrue(any(n.endswith(".json") for n in names), names)
@@ -263,7 +269,7 @@ class WriteSideFilterTest(_Store):
     def test_a_share_exchange_is_never_imported_into_the_store(self):
         self.seed()
         self.open_sharing()
-        out = self.cli("sync")
+        out = self.sync()
         self.assertIn("EXPORT ONLY", out)
 
     def test_pointing_a_run_at_the_share_directory_stays_filtered(self):
@@ -287,7 +293,7 @@ class ProjectionTest(_Store):
     def test_the_shared_view_carries_identity_and_the_goal(self):
         self.seed()
         self.open_sharing()
-        self.cli("sync")
+        self.sync()
         payload = self._shared_file()
         self.assertEqual(payload["kind"], sync.KIND_SHARE)
         self.assertEqual(payload["audience"], ["org"])
@@ -301,7 +307,7 @@ class ProjectionTest(_Store):
         cannot be published by a stripper that forgets it."""
         self.seed()
         self.open_sharing()
-        self.cli("sync")
+        self.sync()
         task = self._shared_file()["task"]
         for field in ("cost_usd", "tokens", "models", "sessions", "session_tree",
                       "usage", "work_mix", "prompts", "resume", "files", "repos",
@@ -311,7 +317,7 @@ class ProjectionTest(_Store):
     def test_liveness_is_never_federated(self):
         self.seed()
         self.open_sharing()
-        self.cli("sync")
+        self.sync()
         self.assertIs(self._shared_file()["task"]["live"], False)
 
     def test_a_field_added_to_the_view_model_does_not_widen_the_share(self):
@@ -319,7 +325,7 @@ class ProjectionTest(_Store):
         SUBSET of the names the allow-list permits."""
         self.seed()
         self.open_sharing()
-        self.cli("sync")
+        self.sync()
         allowed = set(sync.SHARE_IDENTITY) | {"live", "digest"} | \
             set(sync.SHARE_CHECKPOINT_EXTRA) | set(sync.SHARE_FULL_EXTRA)
         self.assertEqual(set(self._shared_file()["task"]) - allowed, set())
