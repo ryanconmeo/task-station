@@ -1158,6 +1158,9 @@ def _update_one(ref, a):
                   register=False)
         cap["changed"], cap["msgs"], cap["related_new"] = changed, msgs, related_new
         cap["undos"] = undos
+        # Carried out of the closure because the outward-imperative lint below reports on
+        # the SAVED text, and only this scope knows whether the text actually moved.
+        cap["state_changed"] = state_changed
         cap["parent_notes"], cap["absorb_notes"] = parent_notes, absorb_notes
 
     updated = g("mutate")(tid, _apply)
@@ -1278,6 +1281,31 @@ def _update_one(ref, a):
     # said whether it was done. Two of its conditions are decidable, so the machine
     # decides them, here, on the write that claims the checkpoint. It costs nothing and
     # needs no extra call; `/todo <n> save --check` re-runs the same check on demand.
+    # THE WRITE-TIME LINT ON AN OUTWARD IMPERATIVE, and it fires on a bare `--state`
+    # rather than only on the checkpoint path, because the write is the last moment the
+    # session that knows WHO ASKED FOR THIS is still in the room. `relay --spawn` builds
+    # the successor's prompt out of this very text, so a sentence like `NEXT: WATCH PR
+    # 1615 AND MERGE IT` becomes the first thing a fresh session reads — and on
+    # 2026-08-29 that is exactly how one came to merge another engineer's PR on a shared
+    # repo. The relay now ATTRIBUTES the line (succession.py), so this is the second of
+    # two independent guards and not the only one.
+    #
+    # IT WARNS AND NEVER REFUSES, which is where it differs from `memo send --corrects`
+    # — that check gates because a correction with no target is malformed, while a state
+    # line naming an outward action is often perfectly correct and merely needs its
+    # authority written down beside it. The detector's own bias toward silence is
+    # documented on `save.outward_imperatives`.
+    if cap.get("state_changed"):
+        outward = _save.outward_imperatives(task.get("state"))
+        if outward:
+            msgs.append("  OUTWARD IMPERATIVE in the state line: %s. A relay interpolates "
+                        "this text into the successor's prompt, so name WHO AUTHORISED "
+                        "the action right here — the successor cannot tell your sentence "
+                        "from an instruction of the user's, and a peer message repeating "
+                        "it reads as a second voice agreeing."
+                        % ", ".join("`%s`" % v for v in outward))
+            msgs.append("    If nobody authorised it yet, say so: `… — NOT AUTHORISED, "
+                        "ask first`. Past tense reports what landed and never trips this.")
     if "checkpoint" in changed:
         msgs.append("  CHECKPOINT STAMPED — this task now records that a FULL structured "
                     "checkpoint was captured (a --summary and a --state written "

@@ -9,6 +9,7 @@ from board.render import *
 from board.graph import *
 from board.boardio import *
 from board.cmds import *
+from board.cliguard import LoudParser
 import argparse
 
 import decisions as _dec
@@ -26,7 +27,12 @@ def main(argv=None):
     a caller already holding this module can run a subcommand through the REAL parser
     and dispatch without paying another interpreter start-up — lib/stop_steps.py runs
     the Stop hook's seven best-effort steps that way."""
-    p = argparse.ArgumentParser(prog="task-station")
+    # LoudParser, not ArgumentParser: a usage error must land on STDOUT and still
+    # exit non-zero. argparse's stderr-only default made a mistyped or unwired
+    # subcommand indistinguishable from a command that ran and had nothing to say —
+    # see board.cliguard. Subparsers inherit the class, so every subcommand's own
+    # flag errors are covered by this one line.
+    p = LoudParser(prog="task-station")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("create"); sp.add_argument("--session", default=None)
@@ -663,6 +669,22 @@ def main(argv=None):
     sp.add_argument("--detail", default=None,
                     help="print one task's full digest (read-only) by seq/id instead of searching")
     sp.set_defaults(fn=cmd_search)
+
+    # history — the on-demand FULL trail for one task: every decision (including the
+    # replaced ones, marked and NUMBERED), the retired steps, the dated milestone log,
+    # memos, activity, worker provenance. The same view `/todo <n> history` renders, but
+    # reachable without a session id — which is what a reader who just wants to read has.
+    # It was advertised in ten places and wired to nothing; `history --task 444` printed
+    # zero bytes and exited 2. See cmds/view.py cmd_history for the exit codes.
+    sp = sub.add_parser("history",
+                        help="the complete trail for one task (read-only): decisions "
+                             "numbered, replaced ones marked, log + memos + activity")
+    sp.add_argument("ref", nargs="?", default=None,
+                    help="the task (seq/id) — same as --task, whichever you type first")
+    sp.add_argument("--task", default=None, help="the task to show (seq/id)")
+    sp.add_argument("--session", default=None,
+                    help="acting session; with no ref its attached task is used")
+    sp.set_defaults(fn=cmd_history)
 
     # add-cost — accumulate a delegate run's worker cost onto a task (called by
     # delegate.py so per-run cost lands on the linked /todo task, not just workers.json).
