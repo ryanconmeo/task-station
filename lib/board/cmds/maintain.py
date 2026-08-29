@@ -35,7 +35,7 @@ __all__ = [
     "_CLAIMS_ACTIONS",
     "_claims_target", "_claims_writes", "_claims_show", "_claims_verify",
     "VERIFY_PASSED", "VERIFY_FAILED", "VERIFY_NOTHING",
-    "cmd_claims", "cmd_heal", "cmd_session_start", "cmd_sync",
+    "cmd_claims", "cmd_heal", "cmd_session_start", "cmd_sync", "_sync_targets",
 ]
 
 
@@ -1083,6 +1083,17 @@ def cmd_claims(a):
     print("\n".join([head] + ["  " + ln for ln in lines] + _claims_show(task)))
 
 
+def _sync_targets(root):
+    """The destinations one `sync` invocation acts on.
+
+    `--dir` means THIS ONE ONLY, and its kind comes from the directory's own
+    declaration rather than from the flag — so aiming `--dir` at a share exchange runs
+    the filtered path, which is the whole point of the exchange declaring itself."""
+    if root:
+        return [{"root": root, "kind": _sync.exchange_kind(root)}]
+    return _sync.destinations()
+
+
 def cmd_sync(a):
     """`task-station sync [--init [DIR]] [--dir DIR] [--dry-run] [--no-net] [--status]`
 
@@ -1102,44 +1113,82 @@ def cmd_sync(a):
     sends nothing; `--init` creates a LOCAL repo and never a remote."""
     root = getattr(a, "dir", None)
     root = os.path.expanduser(root) if root else None
-    if getattr(a, "init", None) is not None:
-        target = getattr(a, "init") or root or _sync.sync_root()
+    for flag, kind, key in (("init", _sync.KIND_BACKUP, "sync_dir"),
+                            ("init_share", _sync.KIND_SHARE, "share_dir")):
+        if getattr(a, flag, None) is None:
+            continue
+        target = getattr(a, flag) or root or (
+            _sync.sync_root() if kind == _sync.KIND_BACKUP else _sync.share_root())
         if not target:
-            print("sync --init needs a directory (or set `sync_dir` in config first).")
+            print("sync --%s needs a directory (or set `%s` in config first)."
+                  % (flag.replace("_", "-"), key))
             return
         target = os.path.expanduser(target)
-        info = _sync.init_root(target)
-        if getattr(a, "init"):
-            _config.set("sync_dir", target)
-        print("sync: exchange ready at %s" % info["root"])
+        try:
+            info = _sync.init_root(target, kind=kind)
+        except _sync.DestinationMismatch as e:
+            print("sync: %s" % e)
+            return
+        if info["kind"] != kind:
+            print("sync: %s already exists as a %s exchange and was left alone. An "
+                  "exchange keeps the identity it has — converting one is a decision "
+                  "with a blast radius, not a flag." % (target, info["kind"]))
+            return
+        if getattr(a, flag):
+            _config.set(key, target)
+        label = "SHARE" if kind == _sync.KIND_SHARE else "backup"
+        print("sync: %s exchange ready at %s" % (label, info["root"]))
         print("  this station: %s / %s   (%s)"
               % (_station.owner(), _station.dirname(), _station.display()))
         print("  partition:    %s" % info["partition"])
         print("  git:          %s" % ("repo present" if info["git"] else "none (plain dir)"))
+        if kind == _sync.KIND_SHARE:
+            print("  SHARES NOTHING YET — a task reaches a share exchange only when a "
+                  "sharing rule on its brain names an audience. `task-station brains "
+                  "share <brain> --with <alias>` is the only thing that widens it.")
+        else:
+            print("  EVERY task is backed up here, unfiltered — that is the durability "
+                  "guarantee, and filtering it would kill it.")
         print("  NO REMOTE is configured and none is created here — adding one is a "
               "deliberate step (docs/SYNC.md).")
         return
     if getattr(a, "status", False):
-        r = root or _sync.sync_root()
-        if not r:
+        try:
+            dests = _sync_targets(root)
+        except _sync.DestinationMismatch as e:
+            print("sync: %s" % e)
+            return
+        if not dests:
             print("sync is OFF — no exchange configured. `task-station sync --init <dir>`.")
             return
-        print("sync: %s" % r)
-        print("  this station: %s / %s   (%s)"
+        print("this station: %s / %s   (%s)"
               % (_station.owner(), _station.dirname(), _station.display()))
-        print("  git: %s · remote: %s"
-              % (_sync.is_git_repo(r), _sync.has_remote(r)))
-        for p in _sync.list_partitions(r):
-            print("  %s %s/%s  %s" % ("*" if p["own"] else " ", p["owner"],
-                                      _station.dirname(p["number"]), p["label"]))
+        for d in dests:
+            r = d["root"]
+            print("")
+            print("%s: %s" % (d["kind"], r))
+            print("  git: %s · remote: %s"
+                  % (_sync.is_git_repo(r), _sync.has_remote(r)))
+            for p in _sync.list_partitions(r):
+                print("  %s %s/%s  %s" % ("*" if p["own"] else " ", p["owner"],
+                                          _station.dirname(p["number"]), p["label"]))
         return
     self_mod = sys.modules.get(g("__name__"))
     if self_mod is None:
         import types as _types
         self_mod = _types.SimpleNamespace(**_shared._G)
-    rep = _sync.run_sync(self_mod, root=root, dry_run=getattr(a, "dry_run", False),
-                         no_net=getattr(a, "no_net", False))
-    print(_sync.format_report(rep))
+    try:
+        dests = _sync_targets(root)
+    except _sync.DestinationMismatch as e:
+        print("sync: %s" % e)
+        return
+    if not dests:
+        print("sync is OFF — no exchange configured. `task-station sync --init <dir>`.")
+        return
+    reps = [_sync.run_sync(self_mod, root=d["root"], kind=d["kind"],
+                           dry_run=getattr(a, "dry_run", False),
+                           no_net=getattr(a, "no_net", False)) for d in dests]
+    print("\n\n".join(_sync.format_report(r) for r in reps))
 
 
 def cmd_heal(a):
