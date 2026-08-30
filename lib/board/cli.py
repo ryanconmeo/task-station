@@ -684,6 +684,28 @@ def main(argv=None):
     sp = sub.add_parser("stop-nudge"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_stop_nudge)    # Stop hook: non-blocking staleness nudge (opt-in auto-checkpoint)
 
+    # timing — the work-boundary scheduler's verdict. A READ: it writes nothing at all, so
+    # the policy can be inspected before `--boundary-maintenance` is allowed to act on it.
+    sp = sub.add_parser("timing",
+                        help="is this a work boundary, what is owed, and what would the "
+                             "AUTO maintenance class do about it")
+    sp.add_argument("--task", default=None,
+                    help="task by seq/id (default: the attached task)")
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--json", dest="as_json", action="store_true",
+                    help="the structured verdict — the same object the text view renders")
+    sp.set_defaults(fn=cmd_timing)
+
+    # window — WHICH CONTEXT WINDOW this session is measured against, and which source said
+    # so. A bare integer cannot be questioned, which is how a 5x-wrong denominator survived
+    # for months; this prints its provenance and names a divergence out loud.
+    sp = sub.add_parser("window",
+                        help="the context window this session is measured against, and "
+                             "which source supplied it")
+    sp.add_argument("--session", default=None)
+    sp.add_argument("--json", dest="as_json", action="store_true")
+    sp.set_defaults(fn=cmd_window)
+
     sp = sub.add_parser("render"); sp.add_argument("--session", required=True)
     sp.add_argument("--arg", default="")
     sp.add_argument("--format", choices=["ascii", "md"], default="ascii",

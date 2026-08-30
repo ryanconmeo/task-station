@@ -3,6 +3,144 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.44.0] — 2026-08-30
+
+**MAINTENANCE HAD NO SENSE OF TIMING. All three of its actions fired on a COUNT, and a count
+says an action is OWED — it says nothing at all about whether NOW is a good time.** The two
+moments this product picked were the two worst available. SESSION START asked for a reconcile
+before any work existed to reconcile, and charged the cold session the digest read and the
+heal in the same breath — on the record this shipped from, that digest is ~82,000 tokens and
+one session spent its first ~14 minutes reading before it wrote anything. MID-TASK landed in
+the middle of a thought, where a nag is dismissed reflexively, which is how a nag becomes
+furniture and how the next real one gets skipped. And the third action had no trigger at all:
+a handoff was a hand judgement every single time. One relay went at ~66% of a 1M window
+because a human guessed well.
+
+**THE RIGHT MOMENT IS A WORK BOUNDARY — a turn ending with nothing in flight — and NOTHING NEW
+WAS BUILT TO DETECT IT.** Two mechanisms already shipped and each knows half: the `Stop` hook
+knows a turn is ending, and the pickup rail (3.40.0) knows whether a child's work is
+outstanding. `timing.boundary` composes them and adds the two other ways a unit of work is
+visibly unfinished — an undelivered control-channel order, and a git merge or rebase left
+half-done in the session's own tree. At a boundary the summary a checkpoint needs is still in
+context and nearly free; an hour later the same summary costs a re-read of everything that
+produced it. Same action, same record, an order of magnitude apart in price. **Moving work
+from the expensive moment to the cheap one is the whole feature.**
+
+**THE DENOMINATOR WAS WRONG BY 5x FOR MONTHS AND NOTHING COULD HAVE SAID SO.**
+`--context-window` was 200,000 on a machine whose sessions run a 1,000,000-token model, and
+`--checkpoint-pct 65` measures against it — so the single most token-expensive prompt in the
+product fired at ~130,000 tokens instead of ~650,000. Five times too early, every session, in
+silence. The mechanism was never wrong: it reads MEASURED usage out of the transcript's own
+`usage` block, which is exactly right. It was a correct mechanism over a wrong artefact, and
+that shape produces a plausible number at the wrong time — nobody questions being asked to
+save early. **Correcting the constant to 1,000,000 is the same bug pointing the other way, and
+the other way is the dangerous one**: a hardcoded 1M overshoots on any smaller-window session,
+the checkpoint never fires, and losing a checkpoint costs an unsaved record where firing early
+costs a line of text.
+
+**So the window is DETECTED and the config is demoted to an OVERRIDE THAT SAYS WHICH SOURCE
+WON.** Resolution runs harness-reported size → the Claude Code selection's `[1m]` marker →
+the transcript's own model → a 200k floor that calls itself a floor rather than a
+measurement. An explicit override still wins, because a number the user typed is user intent
+— but it no longer hides what it overruled: `task-station window` prints the number, the
+source, and, when a stored override disagrees with what the session detects, says so in those
+words and in both directions. The checkpoint nudge — the exact surface that fired at ~13% of
+budget — now names its own denominator in its own copy. And `--context-window 0` no longer
+stores a one-token window: `0`/`off`/`auto` DROPS the override, because the whole point of
+demoting a setting is that it can be put down again.
+
+**THE AUTO CLASS RUNS AT THE BOUNDARY AND REPORTS WHAT IT DID, RATHER THAN ASKING.** An action
+may run unattended only if it is deterministic AND reversible with a named undo. The
+mechanical heal pass qualifies and already said so in its own code: it backs the task blob up
+before the first write and prints one exact undo per operation. `config --boundary-maintenance
+on` lets it act at a safe boundary and report — **default off, because "reversible" is a
+property of a write, not consent to make it.**
+
+**A MERGE IS NEVER AUTOMATIC, AND IT IS EXCLUDED BY VERB RATHER THAN BY THRESHOLD.** A split's
+parts are each still true on their own; put the original back beside them and nothing has been
+asserted that was not already there. A merge writes ONE summary that has to be true of all its
+members at once, and when it is not, there is no verb that unsays it — the restore puts the
+originals back and the false consolidation stays on the log as a decision somebody apparently
+made. On the task this shipped from, the single merge group has been refused six separate
+times by six separate readings, every one correct. So there is no count, no confidence score
+and no configuration that promotes a merge into the auto class; held operations are REPORTED
+rather than dropped, because an op that silently vanishes from a pass is indistinguishable
+from one the planner never found. Nothing outward and nothing that ends a session is automatic
+either, and an action nobody has classified is refused rather than allowed.
+
+**THE HANDOFF GETS A FLOOR, NOT A CEILING — and the refusal is the point of it.** Checkpoint
+and heal can slip a session; a handoff cannot, because past a certain budget there is not
+enough room left to WRITE one, and a handoff written at 95% is the one that loses the state it
+exists to carry. So it fires while enough budget REMAINS to do it well, at a boundary, and
+**it refuses to prompt while the checkpoint is stale.** Handing over a stale record is worse
+than handing over late: the successor inherits a confident summary of a state that has moved,
+believes it, and works from it. Late costs one session boundary. The refusal names the
+checkpoint instead, which is the move that actually unblocks it.
+
+**AND A DISMISSAL NOW KEYS ON THE SUBJECT RATHER THAN THE SENTENCE, because a scheduler is
+only as good as the signal under it.** The old rule — a dismissal covers ONE EXACT FINDING TEXT
+— was written in good faith and the record refuted it, not marginally: 76 dismissals in force
+on one task, `grew-with-candidates:digest` ruled THE SAME WAY five separate times because a
+character count moved, and one ruling that expired inside TEN MINUTES when its finding text
+went from "about decision 436, 503" to "about decision 436" after a split. **The ruling did not
+survive its own subject being edited, and editing the subject is what acting on a finding
+looks like.** The ledger's own dismissal text named the cost: a check that re-litigates a
+settled ruling on every char-count change teaches the reader to skip the scan, which is how a
+real finding gets missed later.
+
+So identity is `(check, ref)` — the check that fired and the entry it fired about. What is
+given up is stated rather than discovered: a ruling now outlives an edit to its subject. That
+is the intended trade and the smaller risk, and it is not given up silently — when the wording
+moves under a live ruling the finding is reported as **MOVED**, and `heal --dismissals` now
+distinguishes three states instead of two: still on the same sentence, still settled but
+moved, and EXPIRED, which now means what the word should always have meant — the scan is not
+reporting that subject at all any more. **Legacy ledgers need no migration**: every row ever
+written stores its `check` and `ref`, so identity is derivable from rows written before
+identity existed, which is the only reason this could be a same-release change.
+
+**FIVE RULES MOVED INTO A STDLIB-ONLY LEAF SO AN EXIT CONDITION CAN ASK THEM OF `origin/main`.**
+3.43.0 learned this and wrote it down when `ownership.may_reassign_out` became a pure
+predicate "because an exit condition has to be able to ask it of origin/main". The window
+precedence, the boundary composition, the auto-class filter, the handoff floor and the
+dismissal keying all live in `lib/board/timing.py`, which imports `os` and `time` and nothing
+else; `sessions`, `heal` and the command seam gather the inputs and delegate, so a rule and
+its wiring can never say two different things. `scripts/prove_maintenance_timing.py` is piped
+out of `origin/main`, imports the rules out of `origin/main`, and has no redirection flag at
+all.
+
+### Added
+- `task-station timing [--task REF] [--json]` — the scheduler's whole verdict: is this a work
+  boundary (and if not, what is in flight), what the record says is owed, what the AUTO class
+  would do, and where the handoff stands. **Writes nothing**, so the policy can be read before
+  it is allowed to act.
+- `task-station window [--session SID] [--json]` — the context window this session is measured
+  against and which source supplied it, with a named DIVERGENCE when a stored override
+  disagrees with what the session detects.
+- `config --boundary-maintenance on|off` (default **off**) — run the AUTO maintenance class at
+  a work boundary and report what it did.
+- `lib/board/timing.py` — the scheduler: the boundary signal, the AUTO/PROMPT/NEVER
+  classification, the handoff floor, and the five pure rules an exit condition reads out of
+  the merge target.
+- `sessions.window_resolution` / `detected_context_window` / `window_lines`; `heal.auto_ops`,
+  `heal.held_ops`, `heal.finding_identity`, `heal.entry_identity`, `heal.moved_dismissals`.
+- `scripts/prove_maintenance_timing.py` — the merge-gated judge for #591's five steps.
+
+### Changed
+- The context window is DETECTED from the session; `--context-window` is an override that
+  names itself, and `--context-window 0|off|auto` drops it (it used to store a one-token
+  window). The `config` listing shows `auto` or the override rather than a resolved number it
+  has no session to resolve.
+- The proactive checkpoint nudge names its window source, and warns when a stored override
+  disagrees with the session it is measuring.
+- `heal`'s dismissal ledger is keyed on `(check, ref)`; the listing gained the MOVED state and
+  EXPIRED now means the subject is gone rather than the sentence having moved.
+- The `Stop` nudge gained a middle limb between the pressure nudge and the staleness nudge —
+  the work boundary — and still emits at most one line per turn end.
+
+### Fixed
+- A checkpoint trigger measured against a hardcoded denominator: wrong by 5x on this machine,
+  and wrong in the more expensive direction under the stopgap that replaced it.
+
 ## [3.43.0] — 2026-08-30
 
 **A CLOSED CHILD'S STILL-CURRENT RULINGS COULD BE RE-HOMED BY NOBODY, AND THE CLOSE REPORT

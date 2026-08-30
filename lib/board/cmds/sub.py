@@ -11,6 +11,7 @@ from board.boardio import *
 from board.cmds.maintain import *
 from board.cmds.manage import *
 from board.cmds.view import *
+from board import nudges as _nudges
 import json
 import os
 import sys
@@ -26,6 +27,9 @@ import save as _save
 import hook_health
 import paths
 import steps as _steps
+import store as _store
+import succession as _succ
+import timing as _timing
 import worktree_hook as _worktree_hook
 
 g, set_g = _shared.g, _shared.set_g
@@ -36,6 +40,8 @@ __all__ = [
     "cmd_detach", "_open_tasks_brief", "cmd_mark_edited", "cmd_touch_file",
     "cmd_terminal",
     "cmd_stop_gate", "cmd_post_compact", "cmd_stop_nudge",
+    "_boundary_facts", "_boundary_schedule", "_boundary_signature", "_record_shape",
+    "_boundary_maintain", "_checkpoint_mark_text", "cmd_timing", "cmd_window",
     "_channel_task_for", "_channel_block", "_stop_gate_edit_reason",
     "_pickup_block", "_pickup_retire",
     "_stand_down_pending",
@@ -775,17 +781,34 @@ def cmd_stop_nudge(a):
        events (edits / promotions) have accrued since the last refresh (default 5), so a
        couple of small edits no longer nudge; 0/off restores nudge-on-any-staleness.
 
-    Never emits both in one Stop. Prints nothing unless auto-checkpoint is ON and a task
-    is attached — so it never fires on today's default setup. Deliberately NOT a block
-    (no decision:block) — avoids the Stop gate's block cap / hard interrupts. Best-effort:
-    the Stop hook emits whatever this prints."""
-    if not _auto_checkpoint_enabled():
+    1.5 THE WORK BOUNDARY (NEW in 3.44.0, `--boundary-maintenance`, default off). Between the
+       two nudges sits the scheduler: when this turn is ending with NOTHING IN FLIGHT — no
+       undelivered order, no unclaimed pickup, no half-done merge in the working tree — the
+       AUTO maintenance class runs and REPORTS what it did, and a due handoff is named here
+       rather than mid-thought. It sits BELOW the pressure nudge because pressure is the one
+       signal with a deadline, and ABOVE the staleness nudge because a pass that has already
+       reconciled the record makes that nudge's advice stale. See `_boundary_maintain`.
+
+    Never emits more than ONE line in one Stop, and that is a contract with the harness, not
+    a style choice: this hook's stdout is a single JSON object. Prints nothing unless a task
+    is attached AND at least one of `--auto-checkpoint` / `--boundary-maintenance` is on — so
+    it never fires on today's default setup. Deliberately NOT a block (no decision:block) —
+    avoids the Stop gate's block cap / hard interrupts. Best-effort: the Stop hook emits
+    whatever this prints."""
+    checkpointing = _auto_checkpoint_enabled()
+    if not checkpointing and not _config_boundary_enabled():
         return
     task = _session_task(a.session)
     if not task:
         return
     if _stand_down_pending(task, a.session):
-        return                      # limb 0 above — the parent's order outranks both nudges
+        return                      # limb 0 above — the parent's order outranks every limb
+    if not checkpointing:
+        line = _boundary_maintain(a, task)
+        if line:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "Stop", "additionalContext": line}}))
+        return
     try:
         import config
         pct = config.checkpoint_pct()
@@ -793,11 +816,21 @@ def cmd_stop_nudge(a):
         # 200k) unless the user has explicitly set context_window. A fixed 200k
         # denominator on a 1M model reads ~5x over-full and fires this nudge almost
         # every Stop — the "saves too often / percentages look reversed" bug.
-        window = effective_context_window(a.session)
+        #
+        # THE RESOLUTION IS KEPT, NOT JUST THE NUMBER. This nudge is the exact surface that
+        # fired at ~13% of the real budget for months, and the reason nobody caught it is
+        # that its copy quoted a percentage without ever saying what it was a percentage OF.
+        # When a stored override disagrees with what the session detects, the line now says
+        # so — the cheapest possible place to notice, because it is the place the wrong
+        # number is being spent.
+        _wres = window_resolution(a.session)
+        window = _wres["window"]
         thresh_abs = config.checkpoint_at()
         milestone = config.checkpoint_milestone_edits()
     except Exception:
         pct, window, thresh_abs, milestone = 0, 200000, 0, 0
+        _wres = {"source": "default", "diverges": False, "override": None,
+                 "detected": None, "window": 200000}
     # 1. Proactive context-pressure trigger (takes precedence over the staleness nudge).
     #    checkpoint_pct (measured) is the default path; checkpoint_at (estimated) is the
     #    absolute back-compat fallback. Either crossing fires the same nudge.
@@ -816,8 +849,16 @@ def cmd_stop_nudge(a):
             # Report BOTH used and remaining so the figure can't be misread against
             # Claude's native "% left" indicator. The nudge fires as the window FILLS
             # (used ≥ checkpoint_pct), i.e. precisely when little context is left.
-            amount = "~%d%% used · ~%d%% left (~%dk/%dk tokens)" % (
-                pct_now, left, measured // 1000, window // 1000)
+            amount = "~%d%% used · ~%d%% left (~%dk/%dk tokens, window source: %s)" % (
+                pct_now, left, measured // 1000, window // 1000, _wres["source"])
+            if _wres.get("diverges"):
+                amount += (" — WARNING: that window is a stored OVERRIDE of %s tokens while "
+                           "this session detects %s. Every percentage above is measured "
+                           "against the override, so this nudge may be firing at the wrong "
+                           "time; `task-station window` explains and "
+                           "`config --context-window auto` drops the override"
+                           % ("{:,}".format(_wres["override"] or 0),
+                              "{:,}".format(_wres["detected"] or 0)))
             note = "proactive checkpoint nudge (~%d%% used, ~%dk tokens)" % (pct_now, measured // 1000)
         else:
             amount = "large (~%dk tokens)" % (est // 1000)
@@ -839,7 +880,15 @@ def cmd_stop_nudge(a):
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "Stop", "additionalContext": line}}))
         return
-    # 2. Light staleness nudge — only when pressure did not fire.
+    # 1.5 The work boundary — only when pressure did not fire. Ranked above the staleness
+    #     nudge because this limb may have just reconciled the record, which would make that
+    #     nudge's advice describe a state that no longer exists.
+    line = _boundary_maintain(a, task)
+    if line:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "Stop", "additionalContext": line}}))
+        return
+    # 2. Light staleness nudge — only when neither pressure nor the boundary fired.
     if not digest_stale(task):
         return
     # Milestone gate: hold the nudge until N meaningful events have accrued since the
@@ -1631,3 +1680,329 @@ def cmd_subscriptions(a):
     minted = _subscriptions_check(getattr(a, "session", None))
     if not getattr(a, "throttle", False):
         print("subscriptions check: minted %d memo(s)" % minted)
+
+
+# ---- THE WORK-BOUNDARY SCHEDULER: steps 2-4 at the seam -----------------------
+#
+# `lib/board/timing.py` holds the whole policy and cannot reach a task, a transcript or a
+# filesystem. THIS is the half that gathers the facts and performs the writes, and the split
+# is the reason the policy is testable against hand-built dicts while the gathering is
+# testable against a real store.
+
+def _boundary_facts(task, session):
+    """The four in-flight inputs `timing.boundary` needs, gathered from what already exists.
+
+    NOTHING NEW MEASURES ANYTHING HERE. Orders and pickups are fields on the task the Stop
+    gate has already loaded; the git operation is a handful of `os.path.exists` calls under
+    one `.git`; the untracked-edit marker is the same one the gate reads. The whole point of
+    the feature is that both halves of "is this a boundary" already shipped."""
+    try:
+        orders = len(_channel.orders_for(task, session) or [])
+    except Exception:                                   # noqa: BLE001
+        orders = 0
+    try:
+        pickups = len(_channel.pickups_pending(task) or [])
+    except Exception:                                   # noqa: BLE001
+        pickups = 0
+    git_op = _timing.git_operation_in_progress(os.getcwd())
+    try:
+        edits = bool(has_edited(session) and not get_link(session))
+    except Exception:                                   # noqa: BLE001
+        edits = False
+    return {"orders": orders, "pickups": pickups, "git_op": git_op,
+            "untracked_edits": edits}
+
+
+def _record_shape(task):
+    """A cheap fingerprint of everything a mechanical finding could come from — the decision,
+    step and memo counts, plus the last-heal stamp.
+
+    THIS IS THE SCAN'S COST GATE, and it is the only honest one available. `heal.cheap_limbs`
+    cannot serve as it: the limb that would have mattered here — "the scan found N issue(s)" —
+    is precisely the one a cheap read cannot evaluate, so gating on the cheap limbs would let
+    an oversized entry sit unreconciled until twenty-five unrelated decisions had accrued. A
+    turn that wrote nothing to the record cannot have created a finding, so THAT is what the
+    scan is gated on: the record moved."""
+    return _nudges.signature([
+        "d:%d" % len(task.get("decisions") or []),
+        "s:%d" % len(task.get("steps") or []),
+        "m:%d" % len(task.get("memos") or []),
+        "h:%s" % (task.get("last_heal_ts") or ""),
+    ])
+
+
+def _boundary_schedule(task, session, scan_ops=True):
+    """`(schedule, extras)` — the whole scheduler verdict for this task/session right now.
+
+    `extras` carries what the CALLER needs and the schedule dict deliberately does not: the
+    window resolution (so a report can say which source won), the succession report, and the
+    mechanical ops actually planned. Kept out of the schedule because `timing.schedule` is
+    pure and must stay constructible without any of them.
+
+    `scan_ops=False` skips the corpus scan and reports zero mechanical operations — the
+    boundary pass passes False on a turn where the record did not move (see `_record_shape`).
+    `timing` always passes True, because a report that quietly skipped a check would be the
+    thing this codebase calls a false green."""
+    facts = _boundary_facts(task, session)
+    bstate = _timing.boundary(orders=facts["orders"], pickups=facts["pickups"],
+                              git_op=facts["git_op"],
+                              untracked_edits=facts["untracked_edits"])
+    ops, limbs = [], []
+    if scan_ops:
+        try:
+            result = _heal.scan(task)
+            ops = _heal.plan(task, result=result)
+            # `due`'s limbs, in `due`'s order and `due`'s wording — the scan limb first, then
+            # the four blob limbs. Read off the result rather than recomputed, so the
+            # scheduler and `heal` can never disagree about what is owed.
+            _due, reasons = _heal.due(task, result=result)
+            limbs = [("findings" if i == 0 and result.get("findings") else "limb", text)
+                     for i, text in enumerate(reasons)]
+        except Exception:                               # noqa: BLE001
+            ops, limbs = [], []
+    else:
+        try:
+            limbs = _heal.cheap_limbs(task)
+        except Exception:                               # noqa: BLE001
+            limbs = []
+    try:
+        gap = _save.since_checkpoint(task)
+    except Exception:                                   # noqa: BLE001
+        gap = {}
+    res = window_resolution(session)
+    measured = measure_context_tokens(session)
+    rep = _succ.report(task, measured, res["window"], session=session)
+    hand = _timing.handoff_due(rep["verdict"], rep["ready"], rep["blockers"],
+                               boundary_safe=bstate["safe"],
+                               relay=_succ.RELAY, compact=_succ.COMPACT)
+    sched = _timing.schedule(bstate, heal_limbs=limbs, checkpoint_gap=gap, handoff=hand,
+                             auto_ops=len(_heal.auto_ops(ops)))
+    return sched, {"window": res, "relay": rep, "ops": ops, "facts": facts}
+
+
+def _boundary_signature(sched):
+    """The state fingerprint the boundary pass throttles on — the heal LIMBS (not their
+    counts), the handoff state, and whether the auto class has anything to do.
+
+    LIMBS RATHER THAN COUNTS, for the reason `nudges._signature` spells out: every reason this
+    scheduler reports carries a number that moves on its own, so hashing the worded reason
+    would re-arm the throttle on every single turn and a pass built to act once would act
+    forever."""
+    parts = [l for l, _t in (sched.get("heal_limbs") or [])]
+    parts.append("handoff:%s" % sched.get("handoff"))
+    parts.append("auto:%s" % ("yes" if sched.get("auto_fires") else "no"))
+    return _nudges.signature(parts)
+
+
+def _checkpoint_mark_text(sched, extras):
+    """The LIGHT CHECKPOINT's one history entry — facts only, and it says so.
+
+    It records the occupancy, the window AND WHICH SOURCE SUPPLIED IT, and what has accrued
+    since the last full checkpoint. It does NOT stamp a checkpoint and never will: this
+    codebase already ruled that `last_full_save_ts` means one thing, that a stamp is a claim
+    that work was captured, and that only work may make it. A machine cannot author the prose
+    a digest is, so the most it may honestly write is the arithmetic — which is the half that
+    is expensive to reconstruct an hour later, and free right now."""
+    res = extras["window"]
+    rep = extras["relay"]
+    return ("boundary mark: ~%d%% of a %s-token window used (window source: %s) · %d record "
+            "change(s) since the last full checkpoint. Facts only — no checkpoint was "
+            "stamped and the digest was not touched."
+            % (rep.get("used_pct") or 0, "{:,}".format(res.get("window") or 0),
+               res.get("source"), sched.get("checkpoint_accrued") or 0))
+
+
+def _boundary_maintain(a, task):
+    """The AUTO class at a work boundary: run it, then say what it did. Returns ONE line for
+    the Stop hook's additionalContext, or None.
+
+    THE ORDER OF THE GUARDS IS THE POLICY:
+
+      1. OFF unless asked. `boundary_maintenance` is default-off — see the note in `config`.
+      2. NOT AT A BOUNDARY, NOTHING HAPPENS. Not a quieter version of the pass: nothing. A
+         maintenance line printed mid-flight is the furniture this feature exists to remove.
+      3. ONCE PER STATE. The same watermark the prompt nudges use, so a session that sits at a
+         boundary for six turns acts once and is silent five times.
+      4. MERGES ARE EXCLUDED BY CLASS. `heal.auto_ops` filters on the VERB, and
+         `timing.may_run_unattended` is asserted here as well — two independent readings of
+         the same rule, because this is the one place where getting it wrong writes a false
+         consolidation into somebody's record.
+
+    Every write is preceded by the same pre-heal backup `heal --apply` takes, and the report
+    names it. Fails open and silent: an exception here must never cost a turn."""
+    try:
+        if not _config_boundary_enabled():
+            return None
+        tid = task.get("id")
+        # CHEAP FIRST, ALWAYS. The boundary is four blob reads and a handful of stats; a turn
+        # that is not at a boundary leaves here having touched no corpus at all.
+        facts = _boundary_facts(task, a.session)
+        if not _timing.boundary(orders=facts["orders"], pickups=facts["pickups"],
+                                git_op=facts["git_op"],
+                                untracked_edits=facts["untracked_edits"])["safe"]:
+            return None
+        # THE SCAN IS PAID FOR ONLY WHEN THE RECORD MOVED. Recorded whether or not this pass
+        # goes on to act, because the statement being stored is "this shape has been scanned",
+        # not "this shape was acted on" — conflating the two would re-scan the same corpus at
+        # every turn end for as long as nothing was owed.
+        shape = _record_shape(task)
+        scan_ops = not _nudges.acted(tid, _nudges.SHAPE_KEY, a.session, shape)
+        sched, extras = _boundary_schedule(task, a.session, scan_ops=scan_ops)
+        if scan_ops:
+            _nudges.record_acted(tid, _nudges.SHAPE_KEY, a.session, shape)
+        if not sched["safe"]:
+            return None
+        sig = _boundary_signature(sched)
+        if _nudges.acted(tid, _nudges.BOUNDARY_KEY, a.session, sig):
+            return None
+        auto = _heal.auto_ops(extras["ops"])
+        held = _heal.held_ops(extras["ops"])
+        hand_state = sched.get("handoff")
+        if not auto and hand_state not in (_timing.HANDOFF_PROMPT, _timing.HANDOFF_BLOCKED,
+                                           _timing.HANDOFF_MISSED):
+            return None                       # nothing owed at this boundary — stay silent
+        _nudges.record_acted(tid, _nudges.BOUNDARY_KEY, a.session, sig)
+        seq = task.get("seq") or str(task.get("id") or "")[:8]
+        done, backup = [], None
+        # THE SECOND READING OF THE SAME RULE, and it is a refusal rather than an `assert`,
+        # because an assert vanishes under `python -O` and this is the one guard whose failure
+        # writes a false consolidation into somebody's record. `heal.auto_ops` filtered on the
+        # verb; this asks `timing.classify` independently. If the two ever disagree, nothing
+        # runs.
+        if auto and not (_timing.may_run_unattended(_timing.ACTION_HEAL_MECHANICAL)
+                         and all(o.get("verb") in _heal.AUTO_VERBS for o in auto)):
+            return ("[task-station] Work boundary on #%s — the AUTO maintenance class REFUSED "
+                    "to run: the plan filter and the action classifier disagree about what may "
+                    "run unattended, and nothing runs while they do. Nothing was changed. Run "
+                    "`/todo heal` by hand." % seq)
+        if auto:
+            backup = _heal.backup(task, strip=_store.strip_rev)
+            if backup:
+                session = a.session
+
+                def _append(text, _t=task, _s=session):
+                    if not append_decision(_t, text, _s):
+                        return None
+                    return len(_t.get("decisions") or [])
+
+                lines, applied, _skipped = _heal.apply(task, auto, append=_append)
+                if applied:
+                    _heal.stamp_healed(task)
+                    done.extend(lines)
+                append_history(task, _checkpoint_mark_text(sched, extras),
+                               session=a.session)
+                task["updated_ts"] = _now()
+                save_task(task)
+                _heal.clear_gate(tid)
+        parts = ["[task-station] Work boundary on #%s — nothing in flight, so the AUTO "
+                 "maintenance class ran. THIS IS A REPORT, NOT A REQUEST." % seq]
+        if done:
+            parts.append("Applied %d mechanical operation(s): %s."
+                         % (len(done), "; ".join(done)))
+            undo = _heal.undo_lines(extras["ops"])
+            if undo:
+                parts.append("Each one is reversible: %s" % " ".join(undo))
+            if backup:
+                parts.append("Pre-heal blob: %s." % backup)
+        elif auto:
+            parts.append("Refused to write: the pre-heal backup could not be taken, so "
+                         "nothing was changed.")
+        if held:
+            parts.append("%d operation(s) were HELD, not skipped: %s. A merge is never "
+                         "automatic — its summary has to be true of all its members at once "
+                         "and no verb unsays it when it is not. Run `/todo heal` to decide "
+                         "them by hand."
+                         % (len(held), ", ".join(sorted(set(o.get("verb") or "?"
+                                                            for o in held)))))
+        if hand_state == _timing.HANDOFF_PROMPT:
+            parts.append("HANDOFF IS DUE and this is the cheap moment to take it: %s "
+                         "`task-station relay --task %s` reports it; `relay --spawn` "
+                         "performs it. Never automatic — it ends this session."
+                         % (sched.get("handoff_why"), seq))
+        elif hand_state == _timing.HANDOFF_BLOCKED:
+            parts.append("HANDOFF WITHHELD: %s" % sched.get("handoff_why"))
+        elif hand_state == _timing.HANDOFF_MISSED:
+            parts.append("HANDOFF: %s" % sched.get("handoff_why"))
+        return " ".join(parts)
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def _config_boundary_enabled():
+    try:
+        import config
+        return config.boundary_maintenance_enabled()
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
+def cmd_timing(a):
+    """`task-station timing [--task REF] [--json]` — the scheduler's whole verdict, and it
+    WRITES NOTHING.
+
+    Three questions in one report: is this a work boundary (and if not, what is in flight),
+    what does the record say is owed, and what would the AUTO class do about it. The point of
+    a read-only surface is that the scheduler can be inspected BEFORE `--boundary-maintenance`
+    is turned on — a feature whose first observable behaviour is an unattended write to your
+    record is a feature nobody switches on."""
+    task, err = _timing_target(a)
+    if err:
+        print(err)
+        sys.exit(2)
+    sched, extras = _boundary_schedule(task, getattr(a, "session", None))
+    if getattr(a, "as_json", False):
+        out = dict(sched)
+        out["window"] = extras["window"]
+        out["relay"] = extras["relay"]
+        out["held_ops"] = [o.get("verb") for o in _heal.held_ops(extras["ops"])]
+        print(json.dumps(out, indent=2, sort_keys=True, default=str))
+        return
+    seq = task.get("seq") or str(task.get("id") or "")[:8]
+    print("Timing — #%s %s" % (seq, task.get("title")))
+    for line in window_lines(extras["window"]):
+        print(line)
+    for line in _timing.schedule_lines(sched):
+        print(line)
+    held = _heal.held_ops(extras["ops"])
+    if held:
+        print("  %-13s %d op(s) a machine may NEVER run unattended: %s"
+              % ("never auto", len(held),
+                 ", ".join(sorted(set(o.get("verb") or "?" for o in held)))))
+    print("  %-13s %s" % ("writes", "none — this is the report. "
+                          "`config --boundary-maintenance on` lets the AUTO class act."
+                          if not _config_boundary_enabled() else
+                          "none from this command; the AUTO class is ENABLED and acts at "
+                          "the next safe boundary."))
+
+
+def _timing_target(a):
+    """The task `timing` reports on, as `(task, error_line)` — `--task <ref>` by seq/id, else
+    the session's attached task. The same resolution every task-scoped command uses."""
+    ref = getattr(a, "task", None)
+    if ref:
+        task = resolve_ref(ref) or load_task(ref)
+        if not task:
+            return None, "timing: no task matching '%s'." % ref
+        return task, None
+    task = _session_task(getattr(a, "session", None))
+    if not task:
+        return None, ("timing: no task attached — name one with `timing --task <n>`.")
+    return task, None
+
+
+def cmd_window(a):
+    """`task-station window [--session SID] [--json]` — the context window this session is
+    actually measured against, AND WHICH SOURCE SUPPLIED IT.
+
+    THIS COMMAND EXISTS BECAUSE A NUMBER WITH NO PROVENANCE WAS WRONG BY 5x FOR MONTHS AND
+    NOTHING COULD HAVE SAID SO. `--context-window` was 200,000 on a machine running a
+    1,000,000-token model, so the checkpoint nudge fired at ~13% of the real budget on every
+    session in silence. The arithmetic was never wrong; the denominator was, and a bare
+    integer cannot be questioned. So this prints the window, the source that won, and — when
+    a stored override disagrees with what the session detects — says so in those words."""
+    res = window_resolution(getattr(a, "session", None))
+    if getattr(a, "as_json", False):
+        print(json.dumps(res, indent=2, sort_keys=True, default=str))
+        return
+    for line in window_lines(res):
+        print(line)

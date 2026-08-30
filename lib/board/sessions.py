@@ -30,6 +30,9 @@ __all__ = [
     "session_model", "_settings_model", "claude_code_model_selection",
     "_model_family_token", "_same_model_family", "_read_statusline_stdin",
     "persist_harness_context_window", "harness_context_window",
+    "SRC_ENV", "SRC_CONFIG", "SRC_HARNESS", "SRC_SELECTION", "SRC_MODEL", "SRC_DEFAULT",
+    "DETECTED_SOURCES", "_explicit_window", "_config_get", "detected_context_window",
+    "window_resolution", "window_lines",
     "effective_context_window", "_session_cwd", "_load_delegate_registry",
     "_live_bg_index", "_is_live_bg", "bg_aware_resume", "bg_resume_hint",
     "worker_targets", "worker_lines", "_is_resumable", "_fresh_session_cwd",
@@ -866,43 +869,194 @@ def harness_context_window(session):
     return n if n > 0 else None
 
 
-def effective_context_window(session):
-    """The context-window size (tokens) to size the checkpoint %/tokens math against
-    for `session`. Precedence: an EXPLICIT override (TASK_STATION_CONTEXT_WINDOW / the
-    `context_window` config key) always wins; else the HARNESS-reported window
-    (harness_context_window — the statusline payload's context_window_size, which is
-    already 1M-aware) is authoritative; else it is derived from the transcript model and
-    UPGRADED to the Claude Code selection's 1M window only when the selection is
-    genuinely larger AND of the same model family; else 200k. This is why an Opus-1M
-    session (transcript records the marker-stripped `claude-opus-4-8`, and settings/env
-    carry no marker for a runtime `/model` pick) is still sized at 1,000,000."""
-    import config
-    tm = g("session_model")(session)            # transcript base id, marker stripped
-    win = config.context_window(tm)             # explicit override wins in here
-    # An explicit override (env or config key, positive int) is user intent — never
-    # inflate/deflate past it; return immediately.
-    raw = os.environ.get("TASK_STATION_CONTEXT_WINDOW")
-    if raw is None:
-        raw = config.get("context_window", None)
-    if raw is not None:
+# -- WHICH SOURCE WON, and why a bare number was not enough ---------------------------
+#
+# THE DENOMINATOR WAS WRONG BY 5x FOR MONTHS AND NOTHING COULD HAVE SAID SO. `context_window`
+# was configured at 200,000 on a machine whose sessions run a 1,000,000-token model, and
+# `checkpoint_pct 65` measures against it — so the single most token-expensive prompt in the
+# product fired at ~130,000 tokens instead of ~650,000. Five times too early, every session,
+# in silence. The mechanism was never wrong: it reads MEASURED usage out of the transcript's
+# own usage block, which is exactly right. It was a correct mechanism over a wrong artefact,
+# and that shape produces a plausible number at the wrong time — nobody questions being asked
+# to save early.
+#
+# CORRECTING THE CONSTANT TO 1,000,000 IS THE SAME BUG POINTING THE OTHER WAY, and the other
+# way is the dangerous one. A hardcoded 1M overshoots on any session that is not a 1M-window
+# model: the checkpoint never fires, and losing a checkpoint costs an unsaved record, where
+# firing early costs a line of text. A number a human keeps in sync with a model roster will
+# be wrong again, and the second time it will be wrong in the expensive direction.
+#
+# SO THE WINDOW IS DETECTED AND THE CONFIG IS DEMOTED TO AN OVERRIDE — and, because the whole
+# failure was invisibility rather than arithmetic, the resolution SAYS WHICH SOURCE WON.
+# `window_resolution` returns the number AND the source that supplied it AND what detection
+# would have said on its own, so an override that disagrees with the live session is a fact
+# somebody can read instead of a number nobody can question. `effective_context_window` is
+# now one line over it, so the value and its provenance can never be computed two ways.
+
+# The sources, most authoritative first. These strings are the contract: they appear in the
+# report, in `--json`, and in the exit condition that judges this from origin/main.
+SRC_ENV = "override-env"       # TASK_STATION_CONTEXT_WINDOW
+SRC_CONFIG = "override-config" # the `context_window` config key
+SRC_HARNESS = "harness"        # the statusline payload's own context_window_size
+SRC_SELECTION = "selection"    # the Claude Code model selection, `[1m]` marker and all
+SRC_MODEL = "model"            # the transcript's `message.model`
+SRC_DEFAULT = "default"        # nothing was readable — pricing's 200k floor
+
+# The sources that are DETECTION (the session answering for itself) rather than a stored
+# number somebody typed. An override is only ever checked AGAINST these.
+DETECTED_SOURCES = (SRC_HARNESS, SRC_SELECTION, SRC_MODEL)
+
+
+def _explicit_window():
+    """`(value, source)` for an explicit override, or `(None, None)`.
+
+    A non-positive or unparseable value is NOT an override — it falls through to detection,
+    which is `config.context_window`'s long-standing rule and is repeated here rather than
+    inferred, so the two readers cannot disagree about what counts as set."""
+    for raw, source in ((os.environ.get("TASK_STATION_CONTEXT_WINDOW"), SRC_ENV),
+                        (_config_get("context_window"), SRC_CONFIG)):
+        if raw is None:
+            continue
         try:
-            if int(raw) > 0:
-                return win
+            n = int(raw)
         except (TypeError, ValueError):
-            pass
-    # No user override: the harness's OWN reported window is authoritative — it already
-    # reflects a 1M runtime selection that the transcript/settings never record.
+            continue
+        if n > 0:
+            return n, source
+    return None, None
+
+
+def _config_get(key):
+    """`config.get(key)` with no import at module scope (config imports back through the
+    facade). Returns None when config cannot be read at all — an unreadable config must not
+    be able to take a window resolution down with it."""
+    try:
+        import config
+        return config.get(key, None)
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def detected_context_window(session):
+    """`(window, source, evidence)` — what the SESSION ITSELF says its window is, with no
+    stored override consulted at all.
+
+    Three detectors, most authoritative first, and the order is the whole point:
+
+      * HARNESS. The statusline payload's `context_window_size` is the harness reporting its
+        own window, so it already reflects a runtime `/model` pick. It is the only source
+        that cannot be stale.
+      * SELECTION. The Claude Code model selection string (ANTHROPIC_MODEL, then
+        settings.local.json, then settings.json) still carries the `[1m]` marker that Claude
+        Code strips before calling the API. Used only when it is genuinely LARGER than the
+        transcript model's window and of the SAME family — so a `--model sonnet` session
+        running under an `opus[1m]` default is never inflated to 1M.
+      * MODEL. The transcript's own `message.model`, marker-stripped, through
+        `pricing.context_window_for`.
+
+    `evidence` is the raw string the winning detector read (the model id, or "" for the
+    harness, whose evidence is the number itself), so a report can show its working.
+
+    WITH NO TRANSCRIPT AND NO HARNESS VALUE THIS RETURNS THE 200k FLOOR RATHER THAN THE
+    SELECTION, and says `default` so nobody mistakes the floor for a measurement. The
+    selection is the machine's DEFAULT model, not necessarily this session's — a `--model`
+    launch or a runtime `/model` pick never reaches settings.json — so believing it
+    uncorroborated is how a 200k session gets sized at 1M, and an over-sized window is the
+    failure that loses a checkpoint rather than the one that prints a line too early."""
     hw = harness_context_window(session)
     if hw and hw > 0:
-        return hw
-    # No HUD data: fall back to the CC model-selection marker, else the transcript model.
-    cm = g("claude_code_model_selection")()     # selection, may carry [1m]
-    if cm:
+        return hw, SRC_HARNESS, ""
+    tm = g("session_model")(session)                    # transcript base id, marker stripped
+    cm = g("claude_code_model_selection")()             # selection, may carry [1m]
+    try:
         import pricing
-        if pricing.context_window_for(cm) > pricing.context_window_for(tm) \
-                and _same_model_family(tm, cm):
-            win = config.context_window(cm)
-    return win
+    except Exception:                                   # noqa: BLE001
+        pricing = None
+    if pricing is not None and cm and tm and _same_model_family(tm, cm) \
+            and pricing.context_window_for(cm) > pricing.context_window_for(tm):
+        return pricing.context_window_for(cm), SRC_SELECTION, cm
+    if pricing is not None and tm:
+        return pricing.context_window_for(tm), SRC_MODEL, tm
+    return 200000, SRC_DEFAULT, ""
+
+
+def window_resolution(session):
+    """The context window for `session` AND WHICH SOURCE SUPPLIED IT, as one dict:
+
+        {"window": int, "source": <one of SRC_*>, "detected": int|None,
+         "detected_source": str, "evidence": str, "override": int|None,
+         "diverges": bool, "why": "<one sentence>"}
+
+    PRECEDENCE IS UNCHANGED — an explicit override still wins, because a number the user
+    typed is user intent and a detector is not entitled to overrule it. What is new is that
+    the override no longer hides what it overruled: `detected` is computed EVEN WHEN AN
+    OVERRIDE IS IN FORCE, and `diverges` is True when the two disagree. That single boolean
+    is the whole defect made visible — a 200,000 override on a 1M session, and a 1,000,000
+    override on a 200k one, are the same finding with the sign flipped.
+
+    Never raises: every limb is defensive and the floor is pricing's 200k default, because
+    this feeds the Stop hook and a resolution that threw would cost a turn."""
+    detected, dsource, evidence = 200000, SRC_DEFAULT, ""
+    try:
+        detected, dsource, evidence = detected_context_window(session)
+    except Exception:                                   # noqa: BLE001
+        pass
+    override, osource = _explicit_window()
+    # THE PRECEDENCE RULE ITSELF LIVES IN `timing.resolve_window` — a stdlib-only leaf — and
+    # this function only gathers the inputs. That is not tidying: an exit condition has to be
+    # able to ask the rule of `origin/main`, and importing a module that reaches transcripts,
+    # config files and the HUD is not something a judge can do. One definition, gathered here,
+    # judged there.
+    import timing as _timing
+    rule = _timing.resolve_window(
+        detected, dsource, override=override,
+        override_source=("TASK_STATION_CONTEXT_WINDOW" if osource == SRC_ENV
+                         else "the `context_window` config key"),
+        detected_sources=DETECTED_SOURCES)
+    if override:
+        return {"window": rule["window"], "source": osource, "detected": detected,
+                "detected_source": dsource, "evidence": evidence, "override": override,
+                "diverges": rule["diverges"], "why": rule["why"]}
+    why = {
+        SRC_HARNESS: "the harness reported this window for the session itself",
+        SRC_SELECTION: "derived from the Claude Code model selection %r, which carries the "
+                       "1M marker the transcript never records" % evidence,
+        SRC_MODEL: "derived from the session's own model %r" % evidence,
+        SRC_DEFAULT: "nothing about this session was readable, so this is the 200k floor — "
+                     "not a measurement",
+    }[dsource]
+    return {"window": detected, "source": dsource, "detected": detected,
+            "detected_source": dsource, "evidence": evidence, "override": None,
+            "diverges": False, "why": why}
+
+
+def window_lines(res):
+    """`window_resolution` as display rows — the number, the source that won, and the
+    divergence when there is one. A DIVERGENCE IS ALWAYS PRINTED: silence about it reads
+    exactly like never having checked."""
+    res = res or {}
+    out = ["  %-13s %s tokens  (source: %s)"
+           % ("window", "{:,}".format(res.get("window") or 0), res.get("source") or "?"),
+           "  %-13s %s" % ("why", res.get("why") or "")]
+    if res.get("diverges"):
+        out.append("  %-13s the stored override says %s and this session detects %s — one "
+                   "of them is wrong, and every %%-of-window trigger is measured against "
+                   "the override."
+                   % ("DIVERGES", "{:,}".format(res.get("override") or 0),
+                      "{:,}".format(res.get("detected") or 0)))
+        out.append("  %-13s `task-station config --context-window 0` drops the override "
+                   "and lets detection answer." % "fix")
+    return out
+
+
+def effective_context_window(session):
+    """The context-window size (tokens) to size the checkpoint %/tokens math against for
+    `session` — `window_resolution(session)["window"]` and nothing else.
+
+    ONE LINE OVER THE RESOLUTION ON PURPOSE. Every caller that only wants the number keeps
+    working unchanged, and the number can never be computed by a second path that drifts
+    from the one that reports its provenance."""
+    return window_resolution(session)["window"]
 
 
 def _session_cwd(path):

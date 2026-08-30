@@ -4125,18 +4125,52 @@ class TestTheDismissalLedger(_Base):
         for _ in range(3):
             self.assertEqual(heal.scan(self._reload(t))["findings"], [])
 
-    def test_changing_the_matched_text_makes_the_finding_RE_REPORT(self):
-        # The ruling covered the sentence that was there. Rewriting the entry — here, from
-        # "was wrong" to "no longer holds" — changes what the check matched, so nobody has
-        # ruled on the new one.
+    def test_rewording_the_entry_does_NOT_reopen_a_settled_ruling(self):
+        # SUPERSEDES `test_changing_the_matched_text_makes_the_finding_RE_REPORT`, and the
+        # reversal is deliberate. That test asserted the original design — a dismissal covers
+        # ONE EXACT FINDING TEXT — and it was correct reasoning that the record then refuted:
+        # on the real corpus, 76 dismissals were in force on one task, `grew-with-candidates:
+        # digest` had been ruled the same way FIVE times because a character count moved, and
+        # one ruling expired inside ten minutes when its finding text went from "about
+        # decision 436, 503" to "about decision 436" after a split — i.e. the ruling did not
+        # survive its own subject being EDITED, and editing the subject is what acting on a
+        # finding looks like. A dismissal is now keyed on (check, ref): the check that fired
+        # and the entry it fired about. Rewording that entry leaves the ruling in force.
         t = self._prose_task()
         self._dismiss(t)
         edited = self._reload(t)
         edited["decisions"][1] = "decision 1 no longer holds — sqlite, for the FTS index"
         ts.save_task(edited)
         result = heal.scan(self._reload(t))
-        self.assertEqual([f["check"] for f in result["findings"]], ["prose-supersession"])
-        self.assertEqual(result["dismissed"], [])
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(len(result["dismissed"]), 1)
+
+    def test_a_reworded_finding_is_reported_as_MOVED_rather_than_silently_silenced(self):
+        # What is given up by the change above is that a ruling now outlives an edit to its
+        # subject. It is NOT given up silently: a silenced finding nobody can see is
+        # indistinguishable from a check that stopped running.
+        t = self._prose_task()
+        self._dismiss(t)
+        edited = self._reload(t)
+        edited["decisions"][1] = "decision 1 no longer holds — sqlite, for the FTS index"
+        ts.save_task(edited)
+        result = heal.scan(self._reload(t))
+        self.assertTrue(result["dismissed"][0]["moved"])
+        self.assertEqual(len(heal.moved_dismissals(result)), 1)
+        self.assertIn("MOVED", self._heal(self._reload(t), dismissals=True))
+
+    def test_a_ruling_still_silences_only_its_OWN_subject(self):
+        # The negative control for the same change, and the one that matters most: a
+        # dismissal that reached past its own subject would be strictly worse than the
+        # re-firing it replaced.
+        t = self._prose_task()
+        self._dismiss(t)
+        edited = self._reload(t)
+        edited["decisions"].append("decision 1 was wrong — flat files after all")
+        ts.save_task(edited)
+        result = heal.scan(self._reload(t))
+        self.assertTrue([f for f in result["findings"]
+                         if f["check"] == "prose-supersession"])
 
     def test_an_unambiguous_substring_of_a_ref_resolves(self):
         t = self._prose_task()
@@ -4206,11 +4240,15 @@ class TestTheDismissalLedger(_Base):
         self.assertIn("in force", out)
         self.assertIn(time.strftime("%Y"), out)
 
-    def test_the_listing_calls_an_expired_ruling_expired(self):
+    def test_the_listing_calls_a_ruling_with_no_remaining_subject_EXPIRED(self):
+        # EXPIRED now means what the word should always have meant: the scan is not reporting
+        # that SUBJECT at all any more, so the ruling covers nothing. It used to fire whenever
+        # the sentence moved, which is how a listing came to read "9 silenced" when the true
+        # answer was "6 are, and 3 rulings expired for no reason anybody chose".
         t = self._prose_task()
         self._dismiss(t)
         edited = self._reload(t)
-        edited["decisions"][1] = "decision 1 no longer holds — sqlite, for the FTS index"
+        edited["decisions"][1] = "sqlite instead, for the FTS index"     # no supersession
         ts.save_task(edited)
         out = self._heal(self._reload(t), dismissals=True)
         self.assertIn("EXPIRED", out)
