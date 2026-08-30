@@ -304,8 +304,8 @@ class TestSupersession(_Base):
         # the feature would be unusable.
         t = self._task(decisions=["alpha", "beta"])
         view = ts._format_history(ts.load_task(t["id"]))
-        self.assertIn(" 1. alpha", view)
-        self.assertIn(" 2. beta", view)
+        self.assertIn("1:1. alpha", view)      # qualified: whose log the number is on
+        self.assertIn("1:2. beta", view)
 
     def test_superseding_a_nonexistent_index_is_a_loud_error(self):
         t = self._task(decisions=["only one"])
@@ -513,7 +513,7 @@ class TestPinnedDecisions(_Base):
         self.assertNotIn("wrong w3", detail)             # superseded → still gone
         # 13 stored, 1 superseded → 12 rendered rows, 3 of them pinned.
         block = detail[detail.index("Decisions:"):].split("\n\n")[0]
-        numbers = [int(m) for m in re.findall(r"^\s+(\d+)\. ", block, re.M)]
+        numbers = [int(m) for m in re.findall(r"^\s+\d+:(\d+)\. ", block, re.M)]
         self.assertEqual(len(numbers), 12)
         self.assertEqual(block.count(ts.DECISION_PIN_MARK), 3)
         # The numbers are the LOG's, so they SKIP the superseded entry (3) rather than
@@ -522,7 +522,8 @@ class TestPinnedDecisions(_Base):
         self.assertEqual(sorted(numbers), [1, 2] + list(range(4, 14)))
         # Pinned sort first, so reading order is not numeric order; the number a row
         # carries still has to be its own.
-        self.assertIn("the correction", block.splitlines()[numbers.index(13) + 1])
+        rows = [ln for ln in block.splitlines() if re.match(r"^\s+\d+:\d+\. ", ln)]
+        self.assertIn("the correction", rows[numbers.index(13)])
 
     def test_history_still_carries_the_retired_decisions_the_digest_drops(self):
         # The other half of the contract: removing truncation must not have quietly

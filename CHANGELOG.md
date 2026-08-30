@@ -3,6 +3,121 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.43.0] — 2026-08-30
+
+**A CLOSED CHILD'S STILL-CURRENT RULINGS COULD BE RE-HOMED BY NOBODY, AND THE CLOSE REPORT
+NAMED THE COMMAND ANYWAY.** 3.42.0 shipped the re-home rail: when a child closes, the
+rulings it does not move are **named** in a memo filed on the parent, alongside the command
+that moves them — ``heal --task <child> --reassign <n,…> --to <parent>``. The reader of
+that memo is the parent, by construction. The command refused that reader, by
+construction. Guard 6 admits only a session **attached to the source task**, and a parent
+is never attached to its child.
+
+**And it was not "empty once the child's window closes" — it was empty from the instant of
+the close.** Closing a task calls `clear_link` on every session linked to it, so the
+child's own authoring session loses its link at the moment the parent closes it. Verified
+from both sides on the real record on 2026-08-30: #586, closed and graded, carrying
+fourteen still-current rulings its close memo offers to re-home. The parent ran the
+command and was refused. The session that had **written** those rulings, against the
+merged engine that has the verb, was refused by the same guard and the same sentence. The
+set of parties permitted to run it was empty. The remedy the refusal offered — `/todo 586`
+— means **reopening a task that had just been closed and graded**.
+
+This is the shape 3.37.0 already fixed once: a documented command that does not exist for
+the person reading it. The re-home rail reintroduced it in a narrower form, and arriving
+through the door built to prevent it — the guard whose own text predicted "the ruling goes
+cold the moment the child closes".
+
+**So the parent may re-home out of a CLOSED child, and nothing else changed.** The risk
+guard 6 exists for — a task claiming rulings it was never handed — does not exist here:
+the child is closed, nobody holds it, and the parent is the one party the close report
+already handed those names to. For an **open** child the guard is untouched, because there
+the risk is real and the child's own session can run the verb. This is the only candidate
+fix that makes the **already-printed** close reports true as written; emitting the re-home
+at close time, or re-addressing the memo, both leave every report filed before today
+pointing at something its reader still cannot run.
+
+The rule moved into `ownership.may_reassign_out` — a pure predicate over a stored record,
+with no session, no store and no terminal — because it is now a property of the **source
+task** (its status, its parents) as much as of the caller, and because an exit condition
+has to be able to ask it of `origin/main`.
+
+**A SECOND DEFECT, FOUND IN THE SAME MINUTE: TWO NUMBERING SYSTEMS RENDERED IDENTICALLY.**
+A task's State prose can carry a numbered list; its decision log carries numbered entries.
+Both rendered as `  N. `, and `--reassign` took one of them silently. On the real record a
+session read #586's six prose **guards** as decision indices and asked for
+`1,2,3,5,6,12,13`: five of the seven named a different ruling than intended, including one
+it had explicitly said to leave alone. Nothing moved — index 6 happened to be superseded
+and the batch is all-or-nothing — so the guards held **by luck of one index**, on a verb
+that writes two tasks. The numbers came from `search --detail 586 | grep '^  [0-9]\+\. '`,
+which matched both structures.
+
+**Decision indices now say which log they are on.** Every read surface prints `586:12` —
+`search --detail`, `history`, `heal`'s current-decisions block, the merge candidate groups
+and the reference stubs. The form is not new: `532:14` is already the stored cross-task
+reference, already what `--supersedes` takes, and already how an inherited pin renders. It
+is the smallest thing that names the artefact a number refers to, and prose cannot collide
+with it, because no hand-written list item begins `<task>:`. On the witness record that one
+grep now returns the six prose guards and nothing else.
+
+**And the verb reads it back, refuses what it cannot read, and says what it is about to
+move.** `--reassign`/`--unassign` take a bare `<n>` or the qualified `<task>:<n>`; a
+qualified ref naming a **different** task is refused and both tasks are named, never
+resolved. An item that parses as neither refuses the whole batch instead of being dropped —
+a reader may drop what it cannot parse, a **writer** may not. Every run now prints each
+ruling's **first sentence** beside its qualified index before it moves anything, because
+the numbers alone read as correct whichever list they were copied from and the sentences do
+not. `--dry-run` validates exactly as the real run validates and moves nothing.
+
+**One consequence of that render had to be paid for immediately.** Sessions copy digest
+lines into decision prose, so `586:12` will start appearing in decision bodies — and
+`#586:12` on a task with 600 entries would have matched the bare-`#N` reader at `#586`,
+where 586 is both in range and earlier. A reference to somebody else's decision would have
+been reported as an unlinked supersession of this task's 586th. `heal`'s prose-supersession
+check now matches the qualified form **first** and claims the occurrence **whole**: it
+reads as decision 12 when the task is #586, as nothing otherwise, and either way neither
+half is left for a second reader.
+
+### Added
+- **`ownership.may_reassign_out(source, linked_task_id)`** — who may move ownership out of
+  a task, as a pure predicate over a stored record. Two ways in and only two: the session
+  attached to the source, or, when the source is CLOSED, a session attached to a task it
+  names as its parent (`parent` or `spawned-from`). No session at all is refused on both
+  paths.
+- **`ownership.index_label(task, n)`** — `586:12`, the one place that knows how a decision's
+  own log index renders, used by every read surface and by the reference stub.
+- **`heal --reassign/--unassign --dry-run`** — names what would move, with each ruling's
+  first sentence, and validates the batch exactly as the real run does. These two verbs
+  write without `--apply` (the close report that names `--reassign` has to be true as
+  printed), so this is how you look before you leap.
+- **`scripts/prove_closed_child_rehome.py`** — the merge-gated exit condition. Judge and
+  rule are both read from `origin/main` with no worktree fallback; the witness is #586
+  itself, live from the store, read-only. Four arms: the parent of the real closed child is
+  admitted; the same record read as OPEN refuses the same parent; a caller attached
+  elsewhere is refused; a caller attached to nothing is refused. It refuses to report on a
+  witness that has stopped witnessing — a reopened child or a severed parent edge prints
+  `WITNESS-NOT-VALID` rather than a green it did not earn.
+
+### Changed
+- Decision indices render **qualified** (`586:12`) in `search --detail`, `history`, `heal`'s
+  current-decisions block, its merge candidate groups, and reference stubs. Every reconcile
+  verb still takes the bare number; `--reassign`/`--unassign` now take the qualified form
+  too.
+- `heal --reassign` prints each ruling it is about to move, by qualified index and first
+  sentence, ahead of the write, the refusal and the dry run alike.
+- `heal`'s prose-supersession check reads `<task>:<n>` and claims the whole occurrence, so
+  the qualified form is visible to it on its own task and unreadable as a local index on
+  any other.
+
+### Fixed
+- **The parent of a closed child can run the command its close report names.** The regression
+  test takes that command out of the emitted memo body rather than knowing it, which is the
+  gap the existing documented-flags guard could not cover: prose emitted at runtime.
+- **`--reassign 1,foo` no longer moves ruling 1 in silence.** An item that is not a decision
+  number refuses the whole batch.
+- **A qualified ref naming another task is refused, not resolved** — and the refusal names
+  both tasks and the `--task` that would make it legal.
+
 ## [3.42.0] — 2026-08-30
 
 **A RULING LIVED WHERE IT WAS TYPED, NOT WHERE IT BELONGED, AND NO VERB COULD MOVE IT.**
