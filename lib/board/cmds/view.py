@@ -593,14 +593,34 @@ def _decision_inheritance(task):
         out.append("  (`update --task %s --supersedes %s --decision '<the correction>'` "
                    "retires one; `heal --task %s --unassign %s` hands it back.)"
                    % (mine[0]["seq"], mine[0]["ref"], mine[0]["seq"], mine[0]["n"]))
+    # INHERITED PINS RENDER AS STUBS, AND THE MEASUREMENT IS WHY. Rendered in full they
+    # took this very task's digest from 21,938 to 70,280 chars — 3.2x — because its parent
+    # pins 27 decisions worth 48,342 chars. A feature whose entire purpose is to make a
+    # digest cheaper cannot triple every child's, and it would have done so on EVERY child
+    # of EVERY programme, silently, in exchange for prose the child cannot edit anyway.
+    #
+    # A stub is the right shape here for the same reason it is on the source side: the
+    # child keeps the knowledge that the constraint exists, who owns it and how to read it,
+    # and the prose stays with the task that owns it. The header carries the one command
+    # that opens them in full, so nothing is hidden — it is one hop away instead of
+    # 48,000 chars in front of every session.
     pins = _own.inherited_pins(task, load_task)
     if pins:
         out.append("")
-        out.append("Inherited pins — the parent's spine. These BIND this task and are NOT "
-                   "this task's to change:")
+        by_parent = []
+        for row in pins:
+            label = "#%s" % row["seq"] if row["seq"] is not None else row["ref"]
+            if label not in by_parent:
+                by_parent.append(label)
+        out.append("Inherited pins (%d) — the parent's spine. These BIND this task and are "
+                   "NOT this task's to change." % len(pins))
+        out.append("  Shown as references, not prose: %s renders them in full, and pinned "
+                   "rulings are long."
+                   % ", ".join("`task-station search --detail %s`" % p.lstrip("#")
+                               for p in by_parent))
         for row in pins:
             out.append("  %s %s%s" % (row["ref"], DECISION_PIN_MARK,
-                                      _dec.text(row["entry"])))
+                                      _dec.stub(row["entry"])))
     return out
 
 

@@ -629,13 +629,27 @@ class TheVerbEndToEnd(unittest.TestCase):
         self.assertIn("gossips over the channel", detail)
         self.assertNotIn("owned by #2", detail)
 
-    def test_a_child_inherits_the_parents_pins(self):
+    def test_inherited_pins_render_as_REFERENCES_not_prose(self):
+        """MEASURED on this feature's own task: rendering a parent's pins in full took its
+        digest from 21,938 to 70,280 chars — 3.2x — because the parent pins 27 decisions
+        worth 48,342. A feature whose whole purpose is a cheaper digest cannot triple every
+        child's, and it would have done so on every child of every programme, silently."""
+        self._family()
+        body = "THE SPINE RULING. " + ("why it binds and what it constrains. " * 60)
+        self._run("update", "--task", "1", "--session", "sp",
+                  "--decision", body, "--pin")
+        child = self._run("search", "--detail", "2")
+        self.assertIn("Inherited pins (1)", child)
+        self.assertIn("THE SPINE RULING", child)         # the knowledge is kept
+        self.assertNotIn(body, child)                    # the prose is not
+        self.assertIn("search --detail 1", child)        # and it is one hop away
+
+    def test_an_inherited_pin_still_names_its_owner_and_number(self):
         self._family()
         self._run("update", "--task", "1", "--session", "sp",
                   "--decision", "never renumber a decision", "--pin")
         child = self._run("search", "--detail", "2")
-        self.assertIn("Inherited pins", child)
-        self.assertIn("never renumber a decision", child)
+        self.assertIn("1:2", child)                      # addressable across tasks
         self.assertIn("NOT this task's to change", child)
 
     def test_a_cross_task_supersession_writes_both_directions(self):

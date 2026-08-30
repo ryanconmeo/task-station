@@ -207,7 +207,7 @@ heal --merge <n1,n2,…> --into <n>
 heal --task <source> --reassign <n,…> --to <owner> [--stub '<the reference line>']
 ```
 
-**The decision does not move — the ownership does.** One copy, one store, still on the source task at its original index, in full. What changes is which task renders it: the owner prints the prose, the source prints a one-line reference stub carrying the title, the owner and the number. A child additionally renders its parent's **pins**, which bind it by inheritance.
+**The decision does not move — the ownership does.** One copy, one store, still on the source task at its original index, in full. What changes is which task renders it: the owner prints the prose, the source prints a one-line reference stub carrying the title, the owner and the number. A child additionally sees its parent's **pins**, which bind it by inheritance — as **references, not prose**: rendering them in full took one real child's digest from 21,938 to 70,280 chars, because its parent pins 27 decisions worth 48,342. A feature whose purpose is a cheaper digest cannot triple every child's, so the child keeps the knowledge and the pointer, and one command opens them in full.
 
 **The rule is one question: would this ruling still matter if this child were deleted?** Yes means the parent owns it; no means the child does. **There is no keyword form of that question**, and the scan does not pretend otherwise: the `placement` check reports only records that contradict themselves, and the **Placement re-read** section lists the decisions that name exactly one other task as *information* — a candidate subject, never a verdict — with the question printed beside them. Neither is counted as an issue; neither makes a heal due.
 
