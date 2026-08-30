@@ -698,47 +698,73 @@ class TheReductionJudge(unittest.TestCase):
         self.assertEqual(before["corpus"], 3001)
         self.assertLess(after["corpus"], 200)          # the stub line, nothing more
         self.assertEqual(after["stubs"], 1)
+        self.assertEqual(before["saved"], 0)           # nothing relocated, nothing saved
 
-    def test_a_reduction_that_clears_the_floor_reads_REDUCED(self):
-        m = {"corpus": 100000, "live": 110, "entries": 577, "stubs": 4, "full": 106}
-        delta, reduced, intact, _why = judge.verdict(m, 160245, 110, 577, 45000)
-        self.assertEqual(delta, 60245)
+    def test_the_saving_is_the_prose_that_left_minus_the_stub_that_replaced_it(self):
+        long_ruling = "x" * 3000
+        m = judge.measure(self._task([long_ruling, "b"], owned=[1]), dec, own)
+        self.assertEqual(m["relocated"], 3000)
+        self.assertEqual(m["saved"], 3000 - m["stub_cost"])
+        self.assertGreater(m["saved"], 2800)
+
+    def test_a_saving_that_clears_the_floor_reads_REDUCED(self):
+        m = {"corpus": 100000, "entries": 577, "stubs": 4, "full": 106, "live": 110,
+             "relocated": 60000, "stub_cost": 400, "saved": 59600}
+        saved, reduced, intact, _why = judge.verdict(m, 577, 45000)
+        self.assertEqual(saved, 59600)
         self.assertTrue(reduced)
         self.assertTrue(intact)
 
-    def test_a_reduction_short_of_the_floor_does_not(self):
-        m = {"corpus": 150000, "live": 110, "entries": 577, "stubs": 1, "full": 109}
-        _delta, reduced, _intact, _why = judge.verdict(m, 160245, 110, 577, 45000)
+    def test_a_saving_short_of_the_floor_does_not(self):
+        m = {"corpus": 150000, "entries": 577, "stubs": 1, "full": 109, "live": 110,
+             "relocated": 10000, "stub_cost": 100, "saved": 9900}
+        _saved, reduced, _intact, _why = judge.verdict(m, 577, 45000)
         self.assertFalse(reduced)
 
-    def test_a_reduction_by_RETIREMENT_is_refused_however_large(self):
-        # 90,000 chars gone and every one of them by superseding a ruling. The floor is
-        # cleared and the record is gutted, which is precisely the move the floor alone
-        # would reward.
-        m = {"corpus": 70000, "live": 70, "entries": 577, "stubs": 0, "full": 70}
-        _delta, reduced, intact, why = judge.verdict(m, 160245, 110, 577, 45000)
-        self.assertTrue(reduced)
-        self.assertFalse(intact)
-        self.assertIn("RETIREMENT", " ".join(why))
-
-    def test_a_reduction_with_no_stub_at_all_did_not_come_from_ownership(self):
-        m = {"corpus": 70000, "live": 110, "entries": 577, "stubs": 0, "full": 110}
-        _delta, _reduced, intact, why = judge.verdict(m, 160245, 110, 577, 45000)
+    def test_a_reduction_by_RETIREMENT_relocates_nothing_and_never_reads_REDUCED(self):
+        # 90,000 chars gone and every one of them by superseding a ruling. The corpus
+        # collapsed; ownership saved nothing, so the token this condition expects never
+        # appears. This is the move a snapshot floor would have rewarded.
+        m = {"corpus": 70000, "entries": 577, "stubs": 0, "full": 70, "live": 70,
+             "relocated": 0, "stub_cost": 0, "saved": 0}
+        _saved, reduced, intact, why = judge.verdict(m, 577, 45000)
+        self.assertFalse(reduced)
         self.assertFalse(intact)
         self.assertIn("no reference stub", " ".join(why))
 
     def test_a_shrinking_append_only_log_is_refused(self):
-        m = {"corpus": 70000, "live": 110, "entries": 500, "stubs": 4, "full": 106}
-        _delta, _reduced, intact, why = judge.verdict(m, 160245, 110, 577, 45000)
+        m = {"corpus": 70000, "entries": 500, "stubs": 4, "full": 106, "live": 110,
+             "relocated": 60000, "stub_cost": 400, "saved": 59600}
+        _saved, _reduced, intact, why = judge.verdict(m, 577, 45000)
         self.assertFalse(intact)
         self.assertIn("SHRANK", " ".join(why))
+
+    def test_a_task_that_GREW_still_reads_REDUCED_when_ownership_did_its_work(self):
+        # The false red this replaced: #444 is live and keeps being written to, so a
+        # snapshot floor went red on a perfectly good relocation pass.
+        m = {"corpus": 180000, "entries": 640, "stubs": 12, "full": 130, "live": 142,
+             "relocated": 60000, "stub_cost": 1200, "saved": 58800}
+        _saved, reduced, intact, _why = judge.verdict(m, 577, 45000)
+        self.assertTrue(reduced)
+        self.assertTrue(intact)
+
+    def test_ordinary_supersede_work_in_the_same_pass_is_not_read_as_gutting(self):
+        # The other false red: the live count legitimately falls when a reconcile
+        # supersedes or merges, and it was already off by one before the feature shipped.
+        m = {"corpus": 90000, "entries": 590, "stubs": 9, "full": 88, "live": 97,
+             "relocated": 60000, "stub_cost": 900, "saved": 59100}
+        _saved, reduced, intact, why = judge.verdict(m, 577, 45000)
+        self.assertTrue(reduced)
+        self.assertTrue(intact, why)
 
     def test_rulings_owned_from_ELSEWHERE_cannot_manufacture_a_reduction(self):
         # They render here, so counting them would let a task "reduce" its digest by
         # taking on more of somebody else's prose.
         t = self._task(["a" * 500, "b" * 500])
         t["owned_decisions"] = [{"task": "P", "seq": 1, "n": 1}]
-        self.assertEqual(judge.measure(t, dec, own)["corpus"], 1000)
+        m = judge.measure(t, dec, own)
+        self.assertEqual(m["corpus"], 1000)
+        self.assertEqual(m["saved"], 0)
 
     def test_the_judge_reads_its_vocabulary_from_origin_main_only(self):
         # No worktree fallback anywhere: an unknown repo yields no vocabulary, and the
