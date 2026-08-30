@@ -662,5 +662,98 @@ class TheVerbEndToEnd(unittest.TestCase):
         self.assertNotIn("this task OWNS", detail)
 
 
+# ------------------------------------------- the exit condition's arithmetic ---
+
+_judge_spec = importlib.util.spec_from_file_location(
+    "prove_ownership_reduction",
+    os.path.join(_REPO_ROOT, "scripts", "prove_ownership_reduction.py"))
+judge = importlib.util.module_from_spec(_judge_spec)
+_judge_spec.loader.exec_module(judge)
+
+
+class TheReductionJudge(unittest.TestCase):
+    """`scripts/prove_ownership_reduction.py` settles step 7's exit condition. It runs
+    piped out of `origin/main`, which is what makes it un-fakeable from a branch — and
+    which also means its ARITHMETIC has to be provable here, on constructed inputs,
+    rather than only against whatever the live store happens to hold today.
+
+    THE FLOOR ALONE WOULD REWARD THE WRONG MOVE: supersede forty rulings and the corpus
+    drops. So the same judge asserts the record did not shrink to get there, and half of
+    these tests are about that half."""
+
+    def _task(self, texts, owned=(), pinned=(), superseded=()):
+        t = {"id": "T", "seq": 444, "decisions": list(texts)}
+        for n in owned:
+            dec.set_owner(t["decisions"], n, "OTHER", seq=999)
+        for n in pinned:
+            dec.set_pin(t["decisions"], n, True)
+        for n, by in superseded:
+            dec.mark_superseded(t["decisions"], n, by)
+        return t
+
+    def test_a_stub_costs_its_own_line_and_not_the_prose(self):
+        long_ruling = "x" * 3000
+        before = judge.measure(self._task([long_ruling, "b"]), dec, own)
+        after = judge.measure(self._task([long_ruling, "b"], owned=[1]), dec, own)
+        self.assertEqual(before["corpus"], 3001)
+        self.assertLess(after["corpus"], 200)          # the stub line, nothing more
+        self.assertEqual(after["stubs"], 1)
+
+    def test_a_reduction_that_clears_the_floor_reads_REDUCED(self):
+        m = {"corpus": 100000, "live": 110, "entries": 577, "stubs": 4, "full": 106}
+        delta, reduced, intact, _why = judge.verdict(m, 160245, 110, 577, 45000)
+        self.assertEqual(delta, 60245)
+        self.assertTrue(reduced)
+        self.assertTrue(intact)
+
+    def test_a_reduction_short_of_the_floor_does_not(self):
+        m = {"corpus": 150000, "live": 110, "entries": 577, "stubs": 1, "full": 109}
+        _delta, reduced, _intact, _why = judge.verdict(m, 160245, 110, 577, 45000)
+        self.assertFalse(reduced)
+
+    def test_a_reduction_by_RETIREMENT_is_refused_however_large(self):
+        # 90,000 chars gone and every one of them by superseding a ruling. The floor is
+        # cleared and the record is gutted, which is precisely the move the floor alone
+        # would reward.
+        m = {"corpus": 70000, "live": 70, "entries": 577, "stubs": 0, "full": 70}
+        _delta, reduced, intact, why = judge.verdict(m, 160245, 110, 577, 45000)
+        self.assertTrue(reduced)
+        self.assertFalse(intact)
+        self.assertIn("RETIREMENT", " ".join(why))
+
+    def test_a_reduction_with_no_stub_at_all_did_not_come_from_ownership(self):
+        m = {"corpus": 70000, "live": 110, "entries": 577, "stubs": 0, "full": 110}
+        _delta, _reduced, intact, why = judge.verdict(m, 160245, 110, 577, 45000)
+        self.assertFalse(intact)
+        self.assertIn("no reference stub", " ".join(why))
+
+    def test_a_shrinking_append_only_log_is_refused(self):
+        m = {"corpus": 70000, "live": 110, "entries": 500, "stubs": 4, "full": 106}
+        _delta, _reduced, intact, why = judge.verdict(m, 160245, 110, 577, 45000)
+        self.assertFalse(intact)
+        self.assertIn("SHRANK", " ".join(why))
+
+    def test_rulings_owned_from_ELSEWHERE_cannot_manufacture_a_reduction(self):
+        # They render here, so counting them would let a task "reduce" its digest by
+        # taking on more of somebody else's prose.
+        t = self._task(["a" * 500, "b" * 500])
+        t["owned_decisions"] = [{"task": "P", "seq": 1, "n": 1}]
+        self.assertEqual(judge.measure(t, dec, own)["corpus"], 1000)
+
+    def test_the_judge_reads_its_vocabulary_from_origin_main_only(self):
+        # No worktree fallback anywhere: an unknown repo yields no vocabulary, and the
+        # caller gets OWNERSHIP-NOT-IN-MAIN rather than a measurement.
+        self.assertIsNone(judge.load_vocabulary("/nonexistent/repo"))
+
+    def test_the_store_path_carries_no_environment_branch(self):
+        # A condition that can be pointed at a different store by exporting a variable
+        # is a condition you can talk into passing.
+        with open(os.path.join(_REPO_ROOT, "scripts",
+                               "prove_ownership_reduction.py")) as fh:
+            src = fh.read()
+        self.assertNotIn("environ.get(\"TASK_STATION_HOME\")", src)
+        self.assertNotIn("environ.get(\"CLAUDE_CONFIG_DIR\")", src)
+
+
 if __name__ == "__main__":
     unittest.main()
