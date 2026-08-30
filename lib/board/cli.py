@@ -581,6 +581,30 @@ def main(argv=None):
     sp.add_argument("--into", default=None, metavar="N1,N2,…",
                     help="the decision(s) a --split became, or the ONE that a --merge "
                          "was absorbed into")
+    sp.add_argument("--reassign", default=None, metavar="N1,N2,…",
+                    help="move OWNERSHIP of these decisions to the task named by --to. "
+                         "The decision does NOT move: one copy, one store, at its "
+                         "original index. What moves is which task renders it in full — "
+                         "this task keeps a one-line REFERENCE STUB carrying the title, "
+                         "the owner and the pointer. REFUSED for a PINNED decision (a pin "
+                         "briefs every session, so a ruling that binds the programme "
+                         "belongs to the programme), for a decision with no text to "
+                         "reference (a reassign leaving no stub is a delete with extra "
+                         "steps), for one already owned elsewhere, and when the acting "
+                         "--session is not attached to the SOURCE task, so a child cannot "
+                         "claim rulings it does not own. Prints the one command that "
+                         "undoes it.")
+    sp.add_argument("--to", dest="to", default=None, metavar="TASK",
+                    help="with --reassign: the task that will OWN (render in full) those "
+                         "decisions, by seq/id/handle")
+    sp.add_argument("--stub", default=None, metavar="TEXT",
+                    help="with --reassign: the one-line reference this task renders in "
+                         "place of the prose. Defaults to the decision's first sentence; "
+                         "pass it when that sentence is not the subject.")
+    sp.add_argument("--unassign", default=None, metavar="N1,N2,…",
+                    help="the ONE inverse of --reassign: bring these decisions' ownership "
+                         "back to the task that holds them, which renders them in full "
+                         "again and drops the stub.")
     sp.add_argument("--dismiss", action="append", default=None, metavar="CHECK:REF",
                     help="adjudicate ONE finding away (repeatable; needs --apply and "
                          "--why). It leaves the findings, the issue count and the due "
@@ -926,12 +950,18 @@ def main(argv=None):
                          "or count limit. Past %d chars you get an advisory suggesting "
                          "`heal --split`; it never refuses, the entry is stored in full."
                          % _dec.LONG_DECISION_CHARS)
-    sp.add_argument("--supersedes", action="append", type=int, default=None, metavar="N",
+    sp.add_argument("--supersedes", action="append", default=None, metavar="N|TASK:N",
                     help="mark decision N (1-based, as numbered by `/todo <n> history`) as "
                          "REPLACED by the --decision in this same update; repeatable, so one "
                          "decision may replace several. A superseded decision vanishes from "
                          "the default digest and every other present-tense surface, and "
-                         "survives only in `history`, marked with its replacement.")
+                         "survives only in `history`, marked with its replacement. "
+                         "`<task>:<n>` supersedes a ruling ON ANOTHER TASK — a child "
+                         "refuting a parent's. Decision numbers are PER-TASK, so a bare "
+                         "number always means this task and anything aimed elsewhere must "
+                         "say where. Both directions are written or neither: the other "
+                         "task learns what refuted it, and this decision records what it "
+                         "refuted.")
     sp.add_argument("--pin", action="store_true", default=False,
                     help="pin the --decision in this same update. A pin is READING ORDER, "
                          "not visibility: every still-current decision renders in the "

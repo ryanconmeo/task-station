@@ -45,6 +45,14 @@ saying "read this first":
     a pin is now "read this first", not "don't lose this". Unbounded; the `★` marker
     keeps the spine tellable apart from the rest. See `digest_order`.
 
+  * OWNERSHIP — WHERE A RULING RENDERS, which is a different question from where it
+    was typed. A decision may name an `owner` task; the decision itself NEVER MOVES,
+    so there is one copy and one store. What moves is which task renders it in full:
+    the task that holds it renders a one-line REFERENCE STUB, the owner renders the
+    prose. `board.ownership` owns the verbs and the task-level index; this module owns
+    the element keys, because every other key on an element is owned here and a second
+    owner of the same dict is how two readers start disagreeing about one entry.
+
 ELEMENT SHAPE — dual, and permanently so. An element is EITHER:
 
     "chose sqlite over flat files"                      (legacy: a plain string)
@@ -112,6 +120,93 @@ _REPLACEMENTS = (("superseded_by", REPLACED_SUPERSEDED, False),
                  ("split_into", REPLACED_SPLIT, True),
                  ("merged_into", REPLACED_MERGED, False))
 
+# -- the FOURTH replacement, and why it is not a fourth `_REPLACEMENTS` row ----------
+#
+# Once ownership can cross tasks, a CHILD's ruling can refute a PARENT's. The three keys
+# above all hold a 1-BASED INDEX INTO THIS TASK'S OWN LOG, and that number is meaningless
+# on another task's log — decision numbers are per-task, so a bare `4` names a different
+# ruling on every task in the store. A cross-task supersession therefore has to carry the
+# TASK as well as the number, which is a different value shape (a dict, not an int) and
+# so a different key: `_index_list` would silently drop a dict, and a garbled replacement
+# mark that "fails open" would leave a refuted ruling briefing every session as current.
+#
+# BOTH DIRECTIONS, ALWAYS. The source entry gets `superseded_across` (naming what refuted
+# it) and the refuting entry gets `supersedes_across` (naming what it refuted). One
+# direction alone makes the contradiction invisible from the other side, which is exactly
+# the defect the prose-supersession check exists to catch — and here the two sides are on
+# two different tasks, so no reader can stumble on the other half by accident.
+SUPERSEDED_ACROSS = "superseded_across"     # on the SOURCE: the ref that refuted it
+SUPERSEDES_ACROSS = "supersedes_across"     # on the REFUTER: the refs it refuted
+
+
+def _clean_ref(raw):
+    """Coerce a stored cross-task reference to `{"task", "seq", "n"}`, or None.
+
+    Requires BOTH a task id and a positive index: a ref missing either cannot be
+    resolved to one ruling, and a half-ref is exactly the thing that must not be
+    treated as a live pointer. Defensive, never raises — a store written by a newer
+    version degrades to "not a ref" instead of breaking a render."""
+    if not isinstance(raw, dict):
+        return None
+    task = str(raw.get("task") or "").strip()
+    try:
+        n = int(raw.get("n"))
+    except (TypeError, ValueError):
+        return None
+    if not task or n < 1:
+        return None
+    out = {"task": task, "n": n}
+    try:
+        if raw.get("seq") is not None:
+            out["seq"] = int(raw["seq"])
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
+def ref_label(ref):
+    """`#532 decision 14` — how a cross-task reference reads in prose. Falls back to the
+    id prefix when the ref carries no seq, so a label is always addressable."""
+    ref = _clean_ref(ref)
+    if ref is None:
+        return ""
+    who = ("#%d" % ref["seq"]) if ref.get("seq") is not None else ref["task"][:8]
+    return "%s decision %d" % (who, ref["n"])
+
+
+def ref_handle(ref):
+    """`532:14` — the COMMAND-LINE form of a cross-task reference, and the one a
+    `--supersedes` / `--reassign` argument takes. Bare-number refs stay legal for the
+    same-task case; the colon form is what makes a number unambiguous once ownership can
+    cross tasks."""
+    ref = _clean_ref(ref)
+    if ref is None:
+        return ""
+    who = str(ref["seq"]) if ref.get("seq") is not None else ref["task"][:8]
+    return "%s:%d" % (who, ref["n"])
+
+
+def superseded_across(entry):
+    """The cross-task reference that refuted this decision, or None."""
+    if not isinstance(entry, dict):
+        return None
+    return _clean_ref(entry.get(SUPERSEDED_ACROSS))
+
+
+def supersedes_across(entry):
+    """Every cross-task ruling this decision refutes, oldest first. The BACK pointer —
+    what makes the contradiction visible from the refuting side too."""
+    if not isinstance(entry, dict):
+        return []
+    raw = entry.get(SUPERSEDES_ACROSS)
+    items = raw if isinstance(raw, (list, tuple)) else [raw]
+    out = []
+    for r in items:
+        ref = _clean_ref(r)
+        if ref is not None and ref not in out:
+            out.append(ref)
+    return out
+
 
 def _index_list(raw, many):
     """Coerce a stored replacement target to a list of ints, dropping anything
@@ -136,7 +231,13 @@ def replacement(entry):
     `kind` is one of REPLACED_SUPERSEDED / REPLACED_SPLIT / REPLACED_MERGED, and the
     targets are the 1-based decisions that replaced it. This is the ONE accessor
     every present-tense surface goes through (via `live`), so adding a verb never
-    needs a second audit of the readers. A legacy plain string is always current."""
+    needs a second audit of the readers. A legacy plain string is always current.
+
+    A CROSS-TASK supersession returns targets that are `#532 decision 14` STRINGS
+    rather than ints, because the number alone does not name the ruling once ownership
+    can cross tasks. Every consumer either joins them into a label or tests them for
+    membership in a set of local indices — a string never collides with an int there,
+    so a cross-task target can only ever read as "not one of mine", which is true."""
     if not isinstance(entry, dict):
         return None
     for key, kind, many in _REPLACEMENTS:
@@ -145,6 +246,9 @@ def replacement(entry):
         targets = _index_list(entry.get(key), many)
         if targets:
             return kind, targets
+    across = superseded_across(entry)
+    if across is not None:
+        return REPLACED_SUPERSEDED, [ref_label(across)]
     return None
 
 
@@ -172,6 +276,11 @@ def replacement_label(entry):
     rep = replacement(entry)
     if rep is None:
         return None
+    across = superseded_across(entry)
+    if across is not None and rep[1] == [ref_label(across)]:
+        # `SUPERSEDED by #532 decision 14` — the ref already carries the word
+        # "decision", so the local wording would read "by decision #532 decision 14".
+        return "SUPERSEDED by %s" % ref_label(across)
     kind, targets = rep
     one, many = _LABELS.get(kind, ("REPLACED by decision", "REPLACED by decisions"))
     return "%s %s" % ((many if len(targets) > 1 else one),
@@ -352,6 +461,9 @@ def _already_phrase(entry):
     rep = replacement(entry)
     if rep is None:
         return None
+    across = superseded_across(entry)
+    if across is not None and rep[1] == [ref_label(across)]:
+        return "already superseded (by %s)" % ref_label(across)
     kind, targets = rep
     how, _advice = _ALREADY.get(kind, ("already replaced (by decision %s)", ""))
     return how % ", ".join(str(n) for n in targets)
@@ -484,6 +596,12 @@ def restore(entries, index1, flag="--restore-decision"):
     rich = as_rich(entries[i - 1])
     for key, _kind, _many in _REPLACEMENTS:
         rich.pop(key, None)
+    # The cross-task mark is a replacement like any other, so the ONE inverse clears it
+    # too. The `supersedes_across` back-pointer on the OTHER task's refuting entry is NOT
+    # reachable from here — `restore` takes one log — so the caller that undoes a
+    # cross-task supersession has to clear both sides; `ownership.restore_across` is
+    # that caller, and it is the only sanctioned way to undo one.
+    rich.pop(SUPERSEDED_ACROSS, None)
     entries[i - 1] = compact(rich)
     return True, None
 
@@ -512,5 +630,276 @@ def set_pin(entries, index1, pinned, flag=None):
         rich["pinned"] = True
     else:
         rich.pop("pinned", None)
+    entries[i - 1] = compact(rich)
+    return True, None
+
+
+# -- OWNERSHIP: which task RENDERS a ruling, as data rather than as convention --------
+#
+# THE PROBLEM, MEASURED. A ruling lives on the task where a session happened to type it,
+# not on the task whose goal it constrains. On one real programme that put 31,072 chars
+# of one child's subject, 12,612 of another's and 3,737 of a third's on the PARENT — and
+# a reconcile pass that split eight oversized entries and cut the longest from 8,095 to
+# 3,581 chars barely moved the total, because the content is load-bearing. It is not
+# redundant, it is in the WRONG PLACE, and no amount of consolidation fixes a place.
+#
+# SO OWNERSHIP MOVES AND THE DECISION DOES NOT. One copy, one store, no duplication: the
+# entry stays exactly where it was written, in full, at its original index, and gains an
+# `owner` naming the task that RENDERS it. The holder renders a one-line reference stub
+# instead of the prose. That is the same shape the knowledge plane already ships — upload,
+# reconcile, approve, and the private node collapses to reference — applied to the task
+# plane.
+#
+# WHY THE STUB IS NOT OPTIONAL, and is enforced at this level: a reassign that left no
+# stub would be a DELETE with extra steps. The holder must never lose the knowledge that
+# a ruling exists and where it went; only the prose leaves its render.
+#
+# WHY `owner` IS AN ID AND `owner_seq` IS DECORATION. A seq is a display number that a
+# store can renumber and that never crosses machines; the uuid is the identity. Both are
+# stored so a render can print `#532` without a load, but every comparison in this
+# codebase resolves on the id.
+
+OWNER_FIELD = "owner"           # task id that RENDERS this ruling in full
+OWNER_SEQ_FIELD = "owner_seq"   # that task's display seq, for a load-free stub render
+STUB_FIELD = "stub"             # the one-line reference the HOLDER renders instead
+
+# How long a derived stub runs before it is cut. One line in a digest, and long enough to
+# say which ruling it is — a stub that does not identify the ruling is not a reference.
+STUB_CHARS = 120
+
+
+def owner(entry):
+    """The task id that OWNS (renders in full) this decision, or None when the task
+    holding it owns it — which is the case for every decision ever written before this
+    field existed, and for the overwhelming majority after."""
+    if not isinstance(entry, dict):
+        return None
+    val = str(entry.get(OWNER_FIELD) or "").strip()
+    return val or None
+
+
+def owner_seq(entry):
+    """The owner's display seq, or None. Decoration for a load-free render; `owner` is
+    what any comparison uses."""
+    if not isinstance(entry, dict):
+        return None
+    try:
+        return int(entry.get(OWNER_SEQ_FIELD))
+    except (TypeError, ValueError):
+        return None
+
+
+def owner_label(entry):
+    """`#532` — how the owner reads in a stub, falling back to an id prefix so a stub
+    written before seqs were stamped is still addressable."""
+    seq = owner_seq(entry)
+    if seq is not None:
+        return "#%d" % seq
+    own = owner(entry)
+    return own[:8] if own else ""
+
+
+def derive_stub(body, limit=STUB_CHARS):
+    """A one-line reference for `body` — its first sentence or line, cut to `limit`.
+
+    Deliberately dumb and deterministic: the first sentence of a ruling is where its
+    subject is stated, and a derived stub that surprises the author is worse than one
+    that is merely terse. `--stub` overrides it whenever the first sentence is not the
+    subject. Returns "" for empty text, which is what makes the no-stub refusal
+    reachable rather than theoretical."""
+    text_ = " ".join(str(body or "").split())
+    if not text_:
+        return ""
+    for cut in (". ", " — ", "; "):
+        head = text_.split(cut, 1)[0]
+        if 0 < len(head) <= limit:
+            return head
+    if len(text_) <= limit:
+        return text_
+    clipped = text_[:limit].rsplit(" ", 1)[0] or text_[:limit]
+    return clipped + "…"
+
+
+def stub(entry):
+    """The reference line the HOLDER renders for a decision it no longer owns: the
+    stored `stub`, else one derived from the text. Never empty for a non-empty
+    decision — the stub is mandatory, so this cannot be the thing that loses it."""
+    stored = ""
+    if isinstance(entry, dict):
+        stored = " ".join(str(entry.get(STUB_FIELD) or "").split())
+    return stored or derive_stub(text(entry))
+
+
+def is_owned(entry):
+    """True iff this decision names an owner at all."""
+    return owner(entry) is not None
+
+
+def renders_full(entry, task_id):
+    """Does the task holding this entry render it IN FULL? True when nothing claims it,
+    or when the claimant IS this task. The ONE predicate every render goes through, so
+    a surface can never disagree with another about who prints the prose.
+
+    A task_id of None means "no identity to compare with" — a foreign feed, a fixture, a
+    test blob — and that renders IN FULL. Failing open is the correct direction here: an
+    unrenderable ruling is invisible, and invisible is the failure this whole mechanism
+    exists to prevent."""
+    own = owner(entry)
+    if own is None or not task_id:
+        return True
+    return own == task_id
+
+
+def set_owner(entries, index1, task_id, seq=None, stub_text=None, flag="--reassign"):
+    """Stamp `index1` as OWNED BY `task_id`, leaving the ruling exactly where it is.
+    `(ok, error)`.
+
+    FOUR REFUSALS, each because something breaks without it:
+
+      * a REPLACED decision — superseded, split or merged. It does not render anywhere,
+        so there is no render to move, and stamping an owner on a dead ruling would put
+        it back on a surface as somebody else's live constraint.
+      * a PINNED decision. A pin briefs every session of the task that set it; a ruling
+        that binds the programme belongs to the programme. Unpin it first if it really
+        is one child's.
+      * an EMPTY STUB — a decision with no text to reference. Without a stub the holder
+        loses the knowledge that the ruling exists, which makes the reassign a delete.
+      * an owner it ALREADY has, or one already held by a THIRD task. Re-pointing an
+        owned ruling in place would leave the previous owner's index naming a decision
+        it no longer owns, and the honest sequence (`--unassign`, then reassign) is one
+        extra command rather than a silently half-updated pair of tasks.
+
+    Does NOT touch the owner task's index — `ownership.reassign` does both halves, and
+    is the only sanctioned caller."""
+    i, err = _check_index(entries, index1, flag)
+    if err:
+        return False, err
+    entry = entries[i - 1]
+    how = _already_phrase(entry)
+    if how is not None:
+        return False, ("%s %d — that decision is %s, so it renders nowhere and there is "
+                       "no render to move" % (flag, i, how))
+    if is_pinned(entry):
+        return False, ("%s %d — that decision is PINNED. A pin briefs every session of "
+                       "this task, so a ruling that binds the programme belongs to the "
+                       "programme; `update --unpin-decision %d` first if it really is one "
+                       "child's." % (flag, i, i))
+    tid = str(task_id or "").strip()
+    if not tid:
+        return False, "%s %d — no owner task given" % (flag, i)
+    existing = owner(entry)
+    if existing:
+        return False, ("%s %d — that decision is already owned by %s; `heal --unassign %d` "
+                       "brings it back here first, so the previous owner's index is never "
+                       "left naming a ruling it no longer owns"
+                       % (flag, i, owner_label(entry) or existing[:8], i))
+    line = " ".join(str(stub_text or "").split()) or derive_stub(text(entry))
+    if not line:
+        return False, ("%s %d — that decision has no text, so no reference stub can be "
+                       "written for it. A reassign that leaves no stub is a delete with "
+                       "extra steps, so this is refused rather than performed."
+                       % (flag, i))
+    rich = as_rich(entry)
+    rich[OWNER_FIELD] = tid
+    if seq is not None:
+        try:
+            rich[OWNER_SEQ_FIELD] = int(seq)
+        except (TypeError, ValueError):
+            pass
+    rich[STUB_FIELD] = line
+    entries[i - 1] = compact(rich)
+    return True, None
+
+
+def clear_owner(entries, index1, flag="--unassign"):
+    """Return `index1` to the task that holds it — the ONE inverse of `set_owner`, and
+    what makes a reassign reversible by a single command. `(ok, error)`.
+
+    Errors rather than silently succeeding on a decision nobody owns: "unassigned" after
+    a typo reads as success, and the caller then believes a render moved when it did not.
+    Drops the stub with the owner — the holder renders the prose again, so a stale
+    reference line would be a second, quietly diverging copy of the first sentence."""
+    i, err = _check_index(entries, index1, flag)
+    if err:
+        return False, err
+    if not is_owned(entries[i - 1]):
+        return False, ("%s %d — this task already owns that decision; there is nothing "
+                       "to bring back" % (flag, i))
+    rich = as_rich(entries[i - 1])
+    rich.pop(OWNER_FIELD, None)
+    rich.pop(OWNER_SEQ_FIELD, None)
+    rich.pop(STUB_FIELD, None)
+    entries[i - 1] = compact(rich)
+    return True, None
+
+
+# -- cross-task supersession (the write half) ------------------------------------
+
+def mark_superseded_across(entries, index1, ref, flag="--supersedes"):
+    """Mark `index1` as refuted by the ruling `ref` names ON ANOTHER TASK. `(ok, error)`.
+
+    Same guards as the local verb — a bad index errors, an already-replaced decision is
+    refused, a pin is cleared — because a decision refuted from across a task boundary is
+    exactly as wrong as one refuted from within it. `ownership.supersede_across` writes
+    the matching `supersedes_across` back-pointer on the refuting entry; ONE side alone
+    is the invisible-contradiction bug this exists to close, so nothing else should call
+    this directly."""
+    i, err = _check_index(entries, index1, flag)
+    if err:
+        return False, err
+    err = _check_unreplaced(entries, i, flag)
+    if err:
+        return False, err
+    clean = _clean_ref(ref)
+    if clean is None:
+        return False, ("%s %d — a cross-task supersession needs BOTH the task and the "
+                       "decision number (`<task>:<n>`); decision numbers are per-task, so "
+                       "a bare number names a different ruling on every task"
+                       % (flag, i))
+    rich = as_rich(entries[i - 1])
+    rich[SUPERSEDED_ACROSS] = clean
+    rich.pop("pinned", None)                 # a refuted decision loses its pin
+    entries[i - 1] = compact(rich)
+    return True, None
+
+
+def add_supersedes_across(entries, index1, ref, flag="--supersedes"):
+    """Record on `index1` that it refutes the ruling `ref` names on another task — the
+    BACK half of a cross-task supersession, so the contradiction is visible from the
+    refuting side too. Idempotent: naming the same ref twice stores it once."""
+    i, err = _check_index(entries, index1, flag)
+    if err:
+        return False, err
+    clean = _clean_ref(ref)
+    if clean is None:
+        return False, "%s — cross-task reference must be `<task>:<n>`" % flag
+    rich = as_rich(entries[i - 1])
+    refs = supersedes_across(rich)
+    if clean not in refs:
+        refs.append(clean)
+    rich[SUPERSEDES_ACROSS] = refs
+    entries[i - 1] = compact(rich)
+    return True, None
+
+
+def remove_supersedes_across(entries, index1, ref, flag="--restore-decision"):
+    """Drop one cross-task back-pointer from `index1`. `(ok, error)`.
+
+    The other half of undoing a cross-task supersession: `restore` clears the mark on the
+    source, and this clears the claim on the refuter. Both, or the record keeps saying a
+    ruling was refuted when it is live again — an over-claim that is invisible from the
+    source side, which is the same one-sided blindness the pair exists to prevent."""
+    i, err = _check_index(entries, index1, flag)
+    if err:
+        return False, err
+    clean = _clean_ref(ref)
+    if clean is None:
+        return False, "%s — cross-task reference must name a task and a number" % flag
+    rich = as_rich(entries[i - 1])
+    refs = [r for r in supersedes_across(rich) if r != clean]
+    if refs:
+        rich[SUPERSEDES_ACROSS] = refs
+    else:
+        rich.pop(SUPERSEDES_ACROSS, None)
     entries[i - 1] = compact(rich)
     return True, None

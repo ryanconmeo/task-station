@@ -16,6 +16,7 @@ import decisions as _dec
 import station as _station
 import sync as _sync
 import heal as _heal
+import ownership as _own
 from board import heal_ado as _heal_ado
 import loop as _loop
 import turn as _turn
@@ -28,7 +29,7 @@ g, set_g = _shared.g, _shared.set_g
 __all__ = [
     "_heal_positional_ref", "_heal_targets", "_heal_scan_one",
     "_heal_scan_report", "_heal_block", "_heal_applied_block",
-    "_heal_no_operations_block", "_heal_verb",
+    "_heal_no_operations_block", "_heal_verb", "_heal_reassign",
     "_split_str_list", "_split_int_list",
     "_heal_mark", "_heal_dismissals_report", "_heal_dismiss_writes",
     "_heal_goal_reviewed", "_heal_candidates_report", "_heal_dispose",
@@ -138,11 +139,17 @@ def _heal_scan_one(task, probe_branches=True, link_probe=None, ado_probe=None,
 
     `link_probe` stays separate and stays OFF unless `--probe-links` asks: git is local and
     bounded, HTTP is neither. `ado_probe` is the same bargain for `--probe-ado`: it reads
-    every work item the task claims, which is several authenticated round trips."""
+    every work item the task claims, which is several authenticated round trips.
+
+    `load` is wired UNCONDITIONALLY, unlike the probers, because it is not a probe: it is
+    a store read of the handful of tasks this one's ownership record already names, on a
+    path that has just loaded a task anyway. Without it the placement check can only see
+    half of what it exists to report — an owner that is gone or closed is exactly the case
+    where the record cannot prove itself wrong from one blob."""
     bp = _heal.branch_prober(task) if probe_branches else None
     cp = _heal.commit_prober(task) if probe_branches else None
     result = _heal.scan(task, branch_probe=bp, link_probe=link_probe, commit_probe=cp,
-                        ado_probe=ado_probe, ado_owned=ado_owned)
+                        ado_probe=ado_probe, ado_owned=ado_owned, load=load_task)
     _heal.write_gate(result)
     return result
 
@@ -181,6 +188,7 @@ def _heal_scan_report(task, result):
     out.extend(_heal.oversized_proposal_lines(result))
     out.extend(_heal.ephemeral_lines(result))
     out.extend(_heal.pinned_lines(result))
+    out.extend(_heal.placement_lines(result))
     out.extend(_heal.goal_review_lines(result))
     out.extend(_heal.ado_lines(result))
     out.extend(_heal.accrual_lines(result))
@@ -225,6 +233,7 @@ def _heal_block(task, result, ops, applied=None, backup=None, before=None):
     out.extend(_heal.oversized_proposal_lines(result))
     out.extend(_heal.ephemeral_lines(result))
     out.extend(_heal.pinned_lines(result))
+    out.extend(_heal.placement_lines(result))
     out.extend(_heal.goal_review_lines(result))
     out.extend(_heal.ado_lines(result))
     out.extend(_heal.accrual_lines(result))
@@ -593,6 +602,127 @@ def _heal_verb(a):
     save_task(task)
     maybe_refresh_board()
     return "\n".join(msgs)
+
+
+def _heal_reassign(a):
+    """`heal --reassign N,… --to <task>` and its inverse `heal --unassign N,…`.
+
+    THE VERB THAT MOVES A RULING'S RENDER WITHOUT MOVING THE RULING. The entry stays on
+    the source task, in full, at its original index — one copy, one store — and gains an
+    owner. The source renders a one-line reference stub; the owner renders the prose.
+
+    GUARD (c) LIVES HERE, and nowhere else can enforce it: ONLY A SESSION ATTACHED TO THE
+    SOURCE TASK MAY REASSIGN OUT OF IT. The other two refusals are properties of the
+    decision (`decisions.set_owner` holds them, beside the keys they protect); this one is
+    a property of the CALLER, so it belongs at the command seam where the caller is known.
+    Without it a child could quietly claim rulings the programme never handed it, and the
+    only record of that would be the ownership it just granted itself.
+
+    WRITE ORDER IS THE CORRECTNESS RULE (see `ownership`'s docstring): the write that
+    could make a ruling INVISIBLE goes last. Reassign saves the owner's index first and
+    the source second; unassign saves the source first. A half-write in the safe order
+    leaves an index pointer the read side already drops, i.e. no visible change at all."""
+    if getattr(a, "all", False):
+        return ("heal --reassign/--unassign name decision numbers on ONE task, so they "
+                "cannot be combined with --all. Target it with `--task <n>`.")
+    tasks, err = _heal_targets(a)
+    if err:
+        return err
+    task = tasks[0]
+    reassign = _split_int_list(getattr(a, "reassign", None))
+    unassign = _split_int_list(getattr(a, "unassign", None))
+    if reassign and unassign:
+        return ("heal: --reassign and --unassign are inverses of each other — run them as "
+                "two commands so each report says plainly what it did.")
+    if not reassign and not unassign:
+        return ("heal --reassign/--unassign: name the decision numbers, e.g. "
+                "`--reassign 30,31 --to 532`. `task-station history %s` numbers them."
+                % _heal._task_ref(task))
+    # GUARD (c). Checked BEFORE anything is loaded or written, so a refusal changes
+    # nothing. A missing --session is refused too: this verb grants one task authority
+    # over another's record, and "no session" is not evidence of attachment.
+    sid = getattr(a, "session", None)
+    linked = get_link(sid) if sid else None
+    if linked != task.get("id"):
+        return ("heal --reassign/--unassign on task #%s: this session is not attached to "
+                "it, and only a session attached to the SOURCE task may move ownership "
+                "out of it — otherwise a task could claim rulings it was never handed. "
+                "Attach with `/todo %s`, or run this from the session that holds it. "
+                "Nothing was changed."
+                % (task.get("seq"), _heal._task_ref(task)))
+    if unassign:
+        return _heal_unassign_writes(task, unassign)
+    to_ref = (getattr(a, "to", None) or "").strip()
+    if not to_ref:
+        return ("heal --reassign %s: pass `--to <task>` naming the task that will OWN "
+                "(render in full) those decisions."
+                % ",".join(str(n) for n in reassign))
+    owner_task = resolve_ref(to_ref) or load_task(to_ref)
+    if not owner_task:
+        return ("heal --reassign: no task matching --to %r. Nothing was changed." % to_ref)
+    stub = getattr(a, "stub", None)
+    if stub is not None and len(reassign) > 1:
+        return ("heal --reassign: one --stub cannot describe %d different rulings — a "
+                "stub is that ruling's reference line, and a shared one names none of "
+                "them. Reassign them one at a time, or drop --stub and let each stub "
+                "come from its own first sentence." % len(reassign))
+    # DRY RUN FIRST, on copies, so an all-or-nothing refusal is possible: a batch with one
+    # bad number must change nothing, or a typo silently moves a different ruling than the
+    # one that was meant — the same rule `--dispose-acks` already keeps.
+    import copy
+    trial_src, trial_own = copy.deepcopy(task), copy.deepcopy(owner_task)
+    for n in reassign:
+        ok, err = _own.reassign(trial_src, trial_own, n, stub_text=stub)
+        if not ok:
+            return "heal: %s Nothing was changed." % err
+    for n in reassign:
+        _own.reassign(task, owner_task, n, stub_text=stub)
+    # The OWNER's index first, the SOURCE second. See the docstring.
+    owner_task["updated_ts"] = _now()
+    save_task(owner_task)
+    _heal.stamp_healed(task, kind=_heal.HEAL_KIND_APPLY)
+    task["updated_ts"] = _now()
+    save_task(task)
+    maybe_refresh_board()
+    nums = ", ".join(str(n) for n in reassign)
+    return "\n".join([
+        "reassigned decision(s) %s → owned by #%s (%s)"
+        % (nums, owner_task.get("seq"), owner_task.get("title") or ""),
+        "  The decisions did NOT move: they are still on #%s at those numbers, in full. "
+        "#%s now renders them; #%s renders a one-line reference stub for each."
+        % (task.get("seq"), owner_task.get("seq"), task.get("seq")),
+        "  UNDO — one command, and it is the whole reversal: `%s`"
+        % _own.undo_command(task, reassign)])
+
+
+def _heal_unassign_writes(task, indices):
+    """`heal --unassign N,…` — bring ownership home. The SOURCE is written first (the
+    prose renders here again before the pointer goes), then each owner's index."""
+    owners, done, msgs = {}, [], []
+    entries = task.get("decisions") or []
+    for n in indices:
+        oid = None
+        if 1 <= n <= len(entries):
+            oid = _dec.owner(entries[n - 1])
+        if oid and oid not in owners:
+            owners[oid] = load_task(oid)
+        ok, err = _own.unassign(task, owners.get(oid), n)
+        if ok:
+            done.append(n)
+        else:
+            msgs.append("heal: %s" % err)
+    if done:
+        task["updated_ts"] = _now()
+        save_task(task)
+        for owner_task in owners.values():
+            if owner_task:
+                owner_task["updated_ts"] = _now()
+                save_task(owner_task)
+        maybe_refresh_board()
+        msgs.append("brought decision(s) %s back to #%s — it renders them in full again "
+                    "and the reference stub is gone"
+                    % (", ".join(str(n) for n in done), task.get("seq")))
+    return "\n".join(msgs) if msgs else "heal --unassign: nothing to do."
 
 
 def _split_str_list(raw):
@@ -1319,6 +1449,8 @@ def cmd_heal(a):
     marking = getattr(a, "mark_healed", False)
     verbs = (getattr(a, "split", None) is not None
              or getattr(a, "merge", None) is not None)
+    assigns = (getattr(a, "reassign", None) is not None
+               or getattr(a, "unassign", None) is not None)
 
     def _others(*allowed):
         """The mode flags present that this invocation is NOT one of. One reader, so every
@@ -1329,7 +1461,8 @@ def cmd_heal(a):
                  ("--dismissals", listing), ("--candidates", candidates),
                  ("--dismiss", bool(dismiss)), ("--undismiss", bool(undismiss)),
                  ("--dispose-acks", bool(dispose)),
-                 ("--split/--merge", verbs))
+                 ("--split/--merge", verbs),
+                 ("--reassign/--unassign", assigns))
         return [name for name, on in modes if on and name not in allowed]
 
     if scan_only and apply_it:
@@ -1424,6 +1557,18 @@ def cmd_heal(a):
             print("")
         print(_heal_mark(a, tasks))
         maybe_refresh_board()
+        return
+    if assigns:
+        # OWNERSHIP IS ITS OWN INVOCATION, for the reason every other mode here is: it
+        # writes TWO tasks, and a report that also carried a scan or a mechanical plan
+        # could not say plainly which record each line was about.
+        clash = _others("--reassign/--unassign")
+        if clash:
+            print("heal --reassign/--unassign move a ruling's OWNERSHIP between two "
+                  "tasks; %s change(s) one task's own log. One report cannot honestly "
+                  "tell both stories — run them separately." % ", ".join(clash))
+            return
+        print(_heal_reassign(a))
         return
     if getattr(a, "split", None) is not None or getattr(a, "merge", None) is not None:
         # `--into` is ONE option, so passing it twice silently keeps only the last value

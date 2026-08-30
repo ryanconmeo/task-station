@@ -1,6 +1,6 @@
 ---
 name: heal
-description: Reconcile a task's append-only decision log into current state — supersede what is now wrong, split what is compound, merge what is true but no longer load-bearing, retro-dispose stale acks, adjudicate a false-positive finding away with a reason, and refresh or re-read a drifted goal. Use on `/heal`, `/todo heal`, "reconcile this task", or when the SessionStart nag says a task is under-reconciled. Runs as ONE uninterrupted pass — scan, judge, apply, verify — and reports the exact one-command undo for every write it made.
+description: Reconcile a task's append-only decision log into current state — supersede what is now wrong, split what is compound, merge what is true but no longer load-bearing, reassign what is right but on the wrong task, retro-dispose stale acks, adjudicate a false-positive finding away with a reason, and refresh or re-read a drifted goal. Use on `/heal`, `/todo heal`, "reconcile this task", or when the SessionStart nag says a task is under-reconciled. Runs as ONE uninterrupted pass — scan, judge, apply, verify — and reports the exact one-command undo for every write it made.
 ---
 
 # Heal — the reconcile pass
@@ -85,7 +85,7 @@ The CLI generates those commands as it writes — `update --task <n> --restore-d
 
 Do not re-render the `/todo` list.
 
-### The user should never need to type `--apply`, `--merge`, `--split`, `--dispose-acks`, `--mark-healed`, `--goal-reviewed`, `--candidates`, `--dismiss`, `--probe-links` or `--probe-ado`
+### The user should never need to type `--apply`, `--merge`, `--split`, `--reassign`, `--dispose-acks`, `--mark-healed`, `--goal-reviewed`, `--candidates`, `--dismiss`, `--probe-links` or `--probe-ado`
 
 **You choose them.** They exist so this skill can act precisely and so a script can too; they are not a menu for a person to pick from. A user who types `heal --apply` on a hunch gets the worst of both worlds — they pay for the dry run they never read, and before this release they also got a heal stamped for a pass that did nothing. If the user does name a flag, honour it; otherwise never make them learn one.
 
@@ -101,6 +101,7 @@ Do not re-render the `/todo` list.
 | Cited commits that resolve nowhere | **The first outward check.** A commit sha the record *declares* (`commit <sha>`, `merged <sha>`, `main @ <sha>`) that resolves in **none** of the task's repos — history was rewritten and the record now points at a commit nobody can read. Bare hex tokens are **never** matched: a task id, a memo id8 and a heal fingerprint are all hex too. UNKNOWN (no repo found, git error) is never reported, and with no prober wired nothing is probed at all — the SessionStart path spawns no subprocess |
 | Digest grew with candidates outstanding | The digest is **larger** than at the last heal **and** at least one merge candidate group is outstanding. Neither half is a defect alone: a working task records work, and a group nobody has ruled on is not wrong. Together they say the record is getting more expensive to brief in exactly the place a named verb was waiting. Needs a baseline, so a never-healed task is silent |
 | Corrections never applied | A memo declaring `--corrects` whose target was never updated |
+| Ownership records that contradict themselves | Only what is **mechanical**: an **index** pointing at a ruling the source task does not confirm; an **owner** that no longer **exists**; an owner that is **closed**, so a still-current ruling renders only on a digest nobody opens again. Each is a ruling rendering in the wrong place or in **no** place, provable from the records alone. A pointer at a **retired** ruling is spent, not drifted, and is deliberately not reported — otherwise the check fires on every correctly-retired ruling and gets switched off. **It does not decide placement**, and an earlier version that tried produced **zero** findings on the 112 live decisions of the task this was built for: it needed *one* other task named **and** three or more mentions of it, and those never co-occur there — of the 9 decisions naming exactly one other task the most mentions is **two**, while all 3 that mention a task three or more times name *several*. Dropping the single-subject gate would have been worse, not better: that corpus's most-citing entry names two tasks six times each because it is **about the relationship between them**, and a bare mention count would have ranked it the most misplaced ruling on the task. Lowering the bar instead flags most of the corpus, since a ruling mentions a subject about twice as often as it is about one. The question is handed over instead, as the **Placement re-read** section |
 | Unlinked supersession language | A decision *saying* "decision 4 was wrong" but linked to nothing — prose pretending to be structure. **Three** conditions, all required: the language, **and** a decision-shaped target (`decision N` / `entry N` / `#N`, naming an earlier decision that exists), **and** a sentence that *declares against* that decision rather than *reporting on* it. Prose that merely *describes* supersession — a rule superseding a rule, a corrected memory note, a memo chain, the supersede feature itself — is **not** reported, and neither is prose that attributes the action to the other decision: `corrected by decision 184`, `decision 173 investigated`, `why decision 150 is NOT superseded`. It fired 5 times on one task with 4 false, then 8 times on another with all 8 the reporting shape; a check that is 80% wrong is one the reader learns to skip |
 | Oversized decisions | Past **6×** the 600-char write advisory (3,600) — the length at which an entry can no longer be superseded a piece at a time, because every ruling inside it is welded to every other one. Between **2×** and 6× it is a **proposal**, not a finding: a real task's decisions *average* ~1,400 chars, so reporting that band as a defect would put `Heal due? YES` on every healthy record on the board. Both numbers derive from the one write advisory (`decisions.LONG_DECISION_CHARS`) rather than being picked separately |
 | Drift | Recorded paths and worktrees that no longer exist, plus branches named in the digest that resolve nowhere. A branch candidate must be **ref-shaped** (backticked, or carrying a `/`, `-`, `_` or digit, or a conventional name like `main`/`dev`) — otherwise the English word after "branch" gets reported. **Session scratchpads and system temp paths are excluded outright** — see below |
@@ -182,9 +183,9 @@ A check for it would be the fifth confidently-wrong check this subsystem has shi
 
 **Layer 2 — the pass.** `heal` prints the `[HEAL]` block: the findings, the four sections above, the health metric, the **full current decision set**, then the **goal line and the live checklist** beside it (the newest decisions are the evidence that retires them), the mechanical plan, and the judgment list. You work that list — once, per step 3.
 
-## The three verbs
+## The four verbs
 
-`supersede` shipped in 2.9.0. `split` and `merge` exist because supersession alone cannot express two real shapes.
+`supersede` shipped in 2.9.0. `split` and `merge` exist because supersession alone cannot express two real shapes. `reassign` exists because none of the three can express the fourth: the ruling is **right, current and load-bearing, and it is on the wrong task**.
 
 **`supersede <n>`** — something **refuted** it. `update --task <n> --decision '<the correct call + why>' --supersedes <k>` (repeatable, so one decision may replace several).
 
@@ -199,6 +200,34 @@ heal --split <k> --into <n1,n2,…>
 ```
 heal --merge <n1,n2,…> --into <n>
 ```
+
+**`reassign <n,…> --to <task>`** — the ruling is **in the wrong place**. This is the verb for the shape neither consolidation verb can touch, and the measurement is what proves it: task #444 carried 31,072 chars of one child's subject, 12,612 of a second's and 3,737 of a third's, and a heal that split eight oversized entries and cut the longest from 8,095 to 3,581 chars **barely moved the total**. Nothing there was redundant. It was misplaced.
+
+```
+heal --task <source> --reassign <n,…> --to <owner> [--stub '<the reference line>']
+```
+
+**The decision does not move — the ownership does.** One copy, one store, still on the source task at its original index, in full. What changes is which task renders it: the owner prints the prose, the source prints a one-line reference stub carrying the title, the owner and the number. A child additionally sees its parent's **pins**, which bind it by inheritance — as **references, not prose**: rendering them in full took one real child's digest from 21,938 to 70,280 chars, because its parent pins 27 decisions worth 48,342. A feature whose purpose is a cheaper digest cannot triple every child's, so the child keeps the knowledge and the pointer, and one command opens them in full.
+
+**The rule is one question: would this ruling still matter if this child were deleted?** Yes means the parent owns it; no means the child does. **There is no keyword form of that question**, and the scan does not pretend otherwise: the `placement` check reports only records that contradict themselves, and the **Placement re-read** section lists the decisions that name exactly one other task as *information* — a candidate subject, never a verdict — with the question printed beside them. Neither is counted as an issue; neither makes a heal due.
+
+**A consolidation is refused, not guessed at.** A decision that declares itself the one record of several others is written **across** subjects — that is why its members stopped earning individual space — so it may have no single owner, and reassigning it makes it wrong for everything else it covers. Measured on #444: 11 of 112 live decisions, and the large ones replace between 16 and 39 originals each. `heal --split <n> --into <n1,n2,…>` first, then reassign the parts.
+
+Four refusals, and each one is a shape that would otherwise break something:
+
+| Refused | Because |
+|---|---|
+| a **pinned** decision | a pin briefs every session, so a ruling that binds the programme belongs to the programme. `update --unpin-decision <n>` first if it really is one child's |
+| a **consolidation** | it is written across subjects, so it may have no single owner. Split it and reassign the parts |
+| a decision with **no text** | a reassign leaving no stub is a delete with extra steps |
+| a caller **not attached to the source** | otherwise a child could claim rulings it was never handed |
+| one **already owned** elsewhere | `heal --unassign <n>` brings it home first, so the previous owner's index is never left naming a ruling it no longer owns |
+
+`heal --task <source> --unassign <n,…>` is the whole reversal, and the CLI prints it at the moment of the write.
+
+**A ruling can be superseded across the boundary**: `update --task <child> --decision '<the correction>' --supersedes <task>:<n>`. Decision numbers are **per-task**, so a bare number always means this task and anything aimed elsewhere must say where. Both directions are written or neither — the other task learns what refuted it and this decision records what it refuted — and `update --task <source> --restore-decision <n>` clears both sides.
+
+**Closing a child does not orphan what it owns.** Rulings it owns that live on another task are **released** back there; its own **pinned** rulings are **re-homed** to the parent (the pin is dropped — a finished child must not permanently reorder the programme's reading); and everything else still current is **named**, with the command that moves it, rather than moved silently or dropped. Dumping a whole child log onto the parent in full is the exact bloat this verb removes. Those names ride the **memo and pickup** the close already files on the parent, not just stdout — a named ruling nobody reads has been dropped with extra steps.
 
 ## The step verb
 
