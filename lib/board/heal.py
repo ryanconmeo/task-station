@@ -585,6 +585,23 @@ _DECISION_WORD_REF = re.compile(
 _NUMBER = re.compile(r"\d+")
 _HASH_REF = re.compile(r"#(?P<n>\d+)\b")
 
+# THE QUALIFIED FORM — `586:12`, optionally hashed as `#586:12`. Every read surface now
+# prints a decision's index this way (`ownership.index_label`), because a task's State
+# prose can carry a numbered list of its own and a bare `12.` said nothing about which
+# list it came from. Prose written by a session that copied a digest line therefore
+# carries it too, and this module has to read it — in BOTH directions:
+#
+#   * `586:12` on task #586 IS a reference to decision 12 here, and was invisible to this
+#     check until the form existed.
+#   * `586:12` on any OTHER task is a reference to somebody else's decision, and the `586`
+#     half must never be read as a local index. Without this the new render would have
+#     manufactured a false positive on every long log: `#586` alone matches `_HASH_REF`,
+#     and on a task with 600 entries 586 is in range and earlier.
+#
+# The occurrence is claimed WHOLE, so whatever it means, no other reader gets a second
+# bite at either half of it.
+_QUALIFIED_REF = re.compile(r"#?(?P<q>\d+):(?P<n>\d+)\b")
+
 # Nouns that, read by `qualifier` off the front of a `#N`, make it name something OTHER
 # than a decision on this task. `memo #3`, `task #444`, `PR #12`, `step 2` are all
 # numbered, and none of them is a decision — so a supersession claim about one of them
@@ -596,27 +613,44 @@ NON_DECISION_QUALIFIERS = frozenset((
     "release", "commit", "branch", "ticket", "skill", "test", "check", "item"))
 
 
-def _decision_ref_spans(text):
+def _decision_ref_spans(text, seq=None):
     """Every decision-shaped reference OCCURRENCE as `(numbers, start, end)`, in the order
-    the two shapes are matched.
+    the shapes are matched. `seq` is the task's own number, when the caller knows it.
 
     Split out of `decision_refs` so the reporting discriminator below can read WHERE each
     reference sat — the word in front of it, the word after it, the clause around it — and
     so there stays exactly ONE place that knows what a decision reference looks like. Two
     readers with two copies of these regexes would answer differently the first time
     either was tuned, which is the same failure the declare-vs-describe guard exists to
-    prevent one level up."""
-    spans = []
+    prevent one level up.
+
+    THE QUALIFIED FORM IS MATCHED FIRST AND CLAIMS ITS WHOLE OCCURRENCE. `586:12` reads as
+    decision 12 when 586 is this task and as NOTHING otherwise — and either way the `586`
+    is consumed, so `_HASH_REF` cannot come along behind and read it as a local index.
+    Without `seq` the qualified form is claimed and discarded: a caller that cannot say
+    whose number it is gets the missed finding rather than the false one, which is the
+    direction this module takes everywhere."""
+    spans, claimed = [], []
+    for m in _QUALIFIED_REF.finditer(text or ""):
+        claimed.append((m.start(), m.end()))
+        if seq is not None and int(m.group("q")) == int(seq):
+            spans.append(([int(m.group("n"))], m.start(), m.end()))
+    def _free(start, end):
+        return not any(start < c_end and c_start < end for c_start, c_end in claimed)
     for m in _DECISION_WORD_REF.finditer(text or ""):
+        if not _free(m.start(), m.end()):
+            continue
         spans.append(([int(n) for n in _NUMBER.findall(m.group(0))], m.start(), m.end()))
     for m in _HASH_REF.finditer(text or ""):
+        if not _free(m.start(), m.end()):
+            continue
         if qualifier(text, m.start()) in NON_DECISION_QUALIFIERS:
             continue
         spans.append(([int(m.group("n"))], m.start(), m.end()))
     return spans
 
 
-def decision_refs(text, own_index=None, total=None):
+def decision_refs(text, own_index=None, total=None, seq=None):
     """The decision indices this prose plausibly names, as ints, oldest-first.
 
     THREE gates, each one there to kill a shape that was measured as a false positive:
@@ -631,7 +665,7 @@ def decision_refs(text, own_index=None, total=None):
         out-of-range number (a task number, a version, a line number) is not a
         decision reference on this task."""
     found = []
-    for nums, _start, _end in _decision_ref_spans(text):
+    for nums, _start, _end in _decision_ref_spans(text, seq=seq):
         found.extend(nums)
     out = []
     for n in found:
@@ -792,7 +826,7 @@ def reports_another_decision(text, start, end, window=REPORTING_WINDOW):
     return _denies_correction(_clause_at(text, start, end, window))
 
 
-def reported_decision_refs(text, window=REPORTING_WINDOW):
+def reported_decision_refs(text, window=REPORTING_WINDOW, seq=None):
     """The decision numbers this text merely REPORTS ON, as a set.
 
     Returned UNFILTERED by range or direction — the caller already has `decision_refs`
@@ -800,7 +834,7 @@ def reported_decision_refs(text, window=REPORTING_WINDOW):
     named twice, once as a target and once as an actor, lands in here: see the asymmetry
     note above for why that deliberate false negative is the cheaper failure."""
     out = set()
-    for nums, start, end in _decision_ref_spans(text):
+    for nums, start, end in _decision_ref_spans(text, seq=seq):
         if reports_another_decision(text, start, end, window):
             out.update(nums)
     return out
@@ -823,8 +857,9 @@ def prose_supersession(task):
     So THREE conditions must ALL hold, not one:
 
       1. the prose carries supersession language, and
-      2. it names a DECISION-SHAPED target — `decision N`, `entry N` or `#N`, pointing
-         at an earlier decision that exists on this task (see `decision_refs`), and
+      2. it names a DECISION-SHAPED target — `decision N`, `entry N`, `#N`, or the
+         qualified `<this task>:N` the read surfaces print — pointing at an earlier
+         decision that exists on this task (see `decision_refs`), and
       3. the sentence DECLARES against that decision rather than REPORTING on it
          (`reported_decision_refs`). Condition 3 shipped four releases late: "corrected by
          decision 184", "decision 173 investigated" and "why decision 150 is NOT
@@ -856,8 +891,9 @@ def prose_supersession(task):
         hits = matched_language(body, SUPERSESSION_LANGUAGE)
         if not hits:
             continue
-        reported = reported_decision_refs(body)
-        refs = [n for n in decision_refs(body, own_index=i, total=len(entries))
+        seq = (task or {}).get("seq")
+        reported = reported_decision_refs(body, seq=seq)
+        refs = [n for n in decision_refs(body, own_index=i, total=len(entries), seq=seq)
                 if n in still_live and n not in reported]
         if not refs:
             continue
@@ -4571,9 +4607,10 @@ def candidate_lines(task, result=None):
                 # The same mark every other surface uses for a pin (task-station's
                 # DECISION_PIN_MARK). Spelled out here rather than imported, because this
                 # module is the one task-station imports and never the other way around.
-                out.append("  %2d. %s%s" % (i,
-                                            "★ " if _dec.is_pinned(entries[i - 1]) else "",
-                                            _dec.text(entries[i - 1])))
+                out.append("  %s:%d. %s%s"
+                           % (seq, i,
+                              "★ " if _dec.is_pinned(entries[i - 1]) else "",
+                              _dec.text(entries[i - 1])))
         out.append("     → `heal --merge %s --into <n>` once the summary decision exists"
                    % ",".join(str(i) for i in idxs))
     return out

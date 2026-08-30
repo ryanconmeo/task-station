@@ -268,12 +268,22 @@ def _format_detail(task, session, attached=True):
                        if _dec.renders_full(d, task.get("id"))]
     stubs = _own.held_stubs(task)
     inherited = _decision_inheritance(task)
+    #
+    # NUMBERED `<task>:<n>`, NOT `<n>` — see `ownership.index_label`. The State prose
+    # above this block can carry a numbered list of its own, and while both rendered as
+    # `  N. ` one grep returned a mixture of the two to a reader who then handed them to
+    # a verb that writes two tasks. The qualified form names the artefact the number
+    # refers to, and it is the same form an inherited pin has always rendered.
     if shown_decisions or stubs:
         out.append("")
         out.append("Decisions:")
+        out.append("  (numbered `%s:<n>` — this log's OWN index, so a number here can "
+                   "never be read as one from the prose above. Every reconcile verb takes "
+                   "it, bare or qualified.)" % _own.task_ref(task))
         for i, d in shown_decisions:
-            out.append("  %2d. %s%s" % (i, DECISION_PIN_MARK if _dec.is_pinned(d) else "",
-                                        _dec.text(d)))
+            out.append("  %s. %s%s" % (_own.index_label(task, i),
+                                       DECISION_PIN_MARK if _dec.is_pinned(d) else "",
+                                       _dec.text(d)))
         if stubs:
             out.append("  — reference stubs: these rulings are STILL ON THIS TASK at "
                        "these numbers, in full. Another task")
@@ -282,7 +292,7 @@ def _format_detail(task, session, attached=True):
                        % task.get("seq", task["id"][:8]))
             out.append("    the full text; `heal --unassign <n>` brings one back.")
             for i, d in stubs:
-                out.append(_own.stub_line(i, d))
+                out.append(_own.stub_line(i, d, task))
         out.append("  (`update --task %s --supersedes <n> --decision '<the correction>'` "
                    "retires decision <n>.)" % task.get("seq", task["id"][:8]))
     out.extend(inherited)
@@ -470,13 +480,15 @@ def _format_history(task):
     # these 1-based indices are exactly what `--supersedes` / `--pin-decision` take.
     decisions = task.get("decisions") or []
     out.append("")
-    out.append("Decisions (%d, oldest first%s):"
-               % (len(decisions), _replaced_suffix(decisions)))
+    out.append("Decisions (%d, oldest first%s) — numbered `%s:<n>`, this log's own index, "
+               "and the numbers SKIP where one was replaced:"
+               % (len(decisions), _replaced_suffix(decisions), _own.task_ref(task)))
     for i, d in enumerate(decisions, 1):
         label = _dec.replacement_label(d)
         if label is not None:
-            out.append("  %2d. %s%s  — %s"
-                       % (i, DECISION_DEAD_MARK, _dec.text(d), label))
+            out.append("  %s. %s%s  — %s"
+                       % (_own.index_label(task, i), DECISION_DEAD_MARK, _dec.text(d),
+                          label))
         else:
             # OWNERSHIP IS SHOWN HERE IN FULL, deliberately. The digest renders a stub for
             # a ruling this task no longer owns; history's job is to stay complete, and a
@@ -485,8 +497,9 @@ def _format_history(task):
             # ruling this one refuted, which no other surface on this task can show.
             owned = " — owned by %s (rendered in full there)" % _dec.owner_label(d) \
                 if _dec.is_owned(d) else ""
-            out.append("  %2d. %s%s%s"
-                       % (i, DECISION_PIN_MARK if _dec.is_pinned(d) else "",
+            out.append("  %s. %s%s%s"
+                       % (_own.index_label(task, i),
+                          DECISION_PIN_MARK if _dec.is_pinned(d) else "",
                           _dec.text(d), owned))
         for ref in _dec.supersedes_across(d):
             out.append("      ↳ supersedes %s (on another task)" % _dec.ref_label(ref))

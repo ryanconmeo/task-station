@@ -586,14 +586,18 @@ def main(argv=None):
                          "The decision does NOT move: one copy, one store, at its "
                          "original index. What moves is which task renders it in full — "
                          "this task keeps a one-line REFERENCE STUB carrying the title, "
-                         "the owner and the pointer. REFUSED for a PINNED decision (a pin "
-                         "briefs every session, so a ruling that binds the programme "
-                         "belongs to the programme), for a decision with no text to "
-                         "reference (a reassign leaving no stub is a delete with extra "
-                         "steps), for one already owned elsewhere, and when the acting "
-                         "--session is not attached to the SOURCE task, so a child cannot "
-                         "claim rulings it does not own. Prints the one command that "
-                         "undoes it.")
+                         "the owner and the pointer. Takes a bare `<n>` or the qualified "
+                         "`<task>:<n>` the decision list prints; a qualified ref naming a "
+                         "DIFFERENT task is refused, never resolved. NAMES EACH RULING "
+                         "BACK, with its first sentence, before it moves anything. "
+                         "REFUSED for a PINNED decision (a pin briefs every session, so a "
+                         "ruling that binds the programme belongs to the programme), for "
+                         "a decision with no text to reference (a reassign leaving no "
+                         "stub is a delete with extra steps), for one already owned "
+                         "elsewhere, and — unless the source task is CLOSED and the "
+                         "acting --session is attached to its PARENT — when that session "
+                         "is not attached to the SOURCE task, so a child cannot claim "
+                         "rulings it does not own. Prints the one command that undoes it.")
     sp.add_argument("--to", dest="to", default=None, metavar="TASK",
                     help="with --reassign: the task that will OWN (render in full) those "
                          "decisions, by seq/id/handle")
@@ -601,6 +605,13 @@ def main(argv=None):
                     help="with --reassign: the one-line reference this task renders in "
                          "place of the prose. Defaults to the decision's first sentence; "
                          "pass it when that sentence is not the subject.")
+    sp.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="with --reassign/--unassign: NAME what would move and move "
+                         "nothing. The batch is validated exactly as the real run "
+                         "validates it, so a refusal here is the refusal you would get. "
+                         "(These two verbs write without --apply — the close report that "
+                         "names `--reassign` has to be true as printed — so this is how "
+                         "you look before you leap.)")
     sp.add_argument("--unassign", default=None, metavar="N1,N2,…",
                     help="the ONE inverse of --reassign: bring these decisions' ownership "
                          "back to the task that holds them, which renders them in full "
