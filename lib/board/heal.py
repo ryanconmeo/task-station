@@ -221,6 +221,7 @@ import config as _config
 import decisions as _dec
 import paths
 import steps as _steps
+import timing as _timing
 
 # -- thresholds (module-level so one edit retunes the whole pass) ----------------
 
@@ -2738,11 +2739,10 @@ DISMISSALS_FIELD = "heal_dismissals"     # additive: the append-only adjudicatio
 def finding_fingerprint(finding):
     """A stable sha1 over one finding's MATCHED TEXT — check, ref and detail.
 
-    THE DETAIL LINE IS IN THE HASH ON PURPOSE. It is where every check writes what it
-    actually matched: the char count for an oversized entry, the keywords for a stale step,
-    the overlap percentage and the paired decision for a restatement, the shapes for a
-    re-fragmentation. So the hash changes when the underlying text changes, which is exactly
-    when the ruling should expire.
+    STILL COMPUTED, AND NO LONGER WHAT SILENCES. It is now the ruling's WITNESS: the exact
+    text somebody was looking at when they ruled, kept so that a later reader can be told the
+    text has MOVED (see `apply_dismissals`). What it is not, any more, is the key — see the
+    note above `finding_identity` for the measurement that changed that.
 
     hashlib, NOT hash() — the same reason `_signature` gives: hash()'s string seed is
     randomised per process, so a stored fingerprint would stop matching after a restart and
@@ -2751,6 +2751,71 @@ def finding_fingerprint(finding):
                       str((finding or {}).get("ref") or ""),
                       str((finding or {}).get("detail") or "")])
     return hashlib.sha1(blob.encode("utf-8", "replace")).hexdigest()
+
+
+# -- A DISMISSAL KEYS ON THE SUBJECT, NOT ON THE SENTENCE -------------------------------
+#
+# THE OLD RULE WAS "the hash changes when the underlying text changes, which is exactly when
+# the ruling should expire", and it was written in good faith. Measured on the real record on
+# 2026-08-29 it does not hold, and the measurement is not close:
+#
+#   * 76 dismissals in force on ONE task, many already marked EXPIRED.
+#   * `grew-with-candidates:digest` was ruled THE SAME WAY five separate times. Nothing about
+#     the situation changed between rulings. A CHARACTER COUNT MOVED, so the sentence moved,
+#     so the hash moved, so a settled ruling came back as a new finding — five times.
+#   * Sharpest of all: a dismissal written at 22:0x expired inside TEN MINUTES. Its finding
+#     text went from "about decision 436, 503" to "about decision 436" after a split. THE
+#     RULING DID NOT SURVIVE ITS OWN SUBJECT BEING EDITED — and editing the subject is what
+#     acting on a finding looks like.
+#
+# The ledger's own dismissal text names the cost better than this comment could: "a check
+# that re-litigates a settled ruling on every char-count change teaches the reader to skip
+# the scan, which is how a real finding gets missed later." A scheduler built on that signal
+# inherits the cry-wolf, which is why this had to land in the same release.
+#
+# SO IDENTITY IS (check, ref) — the CHECK that fired and the SUBJECT it fired about. Those two
+# are what a human is ruling on: "this check, about decision 436, has been considered." The
+# detail is how the finding was WORDED on the day, and a ruling about a decision is not a
+# ruling about a character count.
+#
+# WHAT IS GIVEN UP, stated plainly rather than discovered later: a dismissal now survives an
+# edit to the entry it is about. That is the intended trade and it is the smaller risk — a
+# stale ruling on a subject somebody already read costs one missed re-read, while the old
+# behaviour cost the credibility of the entire scan. It is not given up SILENTLY either: when
+# the text moves under a live dismissal the finding is reported as MOVED, carrying both the
+# ruling's date and the fact that the sentence is no longer the one that was ruled on.
+#
+# LEGACY LEDGERS NEED NO MIGRATION. Every entry ever written stores `check` and `ref` beside
+# its fingerprint, so identity is derivable from rows written before identity existed. That
+# is the only reason this could be a same-release change rather than a two-release one.
+
+def finding_identity(finding):
+    """A stable sha1 over one finding's SUBJECT — check and ref, and nothing else.
+
+    This is what a dismissal is keyed on. `finding_fingerprint` keeps hashing the wording, so
+    the two together can say "still the same subject, different sentence" — which is the
+    MOVED report.
+
+    ONE LINE OVER `timing.dismissal_identity`, WHICH HOLDS THE RULE. `heal` imports config,
+    decisions, steps and the store; `timing` imports the standard library and nothing else,
+    which is what lets an exit condition read this rule straight out of `origin/main` and
+    exercise it. Same move `ownership.may_reassign_out` made in 3.43.0, for the same reason."""
+    return _timing.dismissal_identity((finding or {}).get("check"),
+                                      (finding or {}).get("ref"))
+
+
+def entry_identity(entry):
+    """The identity of one LEDGER ROW — its stored `identity` when it has one, else derived
+    from the `check` and `ref` every row has always stored.
+
+    THE DERIVATION IS THE MIGRATION. Rows written before this key existed resolve to exactly
+    the identity they would have been given, so a ledger somebody built up over months keeps
+    working on the first run of the new code and nothing has to be rewritten."""
+    ident = str((entry or {}).get("identity") or "")
+    if ident:
+        return ident
+    return finding_identity({"check": (entry or {}).get("check"),
+                             "ref": (entry or {}).get("ref")})
 
 
 def dismissal_ledger(task):
@@ -2766,9 +2831,25 @@ def active_dismissals(task):
 
 
 def dismissed_fingerprints(task):
-    """The fingerprints currently silenced, as a set."""
+    """The fingerprints currently silenced, as a set.
+
+    KEPT AND NO LONGER THE MATCHER — `dismissed_identities` is. This still answers "which
+    exact texts were ruled on", which is what `dismissal_rows` needs to say whether a ruling
+    is still sitting on the sentence it was written about."""
     return set(str(e.get("fingerprint") or "") for e in active_dismissals(task)
                if e.get("fingerprint"))
+
+
+def dismissed_identities(task):
+    """`{identity: entry}` for every dismissal still in force — what actually silences.
+
+    LAST WRITER WINS on a repeated identity, which cannot arise through `dismiss` (it refuses
+    an already-dismissed subject) but can through a hand-edited blob. Taking the newest is the
+    reading that matches the ledger being append-only."""
+    out = {}
+    for e in active_dismissals(task):
+        out[entry_identity(e)] = e
+    return out
 
 
 # -- AN IDENTICAL FINDING IS ONE FINDING -----------------------------------------
@@ -2816,15 +2897,43 @@ def dedupe_findings(findings):
 
 def apply_dismissals(findings, task):
     """`(kept, dismissed)` — the findings split by the ledger, each side in the order it
-    arrived. Both halves keep their `fingerprint`, which is what lets a later `--undismiss`
-    and the `--dismissals` listing talk about the same rows the scan matched."""
-    silenced = dismissed_fingerprints(task)
+    arrived. Both halves keep their `fingerprint` AND their `identity`, which is what lets a
+    later `--undismiss` and the `--dismissals` listing talk about the same rows the scan
+    matched.
+
+    SILENCING IS BY IDENTITY (check + ref). A dismissed row whose WORDING no longer matches
+    the ruling's witness is marked `moved`, carrying `moved_from` — the fingerprint that was
+    ruled on. It is still silenced: the subject was settled, and the sentence changing is what
+    acting on a finding looks like. But it is not silently silenced, which is the difference
+    between an adjudication and a hole in the report."""
+    silenced = dismissed_identities(task)
     kept, dropped = [], []
     for f in (findings or []):
         row = dict(f)
         row["fingerprint"] = finding_fingerprint(f)
-        (dropped if row["fingerprint"] in silenced else kept).append(row)
+        row["identity"] = finding_identity(f)
+        entry = silenced.get(row["identity"])
+        if entry is None:
+            kept.append(row)
+            continue
+        # The three-state rule lives in `timing.dismissal_state`, so "settled", "settled but
+        # the wording moved" and "a different subject entirely" are decided in one place that
+        # an exit condition can read out of origin/main.
+        state = _timing.dismissal_state(entry.get("check"), entry.get("ref"),
+                                        str(entry.get("fingerprint") or ""),
+                                        row.get("check"), row.get("ref"),
+                                        row["fingerprint"])
+        if state == _timing.DISMISSAL_MOVED:
+            row["moved"] = True
+            row["moved_from"] = str(entry.get("fingerprint") or "")
+        dropped.append(row)
     return kept, dropped
+
+
+def moved_dismissals(result):
+    """The dismissed findings whose text has MOVED since the ruling. Reads the scan result
+    rather than recomputing, so this and the report can never disagree about the count."""
+    return [f for f in ((result or {}).get("dismissed") or []) if f.get("moved")]
 
 
 def dismissal_entry(finding, why, sid=None, now=None):
@@ -2833,6 +2942,7 @@ def dismissal_entry(finding, why, sid=None, now=None):
     return {"check": str((finding or {}).get("check") or ""),
             "ref": str((finding or {}).get("ref") or ""),
             "fingerprint": finding_fingerprint(finding),
+            "identity": finding_identity(finding),
             "why": str(why or "").strip(),
             "ts": time.time() if now is None else now,
             "sid": sid or None}
@@ -2978,7 +3088,7 @@ def dismiss(task, findings, selector, why, sid=None, now=None):
     if err:
         return None, err
     fp = finding_fingerprint(row)
-    if fp in dismissed_fingerprints(task):
+    if finding_identity(row) in dismissed_identities(task):
         return None, ("heal --dismiss %s: already dismissed, and the ledger already carries "
                       "the why — `heal --dismissals` prints it. Nothing was changed."
                       % _row_label(row))
@@ -3011,23 +3121,30 @@ def dismissal_rows(task, result=None):
     """The ledger for display, as `[{entry…, "silencing": bool}, …]`, newest first.
 
     `silencing` answers the one question a reader of this list actually has: is this ruling
-    still doing anything? An ACTIVE entry whose fingerprint matches nothing in the current
-    scan means the underlying text has CHANGED, so the finding is being reported again and
-    the old ruling no longer covers it. That is the fingerprint design working, and it has to
-    be visible — otherwise the list reads as "9 findings are silenced" when the true answer
-    is "6 are, and 3 rulings have expired". Needs a scan `result` to say so; without one the
-    key is None, meaning unknown rather than False."""
-    seen = None
+    still doing anything? It is now matched on IDENTITY (check + ref), which is what actually
+    silences — matching on the fingerprint reported "expired" for every ruling whose sentence
+    had moved, which was the loudest symptom of the defect this now keys around.
+
+    `moved` is the second column, and it carries what the fingerprint match used to: True when
+    the ruling is still in force but the finding's WORDING is no longer the one that was ruled
+    on. So the list distinguishes three states instead of two — silencing the same text,
+    silencing a subject whose text has moved, and covering nothing at all. Needs a scan
+    `result`; without one both keys are None, meaning unknown rather than False."""
+    seen, moved = None, {}
     if result is not None:
         seen = set()
         for f in ((result.get("findings") or []) + (result.get("dismissed") or [])):
-            seen.add(f.get("fingerprint") or finding_fingerprint(f))
+            ident = f.get("identity") or finding_identity(f)
+            seen.add(ident)
+            if f.get("moved"):
+                moved[ident] = True
     out = []
     for e in reversed(dismissal_ledger(task)):
         row = dict(e)
+        ident = entry_identity(e)
         row["silencing"] = (None if seen is None else
-                            (not e.get("retired")
-                             and str(e.get("fingerprint") or "") in seen))
+                            (not e.get("retired") and ident in seen))
+        row["moved"] = None if seen is None else bool(moved.get(ident))
         out.append(row)
     return out
 
@@ -3684,6 +3801,34 @@ def plan(task, result=None, limit=OVERSIZE_CHARS):
     return ops
 
 
+# -- THE AUTO-ELIGIBLE SUBSET OF THE MECHANICAL PLAN ------------------------------------
+#
+# `plan` is already "the part a machine can get right with no judgment". It is not, however,
+# the part a machine may run UNATTENDED, and the difference is one verb.
+#
+# A SPLIT IS REVERSIBLE AND A MERGE IS NOT — not in the way that matters. A split's parts are
+# each still true on their own; put the original back beside them and nothing has been
+# asserted that was not already there. A merge writes ONE summary that has to be true of all
+# its members at once, and when it is not, there is no verb that unsays it: the restore puts
+# the originals back, but the false consolidation stays on the log as a decision somebody
+# apparently made. On the task this shipped from, the single merge group has been refused six
+# separate times by six separate readings, every one of them correct, because no one summary
+# could be true of all its members.
+#
+# So the auto class is `split` and `disposition`, and `merge` is excluded BY VERB rather than
+# by any threshold — there is no count of decisions, no confidence score and no configuration
+# that promotes a merge into it. `timing.classify` says the same thing from the other side,
+# and a test asserts the two agree.
+
+# THE VERB LIST AND THE FILTER BOTH LIVE IN `timing`, for the same reason `finding_identity`
+# does: a rule that decides what a machine may write unattended is exactly the rule an exit
+# condition must be able to read out of the merge target. These three names are the handles
+# `plan`'s callers already reach for; the rule underneath them has one definition.
+AUTO_VERBS = _timing.AUTO_VERBS
+auto_ops = _timing.auto_ops
+held_ops = _timing.held_ops
+
+
 def undispositioned(task):
     """Every ack still carrying no disposition, as `(memo, ack)` pairs in record order.
     One reader for the check, the plan and the explicit `--dispose-acks` selection, so
@@ -4077,10 +4222,15 @@ def dismissed_line(result):
     n = len((result or {}).get("dismissed") or [])
     if not n:
         return []
+    nmoved = len(moved_dismissals(result))
+    tail = ("a dismissal covers one SUBJECT — the check and the entry it fired about — so "
+            "rewording the entry does not re-open a settled ruling")
+    if nmoved:
+        tail += ("; %d of these has MOVED: still settled, but the sentence is no longer the "
+                 "one that was ruled on, so re-read before relying on the ruling" % nmoved)
     return ["  %-28s %d  (adjudicated and silenced: out of the findings, the issue count "
             "and the due calculus. `heal --dismissals` lists each one with its why and its "
-            "date; a dismissal covers ONE exact text, so an edit to the underlying entry "
-            "makes the finding re-report)" % ("Dismissed", n)]
+            "date; %s)" % ("Dismissed", n, tail)]
 
 
 def size_line(size):
@@ -4516,10 +4666,11 @@ def dismissal_lines(task, rows=None, result=None):
 
     THE WHY IS THE POINT OF THE LIST. A dismissal takes a finding out of the report, so the
     only thing standing between that and a buried defect is a reason somebody can now read
-    and disagree with. An EXPIRED ruling (active, but its fingerprint matches nothing the
-    scan found) is called out in those words: that is the fingerprint design working — the
-    text changed, so the finding is being reported again — and it would otherwise look
-    exactly like a ruling still in force."""
+    and disagree with. THREE STATES ARE NAMED, not two: a ruling still sitting on the exact
+    sentence it was written about; one whose subject is unchanged but whose WORDING has MOVED
+    (still in force — the ruling was about the subject — but worth a re-read before relying
+    on it); and one that is EXPIRED because the scan is not reporting that subject at all any
+    more, so the ruling covers nothing."""
     rows = dismissal_rows(task, result=result) if rows is None else rows
     seq = task.get("seq") or str(task.get("id") or "")[:8]
     if not rows:
@@ -4527,14 +4678,16 @@ def dismissal_lines(task, rows=None, result=None):
                 "away, so every finding the scan reports is being counted." % seq]
     active = [r for r in rows if not r.get("retired")]
     out = ["DISMISSALS — task #%s: %d entr%s, %d still in force. A dismissal covers ONE "
-           "exact finding text, so editing the entry it names makes the finding re-report; "
-           "`heal --apply --undismiss '<check>:<ref>'` retires one and restores full "
-           "reporting." % (seq, len(rows), "y" if len(rows) == 1 else "ies", len(active))]
+           "SUBJECT — the check that fired and the entry it fired about — so rewording that "
+           "entry does not re-open a settled ruling; `heal --apply --undismiss "
+           "'<check>:<ref>'` retires one and restores full reporting."
+           % (seq, len(rows), "y" if len(rows) == 1 else "ies", len(active))]
     for r in rows:
         state = "RETIRED" if r.get("retired") else (
-            "in force" if r.get("silencing") is not False else
-            "EXPIRED — the text it covered has changed, so that finding is being reported "
-            "again")
+            "EXPIRED — that subject is no longer being reported at all, so this ruling "
+            "covers nothing" if r.get("silencing") is False else
+            "in force · MOVED — still settled, but the finding no longer reads the way it "
+            "did when it was ruled on" if r.get("moved") else "in force")
         out.append("  • %s   [%s]" % (_row_label(r), state))
         out.append("      why: %s" % (r.get("why") or "(none recorded)"))
         out.append("      dismissed %s%s%s"

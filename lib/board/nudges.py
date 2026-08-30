@@ -65,6 +65,16 @@ GATE_SESSIONS_MAX = 32        # watermarks kept per task; see `_record`
 # about one has not been told about the other.
 HEAL_KEY = "heal_prompt"
 SAVE_KEY = "save_nudge"
+# The third key, and the only one whose watermark guards a WRITE rather than a line: the
+# work-boundary maintenance pass. Same gate, same file, same eviction — because "have I
+# already acted on exactly this state" and "have I already said this" are the same question
+# asked by two callers, and giving them two mechanisms is how they drift.
+BOUNDARY_KEY = "boundary"
+# And the one beside it: "the corpus has been scanned at this record shape". Separate from
+# BOUNDARY_KEY because they answer different questions — one gates the COST of looking, the
+# other gates the ACT of doing something about what was found — and a single watermark would
+# make a turn that found nothing owed re-scan the whole corpus at every subsequent turn end.
+SHAPE_KEY = "boundary_shape"
 
 # Which limb of the staleness test fired. Fingerprinted INSTEAD of the worded reason, for
 # the reason spelled out at `_signature`.
@@ -323,3 +333,28 @@ def save_line(task, session, now=None, persist=True):
                 "refreshes the digest a fresh session would resume from." % (seq, reason))
     except Exception:
         return None
+
+
+# -- the gate, for a caller that is not a nudge ----------------------------------
+#
+# The boundary maintenance pass in the command seam needs exactly this throttle: act once per
+# (task, session) per STATE, and re-arm when the state changes. Rather than grow a second gate
+# beside this one — which is how two throttles end up disagreeing about whether something has
+# happened — these two names expose the one that already works. The module's own rule (a nudge
+# never writes to the task) is untouched: the CALLER writes, this still only records its own
+# watermark.
+
+def acted(task_id, key, session, sig):
+    """True when (task, key, session) has already been acted on at exactly this state."""
+    return _already_told(task_id, key, session, sig)
+
+
+def record_acted(task_id, key, session, sig, now=None):
+    """Record that it has. Fails open like every other write here."""
+    return _record(task_id, key, session, sig,
+                   time.time() if now is None else now)
+
+
+def signature(parts):
+    """The stable fingerprint this module throttles on, exposed for the same caller."""
+    return _signature(parts)
