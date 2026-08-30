@@ -4589,11 +4589,19 @@ def candidate_lines(task, result=None):
 # ruling rendering in the wrong place or in NO place, provable from the records alone.
 #
 # IT DOES NOT DECIDE PLACEMENT, AND AN EARLIER VERSION OF IT TRIED TO. That version fired
-# when a live decision named exactly one other task at least three times. MEASURED against
+# when a live decision named exactly ONE other task at least THREE times. MEASURED against
 # the 112 live decisions of the very task this feature was built for, it produced ZERO
-# findings — the maximum any decision cited a single other task was TWO — so it would have
-# reported `clean` on the most misplaced record in the programme. A check that cannot fire
-# is worse than an absent one, because `clean` is a claim a reader acts on.
+# findings, and the reason is that its two conditions never co-occur there: of the 9
+# decisions naming exactly one other task, the most mentions any of them makes is TWO,
+# while all 3 decisions that mention a task three or more times name SEVERAL. So it would
+# have reported `clean` on the most misplaced record in the programme, and a check that
+# cannot fire is worse than an absent one — `clean` is a claim a reader acts on.
+#
+# THE SINGLE-SUBJECT GATE WAS DOING REAL WORK, and the decision it excluded says why. On
+# that corpus the most-citing entry names two tasks six times EACH, because it is ABOUT the
+# relationship between them — a piece of cross-task analysis sitting exactly where it
+# belongs. A mention-count tier without the gate would have ranked it the single most
+# misplaced ruling on the task. Neither half of the rule was salvageable.
 #
 # AND LOWERING THE THRESHOLD WOULD HAVE BEEN WORSE. The task's own session classified its
 # 82 unpinned decisions by subject and spot-checked six: roughly TWO were right. A ruling

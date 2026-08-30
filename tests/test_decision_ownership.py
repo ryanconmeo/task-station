@@ -442,6 +442,20 @@ class PlacementCheck(unittest.TestCase):
     def test_a_memo_or_pr_number_is_neither(self):
         self.assertEqual(heal.task_citations("memo #3 and PR #12", total=99), {})
 
+    def test_the_single_subject_gate_excluded_the_most_cited_entry(self):
+        """The measurement that killed the citation tier, as a fixture. Its two conditions
+        never co-occurred on real data — the entries naming ONE other task mentioned it at
+        most twice, and the entries mentioning a task three or more times named SEVERAL —
+        and the entry that mentioned one most was cross-task analysis sitting exactly where
+        it belonged. Neither half of the rule was salvageable, which is why the whole tier
+        is gone rather than retuned."""
+        cross = {"id": "P", "seq": 444,
+                 "decisions": ["#586 and #580: " + "#586 #580 " * 6]}
+        cites = heal.task_citations(dec.text(cross["decisions"][0]), total=1)
+        self.assertEqual(len(cites), 2)                  # names SEVERAL, so never one subject
+        self.assertEqual(heal.placement(cross), [])
+        self.assertEqual(heal.placement_review(cross), [])
+
     def test_citations_are_NEVER_a_finding_however_many_there_are(self):
         # MEASURED on the 112 live decisions of the task this feature was built for: the
         # maximum any decision cited a single other task was TWO, so a three-citation
