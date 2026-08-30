@@ -44,7 +44,12 @@ _spec = importlib.util.spec_from_file_location("task_station", os.path.join(LIB,
 ts = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ts)
 
-_ROW = re.compile(r"^\s+(\d+)\. ", re.M)
+# A decision row, on either read surface. The index is rendered QUALIFIED —
+# `586:12.` — so that a number from the decision log can never be mistaken for one from
+# a numbered list in the task's own State prose, which renders as a bare `  12. ` and
+# used to be indistinguishable from it. The bare form stays legal as an ARGUMENT, so this
+# accepts the optional `<task>:` prefix and captures the log index either way.
+_ROW = re.compile(r"^\s+(?:\d+:)?(\d+)\. ", re.M)
 
 
 class _Base(unittest.TestCase):

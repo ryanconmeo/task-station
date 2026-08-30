@@ -165,7 +165,9 @@ class DigestTest(unittest.TestCase):
         # NUMBERED with the log's own 1-based indices — the numbers `--supersedes` and
         # `--pin-decision` take. Unnumbered bullets left the number reachable only from
         # the line echoed at write time, so no reader could name a decision to a verb.
-        numbers = [int(m) for m in re.findall(r"^\s+(\d+)\. ", block, re.M)]
+        # …and QUALIFIED (`<task>:<n>`), so a number from this list can never be read
+        # as one from a numbered list in the task's own State prose.
+        numbers = [int(m) for m in re.findall(r"^\s+\d+:(\d+)\. ", block, re.M)]
         self.assertEqual(numbers, list(range(1, 41)))
 
     def test_detail_does_not_render_the_log_field(self):

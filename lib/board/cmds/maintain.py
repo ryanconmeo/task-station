@@ -264,7 +264,8 @@ def _heal_block(task, result, ops, applied=None, backup=None, before=None):
     out.append("CURRENT DECISIONS (%d) — reconcile THESE:" % h.get("decisions_current", 0))
     for i, d in _dec.live(task.get("decisions")):
         txt = _dec.text(d)
-        out.append("  %2d. %s%s" % (i, DECISION_PIN_MARK if _dec.is_pinned(d) else "", txt))
+        out.append("  %s. %s%s" % (_own.index_label(task, i),
+                                   DECISION_PIN_MARK if _dec.is_pinned(d) else "", txt))
     if not h.get("decisions_current"):
         out.append("  (none current)")
     # The GOAL and the CHECKLIST, immediately below the decisions and immediately below
@@ -629,28 +630,35 @@ def _heal_reassign(a):
     if err:
         return err
     task = tasks[0]
-    reassign = _split_int_list(getattr(a, "reassign", None))
-    unassign = _split_int_list(getattr(a, "unassign", None))
+    reassign, err = _split_decision_refs(getattr(a, "reassign", None), task, "--reassign")
+    if err:
+        return err
+    unassign, err = _split_decision_refs(getattr(a, "unassign", None), task, "--unassign")
+    if err:
+        return err
     if reassign and unassign:
         return ("heal: --reassign and --unassign are inverses of each other — run them as "
                 "two commands so each report says plainly what it did.")
     if not reassign and not unassign:
         return ("heal --reassign/--unassign: name the decision numbers, e.g. "
-                "`--reassign 30,31 --to 532`. `task-station history %s` numbers them."
-                % _heal._task_ref(task))
-    # GUARD (c). Checked BEFORE anything is loaded or written, so a refusal changes
-    # nothing. A missing --session is refused too: this verb grants one task authority
-    # over another's record, and "no session" is not evidence of attachment.
+                "`--reassign 30,31 --to 532` or `--reassign %s:30`. "
+                "`task-station history %s` numbers them."
+                % (_own.task_ref(task), _heal._task_ref(task)))
+    # GUARD (c), whose rule now lives in `ownership.may_reassign_out` — see its comment
+    # block. Checked BEFORE anything is loaded or written, so a refusal changes nothing.
+    # A missing --session is refused too: this verb grants one task authority over
+    # another's record, and "no session" is not evidence of attachment.
     sid = getattr(a, "session", None)
     linked = get_link(sid) if sid else None
-    if linked != task.get("id"):
-        return ("heal --reassign/--unassign on task #%s: this session is not attached to "
-                "it, and only a session attached to the SOURCE task may move ownership "
-                "out of it — otherwise a task could claim rulings it was never handed. "
-                "Attach with `/todo %s`, or run this from the session that holds it. "
-                "Nothing was changed."
-                % (task.get("seq"), _heal._task_ref(task)))
+    ok, refusal = _own.may_reassign_out(task, linked, load=load_task)
+    if not ok:
+        return refusal
+    dry = bool(getattr(a, "dry_run", False))
     if unassign:
+        if dry:
+            return "\n".join(_reassign_preview(task, unassign, flag="--unassign")
+                              + ["  --dry-run: nothing was changed. Re-run without it to "
+                                 "bring these home."])
         return _heal_unassign_writes(task, unassign)
     to_ref = (getattr(a, "to", None) or "").strip()
     if not to_ref:
@@ -666,7 +674,11 @@ def _heal_reassign(a):
                 "stub is that ruling's reference line, and a shared one names none of "
                 "them. Reassign them one at a time, or drop --stub and let each stub "
                 "come from its own first sentence." % len(reassign))
-    # DRY RUN FIRST, on copies, so an all-or-nothing refusal is possible: a batch with one
+    # NAME BACK WHAT IS ABOUT TO MOVE, BEFORE IT MOVES. The preview heads every outcome —
+    # the refusal, the --dry-run and the write — because the numbers alone read as correct
+    # whichever list they were copied from, and the sentences do not.
+    preview = _reassign_preview(task, reassign, owner_task)
+    # TRIAL FIRST, on copies, so an all-or-nothing refusal is possible: a batch with one
     # bad number must change nothing, or a typo silently moves a different ruling than the
     # one that was meant — the same rule `--dispose-acks` already keeps.
     import copy
@@ -674,7 +686,12 @@ def _heal_reassign(a):
     for n in reassign:
         ok, err = _own.reassign(trial_src, trial_own, n, stub_text=stub)
         if not ok:
-            return "heal: %s Nothing was changed." % err
+            return "\n".join(preview + ["heal: %s Nothing was changed." % err])
+    if dry:
+        return "\n".join(preview + [
+            "  --dry-run: nothing was changed. The batch is legal — re-run without "
+            "--dry-run to move it, and `%s` reverses it afterwards."
+            % _own.undo_command(task, reassign)])
     for n in reassign:
         _own.reassign(task, owner_task, n, stub_text=stub)
     # The OWNER's index first, the SOURCE second. See the docstring.
@@ -685,7 +702,7 @@ def _heal_reassign(a):
     save_task(task)
     maybe_refresh_board()
     nums = ", ".join(str(n) for n in reassign)
-    return "\n".join([
+    return "\n".join(preview + [
         "reassigned decision(s) %s → owned by #%s (%s)"
         % (nums, owner_task.get("seq"), owner_task.get("title") or ""),
         "  The decisions did NOT move: they are still on #%s at those numbers, in full. "
@@ -747,6 +764,70 @@ def _split_int_list(raw):
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _split_decision_refs(raw, task, flag):
+    """`"12,586:13"` on task #586 → `([12, 13], None)`. `(None, refusal)` otherwise.
+
+    THE QUALIFIED FORM IS ACCEPTED HERE BECAUSE THE READ SURFACES NOW PRINT IT (see
+    `ownership.index_label`), and a number a reader cannot paste back is the defect this
+    programme has already fixed twice. `<task>:<n>` naming a DIFFERENT task is REFUSED
+    rather than resolved: decision numbers are per-task, this verb writes two tasks, and
+    "you meant #586's 13, I moved #444's" is not a mistake anything downstream could
+    catch.
+
+    NOTHING IS DROPPED SILENTLY. `_split_int_list` discards what it cannot coerce, which
+    is safe for a reader and wrong for a writer: `--reassign 1,foo` would move ruling 1
+    and say nothing about `foo`. Here an unreadable item refuses the whole batch, which is
+    the same all-or-nothing rule the write itself already keeps."""
+    if raw is None:
+        return [], None
+    items = raw if isinstance(raw, (list, tuple)) else str(raw).replace(" ", ",").split(",")
+    out = []
+    for v in items:
+        s = str(v).strip()
+        if not s:
+            continue
+        who, num = _own.parse_ref(s)
+        if num is None:
+            return None, ("heal %s: %r is not a decision number. Pass `<n>`, or "
+                          "`<task>:<n>` exactly as the decision list prints it. Nothing "
+                          "was changed." % (flag, s))
+        if who is not None:
+            other = resolve_ref(who) or load_task(who)
+            if not other:
+                return None, ("heal %s %s: no task matching %r. Nothing was changed."
+                              % (flag, s, who))
+            if other.get("id") != task.get("id"):
+                return None, ("heal %s %s: that number is #%s's, and this command is "
+                              "aimed at #%s. Decision numbers are PER-TASK — re-run with "
+                              "`--task %s`, or name #%s's own number. Nothing was changed."
+                              % (flag, s, other.get("seq"), task.get("seq"),
+                                 _own.task_ref(other), _own.task_ref(task)))
+        if num not in out:
+            out.append(num)
+    return out, None
+
+
+def _reassign_preview(task, indices, owner_task=None, flag="--reassign"):
+    """NAME BACK WHAT IS ABOUT TO MOVE, BEFORE IT MOVES — one line per ruling, carrying
+    the qualified index and the ruling's own first sentence.
+
+    A near miss on the real record is why this exists: seven numbers were handed to
+    `--reassign`, five of them named a different ruling than the caller intended, and
+    nothing in the exchange would have said so until the write had happened. The numbers
+    alone read as correct whichever list they came from; the SENTENCES do not."""
+    entries = (task or {}).get("decisions") or []
+    where = (" → #%s (%s)" % (owner_task.get("seq"), owner_task.get("title") or ""))         if owner_task else ""
+    lines = ["heal %s: about to move %d ruling(s) out of #%s%s —"
+             % (flag, len(indices), task.get("seq"), where)]
+    for n in indices:
+        if 1 <= n <= len(entries):
+            body = _dec.stub(entries[n - 1]) or "(no text)"
+        else:
+            body = "(NO SUCH DECISION on #%s)" % task.get("seq")
+        lines.append("  %s. %s" % (_own.index_label(task, n), body))
+    return lines
 
 
 def _heal_mark(a, tasks):

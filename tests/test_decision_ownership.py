@@ -28,6 +28,7 @@ Isolation copies the `_repoint` idiom from tests/test_heal.py.
 import importlib.util
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -734,6 +735,147 @@ class TheVerbEndToEnd(unittest.TestCase):
                         "--reassign", "1", "--to", "2")
         self.assertIn("run them separately", out)
 
+    # -- the close report's own command, run by the reader it is addressed to --------
+
+    def _closed_child(self):
+        """A parent, a child that names it, one still-current ruling, and the close."""
+        self._run("create", "--title", "PARENT", "--session", "sp")
+        self._run("create", "--title", "CHILD", "--session", "sc")
+        self._run("update", "--task", "2", "--session", "sc", "--parent", "1")
+        self._run("update", "--task", "2", "--session", "sc", "--decision", RULING)
+        self._run("done", "--task", "2", "--session", "sc")
+
+    def _close_memo_body(self):
+        """The close report as the PARENT actually receives it — read back off the memo
+        rail, not reconstructed, because the whole defect was in prose emitted at runtime
+        and a test that rebuilds the sentence cannot see that."""
+        hist = self._run("history", "--task", "1")
+        ids = re.findall(r"• ([0-9a-f]{8}) ", hist)
+        self.assertTrue(ids, hist)
+        return self._run("memo", "show", "--task", "1", "--id", ids[0])
+
+    def test_the_command_the_close_report_prints_is_RUNNABLE_BY_ITS_READER(self):
+        """THE REGRESSION TEST FOR THE WHOLE DEFECT, and it takes the command out of the
+        emitted prose rather than knowing it.
+
+        The close files a memo and a pickup on the PARENT, and its body says
+        "`heal --task <child> --reassign <n,…> --to <parent>` re-homes any of them". Its
+        reader is the parent, by construction. Before this fix the command refused that
+        reader, by construction — and the remedy the refusal named (`/todo <child>`) meant
+        REOPENING a task that had just been closed and graded."""
+        self._closed_child()
+        body = self._close_memo_body()
+        m = re.search(r"`heal --task (\S+) --reassign \S+ --to <parent>`", body)
+        self.assertIsNotNone(m, body)
+        out = self._run("heal", "--task", m.group(1), "--session", "sp",
+                        "--reassign", "1", "--to", "1")
+        self.assertIn("reassigned decision(s) 1", out)
+        self.assertIn("owned by #1", out)
+        # and the ruling really did arrive where the report said it could be sent
+        self.assertIn(RULING, self._run("search", "--detail", "1"))
+
+    def test_the_child_authoring_session_lost_its_link_at_the_close(self):
+        """The other half of the two-sided witness: the session that WROTE the rulings is
+        not a way round this, because closing clears its link."""
+        self._closed_child()
+        out = self._run("heal", "--task", "2", "--session", "sc",
+                        "--reassign", "1", "--to", "1")
+        self.assertIn("Nothing was changed", out)
+        self.assertIn("only its PARENT", out)
+
+    def test_guard_6_is_untouched_while_the_child_is_open(self):
+        self._family()
+        self._run("update", "--task", "2", "--session", "sc", "--decision", "a child rule")
+        out = self._run("heal", "--task", "2", "--session", "sp",
+                        "--reassign", "1", "--to", "1")
+        self.assertIn("not attached", out)
+        self.assertIn("Nothing was changed", out)
+
+    def test_a_stranger_is_refused_out_of_the_closed_child(self):
+        self._closed_child()
+        out = self._run("heal", "--task", "2", "--session", "sx",
+                        "--reassign", "1", "--to", "1")
+        self.assertIn("Nothing was changed", out)
+
+    # -- the two numbering systems, on the surface where they collided ---------------
+
+    def test_a_bare_numbered_grep_over_the_digest_returns_ONLY_the_prose(self):
+        """THE COLLISION, REPRODUCED AND THEN GONE. A task whose State prose carries a
+        numbered list and whose log carries numbered entries: one grep used to return a
+        mixture of the two, and `--reassign` took whichever it was given."""
+        self._family()
+        self._run("update", "--task", "1", "--session", "sp", "--state",
+                  "SIX GUARDS:\n  1. A STUB IS NOT OPTIONAL.\n  2. REVERSIBLE BY ONE "
+                  "COMMAND.\n  3. A PINNED DECISION CANNOT BE REASSIGNED.")
+        self._run("update", "--task", "1", "--session", "sp", "--decision", "second rule")
+        detail = self._run("search", "--detail", "1")
+        bare = re.findall(r"^  (\d+)\. (.*)$", detail, re.M)
+        self.assertEqual([n for n, _t in bare], ["1", "2", "3"])
+        self.assertEqual([t for _n, t in bare],
+                         ["A STUB IS NOT OPTIONAL.", "REVERSIBLE BY ONE COMMAND.",
+                          "A PINNED DECISION CANNOT BE REASSIGNED."])
+        # and every decision row says which log its number is on
+        self.assertIn("1:1. ", detail)
+        self.assertIn("1:2. second rule", detail)
+
+    def test_the_qualified_number_printed_is_the_number_the_verb_takes(self):
+        self._family()
+        out = self._run("heal", "--task", "1", "--session", "sp",
+                        "--reassign", "1:1", "--to", "2")
+        self.assertIn("reassigned decision(s) 1", out)
+
+    def test_a_number_belonging_to_another_task_is_refused_not_resolved(self):
+        # The near miss was a number read off the WRONG list. A qualified ref that names a
+        # different task is exactly that mistake made visible, so it must refuse — and say
+        # which two tasks disagree.
+        self._family()
+        out = self._run("heal", "--task", "1", "--session", "sp",
+                        "--reassign", "2:1", "--to", "2")
+        self.assertIn("that number is #2's", out)
+        self.assertIn("aimed at #1", out)
+        self.assertIn("Nothing was changed", out)
+        self.assertIn(RULING, self._run("search", "--detail", "1"))
+
+    def test_an_unreadable_number_refuses_the_batch_instead_of_being_dropped(self):
+        # A reader may drop what it cannot parse; a WRITER may not. `--reassign 1,foo`
+        # used to move ruling 1 and say nothing at all about `foo`.
+        self._family()
+        out = self._run("heal", "--task", "1", "--session", "sp",
+                        "--reassign", "1,foo", "--to", "2")
+        self.assertIn("is not a decision number", out)
+        self.assertIn(RULING, self._run("search", "--detail", "1"))
+
+    def test_the_reassign_NAMES_each_ruling_before_it_moves_it(self):
+        self._family()
+        out = self._run("heal", "--task", "1", "--session", "sp",
+                        "--reassign", "1", "--to", "2")
+        named = out.index("about to move")
+        moved = out.index("reassigned decision(s)")
+        self.assertLess(named, moved)                 # named BEFORE, in reading order
+        self.assertIn("1:1. Sync transport uses a J-track", out)   # the SENTENCE, not
+        self.assertLess(out.index("1:1. Sync"), moved)             # only the number
+
+    def test_dry_run_names_what_would_move_and_moves_nothing(self):
+        self._family()
+        out = self._run("heal", "--task", "1", "--session", "sp",
+                        "--reassign", "1", "--to", "2", "--dry-run")
+        self.assertIn("about to move 1 ruling(s) out of #1 → #2", out)
+        self.assertIn("nothing was changed", out)
+        self.assertIn("heal --task 1 --unassign 1", out)      # the reversal, in advance
+        self.assertIn(RULING, self._run("search", "--detail", "1"))
+        self.assertNotIn("owned by #2", self._run("search", "--detail", "1"))
+
+    def test_a_dry_run_refuses_exactly_what_the_real_run_refuses(self):
+        # A preview that is more permissive than the write is worse than no preview.
+        self._family()
+        self._run("update", "--task", "1", "--session", "sp", "--pin-decision", "1")
+        dry = self._run("heal", "--task", "1", "--session", "sp",
+                        "--reassign", "1", "--to", "2", "--dry-run")
+        wet = self._run("heal", "--task", "1", "--session", "sp",
+                        "--reassign", "1", "--to", "2")
+        self.assertIn("pinned", dry.lower())
+        self.assertIn("pinned", wet.lower())
+
     def test_an_ordinary_task_renders_exactly_as_it_did_before(self):
         # DATA-GATED: a task with no ownership record and no parent pays nothing and
         # prints nothing new. This is what keeps hundreds of live tasks untouched.
@@ -753,6 +895,126 @@ _judge_spec = importlib.util.spec_from_file_location(
     os.path.join(_REPO_ROOT, "scripts", "prove_ownership_reduction.py"))
 judge = importlib.util.module_from_spec(_judge_spec)
 _judge_spec.loader.exec_module(judge)
+
+
+class TheParentAndTheClosedChild(unittest.TestCase):
+    """WHO MAY MOVE OWNERSHIP OUT OF A TASK — and the case the guard locked out of its own
+    rail.
+
+    THE DEFECT, MEASURED ON THE REAL RECORD 2026-08-30. Guard (c) admitted only a session
+    ATTACHED to the source task. Closing a task calls `clear_link` on every session linked
+    to it, so a closed child's own authoring session loses its link at the instant of the
+    close; a parent is never attached to its child. The set of parties permitted to run
+    `heal --reassign` on a closed child was therefore EMPTY — proved from both sides on
+    #586, whose authoring session and whose parent were refused by the same guard on the
+    same afternoon. And the close files a memo on the PARENT whose body names that exact
+    command. A documented command that does not exist for the person reading it is the
+    shape 3.37.0 already fixed once.
+
+    THE FIX IS NARROW AND THESE TESTS ARE MOSTLY ABOUT ITS NARROWNESS: the parent may
+    re-home out of a CLOSED child, and nothing else changed. For an open child the guard
+    is untouched, because there the risk it prevents is real and the child's own session
+    can run the verb."""
+
+    CLOSED = {"id": "child", "seq": 586, "status": "closed",
+              "related": [{"kind": "parent", "id": "parent"}]}
+    OPEN = {"id": "child", "seq": 586, "status": "open",
+            "related": [{"kind": "parent", "id": "parent"}]}
+
+    def test_the_holder_is_admitted_exactly_as_before(self):
+        ok, why = own.may_reassign_out(self.OPEN, "child")
+        self.assertTrue(ok, why)
+
+    def test_no_session_at_all_is_refused(self):
+        ok, why = own.may_reassign_out(self.CLOSED, None)
+        self.assertFalse(ok)
+        self.assertIn("Nothing was changed", why)
+
+    def test_the_parent_of_a_CLOSED_child_is_admitted(self):
+        ok, why = own.may_reassign_out(self.CLOSED, "parent")
+        self.assertTrue(ok, why)
+
+    def test_the_parent_of_an_OPEN_child_is_still_refused(self):
+        # GUARD 6 IS UNTOUCHED FOR OPEN CHILDREN. The risk it exists for — a task claiming
+        # rulings it was never handed — is real while somebody holds the child, and the
+        # child's own session can run the verb.
+        ok, why = own.may_reassign_out(self.OPEN, "parent")
+        self.assertFalse(ok)
+        self.assertIn("not attached", why)
+
+    def test_the_refusal_for_an_open_source_is_word_for_word_the_old_one(self):
+        # The wording is the guard's public contract; a caller who was refused before must
+        # read the same sentence and be told the same remedy.
+        _ok, why = own.may_reassign_out(self.OPEN, "somebody-else")
+        self.assertIn("only a session attached to the SOURCE task may move ownership out "
+                      "of it", why)
+        self.assertIn("Attach with `/todo 586`", why)
+
+    def test_a_stranger_is_refused_out_of_a_closed_child(self):
+        ok, why = own.may_reassign_out(self.CLOSED, "unrelated")
+        self.assertFalse(ok)
+        self.assertIn("CLOSED", why)
+        self.assertIn("only its PARENT", why)
+
+    def test_a_closed_child_with_no_parent_says_there_is_nowhere_to_re_home_to(self):
+        orphan = {"id": "child", "seq": 586, "status": "closed"}
+        ok, why = own.may_reassign_out(orphan, "anyone")
+        self.assertFalse(ok)
+        self.assertIn("names no parent", why)
+        self.assertIn("/todo 586", why)          # the one honest remedy that is left
+
+    def test_spawned_from_counts_as_a_parent(self):
+        # PARENT_KINDS is the existing vocabulary for "points at its parent"; the
+        # allowance must not know a narrower one, or a child created by `invoke` would be
+        # unreachable while one created by `--parent` was fine.
+        child = {"id": "child", "seq": 9, "status": "closed",
+                 "related": [{"kind": "spawned-from", "id": "parent"}]}
+        self.assertTrue(own.may_reassign_out(child, "parent")[0])
+
+    def test_a_missing_status_reads_as_OPEN(self):
+        # Tasks written before `status` existed must not become re-homable by anybody's
+        # parent. `state.task_status` defaults them to open and so does this.
+        legacy = {"id": "child", "seq": 9,
+                  "related": [{"kind": "parent", "id": "parent"}]}
+        self.assertFalse(own.may_reassign_out(legacy, "parent")[0])
+
+    def test_the_verdict_never_depends_on_the_loader(self):
+        # `load` is used for ONE thing — naming the parent `#444` instead of an id prefix.
+        # A caller with no store (the exit condition that proves this rule) must get the
+        # same answer, or the condition is measuring something other than the rule.
+        for task, linked in ((self.CLOSED, "parent"), (self.CLOSED, "stranger"),
+                             (self.OPEN, "parent"), (self.CLOSED, None)):
+            self.assertEqual(own.may_reassign_out(task, linked, load=None)[0],
+                             own.may_reassign_out(task, linked,
+                                                  load=lambda _i: {"seq": 444})[0])
+
+    def test_the_refusal_names_the_parent_by_seq_when_it_can_be_read(self):
+        _ok, why = own.may_reassign_out(self.CLOSED, "stranger",
+                                        load=lambda _i: {"seq": 444})
+        self.assertIn("#444", why)
+
+
+class TheTwoNumberingSystems(unittest.TestCase):
+    """A TASK'S STATE PROSE CAN CARRY A NUMBERED LIST AND ITS DECISION LOG CARRIES NUMBERED
+    ENTRIES, and both used to render as `  N. `.
+
+    MEASURED ON THE REAL RECORD. A session read #586's six prose GUARDS as decision indices
+    and asked `--reassign` for 1,2,3,5,6,12,13. Five of the seven named a different ruling
+    than intended, including one it had explicitly said to leave alone. Nothing moved —
+    index 6 happened to be superseded and the batch is all-or-nothing — so the guards held
+    BY LUCK OF ONE INDEX rather than by design, on a verb that writes two tasks. The
+    numbers were obtained with `search --detail 586 | grep '^  [0-9]\\+\\. '`, which
+    matched both structures."""
+
+    def test_the_log_index_renders_qualified(self):
+        self.assertEqual(own.index_label({"seq": 586}, 12), "586:12")
+
+    def test_a_task_with_no_seq_still_addresses_itself(self):
+        self.assertEqual(own.index_label({"id": "d54665bcabcd"}, 4), "d54665bc:4")
+
+    def test_a_stub_carries_the_qualified_index_too(self):
+        line = own.stub_line(30, {"text": "THE RULING. why."}, {"seq": 586})
+        self.assertIn("586:30.", line)
 
 
 class TheReductionJudge(unittest.TestCase):
