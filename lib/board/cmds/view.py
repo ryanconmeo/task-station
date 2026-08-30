@@ -14,6 +14,7 @@ import os
 import sys
 
 import decisions as _dec
+import ownership as _own
 import loop as _loop
 import save as _save
 import steps as _steps
@@ -255,15 +256,36 @@ def _format_detail(task, session, attached=True):
     # only by the author, minutes after the fact. The numbers are the LOG's, not this
     # list's, so they are stable and they SKIP — a gap is a replaced decision, and
     # renumbering to close it would silently repoint every command a reader is holding.
-    shown_decisions = _dec.digest_order(decisions)
-    if shown_decisions:
+    #
+    # RENDER BY OWNERSHIP. A decision this task no longer owns renders here as a
+    # ONE-LINE REFERENCE STUB — title, owner, and the number that still addresses it —
+    # and its prose renders on the task that owns it. Nothing is duplicated and nothing
+    # is lost: the entry is still here, in full, at this index, and `history` prints it.
+    # The stubs cost ZERO loads (every field is on the entry this task already holds),
+    # which is the requirement rather than an optimisation — a task with twelve children
+    # must not pay twelve digest loads to print its own decision list.
+    shown_decisions = [(i, d) for i, d in _dec.digest_order(decisions)
+                       if _dec.renders_full(d, task.get("id"))]
+    stubs = _own.held_stubs(task)
+    inherited = _decision_inheritance(task)
+    if shown_decisions or stubs:
         out.append("")
         out.append("Decisions:")
         for i, d in shown_decisions:
             out.append("  %2d. %s%s" % (i, DECISION_PIN_MARK if _dec.is_pinned(d) else "",
                                         _dec.text(d)))
+        if stubs:
+            out.append("  — reference stubs: these rulings are STILL ON THIS TASK at "
+                       "these numbers, in full. Another task")
+            out.append("    owns them now, so it renders the prose and this renders the "
+                       "pointer. `task-station history %s` shows"
+                       % task.get("seq", task["id"][:8]))
+            out.append("    the full text; `heal --unassign <n>` brings one back.")
+            for i, d in stubs:
+                out.append(_own.stub_line(i, d))
         out.append("  (`update --task %s --supersedes <n> --decision '<the correction>'` "
                    "retires decision <n>.)" % task.get("seq", task["id"][:8]))
+    out.extend(inherited)
     # Memos: correspondence handed to this task — anything still awaiting THIS viewer's
     # ack is flagged first (ack it before acting so two sessions don't double-implement),
     # then the last few already-handled. Absent on a task with no memos feed.
@@ -456,8 +478,18 @@ def _format_history(task):
             out.append("  %2d. %s%s  — %s"
                        % (i, DECISION_DEAD_MARK, _dec.text(d), label))
         else:
-            out.append("  %2d. %s%s"
-                       % (i, DECISION_PIN_MARK if _dec.is_pinned(d) else "", _dec.text(d)))
+            # OWNERSHIP IS SHOWN HERE IN FULL, deliberately. The digest renders a stub for
+            # a ruling this task no longer owns; history's job is to stay complete, and a
+            # reader who came here came for the text. What history adds is the ownership
+            # itself — WHO renders it now — plus, for a cross-task supersession, the
+            # ruling this one refuted, which no other surface on this task can show.
+            owned = " — owned by %s (rendered in full there)" % _dec.owner_label(d) \
+                if _dec.is_owned(d) else ""
+            out.append("  %2d. %s%s%s"
+                       % (i, DECISION_PIN_MARK if _dec.is_pinned(d) else "",
+                          _dec.text(d), owned))
+        for ref in _dec.supersedes_across(d):
+            out.append("      ↳ supersedes %s (on another task)" % _dec.ref_label(ref))
     if not decisions:
         out.append("  (none recorded)")
     # PRESERVED SUMMARIES — every text a `--summary` replaced, oldest first, NUMBERED
@@ -522,6 +554,74 @@ def _format_history(task):
     out.append("(Read-only history view — this did NOT attach or reopen the task. "
                "Resume with /todo %s.)" % seq)
     return "\n".join(out)
+
+
+def _decision_inheritance(task):
+    """The OTHER half of render-by-ownership: what this task renders that is not on its
+    own log. Two blocks, and they are two blocks because they are two different claims:
+
+      * OWNED FROM ELSEWHERE — rulings this task OWNS, written on another task. Rendered
+        IN FULL, because owning a ruling is exactly what "renders the prose" means. Each
+        is addressed `<task>:<n>`, the cross-task form, because a bare number names a
+        different ruling on every task once ownership can cross tasks.
+      * INHERITED PINS — the parent's pinned rulings. They bind this task without being
+        its to change: a pin is the parent's declaration that a ruling briefs every
+        session, and a child working under it is such a session. Without this block a
+        reassign would be a downgrade — the child would gain its own rulings and lose
+        sight of the programme's.
+
+    COST. `owned_elsewhere` loads only the distinct tasks this task's index names (one, in
+    the ordinary case of a child owning rulings written on its parent) and `inherited_pins`
+    one per parent. Neither scans the board. Both are DATA-GATED, so a task that has never
+    been part of a reassign and has no parent pins renders exactly as it did before this
+    existed and pays nothing at all.
+
+    Every pointer is verified against its source inside `ownership`; one the source does
+    not confirm renders nothing here, and `heal`'s placement check reports it."""
+    if not (task.get(_own.INDEX_FIELD) or _own.parent_ids(task)):
+        return []                      # the overwhelming majority: no loads, no output
+    out = []
+    mine = _own.owned_elsewhere(task, load_task)
+    if mine:
+        out.append("")
+        out.append("Decisions this task OWNS (written on another task, rendered here in "
+                   "full — one copy, one store):")
+        for row in mine:
+            out.append("  %s %s%s" % (row["ref"],
+                                      DECISION_PIN_MARK if _dec.is_pinned(row["entry"])
+                                      else "", _dec.text(row["entry"])))
+        out.append("  (`update --task %s --supersedes %s --decision '<the correction>'` "
+                   "retires one; `heal --task %s --unassign %s` hands it back.)"
+                   % (mine[0]["seq"], mine[0]["ref"], mine[0]["seq"], mine[0]["n"]))
+    # INHERITED PINS RENDER AS STUBS, AND THE MEASUREMENT IS WHY. Rendered in full they
+    # took this very task's digest from 21,938 to 70,280 chars — 3.2x — because its parent
+    # pins 27 decisions worth 48,342 chars. A feature whose entire purpose is to make a
+    # digest cheaper cannot triple every child's, and it would have done so on EVERY child
+    # of EVERY programme, silently, in exchange for prose the child cannot edit anyway.
+    #
+    # A stub is the right shape here for the same reason it is on the source side: the
+    # child keeps the knowledge that the constraint exists, who owns it and how to read it,
+    # and the prose stays with the task that owns it. The header carries the one command
+    # that opens them in full, so nothing is hidden — it is one hop away instead of
+    # 48,000 chars in front of every session.
+    pins = _own.inherited_pins(task, load_task)
+    if pins:
+        out.append("")
+        by_parent = []
+        for row in pins:
+            label = "#%s" % row["seq"] if row["seq"] is not None else row["ref"]
+            if label not in by_parent:
+                by_parent.append(label)
+        out.append("Inherited pins (%d) — the parent's spine. These BIND this task and are "
+                   "NOT this task's to change." % len(pins))
+        out.append("  Shown as references, not prose: %s renders them in full, and pinned "
+                   "rulings are long."
+                   % ", ".join("`task-station search --detail %s`" % p.lstrip("#")
+                               for p in by_parent))
+        for row in pins:
+            out.append("  %s %s%s" % (row["ref"], DECISION_PIN_MARK,
+                                      _dec.stub(row["entry"])))
+    return out
 
 
 def cmd_history(a):
