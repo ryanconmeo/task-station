@@ -390,6 +390,23 @@ class ClosingAChild(unittest.TestCase):
         self.assertIn("not mechanically decidable", report)
         self.assertIn("--reassign", report)          # and one command moves any of them
 
+    def test_the_un_moved_names_are_DURABLE_not_merely_printed(self):
+        # A named ruling nobody reads has been dropped with extra steps. The close writes
+        # to a terminal nobody is necessarily watching, so the names have to land on a
+        # record too.
+        parent, child = self._family()
+        child["decisions"] = ["ran the fixture at 11am", "and again at noon"]
+        plan = own.close_plan(child, lambda i: parent if i == "P" else None)
+        note = own.close_report_note(child, plan)
+        self.assertIn("were NOT re-homed: 1, 2", note)
+        self.assertIn("--reassign", note)
+        self.assertNotIn("\n  ", note)          # a paragraph, not indented display rows
+
+    def test_nothing_left_behind_produces_no_note_at_all(self):
+        parent, child = self._family()
+        plan = own.close_plan(child, lambda i: parent if i == "P" else None)
+        self.assertEqual(own.close_report_note(child, plan), "")
+
     def test_a_child_with_no_parent_re_homes_nothing_and_says_so(self):
         child = {"id": "C", "seq": 532, "decisions": ["a ruling"]}
         dec.set_pin(child["decisions"], 1, True)
@@ -425,30 +442,44 @@ class PlacementCheck(unittest.TestCase):
     def test_a_memo_or_pr_number_is_neither(self):
         self.assertEqual(heal.task_citations("memo #3 and PR #12", total=99), {})
 
-    def test_two_mentions_are_a_cross_reference_and_do_not_fire(self):
-        task = {"id": "P", "seq": 444,
-                "decisions": ["#532 asked for this and #532 got it"]}
-        self.assertEqual(heal.placement(task), [])
+    def test_citations_are_NEVER_a_finding_however_many_there_are(self):
+        # MEASURED on the 112 live decisions of the task this feature was built for: the
+        # maximum any decision cited a single other task was TWO, so a three-citation
+        # threshold reported `clean` on the most misplaced record in the programme — and
+        # lowering it flags most of a corpus, because a ruling MENTIONS a subject about
+        # twice as often as it is ABOUT one. Neither setting is a defect detector, so
+        # citations do not produce findings at all.
+        for body in ("#532 asked for this and #532 got it",
+                     "#532 framing. #532 retries. #532 backoff.",
+                     "#532 " * 40):
+            task = {"id": "P", "seq": 444, "decisions": [body]}
+            self.assertEqual(heal.placement(task), [], body[:30])
 
-    def test_three_mentions_of_one_task_and_no_other_is_a_finding(self):
+    def test_the_question_is_ASKED_as_information_instead(self):
         task = {"id": "P", "seq": 444,
                 "decisions": ["#532 framing. #532 retries. #532 backoff."]}
-        found = heal.placement(task)
-        self.assertEqual([f["check"] for f in found], ["placement"])
-        self.assertIn("names #532 3 times", found[0]["detail"])
-        self.assertIn("heal --task 444 --reassign 1 --to 532", found[0]["detail"])
+        rows = heal.placement_review(task)
+        self.assertEqual([(r["n"], r["seq"], r["hits"]) for r in rows], [(1, 532, 3)])
+        line = "\n".join(heal.placement_lines({"placement_review": rows}))
+        self.assertIn("INFORMATIONAL", line)
+        self.assertIn("never counted", line)
+        self.assertIn("WOULD THIS RULING STILL MATTER IF THAT TASK WERE DELETED?", line)
 
-    def test_a_decision_naming_two_tasks_has_no_single_subject(self):
+    def test_one_citation_is_enough_for_the_re_read_list(self):
+        # The list must not be empty on real data, or "nothing to look at" is the claim.
+        task = {"id": "P", "seq": 444, "decisions": ["as #532 established, do it this way"]}
+        self.assertEqual(len(heal.placement_review(task)), 1)
+
+    def test_a_decision_naming_two_tasks_has_no_single_candidate(self):
         task = {"id": "P", "seq": 444,
                 "decisions": ["#532 x. #532 y. #532 z. #535 w."]}
-        self.assertEqual(heal.placement(task), [])
+        self.assertEqual(heal.placement_review(task), [])
 
     def test_a_ruling_already_owned_elsewhere_is_settled(self):
         task = {"id": "P", "seq": 444,
                 "decisions": ["#532 framing. #532 retries. #532 backoff."]}
         dec.set_owner(task["decisions"], 1, "C", seq=532)
-        self.assertEqual([f for f in heal.placement(task)
-                          if "names #532" in f["detail"]], [])
+        self.assertEqual(heal.placement_review(task), [])
 
     def test_an_owner_that_no_longer_exists_means_the_ruling_renders_nowhere(self):
         task = {"id": "P", "seq": 444, "decisions": [RULING]}
@@ -644,6 +675,31 @@ class TheVerbEndToEnd(unittest.TestCase):
         self.assertIn("were NOT re-homed: 2", out)
         self.assertIn("the wire format is CBOR", self._run("search", "--detail", "1"))
 
+    def test_the_close_files_the_un_moved_names_on_the_PARENT(self):
+        import re
+        self._family()
+        self._run("update", "--task", "2", "--session", "sc",
+                  "--decision", "ran the fixture at 11am")
+        self._run("done", "--task", "2", "--session", "sp")
+        parent = self._run("search", "--detail", "1")
+        # It reached the parent's RECORD, not just a terminal — the digest shows the memo
+        # (truncated to a preview there, which is why the body is read below).
+        self.assertIn("DECISION OWNERSHIP", parent)
+        mid = re.search(r"^\s+• ([0-9a-f]{8}) ", parent, re.M)
+        self.assertTrue(mid, "no memo on the parent")
+        body = self._run("memo", "show", "--task", "1", "--id", mid.group(1))
+        self.assertIn("were NOT re-homed: 1", body)
+        self.assertIn("--reassign", body)
+
+    def test_a_consolidation_is_refused_because_it_may_have_no_single_owner(self):
+        self._family()
+        self._run("update", "--task", "1", "--session", "sp", "--decision",
+                  "CONSOLIDATED — every closed track and the release ledger.")
+        out = self._run("heal", "--task", "1", "--session", "sp",
+                        "--reassign", "2", "--to", "2")
+        self.assertIn("DECLARES ITSELF A CONSOLIDATION", out)
+        self.assertIn("heal --split", out)
+
     def test_reassign_refuses_to_ride_along_with_another_heal_mode(self):
         self._family()
         out = self._run("heal", "--task", "1", "--session", "sp", "--scan",
@@ -765,6 +821,36 @@ class TheReductionJudge(unittest.TestCase):
         m = judge.measure(t, dec, own)
         self.assertEqual(m["corpus"], 1000)
         self.assertEqual(m["saved"], 0)
+
+    def test_the_how_to_run_block_ACTUALLY_RUNS(self):
+        """The defect this guards is the one 3.37.0 shipped on this same programme: a
+        documented command that does not exist. The block headed HOW THIS IS RUN is what
+        an operator copies, so every flag in it must be a flag the parser accepts — and
+        when the parser changes, this fails rather than the operator."""
+        import re
+        with open(os.path.join(_REPO_ROOT, "scripts",
+                               "prove_ownership_reduction.py")) as fh:
+            src = fh.read()
+        block = src.split("HOW THIS IS RUN")[1].split("THE JUDGE")[0]
+        documented = set(re.findall(r"--[a-z-]+", block))
+        accepted = set(re.findall(r'ap\.add_argument\("(--[a-z-]+)"', src))
+        self.assertTrue(documented, "the how-to-run block names no flags at all")
+        self.assertEqual(documented - accepted, set(),
+                         "documented flags the parser does not accept")
+        self.assertEqual(accepted - documented, set(),
+                         "required flags the how-to-run block never shows")
+
+    def test_the_how_to_run_block_is_accepted_by_the_parser_end_to_end(self):
+        # Not just the flag names — the whole invocation, run for real against a repo
+        # that cannot answer, which is the one path that needs no store and no network.
+        r = subprocess.run(
+            [sys.executable, os.path.join(_REPO_ROOT, "scripts",
+                                          "prove_ownership_reduction.py"),
+             "--repo", "/nonexistent", "--task", "444", "--baseline-chars", "160245",
+             "--baseline-entries", "577", "--floor", "45000"],
+            capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("OWNERSHIP-NOT-IN-MAIN", r.stdout)
 
     def test_the_judge_reads_its_vocabulary_from_origin_main_only(self):
         # No worktree fallback anywhere: an unknown repo yields no vocabulary, and the
