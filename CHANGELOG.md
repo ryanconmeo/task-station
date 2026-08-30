@@ -3,6 +3,74 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.42.0] — 2026-08-30
+
+**A RULING LIVED WHERE IT WAS TYPED, NOT WHERE IT BELONGED, AND NO VERB COULD MOVE IT.**
+`heal` could merge and split — both of which say a decision has stopped earning its
+space — and neither says the one thing that was actually true of task #444's log: the
+content is **right, current and load-bearing, and it is on the wrong task**. #444 carried
+31,072 chars of one child's subject, 12,612 of a second's and 3,737 of a third's. A heal
+on 2026-08-29 split eight oversized decisions and cut the longest entry from 8,095 to
+3,581 chars, **and the total barely moved** — which is the measurement that settles it.
+Nothing there was redundant, so no amount of rewriting could reduce it. It was misplaced,
+and misplacement needs a different verb.
+
+**So ownership moves and the decision does not.** `heal --reassign <n,…> --to <task>`
+stamps an `owner` on the entry and changes nothing else: one copy, one store, still on the
+source task at its original index, in full. What changes is which task **renders** it. The
+owner prints the prose; the source prints a one-line **reference stub** carrying the
+title, the owner and the number that still addresses it there. A child additionally
+renders its parent's **pins**, which bind it by inheritance — without that, a reassign
+would be a downgrade, handing a child its own rulings while taking the programme's out of
+its sight.
+
+**The stub is not optional, and that is the guard the design turns on.** A reassign that
+would leave none is refused, because a reassign with no stub is a delete with extra steps:
+the source would lose not just the prose but the knowledge that the ruling exists. Three
+more refusals, each closing a shape that breaks something — a **pinned** decision (a pin
+briefs every session, so a ruling that binds the programme belongs to the programme), one
+**already owned** elsewhere (or the previous owner's index is left naming a ruling it no
+longer owns), and a caller **not attached to the source task**, so a child cannot claim
+rulings it was never handed. Every write prints the one command that reverses it.
+
+**A child's ruling can now refute a parent's, and the pointer exists in both directions.**
+`--supersedes <task>:<n>` supersedes across the boundary. Decision numbers are **per-task**
+and always have been, so a bare number means this task and anything aimed elsewhere must
+say where; the source learns what refuted it and the refuting decision records what it
+refuted, because one side alone is a contradiction that is invisible from exactly the side
+you happen to be reading. `--restore-decision` clears both.
+
+**Closing a child no longer leaves what it owns cold** — the failure that would have been
+worse than the problem being fixed, since a misplaced ruling is merely in the wrong place
+and an orphaned one is nowhere. Rulings it owns that live elsewhere are **released** back
+to their holder; its own **pinned** rulings are **re-homed** to the parent, with the pin
+dropped so a finished child cannot permanently reorder the programme's reading; and
+everything else still current is **named in the close report** with the command that moves
+it. That last group is not moved, deliberately: whether an unpinned ruling still binds is
+not mechanically decidable, and re-homing a whole child log in full would be the exact
+bloat this release removes.
+
+**And a `placement` check reports what is mechanical about the rule.** The rule itself is
+one question — *would this ruling still matter if this child were deleted?* — which is
+judgement. What the check reports is the part that is not: an index pointing at a ruling
+the source denies, an owner that is gone or closed so the ruling renders nowhere a live
+session looks, and a live decision naming one other task **three** times and no other
+while this task owns it. Three, because two is an ordinary cross-reference and that is
+what a decision log is *for*.
+
+Ownership is **data, not convention**, which is what stops two sessions disagreeing about
+it — and it is the same explicitness a field-level merge needs to be deterministic within
+an owner partition.
+
+### Added
+- …
+
+### Changed
+- …
+
+### Fixed
+- …
+
 ## [3.41.0] — 2026-08-29
 
 **A RELAYED OR INVOKED SESSION WAS TOLD ITS CONTEXT HAD ARRIVED, AND NOTHING SENT IT.**

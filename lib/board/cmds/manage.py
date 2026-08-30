@@ -14,6 +14,7 @@ import os
 import sys
 
 import decisions as _dec
+import ownership as _own
 import heal as _heal
 import hook_health
 import loop as _loop
@@ -733,6 +734,31 @@ def _update_one(ref, a):
         vals = [] if v is None else (list(v) if isinstance(v, list) else [v])
         return [s for s in (str(x).strip() for x in vals if x is not None) if s]
 
+    # CROSS-TASK SUPERSESSIONS, resolved HERE for the reason every other cross-task
+    # reference is: reads happen before the optimistic-locked self-update, and the write
+    # on the OTHER task is a deferred side effect below. `<task>:<n>` is required for
+    # anything aimed off this task — decision numbers are per-task, so a bare number is
+    # unambiguous only while it means "mine", and it always will.
+    local_supersedes, cross_supersedes = [], []
+    for raw in (getattr(a, "supersedes", None) or []):
+        who, num = _own.parse_ref(raw)
+        if num is None:
+            relate_warnings.append(
+                "update %s: ignoring --supersedes %r — expected a decision number, or "
+                "`<task>:<n>` for one on another task" % (ref, raw))
+            continue
+        if who is None:
+            local_supersedes.append(num)
+            continue
+        other = resolve_ref(who) or load_task(who)
+        if not other:
+            relate_warnings.append("update %s: ignoring --supersedes %s (no task matching "
+                                   "%r)" % (ref, raw, who))
+        elif other.get("id") == tid:
+            local_supersedes.append(num)      # named this task the long way round
+        else:
+            cross_supersedes.append((other, num))
+
     edge_targets, unrelate_targets = {}, []
     for flag, kind, vals in (
             ("--depends-on", "depends-on", _reflist(getattr(a, "depends_on", None))),
@@ -953,11 +979,20 @@ def _update_one(ref, a):
         # NOT setdefault — a task with no decisions must not grow the field just because
         # a bad --supersedes was passed; an empty list makes every index check fail loudly.
         entries = task.get("decisions") or []
-        supersedes = [n for n in (getattr(a, "supersedes", None) or [])]
-        if supersedes and last_decision_idx is None:
+        supersedes = list(local_supersedes)
+        if (supersedes or cross_supersedes) and last_decision_idx is None:
             msgs.append("update %s: --supersedes needs a --decision in the same update "
                         "(the new decision is what replaces the old one)" % ref)
         else:
+            # THE REFUTER'S HALF of every cross-task supersession — what THIS decision
+            # refutes. Written inside the locked self-update because it lands on this
+            # task's own log; the source's half is deferred below, so the write that
+            # HIDES a ruling lands after the one that records the refutation.
+            for other, n in cross_supersedes:
+                ok, err = _dec.add_supersedes_across(entries, last_decision_idx,
+                                                     _own.make_ref(other, n))
+                if not ok:
+                    msgs.append("update %s: %s" % (ref, err))
             for n in supersedes:
                 ok, err = _dec.mark_superseded(entries, n, last_decision_idx)
                 if ok:
@@ -999,6 +1034,13 @@ def _update_one(ref, a):
             label = None
             try:
                 label = _dec.replacement_label(entries[int(n) - 1])
+                # A CROSS-TASK supersession has a second half on the refuting task, and
+                # `restore` cannot reach it — it takes one log. Read the ref BEFORE the
+                # restore clears it, so the deferred write below can clear the other
+                # side too and the pair cannot end up half-undone.
+                across = _dec.superseded_across(entries[int(n) - 1])
+                if across is not None:
+                    cap.setdefault("restore_across", []).append((int(n), across))
             except (TypeError, ValueError, IndexError):
                 pass
             ok, err = _dec.restore(entries, n)
@@ -1162,6 +1204,7 @@ def _update_one(ref, a):
         # the SAVED text, and only this scope knows whether the text actually moved.
         cap["state_changed"] = state_changed
         cap["parent_notes"], cap["absorb_notes"] = parent_notes, absorb_notes
+        cap["last_decision_idx"] = last_decision_idx
 
     updated = g("mutate")(tid, _apply)
     if updated is None:
@@ -1191,6 +1234,53 @@ def _update_one(ref, a):
     # write, so it runs HERE (after the atomic self-update) and is itself
     # optimistic-locked, exactly like --relate's reciprocal posts above. Its notices are
     # collected rather than appended, so they print under the result line, not above it.
+    # UNDOING a cross-task supersession clears BOTH sides. `restore` already cleared the
+    # mark on this task; this clears the claim on the refuter, so the record never says a
+    # ruling was refuted by a decision that no longer claims to refute it.
+    for n, across in (cap.get("restore_across") or []):
+        def _unclaim(o, _ref=_own.make_ref(updated, n), _n=across["n"]):
+            _dec.remove_supersedes_across(o.get("decisions") or [], _n, _ref)
+        other = g("mutate")(across["task"], _unclaim)
+        if other is None:
+            msgs.append("update %s: decision %s is live again here, but %s could not be "
+                        "loaded to clear its claim that it refuted this one."
+                        % (label, n, _dec.ref_label(across)))
+        else:
+            save_task(other)
+            msgs.append("update %s: restored decision %s and cleared %s's matching claim "
+                        "— both sides of the cross-task supersession are undone."
+                        % (label, n, _dec.ref_label(across)))
+    # THE SOURCE'S HALF of every cross-task supersession, and it lands LAST on purpose.
+    # This is the write that HIDES a ruling — it drops the target out of the other task's
+    # digest — so it runs after the write that records the refutation. If this one fails,
+    # the record over-claims (a back-pointer at a ruling that is still live), which a
+    # reader can see from the refuting side; the opposite order would silently retire a
+    # ruling with nothing anywhere saying what retired it.
+    for other, n in cross_supersedes:
+        idx = cap.get("last_decision_idx")
+        if idx is None:
+            continue
+        box = {"err": None}
+
+        def _refute(o, _n=n, _idx=idx, _box=box):
+            ok, err = _dec.mark_superseded_across(
+                o.get("decisions") or [], _n, _own.make_ref(updated, _idx))
+            _box["err"] = None if ok else err
+        target = g("mutate")(other["id"], _refute)
+        if target is None or box["err"]:
+            msgs.append("update %s: could not supersede %s:%s — %s. This decision still "
+                        "RECORDS that it refutes it, so the claim is visible from here; "
+                        "the other task's log was not changed."
+                        % (label, other.get("seq"), n,
+                           box["err"] or "that task could not be loaded"))
+            continue
+        add_event(target, "decision",
+                  "decision %s superseded by #%s decision %s"
+                  % (n, updated.get("seq"), idx), session)
+        save_task(target)
+        undos.append("superseded #%s decision %s (by decision %s here) → `update --task %s "
+                     "--restore-decision %s`, which clears BOTH sides"
+                     % (other.get("seq"), n, idx, other.get("seq"), n))
     replace_notes = []
     for other in edge_targets.get("replaces", []):
         was, shut = task_status(other), {"v": False}

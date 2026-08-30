@@ -298,6 +298,7 @@ CHECKS = (
     ("cited-commit", "Cited commits that resolve nowhere"),
     ("stale-project", "Named repos with no local clone"),
     ("grew-with-candidates", "Digest grew with candidates outstanding"),
+    ("placement", "Decisions whose subject does not match their owner"),
     # THE RECONCILE AGAINST THE SOURCE — see heal_ado.py. Registered here so these
     # findings sort, title, dedupe and DISMISS through exactly the same machinery as
     # every other check; a second finding vocabulary would be a second thing to keep
@@ -2998,7 +2999,7 @@ def dismissal_rows(task, result=None):
 # -- the scan --------------------------------------------------------------------
 
 def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=None,
-         commit_probe=None, ado_probe=None, ado_owned=None):
+         commit_probe=None, ado_probe=None, ado_owned=None, load=None):
     """Run all eleven checks, plus the sections that are deliberately NOT checks. NEVER
     mutates the task — not one field.
 
@@ -3063,6 +3064,10 @@ def scan(task, now=None, exists=os.path.exists, branch_probe=None, link_probe=No
     findings.extend(commit_rot(task, states=commits))
     findings.extend(stale_projects(task, names=unresolved))
     findings.extend(grew_with_candidates(task, groups=groups, size=size))
+    # PLACEMENT. `load` defaults to None, so the session-start scan stays free of store
+    # reads and reports only what this task's own blob proves — the same opt-in shape
+    # every outward probe here uses. `heal --scan` wires a loader and gets both tiers.
+    findings.extend(placement(task, load=load))
     # The reconcile against the SOURCE. Its findings join the same list so they sort,
     # dedupe, count and dismiss identically; when no prober is wired it contributes
     # none and says so in `ado`.
@@ -4545,4 +4550,154 @@ def candidate_lines(task, result=None):
                                             _dec.text(entries[i - 1])))
         out.append("     → `heal --merge %s --into <n>` once the summary decision exists"
                    % ",".join(str(i) for i in idxs))
+    return out
+
+
+# -- check 13: PLACEMENT — a decision whose subject does not match its owner ---------
+#
+# WHAT TURNS THE PLACEMENT RULE FROM ETIQUETTE INTO SOMETHING CHECKABLE. Ownership
+# (`board.ownership`) makes "which task renders this ruling" DATA rather than convention,
+# which is why two sessions cannot disagree about it. But data can still be WRONG, and
+# nothing so far reports it — a rule that only exists in a skill's prose is one every
+# session is free to read differently, and the measured cost of that was 47,421 chars of
+# three children's subjects sitting on their parent.
+#
+# THE RULE IS ONE QUESTION: WOULD THIS RULING STILL MATTER IF THIS CHILD WERE DELETED?
+# Yes means the parent owns it; no means the child does. That question is not mechanically
+# decidable, and this check does not pretend otherwise. What it reports is the subset that
+# IS decidable, in two tiers:
+#
+#   STRUCTURAL (a defect, always) — the ownership record contradicts itself, so a ruling
+#   renders in the wrong place or in NO place. An index pointer the source does not
+#   confirm; an owner task that no longer exists; an owner that is CLOSED while the ruling
+#   is still live. The last one is the quiet one: the ruling renders only on a digest
+#   nobody opens again.
+#
+#   CITATIONAL (a placement finding) — a live decision that names exactly ONE other task,
+#   repeatedly enough that the other task is plainly its subject, while this task owns it.
+#   Repetition is the whole precision guard: one `#532` in passing is a cross-reference,
+#   which is what a decision log is FOR. Three mentions and no mention of anything else is
+#   a decision about #532 that happens to be stored here.
+#
+# A CITATIONAL FINDING NAMES A PROPOSAL, NOT A VERDICT, and its wording says so. The check
+# cannot know whether the ruling would outlive the child; the reader can, in one question.
+
+# How many times another task must be named before a decision is read as being ABOUT it.
+# Three, because two occurrences are an ordinary "as #532 established, …" cross-reference
+# and this check must not fire on the thing a decision log exists to do.
+PLACEMENT_MIN_CITATIONS = 3
+
+
+TASK_QUALIFIERS = frozenset(("task", "tasks", "child", "children", "parent", "sibling",
+                             "seq", "board"))
+
+
+def task_citations(text, total=None):
+    """`{seq: count}` for every `#N` in `text` that names a TASK rather than a decision.
+
+    TWO WAYS A `#N` IS A TASK, and they are the exact inverse of `decision_refs`' two
+    gates, read from the other end. That is deliberate: one vocabulary, two readers, so
+    tuning it can never make them disagree about the same `#532`.
+
+      * a TASK QUALIFIER stands in front of it — `task #444`, `child #532`. `qualifier`
+        is the same word-before reader check 3 uses, and the narrow `TASK_QUALIFIERS`
+        subset is used rather than all of `NON_DECISION_QUALIFIERS`, because `memo #3`
+        and `PR #12` are not decisions AND not tasks.
+      * it is OUT OF RANGE as a decision on this task (`n > total`). `decision_refs`
+        already drops those for exactly this reason — a decision log of 110 entries has
+        no decision 532 — so the number cannot be a decision reference, and on this
+        board the only other thing written `#532` is a task.
+
+    `total` is the log length; without it only the qualified form counts, which is the
+    conservative direction. A word-qualified hit ALSO counts when in range, because
+    `task #7` says which it is regardless of what else is numbered 7."""
+    out = {}
+    for m in _HASH_REF.finditer(text or ""):
+        n = int(m.group("n"))
+        qualified = qualifier(text, m.start()) in TASK_QUALIFIERS
+        out_of_range = total is not None and n > total
+        if qualified or out_of_range:
+            out[n] = out.get(n, 0) + 1
+    return out
+
+
+def placement(task, load=None, minimum=PLACEMENT_MIN_CITATIONS):
+    """Findings where a decision's OWNER does not match its subject or its record.
+
+    `load(task_id)` is injected and OPTIONAL: with no loader the structural tier is
+    limited to what this task's own blob proves, and the check says nothing it cannot
+    show. That keeps the default session-start scan free of store reads while `heal
+    --scan` (which has a loader) gets the full answer — the same opt-in shape every
+    outward probe in this module already uses."""
+    import ownership as _own
+    out, tid = [], task.get("id")
+    entries = task.get("decisions") or []
+    # STRUCTURAL, tier 1 — the OWNER side. An index pointer the source does not confirm
+    # is a pointer at a ruling this task does not own, and the render already drops it
+    # silently; silence about drift is how an index starts being trusted while it is wrong.
+    if load is not None:
+        seen = {}
+        for ptr in _own.index_entries(task):
+            src = seen.get(ptr["task"])
+            if src is None:
+                src = seen[ptr["task"]] = load(ptr["task"]) or {}
+            src_entries = src.get("decisions") or []
+            if 1 <= ptr["n"] <= len(src_entries):
+                entry = src_entries[ptr["n"] - 1]
+                if _dec.owner(entry) == tid:
+                    continue              # confirmed by the source: nothing to report
+                if _dec.is_replaced(entry) and not _dec.is_owned(entry):
+                    # THE ONE STALE POINTER THAT IS NOT DRIFT. A ruling that was
+                    # superseded, split or merged renders nowhere by design, so the
+                    # ownership question is moot and the pointer is simply spent. Marking
+                    # it a defect would fire this check on every correctly-retired ruling
+                    # a task ever owned, which is how a check teaches people to skip it.
+                    continue
+            out.append(_finding(
+                "placement", "owned %s:%s" % (ptr.get("seq") or ptr["task"][:8], ptr["n"]),
+                "this task's index claims it owns that decision, but the task holding it "
+                "does not say so — the ruling is NOT rendered here. Either it was brought "
+                "back (`heal --unassign`) without the index following, or the ownership "
+                "write never landed. `heal --task %s --reassign %s --to %s` re-states it."
+                % (ptr.get("seq") or ptr["task"][:8], ptr["n"], task.get("seq") or "")))
+    # STRUCTURAL, tier 2 — the SOURCE side. A ruling this task holds but does not render,
+    # whose owner is gone or closed, renders NOWHERE a live session will look.
+    for i, e in _dec.live(entries):
+        own = _dec.owner(e)
+        if not own or own == tid:
+            continue
+        owner_task = load(own) if load is not None else None
+        if load is not None and not owner_task:
+            out.append(_finding(
+                "placement", "decision %d" % i,
+                "owned by a task that no longer exists, so this ruling renders NOWHERE — "
+                "this task shows a stub and nothing shows the prose. "
+                "`heal --task %s --unassign %d` brings it home."
+                % (task.get("seq") or "", i)))
+            continue
+        if owner_task and str(owner_task.get("status") or "") == "closed":
+            out.append(_finding(
+                "placement", "decision %d" % i,
+                "owned by #%s, which is CLOSED — the ruling is still current but renders "
+                "only on a digest nobody opens again. Closing a task is supposed to "
+                "release what it owns; this one did not. `heal --task %s --unassign %d` "
+                "brings it home."
+                % (owner_task.get("seq"), task.get("seq") or "", i)))
+    # CITATIONAL — the subject/owner mismatch proper.
+    for i, e in _dec.live(entries):
+        if _dec.is_owned(e) and _dec.owner(e) != tid:
+            continue                      # already somebody else's; placement is settled
+        cites = task_citations(_dec.text(e), total=len(entries))
+        cites.pop(task.get("seq"), None)
+        if len(cites) != 1:
+            continue                      # names several tasks, or none: not one subject
+        seq, hits = list(cites.items())[0]
+        if hits < minimum:
+            continue
+        out.append(_finding(
+            "placement", "decision %d" % i,
+            "names #%s %d times and no other task, but this task owns it. If it would "
+            "still matter with #%s deleted, it belongs here and this is noise; if it "
+            "would not, #%s should own it: `heal --task %s --reassign %d --to %s`."
+            % (seq, hits, seq, seq, task.get("seq") or "", i, seq)))
     return out
