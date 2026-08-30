@@ -1022,13 +1022,20 @@ def _close_one(ref, session):
             clear_count(sess)
             clear_edit_markers(sess)   # closing is a deliberate wrap-up — don't let the gate block
     line = "Closed task [%s] %s. Reopen later with /todo." % (task["id"][:8], task["title"])
-    rehome = _rehome_on_close(task, session)
+    rehome, rehome_note = _rehome_on_close(task, session)
     if rehome:
         line += "\n" + "\n".join(rehome)
-    pseq = report_to_parent(task, "CLOSED — ready for the gate (`/grade`)", session)
+    pseq = report_to_parent(task, _close_headline(rehome_note), session)
     if pseq:
         line += "\n  told #%s: this child is closed." % pseq
     return (line + "\n" + gate) if gate else line
+
+
+def _close_headline(rehome_note=""):
+    """The headline the close files on its parent. Carries the un-moved rulings when
+    there are any, so the names land on a record instead of a terminal."""
+    base = "CLOSED — ready for the gate (`/grade`)"
+    return (base + "\n\nDECISION OWNERSHIP — " + rehome_note) if rehome_note else base
 
 
 def _rehome_on_close(task, session=None):
@@ -1043,14 +1050,15 @@ def _rehome_on_close(task, session=None):
     part that is not, and this refuses to pretend the second is the first — see that
     module's own comment for why the undecidable remainder is NAMED rather than moved.
 
-    Called AFTER the status flip and before the result line, and fully guarded: an
-    ownership problem must never be the reason a close fails. A close that half-happened
+    Returns `(display_lines, durable_note)`. Called AFTER the status flip and before the
+    result line, and fully guarded: an ownership problem must never be the reason a close
+    fails. A close that half-happened
     is worse than one that reported nothing, and the record is recoverable either way
     (the rulings are exactly where they were)."""
     try:
         plan = _own.close_plan(task, load_task)
         if not (plan["released"] or plan["rehomed"] or plan["reported"]):
-            return []
+            return [], ""
         touched, lines = _own.apply_close_plan(task, plan)
         for other in touched:
             other["updated_ts"] = _now()
@@ -1065,9 +1073,13 @@ def _rehome_on_close(task, session=None):
             out.append("  DECISION OWNERSHIP on close:")
             out.extend("    • %s" % line for line in lines)
         out.extend(_own.close_report_lines(task, plan))
-        return out
+        # The SECOND return value is the durable half. Printing the un-moved names to a
+        # terminal nobody is necessarily watching is dropping them with extra steps, so
+        # the caller rides them out on the memo + pickup the close already files on the
+        # parent — the one rail the parent's Stop gate will not let it past.
+        return out, _own.close_report_note(task, plan)
     except Exception:
-        return []
+        return [], ""
 
 
 def _maybe_close_session_window(session):
@@ -1150,9 +1162,10 @@ def cmd_done(a):
     _maybe_close_session_window(a.session)   # opt-in; no-op unless enabled
     print("Closed task [%s] %s and detached this session. Reopen later with /todo."
           % (task["id"][:8], task["title"]))
-    for line in _rehome_on_close(task, a.session):
+    rehome, rehome_note = _rehome_on_close(task, a.session)
+    for line in rehome:
         print(line)
-    pseq = report_to_parent(task, "CLOSED — ready for the gate (`/grade`)", a.session)
+    pseq = report_to_parent(task, _close_headline(rehome_note), a.session)
     if pseq:
         print("  told #%s: this child is closed." % pseq)
     if gate:

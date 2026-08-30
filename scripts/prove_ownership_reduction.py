@@ -8,8 +8,7 @@ HOW THIS IS RUN, and why it is not run any other way:
     git -C <main checkout> fetch -q origin main
     git -C <main checkout> show origin/main:scripts/prove_ownership_reduction.py \
         | python3 - --repo <main checkout> --task 444 \
-                    --baseline-chars 160245 --baseline-live 110 \
-                    --baseline-entries 577 --floor 45000
+                    --baseline-chars 160245 --baseline-entries 577 --floor 45000
 
 THE JUDGE COMES OUT OF origin/main, AND SO DOES THE VOCABULARY IT JUDGES WITH. An exit
 condition that resolves a worktree passes on work that never merged — the only rot shape

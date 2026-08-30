@@ -272,6 +272,9 @@ def reassign(source_task, owner_task, index1, stub_text=None, now=None,
         return False, ("%s %s — a task already renders its own decisions in full, so it "
                        "cannot be reassigned to itself" % (flag, index1))
     entries = source_task.get("decisions") or []
+    err = _consolidation_refusal(entries, index1, flag)
+    if err:
+        return False, err
     ok, err = _dec.set_owner(entries, index1, owner_task.get("id"),
                              seq=owner_task.get("seq"), stub_text=stub_text, flag=flag)
     if not ok:
@@ -279,6 +282,57 @@ def reassign(source_task, owner_task, index1, stub_text=None, now=None,
     source_task["decisions"] = entries
     index_add(owner_task, source_task, index1, now=now)
     return True, None
+
+
+def _consolidation_refusal(entries, index1, flag):
+    """Refuse to reassign a decision that DECLARES ITSELF the one record of several
+    others, or None when there is nothing to refuse.
+
+    A CONSOLIDATION MAY HAVE NO SINGLE OWNER, and that is not a rare edge. Measured on
+    #444: 11 of 112 live decisions declare themselves consolidations, 12,139 chars, and
+    the large ones replace between 16 and 39 originals EACH. A consolidation is written
+    ACROSS subjects precisely because its members individually stopped earning space —
+    one covers the typed-edge model AND the graph run, another the 3.0.0 phases AND the
+    A1 track. Reassigning it anywhere makes it wrong for everything else it covers, and
+    the task that loses it keeps only a stub for material that was partly its own.
+
+    WHY THIS REFUSES RATHER THAN GUESSING, and why the criterion is "declares itself a
+    consolidation" rather than "spans more than one subject". The second is the better
+    question and there is no mechanical form of it — the same reason the placement rule
+    itself is a judgement. A refusal on an imprecise criterion blocks correct moves and
+    produces workarounds rather than fixes, which this project has already measured once
+    with the pin cap. So the criterion is the precise one, the cost is bounded (11% of
+    one real task's reassignable pool, well inside its floor), and the escape hatch is
+    real, named, and better practice anyway: split it, then reassign the parts.
+
+    Imported lazily for the reason `heal` imports THIS module lazily — the two share a
+    vocabulary and a module-level import in both directions would be a cycle. One import
+    at one call site keeps the declare-vs-describe guard shared rather than copied."""
+    try:
+        i = int(index1)
+    except (TypeError, ValueError):
+        return None
+    if not (1 <= i <= len(entries or [])):
+        return None            # `set_owner` reports a bad index; this must not shadow it
+    try:
+        import heal as _heal
+    except Exception:
+        return None            # never let a missing peer module block an ordinary verb
+    body = _dec.text(entries[i - 1])
+    if not _heal.declares_consolidation(body):
+        return None
+    members = sum(1 for e in entries
+                  if (_dec.replacement(e) or ("", []))[0] == _dec.REPLACED_MERGED
+                  and i in (_dec.replacement(e) or ("", []))[1])
+    covers = (" It records itself as the one record of %d earlier decision(s)." % members
+              if members else "")
+    return ("%s %d — that decision DECLARES ITSELF A CONSOLIDATION.%s A consolidation is "
+            "written ACROSS subjects, because its members individually stopped earning "
+            "space — so it may have no single owner, and reassigning it makes it wrong "
+            "for everything else it covers. `heal --split %d --into <n1,n2,…>` breaks it "
+            "into the parts first; reassign those. Refused rather than guessed: a wrong "
+            "owner here quietly takes material away from the task it also belonged to."
+            % (flag, i, covers, i))
 
 
 def unassign(source_task, owner_task, index1, flag="--unassign"):
@@ -460,18 +514,29 @@ def close_report_lines(task, plan):
     The un-moved half is the point. A close that silently kept a child's rulings out of
     the parent's sight reads exactly like a close that had nothing to keep, and the
     reader only finds out at the moment they needed the ruling."""
-    out = []
+    note = close_report_note(task, plan)
+    return ["  " + line for line in note.splitlines()] if note else []
+
+
+def close_report_note(task, plan):
+    """The same report as ONE durable paragraph, for the memo the close files on the
+    parent — or "" when nothing was left behind.
+
+    PRINTING IT IS NOT ENOUGH, and that is the whole reason this exists separately. A
+    close writes to a terminal nobody is necessarily watching, and a named ruling nobody
+    reads has been dropped with extra steps. The parent already gets a memo and a pickup
+    on every child close (`report_to_parent`), and a pickup is the one thing the parent's
+    Stop gate will not let it past — so the names ride that rail rather than a stdout the
+    session that needed them may never see."""
     reported = plan.get("reported") or []
     if not reported:
-        return out
+        return ""
     ref = task.get("seq") or str(task.get("id") or "")[:8]
     nums = ", ".join(str(i) for i, _e in reported[:12])
     more = "" if len(reported) <= 12 else " (+%d more)" % (len(reported) - 12)
-    out.append("  %d still-current ruling(s) on this task were NOT re-homed: %s%s."
-               % (len(reported), nums, more))
-    out.append("  Nothing marks them as still binding beyond this task, and whether they "
-               "do is not mechanically decidable — so they are NAMED here rather than "
-               "moved. They stay in `task-station history %s`; "
-               "`heal --task %s --reassign <n,…> --to <parent>` re-homes any of them."
-               % (ref, ref))
-    return out
+    return ("%d still-current ruling(s) on this task were NOT re-homed: %s%s.\n"
+            "Nothing marks them as still binding beyond this task, and whether they do "
+            "is not mechanically decidable — so they are NAMED rather than moved. They "
+            "stay in `task-station history %s`; `heal --task %s --reassign <n,…> --to "
+            "<parent>` re-homes any of them."
+            % (len(reported), nums, more, ref, ref))
