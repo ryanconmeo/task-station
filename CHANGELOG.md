@@ -3,6 +3,83 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.41.0] — 2026-08-29
+
+**A RELAYED OR INVOKED SESSION WAS TOLD ITS CONTEXT HAD ARRIVED, AND NOTHING SENT IT.**
+Attaching a session to a task is a **pointer**. At session start the hook prints that
+task's title and status — that is the whole of it, and in particular not the digest.
+Seven lines across five files said otherwise, and then, *on that basis*, deliberately
+withheld the record from the prompt. Both halves are individually reasonable. Together
+they hand a fresh session no context and a sentence explaining why it does not need any,
+which is the most expensive thing this system can tell a model. 3.35.0 fixed the two
+lines in `succession.py`; this release fixes the remaining five, the post-compaction
+nudge, and the two documentation surfaces a model actually reads.
+
+**The two that EXECUTE were the two nobody could see.** `cmds/loop.py` printed the claim
+to the operator on every `invoke` and on every `relay --spawn` — live `print()` calls, not
+config — while the first count of this defect greped a hardcoded list of paths, two of
+which were wrong (`lib/board/view.py` does not exist; `lib/board/loop.py` is role config).
+A missing path and a clean file both produce zero, so the count read 2 when it was 7.
+Nothing here is counted from a list any more.
+
+**Deleting the false sentence is not the whole fix, and that is the part worth reading.**
+`invoke`'s ask carries the request *only*, and that is safe exactly and only because
+something else points the child at its record. Nothing did. So the child's launch prompt
+now names the read, on the same condition that already names the hand-back rail: the
+record is where the work comes from and where it goes back, and a child told neither is
+the lossy-brief boundary with extra steps.
+
+**The caps are untouched, deliberately.** `NEXT_CHARS = 320`, `STEP_CAP`/`STEP_CHARS` and
+`PROMPT_BUDGET = 1600` are correct reasoning from a false premise — only the premise was
+wrong. Widening any of them is the obvious wrong repair: it turns a relay prompt into the
+context dump the design exists to avoid. Actually *injecting* the digest is a better end
+state and is not this release: one real digest is ~82,000 tokens, and paying that per
+relayed session is ruinous. A pointer plus one command is the right answer at this size.
+
+### Added
+- **A repo-wide contract test, with no file list** (`tests/test_no_false_injection_claim.py`).
+  It walks `lib/` and fails on any line telling a session it already holds the record, so an
+  eighth site written next month cannot pass and a renamed file cannot read as a fix.
+  Tested in **both** directions: a planted claim in a walked tree is found, and three
+  realistic post-fix wordings — including `# HISTORY: this used to say SessionStart injects
+  the digest`, which is this codebase's documented house style — are **not** counted as
+  offences. A detector asserted only against a tree that already passes is asserting nothing.
+- **The child's launch prompt names the read.** `_child_prompt` now opens the bargain it
+  already closed: `READ YOUR OWN RECORD FIRST — nothing was loaded into this session at
+  start: task-station search --detail <n>`, on the same `ref is not None` condition as the
+  memo rail. A prompt with no task ref is unchanged, because a command the child cannot
+  resolve is worse than no command.
+
+### Changed
+- **The five remaining false claims are reworded to name the fetch** — `cli.py` (the
+  `invoke` design comment), `cmds/loop.py` (the B10 rationale, the live `invoke` line, the
+  live `relay --spawn` line) and `cmds/view.py` (the `guidance` command reference a model
+  reads to learn what commands do). Each now says what is true: attachment is a pointer,
+  nothing is loaded, and here is the command.
+- **The post-compaction nudge carries the command instead of assuming the read happened.**
+  It used to call the digest the model's own standing source of truth while carrying none
+  of it — to a session that had *just lost its context*, which is the one moment where
+  being told you already hold the record does the most damage.
+- **`README.md` and `skills/grade/SKILL.md`** said the same thing to a human and to the
+  model driving the loop. Both corrected; the grade skill is a live surface, not prose.
+
+### Fixed
+- **The `NEXT:` guard now fires on the write that was silent.** The cold-read check that
+  requires a state line to lead with `NEXT:` ran only on the **checkpoint** path, so
+  `update --state '<no NEXT:>'` printed a success line and nothing else, while the
+  identical text written *with* a `--summary` printed the failure. The author was told at
+  the wrong moment: the first thing to notice was a **refused handoff**, days later, by
+  which point the session that knew the answer is gone. Same predicate, no new logic, moved
+  onto the path that was quiet. It stays silent when the line does lead with `NEXT:` (or it
+  becomes noise on every write), says nothing about a *cleared* state (that is
+  `empty_slots`' finding — two verbs answering for one gap is how a report starts
+  contradicting itself), and is skipped on the checkpoint path, where `COLD-READ CHECK`
+  already reports it. Same defect shape as the release itself: a check that exists but
+  fires where it cannot help.
+
+### Fixed
+- …
+
 ## [3.40.0] — 2026-08-29
 
 **A FINISHED CHILD TOLD THE RECORD, AND NOTHING WOKE THE PARENT.** Every piece already

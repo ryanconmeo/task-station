@@ -741,6 +741,33 @@ class SuccessorSpawn(_SuccessionTest):
         self.assertEqual(code, 0, out)
         self.assertIn("--model sonnet", self.opened[0])
 
+    def test_the_spawn_line_does_not_claim_the_digest_was_delivered(self):
+        """#583. This line was one of the two that EXECUTE — a live `print()` on every
+        `relay --spawn`, telling the operator "its SessionStart injects the same digest
+        you have been working from". Nothing injects one, so the successor's own prompt
+        (which correctly points at the record) was contradicted by the line printed
+        directly above it."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        low = out.lower()
+        for claim in ("sessionstart injects", "already injected",
+                      "already has the context"):
+            self.assertNotIn(claim, low)
+
+    def test_the_spawn_line_names_the_read_the_prompt_names(self):
+        """The report and the prompt must say the same thing. They disagreed for
+        longer than they agreed, and the reader believes whichever one they read
+        first."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        read = "task-station search --detail %s" % task["seq"]
+        self.assertIn(read, out)
+        self.assertIn(read, self.opened[0])
+
     def test_the_hub_ordinal_advances(self):
         task, sid = self._task()
         self._transcript(sid, 130000)

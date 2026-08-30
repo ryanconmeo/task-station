@@ -16,8 +16,8 @@
 set -u
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 
-# The floors, as of 3.40.0. Raise them deliberately; never lower one to make a claim pass.
-SUITE_FLOOR=5663
+# The floors, as of 3.41.0. Raise them deliberately; never lower one to make a claim pass.
+SUITE_FLOOR=5720
 PICKUP_FLOOR=47
 
 _ran() {   # (output) -> the "Ran N tests" count, or 0. Never an absence: `Ran 0 tests`
