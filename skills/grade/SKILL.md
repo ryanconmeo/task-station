@@ -147,7 +147,7 @@ python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" invoke --task <child> --from <
   --ask '<the request — and only the request>' [--role implementer]
 ```
 
-The child spawns **already attached to its own task**, so its SessionStart injects its own digest. That is why the ask carries the request only: anything you write restating the child's context is a lossy copy of a record it is already reading. If your ask is running past a few sentences, you are writing a brief, and the brief is the thing this design removes.
+The child spawns **already attached to its own task**, and its launch prompt tells it to read that task (`search --detail <n>`). That is why the ask carries the request only: anything you write restating the child's context is a lossy copy of a record it is about to fetch in one command. Attaching a child delivers nothing on its own — the read is what gets it the record. If your ask is running past a few sentences, you are writing a brief, and the brief is the thing this design removes.
 
 Add `--cwd <path>` when the child belongs in a worktree, and `invoke` clears the first-run gates you cannot answer for it — the trust dialog and the workspace's own `.mcp.json` approval. It does so **only for a worktree whose main checkout is already trusted**; anything else is refused with the reason printed and the launch proceeds anyway, so the child stops at one dialog instead of stalling invisibly (a session waiting on the trust prompt has not fired SessionStart, so the scan cannot see it at all).
 
