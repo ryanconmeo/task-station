@@ -20,6 +20,7 @@ import checker as _checker
 import loop as _loop
 import config_change as _config_change
 import decisions as _dec
+import ownership as _own
 import heal as _heal
 import save as _save
 import hook_health
@@ -1021,10 +1022,52 @@ def _close_one(ref, session):
             clear_count(sess)
             clear_edit_markers(sess)   # closing is a deliberate wrap-up — don't let the gate block
     line = "Closed task [%s] %s. Reopen later with /todo." % (task["id"][:8], task["title"])
+    rehome = _rehome_on_close(task, session)
+    if rehome:
+        line += "\n" + "\n".join(rehome)
     pseq = report_to_parent(task, "CLOSED — ready for the gate (`/grade`)", session)
     if pseq:
         line += "\n  told #%s: this child is closed." % pseq
     return (line + "\n" + gate) if gate else line
+
+
+def _rehome_on_close(task, session=None):
+    """Run the ownership half of closing `task` and return its report lines.
+
+    THE INVERSE OF COLLAPSE-TO-REFERENCE, and the step the design itself flags as most
+    likely to be forgotten: without it a ruling goes COLD the instant its child closes,
+    which is strictly worse than the problem ownership exists to fix. Today a misplaced
+    ruling is merely in the wrong place; after a bad close it is nowhere.
+
+    `ownership.close_plan` splits the question into the part that is mechanical and the
+    part that is not, and this refuses to pretend the second is the first — see that
+    module's own comment for why the undecidable remainder is NAMED rather than moved.
+
+    Called AFTER the status flip and before the result line, and fully guarded: an
+    ownership problem must never be the reason a close fails. A close that half-happened
+    is worse than one that reported nothing, and the record is recoverable either way
+    (the rulings are exactly where they were)."""
+    try:
+        plan = _own.close_plan(task, load_task)
+        if not (plan["released"] or plan["rehomed"] or plan["reported"]):
+            return []
+        touched, lines = _own.apply_close_plan(task, plan)
+        for other in touched:
+            other["updated_ts"] = _now()
+            save_task(other)
+        if plan["released"] or plan["rehomed"]:
+            task["updated_ts"] = _now()
+            save_task(task)
+            for text in lines:
+                add_event(task, "decision", text, session)
+        out = []
+        if lines:
+            out.append("  DECISION OWNERSHIP on close:")
+            out.extend("    • %s" % line for line in lines)
+        out.extend(_own.close_report_lines(task, plan))
+        return out
+    except Exception:
+        return []
 
 
 def _maybe_close_session_window(session):
@@ -1107,6 +1150,8 @@ def cmd_done(a):
     _maybe_close_session_window(a.session)   # opt-in; no-op unless enabled
     print("Closed task [%s] %s and detached this session. Reopen later with /todo."
           % (task["id"][:8], task["title"]))
+    for line in _rehome_on_close(task, a.session):
+        print(line)
     pseq = report_to_parent(task, "CLOSED — ready for the gate (`/grade`)", a.session)
     if pseq:
         print("  told #%s: this child is closed." % pseq)
