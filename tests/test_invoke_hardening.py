@@ -703,5 +703,46 @@ class ContextWindowInheritance(_InvokeTest):
                          pricing.DEFAULT_CONTEXT_WINDOW)
 
 
+# -- (8) the operator line describes what actually happens -----------------------
+
+class TheLaunchLineTellsTheTruth(_InvokeTest):
+    """`invoke` reports a POINTER, not a delivery.
+
+    The line an operator sees on every launch used to read "its SessionStart injects
+    THIS task's digest, so the ask carries the request only". The first clause is
+    false — SessionStart prints the task's title and status and nothing else — and the
+    second clause was JUSTIFIED BY IT, which is what made this expensive rather than
+    merely wrong: on that basis the ask deliberately withheld the record from a child
+    nothing had given the record to. #583 counted seven lines in this shape; two of
+    them, including this one, were live `print()` calls rather than documentation.
+    """
+
+    def _line(self, **kw):
+        parent, child = self._pair()
+        out, _ = self._invoke(parent=parent, child=child, **kw)
+        return out, child
+
+    def test_it_does_not_claim_the_digest_was_delivered(self):
+        out, _ = self._line()
+        low = out.lower()
+        for claim in ("sessionstart injects", "already injected",
+                      "already has the context"):
+            self.assertNotIn(claim, low)
+
+    def test_it_says_the_child_is_pointed_at_the_record(self):
+        out, child = self._line()
+        self.assertIn("pre-attached", out)
+        self.assertIn("task-station search --detail %s" % child["seq"], out)
+
+    def test_the_command_it_launches_carries_that_same_read(self):
+        """The operator line is only true because the PROMPT says so. Asserting the
+        line alone would pass against a promise nothing keeps, so this reads only the
+        text after the launch marker — the command, not the report above it."""
+        out, child = self._line(print_command=True)
+        self.assertIn("run it yourself:", out)
+        cmd = out.split("run it yourself:", 1)[1]
+        self.assertIn("task-station search --detail %s" % child["seq"], cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -248,6 +248,20 @@ class SessionStartNudge(_StoreBase):
         self.assertIn("Context was just compacted", out)
         self.assertIn("%s history" % t["seq"], out)
 
+    def test_the_nudge_names_the_read_instead_of_assuming_it_happened(self):
+        """#583. This line used to call the digest the model's own standing source of
+        truth while carrying none of it — to a session that had just lost its context,
+        which is the one moment where being told you already hold the record does the
+        most damage. SessionStart additionalContext is a few hundred characters; the
+        digest is orders of magnitude bigger and is not in there. So the line names the
+        command."""
+        config.set("auto_checkpoint", True)
+        t = self._task(); self._attach("sess-a", t)
+        out = self._ctx("sess-a", "compact")
+        self.assertIn("Context was just compacted", out)
+        self.assertIn("task-station search --detail %s" % t["seq"], out)
+        self.assertNotIn("source of truth for continuing", out)
+
     def test_no_nudge_when_off(self):
         config.set("auto_checkpoint", False)
         t = self._task(); self._attach("sess-a", t)

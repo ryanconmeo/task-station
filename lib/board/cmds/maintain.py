@@ -1606,18 +1606,28 @@ def cmd_session_start(a):
                 msg.append(kids)
         except Exception:                                       # noqa: BLE001
             pass
-        # Opt-in auto-checkpoint: on a POST-COMPACTION session start, point the model
-        # at the durable digest as its source of truth and nudge a refresh if the plan
-        # advanced. SessionStart additionalContext reliably lands before the model's
-        # next turn — the sanctioned model-facing post-compaction instruction. Gated:
-        # auto-checkpoint on + source==compact + attached, else unchanged.
+        # Opt-in auto-checkpoint: on a POST-COMPACTION session start, send the model to
+        # FETCH the durable digest and nudge a refresh if the plan advanced. SessionStart
+        # additionalContext reliably lands before the model's next turn — the sanctioned
+        # model-facing post-compaction instruction. Gated: auto-checkpoint on +
+        # source==compact + attached, else unchanged.
+        #
+        # THE LINE NAMES THE COMMAND BECAUSE THE LINE IS ALL THE MODEL GETS — #583. It
+        # used to call the digest the model's own standing source of truth while carrying
+        # none of it, to a session that had just lost its context: the one moment where
+        # being told you already hold the record does the most damage. (The old phrasing
+        # is deliberately NOT quoted here — the gate for #583 counts that exact string
+        # with no exemption for a comment recording it, so quoting it would hold the
+        # gate red on a correct fix.)
         if getattr(a, "source", "") == "compact" and _auto_checkpoint_enabled():
             seq = task.get("seq", task["id"][:8])
             msg.append("[task-station] Context was just compacted. Task %s's durable "
-                       "digest is your source of truth for continuing. If the plan "
-                       "advanced since the last checkpoint, run `/todo save` (or at "
-                       "least refresh `--state`) so a future resume stays current; the "
-                       "compaction summary is stashed in `/todo %s history`." % (seq, seq))
+                       "digest is the record to continue from — and this line does not "
+                       "carry it, so read it first: `task-station search --detail %s`. "
+                       "If the plan advanced since the last checkpoint, run `/todo save` "
+                       "(or at least refresh `--state`) so a future resume stays "
+                       "current; the compaction summary is stashed in `/todo %s "
+                       "history`." % (seq, seq, seq))
         # Under-reconciled digest gets ONE line, in the same rail as the hook-health
         # and memo nags. Self-capping: the gate file fingerprints the state already
         # reported, so this stays silent until it CHANGES (or an --apply re-arms it) —
