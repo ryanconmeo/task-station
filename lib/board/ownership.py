@@ -69,6 +69,11 @@ INDEX_FIELD = "owned_decisions"
 # has to mean "decision 4 of the task I am attached to" and nothing else, and anything
 # aimed elsewhere has to say where. The colon form is the smallest thing that says it.
 
+def task_ref(task):
+    """The shortest ref that names a task on a command line — seq, else an id prefix."""
+    return str((task or {}).get("seq") or str((task or {}).get("id") or "")[:8])
+
+
 def parse_ref(raw):
     """`"532:14"` → `("532", 14)`; `"14"` → `(None, 14)`; anything else → `(None, None)`.
 
@@ -169,12 +174,34 @@ def held_stubs(task):
             and not _dec.renders_full(e, tid)]
 
 
-def stub_line(index1, entry):
-    """`  30. ⇢ <title>  — owned by #532` — one line, and it carries all three things a
-    reference owes a reader: WHAT the ruling is, WHO owns it now, and the number that
+def index_label(task, index1):
+    """`586:12` — how a decision's OWN log index renders in a list, on every read surface.
+
+    TWO NUMBERING SYSTEMS RENDERED IDENTICALLY, and a verb that took one of them silently.
+    A task's State prose can carry a numbered list and its decision log carries numbered
+    entries; both used to render as `  N. `, so `search --detail | grep '^  [0-9]\+\. '`
+    returned a mixture of the two. Measured on the real record: a session read #586's six
+    prose GUARDS as decision indices and asked `--reassign` for 1,2,3,5,6,12,13 — five of
+    the seven named a different ruling than intended, including one it had explicitly said
+    to leave alone. Nothing moved, but only because index 6 happened to be superseded and
+    the batch is all-or-nothing. The guards held by luck of one index, not by design.
+
+    So the log's numbers now SAY WHICH LOG THEY ARE. The form is not new — `532:14` is
+    already the stored cross-task reference, already what `--supersedes` takes, and
+    already how an inherited pin renders. It is the smallest thing that names the artefact
+    a number refers to, and prose cannot collide with it: no hand-written list item begins
+    `<task>:`. Every verb still takes the bare `<n>`; the qualified form is now accepted
+    too, and refused when it names a different task than `--task`."""
+    return "%s:%d" % (task_ref(task), int(index1))
+
+
+def stub_line(index1, entry, task=None):
+    """`  586:30. ⇢ <title>  — owned by #532` — one line, and it carries all three things
+    a reference owes a reader: WHAT the ruling is, WHO owns it now, and the number that
     still addresses it here."""
-    return "  %2d. ⇢ %s  — owned by %s" % (index1, _dec.stub(entry),
-                                           _dec.owner_label(entry) or "another task")
+    label = index_label(task, index1) if task is not None else ("%d" % index1)
+    return "  %s. ⇢ %s  — owned by %s" % (label, _dec.stub(entry),
+                                          _dec.owner_label(entry) or "another task")
 
 
 def owned_elsewhere(task, load):
@@ -252,6 +279,111 @@ def inherited_pins(task, load):
             rows.append({"source": parent, "seq": parent.get("seq"), "n": i,
                          "entry": e, "ref": _dec.ref_handle(make_ref(parent, i))})
     return rows
+
+
+# -- who may move ownership OUT of a task ----------------------------------------
+#
+# GUARD (c), AND THE ONE READER IT LOCKED OUT OF ITS OWN RAIL. Only a session attached to
+# the SOURCE task may reassign out of it, or a task could quietly claim rulings the
+# programme never handed it and the only record of that would be the ownership it just
+# granted itself. That rule is right and it stays.
+#
+# IT WAS ALSO, FOR A CLOSED CHILD, A REFUSAL ADDRESSED TO EVERYBODY. Closing a task calls
+# `clear_link` on every session linked to it, so the child's own authoring session loses
+# its link at the instant of the close, and a parent is never attached to its child. The
+# set of parties permitted to run the verb was therefore EMPTY from the moment of the
+# close — not "empty once the child's window shuts", empty immediately. Measured on the
+# real record: #586 closed, and both its authoring session and its parent were refused by
+# this guard on the same afternoon. Meanwhile the close files a memo and a pickup on the
+# PARENT whose body reads "`heal --task <child> --reassign <n,…> --to <parent>` re-homes
+# any of them" — a documented command that does not exist for the person reading it,
+# which is the exact shape 3.37.0 already fixed once. The remedy the refusal offered
+# (`/todo <child>`) means REOPENING a task that was just closed and graded.
+#
+# SO THE PARENT MAY RE-HOME OUT OF A CLOSED CHILD, AND NOTHING ELSE CHANGES. The risk
+# guard (c) exists for does not exist here: the child is closed, nobody holds it, and the
+# parent is the one party the close report already handed those names to. For an OPEN
+# child the guard is untouched — there the risk is real, the child's own session can run
+# the verb, and this allowance would be a way around the guard rather than a repair to it.
+#
+# WHY THE RULE LIVES HERE AND NOT AT THE COMMAND SEAM. It is now a property of the SOURCE
+# TASK (its status, its parents) as much as of the caller, and the exit condition that
+# proves it has to be able to ask the question of a stored record without a session, a
+# store write or a terminal. Pure, stdlib, no I/O — the same contract as the rest of this
+# module.
+
+# Spelled out rather than imported from `state`: this module is a leaf that imports only
+# `decisions`, and nothing in the engine may come to depend on it the other way round. A
+# missing or unknown status reads as OPEN, exactly as `state.task_status` defaults it.
+CLOSED_STATUS = "closed"
+
+
+def _parent_labels(parent_ids_, load):
+    """`["#444"]` — how the parents read in a refusal. Falls back to an id prefix when no
+    loader is supplied or the parent cannot be read, so the sentence always addresses
+    something."""
+    out = []
+    for pid in parent_ids_:
+        seq = None
+        if load:
+            try:
+                seq = (load(pid) or {}).get("seq")
+            except Exception:
+                seq = None
+        out.append("#%s" % (seq if seq is not None else pid[:8]))
+    return out
+
+
+def may_reassign_out(source_task, linked_task_id, flag="--reassign/--unassign",
+                     load=None):
+    """May a caller attached to `linked_task_id` move ownership OUT of `source_task`?
+    Returns `(ok, refusal)` — the refusal is the whole message, ready to print.
+
+    TWO WAYS IN, and only two:
+      * THE HOLDER. The caller's session is attached to the source task itself. This is
+        guard (c) as it has always been, and it is the ordinary path.
+      * THE PARENT OF A CLOSED CHILD. The source is closed and the caller is attached to
+        a task the source names as its parent. Nobody holds a closed task, so there is no
+        session that could take the first path, and the parent is the addressee of the
+        close report that names this command.
+
+    `linked_task_id` of None (no `--session`, or a session attached to nothing) is a
+    refusal on both paths: this verb grants one task authority over another's record, and
+    "no session" is not evidence of attachment.
+
+    `load(task_id)` is optional and is used for ONE thing — naming the parent as `#444`
+    rather than as an id prefix in the refusal. The DECISION never depends on it, so a
+    caller with no store (the exit condition that proves this rule) gets the same verdict
+    and a slightly blunter sentence."""
+    src_id = (source_task or {}).get("id")
+    if linked_task_id and src_id and linked_task_id == src_id:
+        return True, None
+    closed = (source_task or {}).get("status") == CLOSED_STATUS
+    parents = parent_ids(source_task)
+    if closed and linked_task_id and linked_task_id in parents:
+        return True, None
+    ref = task_ref(source_task)
+    if not closed:
+        # UNCHANGED WORDING for the open case. This is the refusal the guard has always
+        # printed, and it is still exactly right: the child's own session can run the verb.
+        return False, ("heal %s on task #%s: this session is not attached to it, and only "
+                       "a session attached to the SOURCE task may move ownership out of "
+                       "it — otherwise a task could claim rulings it was never handed. "
+                       "Attach with `/todo %s`, or run this from the session that holds "
+                       "it. Nothing was changed." % (flag, (source_task or {}).get("seq"), ref))
+    if not parents:
+        return False, ("heal %s on task #%s: this task is CLOSED and names no parent, so "
+                       "there is no task with standing to re-home its rulings and nowhere "
+                       "to re-home them to. Reopen it with `/todo %s` and move them from "
+                       "there. Nothing was changed."
+                       % (flag, (source_task or {}).get("seq"), ref))
+    return False, ("heal %s on task #%s: this task is CLOSED, so only its PARENT (%s) may "
+                   "move ownership out of it — nobody holds a closed task, and the parent "
+                   "is who its close report handed these rulings' names to. Run this from "
+                   "a session attached to the parent, or reopen the task with `/todo %s`. "
+                   "Nothing was changed."
+                   % (flag, (source_task or {}).get("seq"),
+                      ", ".join(_parent_labels(parents, load)), ref))
 
 
 # -- writing: the reassign verb and its inverse ----------------------------------

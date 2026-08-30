@@ -540,6 +540,35 @@ class TestScanChecks(_Base):
         self.assertEqual(heal.decision_refs("the rule was wrong", own_index=2,
                                             total=2), [])
 
+    def test_the_qualified_form_is_read_as_a_decision_only_on_its_own_task(self):
+        """`586:12` is how every read surface now prints a decision's index, so prose that
+        was copied off a digest carries it — and this check has to read it in BOTH
+        directions.
+
+        The dangerous direction is the second one. `#586:12` on a task with 600 entries
+        would have matched `_HASH_REF` at `#586`, and 586 is both in range and earlier, so
+        a reference to SOMEBODY ELSE'S decision would have been reported as an unlinked
+        supersession of this task's 586th. The qualified occurrence is claimed whole, so
+        neither half is available to a second reader."""
+        self.assertEqual(heal.decision_refs("586:12 was wrong", own_index=20, total=30,
+                                            seq=586), [12])
+        self.assertEqual(heal.decision_refs("586:12 was wrong", own_index=20, total=30,
+                                            seq=444), [])
+        self.assertEqual(heal.decision_refs("#586:12 was wrong", own_index=600, total=700,
+                                            seq=444), [])
+        # …and a caller that cannot say whose number it is takes the missed finding, not
+        # the false one — the direction this module takes everywhere.
+        self.assertEqual(heal.decision_refs("586:12 was wrong", own_index=20, total=30),
+                         [])
+
+    def test_the_unqualified_shapes_are_untouched_by_that(self):
+        # The qualified form ADDS a reading; it must not quietly remove the four that
+        # were already there, nor start reading a plain time or ratio as a reference.
+        self.assertEqual(heal.decision_refs("corrected in #1", own_index=3, total=3,
+                                            seq=9), [1])
+        self.assertEqual(heal.decision_refs("decision 3 was wrong", own_index=5, total=5,
+                                            seq=9), [3])
+
     # -- 4: oversized decisions --------------------------------------------
     def test_an_oversized_decision_is_flagged_as_a_split_candidate(self):
         big = "x" * (heal.OVERSIZE_CHARS + 1)
