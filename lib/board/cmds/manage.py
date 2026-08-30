@@ -1306,6 +1306,30 @@ def _update_one(ref, a):
                         % ", ".join("`%s`" % v for v in outward))
             msgs.append("    If nobody authorised it yet, say so: `… — NOT AUTHORISED, "
                         "ask first`. Past tense reports what landed and never trips this.")
+    # THE `NEXT:` CHECK, ON THE PATH THAT WAS SILENT. Same defect shape as #583 itself: a
+    # check that exists but fires where it cannot help. `cold_read_failures` runs only
+    # under the checkpoint stamp below, so `update --state '<no NEXT:>'` printed
+    # "updated task N: state" and nothing else, while the IDENTICAL text written with a
+    # `--summary` printed the failure. Nothing told the author at WRITE time, and the
+    # first thing to notice was a REFUSED handoff — by which point the session that knew
+    # the answer is gone. No new logic: the same `save.leads_with_next` predicate the
+    # checkpoint path already uses, on the write it was never wired to.
+    #
+    # SILENT WHEN THE LINE LEADS WITH `NEXT:`, so it cannot become noise on every write,
+    # and skipped entirely on the checkpoint path, where COLD-READ CHECK below reports
+    # the same finding — one write must never print it twice. A CLEARED state (`--state
+    # ''`) is not warned about here either, for the same reason `cold_read_failures`
+    # does not: an empty slot is `empty_slots`' finding, and two verbs answering for one
+    # gap is how a report starts contradicting itself.
+    if (cap.get("state_changed") and "checkpoint" not in changed
+            and (task.get("state") or "").strip()
+            and not _save.leads_with_next(task.get("state"))):
+        msgs.append("  COLD-READ CHECK: the state line does not begin with `%s` — a "
+                    "resumed session gets standing, not a first move, and `relay "
+                    "--spawn` REFUSES a record in this shape. Fix it now, while you are "
+                    "still the session that knows the answer: "
+                    "`--state '%s <concrete first move> — <current standing>'`."
+                    % (_save.NEXT_PREFIX, _save.NEXT_PREFIX))
     if "checkpoint" in changed:
         msgs.append("  CHECKPOINT STAMPED — this task now records that a FULL structured "
                     "checkpoint was captured (a --summary and a --state written "

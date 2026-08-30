@@ -321,8 +321,11 @@ def main(argv=None):
                     help="the structured report — the same object the text view renders")
     sp.set_defaults(fn=cmd_turn)
 
-    # invoke — spawn a child session ALREADY ATTACHED to its own task, so the hooks
-    # inject that task's digest and the ask carries the REQUEST only.
+    # invoke — spawn a child session ALREADY ATTACHED to its own task, so the child can
+    # FETCH that task's record in one command and the ask carries the REQUEST only.
+    # ATTACHMENT IS A POINTER, NOT A DELIVERY (#583): this comment used to say the hooks
+    # handed the digest over. They do not — SessionStart prints the task's title and
+    # status and nothing else — so the launch prompt names the read instead.
     sp = sub.add_parser("invoke",
                         help="spawn a child session pre-attached to its own task")
     sp.add_argument("--task", default=None, metavar="CHILD",

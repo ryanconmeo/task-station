@@ -547,10 +547,17 @@ def cmd_scan(a):
 # ------------------------------------------------------------------ the invoke ----
 #
 # B10 — CHILD AS ATTACHED SESSION. The child is spawned ALREADY LINKED to its own task,
-# so the SessionStart hook injects that task's digest and the child reads its own
-# context from the record instead of from a brief somebody wrote. That is what kills the
-# lossy-brief boundary BY CONSTRUCTION rather than by discipline: there is no brief to
-# get wrong, and the ask carries the REQUEST only.
+# so it reads its own context OUT OF THE RECORD, in one command, instead of out of a
+# brief somebody wrote. That is what kills the lossy-brief boundary BY CONSTRUCTION
+# rather than by discipline: there is no brief to get wrong, and the ask carries the
+# REQUEST only.
+#
+# ATTACHMENT IS A POINTER, NOT A DELIVERY — #583, and this comment was one of the seven
+# places that said otherwise. Nothing hands a child its digest: SessionStart prints the
+# task's title and status, and that is the whole of it. So "the ask carries the request
+# only" is only safe BECAUSE the launch prompt names the read (`_child_prompt`); without
+# that line the same sentence describes a child with no context at all, which is correct
+# reasoning from a false premise and is exactly how this defect survived seven sites.
 
 # Past this many characters an ask has almost certainly stopped being a request and
 # started being context. A WARNING, never a refusal: a legitimate request can be long,
@@ -607,7 +614,16 @@ def _child_prompt(ask, role, report, ref=None):
 
     `<n>` IN THE CONTRACT BECOMES THE CHILD'S TASK REF, so a contract that tells the
     child to run `claims --task <n>` hands it a command it can paste rather than one more
-    thing to resolve on the way to doing what was asked. Only when a ref is known."""
+    thing to resolve on the way to doing what was asked. Only when a ref is known.
+
+    THE READ IS NAMED FOR THE SAME REASON THE RAIL IS — #583. Attaching a child to a task
+    delivers nothing: SessionStart prints that task's title and status, and every surface
+    around this one used to claim the digest arrived with it. So a child was told its
+    context had been handed over, told the ask deliberately withheld that context, and
+    given no command to fetch it — three true-sounding sentences that together left it
+    with nothing. It rides on the same `ref is not None` condition as the memo rail
+    because both are the same bargain: the record is where the work comes from and where
+    it goes back, and a child that is told neither is a brief boundary with extra steps."""
     report = str(report or "").strip()
     if report and ref is not None:
         report = report.replace(CHILD_REF_TOKEN, str(ref))
@@ -616,9 +632,12 @@ def _child_prompt(ask, role, report, ref=None):
         out = "%s\n\nREPORT BACK — the %s contract: %s" % (ask, role or "role", report)
     if ref is None:
         return out
-    return ("%s\n\nHAND IT BACK AS A MEMO ON YOUR OWN TASK — `task-station memo send "
+    return ("%s\n\nREAD YOUR OWN RECORD FIRST — nothing was loaded into this session at "
+            "start: `task-station search --detail %s` returns the goal, the open "
+            "checklist and every live decision, and re-deriving any of it is waste.\n\n"
+            "HAND IT BACK AS A MEMO ON YOUR OWN TASK — `task-station memo send "
             "--task %s --text '<the report>'`. That is where the gate reads it; a report "
-            "in this window dies with the session." % (out, ref))
+            "in this window dies with the session." % (out, ref, ref))
 
 
 def _invoke_command(base, role, model, permission_mode, ask, effort=None, ref=None):
@@ -881,8 +900,10 @@ def cmd_invoke(a):
     cmd = _invoke_command(base, role, model, permission_mode, ask, effort,
                           ref=child.get("seq"))
     print(header)
-    print("  session %s is pre-attached: its SessionStart injects THIS task's digest, "
-          "so the ask carries the request only." % sid[:8])
+    print("  session %s is pre-attached, which is a POINTER and not a delivery: nothing "
+          "is loaded into it, so the ask carries the request only and its launch prompt "
+          "tells it to run `task-station search --detail %s` first."
+          % (sid[:8], child.get("seq") or child["id"][:8]))
     for w in warnings:
         print("  note: %s" % w)
     for line in _workspace.lines(verdict, done):
@@ -1007,9 +1028,10 @@ def cmd_relay(a):
         parts.append("--model %s" % shlex.quote(model))
     parts.append(shlex.quote(prompt))
     cmd = " ".join(parts)
-    print("  session %s (%s) is pre-attached to THIS task — no child, no new record: its "
-          "SessionStart injects the same digest you have been working from."
-          % (sid[:8], successor))
+    print("  session %s (%s) is pre-attached to THIS task — no child, no new record. "
+          "Nothing is loaded into it: the continuation prompt points it at "
+          "`task-station search --detail %s`, the same record you have been working "
+          "from." % (sid[:8], successor, ref))
     for line in _workspace.lines(verdict, done):
         print(line)
     manual = True
