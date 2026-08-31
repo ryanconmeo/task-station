@@ -92,6 +92,7 @@ import time
 
 import config as _config
 import exits as _exits
+import gating as _gating
 import loop as _loop
 
 # ---------------------------------------------------------------- child states ----
@@ -374,6 +375,25 @@ def landed_work(task, after=None):
     return after is None or float(last) >= float(after)
 
 
+def _reported_state(task):
+    """REPORTED, or DONE_PENDING_MERGE when every unmet condition was DECLARED merge-gated.
+
+    ONE FUNCTION BECAUSE THERE ARE TWO WAYS TO ARRIVE AT REPORTED, and until 3.45.0 only
+    one of them asked the question. A child whose report is still UNACKED went through the
+    first return and got the merge-gated reading; a child whose report the parent had
+    already ACKED — graded once, still open, still waiting on the same merge — fell through
+    to the second return and read as a plain REPORTED, indistinguishable from a child with
+    ordinary red conditions. That is the same defect as the silent `exit-show`, in the
+    verb that decides what the loop does next: the flag was stored, correct, and dropped on
+    the path a child spends the LONGEST on, because "acked and still waiting for a human"
+    is exactly the state a queued merge leaves behind.
+
+    Nothing here softens the verdict. Both states are gated and both are gradeable; the
+    difference is only which sentence the turn prints."""
+    return DONE_PENDING_MERGE if _gating.pending_merge(_exits.merge_gate(task)) \
+        else REPORTED
+
+
 def child_state(task, live=(), worked=None):
     """Which of the eight states this child is in, right now.
 
@@ -411,8 +431,7 @@ def child_state(task, live=(), worked=None):
     if launch and not _loop.parked(task) \
             and (report_memo(task, after=launch["ts"], unacked_only=True)
                  or landed_work(task, after=launch["ts"])):
-        return DONE_PENDING_MERGE if _exits.merge_gate(task)["all_merge_gated"] \
-            else REPORTED
+        return _reported_state(task)
     if live and task.get("seq") in set(live):
         return RUNNING
     if _loop.parked(task):
@@ -420,7 +439,7 @@ def child_state(task, live=(), worked=None):
     if not launch:
         return UNSTARTED
     if report_memo(task, after=launch["ts"]):
-        return REPORTED
+        return _reported_state(task)
     did = worked_since(task, launch["ts"]) if worked is None else bool(worked)
     if did:
         return SILENT_EXIT
@@ -1041,10 +1060,23 @@ def plan(orch, children, live=(), resolve=None, cap=None, retry_max=None, worked
     # which the parent's own Stop gate will not let a turn end on. So the honest next step
     # is to do something else and be told, not to look again.
     for child in waits:
+        # AND THE SECOND HALF OF THAT SENTENCE IS A TEST SOME CHILDREN CANNOT SIT. "Nor
+        # turned its exit conditions green" reads as a thing the child is failing to do —
+        # but when every unmet condition was DECLARED as reading the merge target, turning
+        # them green is not in the child's power at all, and on a night when the one human
+        # who may merge is asleep that is EVERY in-flight child at once. The state stays
+        # RUNNING (see `gating.wait_note`: a live child that has not reported is still
+        # working, and conditions are registered before the work is done, so promoting on
+        # a red gated condition would call a child done on its first minute). What changes
+        # is that the reader is told which of the two reds this is.
+        gated = _gating.wait_note(_exits.merge_gate(child))
+        why = ("a live session is attached AND it has neither reported nor turned its exit "
+               "conditions green — the loop is working, not stuck")
+        if gated:
+            why = ("a live session is attached and it has not reported yet — the loop is "
+                   "working, not stuck. %s" % gated)
         actions.append(_act(
-            WAIT, child,
-            "a live session is attached AND it has neither reported nor turned its exit "
-            "conditions green — the loop is working, not stuck",
+            WAIT, child, why,
             "task-station pickup list --task %s" % (_ref(orch) if orch else _ref(child)),
             reach=reach_command(_ref(child), seq=_ref(child))))
 

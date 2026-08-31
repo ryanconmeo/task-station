@@ -3,6 +3,90 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.45.0] — 2026-08-31
+
+**A MERGE-GATED CONDITION RENDERED IDENTICALLY TO AN UNDECLARED ONE.** `exit-add
+--merge-gated` has stored the flag since 3.39.0, and the flag is load-bearing: it is the one
+thing that separates "finished, waiting on a human to merge" from "failed". `exit-show` never
+printed it. A declared condition and an undeclared one were BYTE-IDENTICAL on the single
+surface built to display conditions — the only two occurrences of the string "merge" in that
+output came from a child's own expect token, a coincidence.
+
+**MEASURED, ON 2026-08-30.** A parent session read `exit-show --task 591`, saw no marking
+anywhere, concluded that none of the five conditions were declared, and sent the child a
+message telling it to declare a flag it had already declared. All five carried
+`merge_gated=True` in the store, and `exit-add` had printed the full MERGE-GATED banner at
+registration — announced exactly once, to whoever happened to be running that command, and
+then unreachable from the surface every later reader consults. The record was right and the
+surface was silent, which is how a correct store produces a wrong decision.
+
+**WHY IT COSTS SOMETHING RATHER THAN LOOKING UNTIDY.** Exit conditions run against the MAIN
+checkout by design — that is what stops a child grading its own unmerged branch. So while the
+one person who may merge is away, EVERY condition on EVERY in-flight child is red, for one
+reason, and that reason is not a defect. Without a mark, "red because unmerged" and "red
+because broken" are the same picture, and the only reading available is the wrong one.
+
+**`turn` DROPPED THE DECLARATION ON THE PATH A CHILD SITS IN LONGEST.** It read
+`merge_gate` on exactly one of its classification paths, so a merge-gated child was named
+DONE PENDING MERGE only while its report was still UNACKED. Once the parent had engaged that
+report — graded it once, still open, still waiting on the same merge — the same child fell
+through a second `return REPORTED` and became indistinguishable from one with ordinary red
+conditions. Both returns now go through one merge-gate-aware helper.
+
+**AND ITS WAIT LINE ASKED FOR SOMETHING THE CHILD CANNOT DO.** "A live session is attached AND
+it has neither reported nor turned its exit conditions green" — for a merge-gated child the
+second half names a thing that cannot happen before a human merges, so the reader was handed a
+test the child is not able to sit. The state is unchanged (a live child that has not reported
+is STILL RUNNING — conditions are registered before the work is done, so "all declared and
+red" is the ordinary state of a child in its first minute, and promoting on that alone would
+report a child done at the moment it started). What changed is the sentence.
+
+### The rules moved to a leaf, for the third time and for the same reason
+
+`lib/board/gating.py` imports NOTHING — not even from its own package. `exits` imports
+`checker`, which imports `heal`, which reads the store, so none of it loads from `git show
+origin/main:` and an exit condition that must resolve the merge target could never exercise
+the rule it asserts. `timing.py` (3.44.0) and `ownership.may_reassign_out` (3.43.0) were moved
+for exactly this reason and said so; this is the third time, so it is the house pattern.
+
+### Nothing softens a verdict
+
+A merge-gated condition that is UNMET is still unmet, still a gate finding, and still blocks
+the release. One ordinary unmet condition alongside any number of gated ones is still not
+DONE PENDING MERGE — something a merge cannot fix means the work is not finished. A task with
+nothing unmet is not "pending merge", it is fine. And nothing is inferred anywhere: an
+UNDECLARED condition behaves exactly as it did before this release, permanently, which is the
+negative control every test here is paired against.
+
+### Added
+- `lib/board/gating.py` — the merge-gated vocabulary as a stdlib-only leaf: `tally`,
+  `pending_merge`, `step_note`, `header_notes`, `wait_note`. One spelling of the word, in one
+  place, so three surfaces cannot describe the same declaration three ways.
+- `scripts/prove_merge_gated_visible.py` — the judge for #598's two exit conditions. It
+  materialises `git archive origin/main` into a throwaway tree and runs the SHIPPED surfaces
+  from it (the real `exit-show` CLI against a throwaway store; the real `turn.child_state` and
+  `turn.plan`), rather than grepping callers for a line that could be present and unreached.
+
+### Changed
+- `exit-show` marks each declared condition under its step and counts them in the header, and
+  says DONE PENDING MERGE when every unmet condition is declared. It prints nothing at all
+  when nothing is declared — a surface that said "0 merge-gated" on every task would train
+  every reader to skip the line, and the line is the whole feature.
+- `exits.items()` carries `merge_gated`, and `exits.merge_gate()` returns `declared` as well.
+  `declared` counts every declared condition, met or not, because the declaration is a
+  property of the condition and not of its last result.
+- `turn.child_state` routes both of its REPORTED returns through `_reported_state`, so an
+  acked report keeps the merge-gated reading; `turn.plan`'s WAIT line names the merge.
+
+### Added
+- …
+
+### Changed
+- …
+
+### Fixed
+- …
+
 ## [3.44.0] — 2026-08-30
 
 **MAINTENANCE HAD NO SENSE OF TIMING. All three of its actions fired on a COUNT, and a count
