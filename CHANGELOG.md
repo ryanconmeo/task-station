@@ -3,6 +3,48 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.48.0] — 2026-08-31
+
+**A MERGE PROPOSAL WAS A TRANSITIVE CLOSURE, SO IT NAMED A SUBJECT NO MEMBER SHARED.**
+The subject tier grouped decisions with a union-find over their signals. The signals
+themselves were never the problem — `subject_signals` emits explicit named references
+only and infers nothing from wording — but a connected component built from correct
+signals is not a subject. A names PR 27, B names PR 27 and PR 29, C names PR 29, and
+all three became one group though A and C share nothing at all. Chained across the
+record it was measured on, that put **36 live decisions and 31 signals into a single
+proposal**, which had been correctly refused **seven** times: a reader cannot perform a
+merge whose members are about different things.
+
+### Changed
+- **Merge candidates are proposed PER SIGNAL, not per connected component.** Every
+  member of a group now names the same step, release, PR or story, so the proposal is
+  one a reader can act on. On the measured record: one 36-member group becomes 27
+  groups, the largest of 6, and each one is performable. Two signals carried by the
+  *identical* set of decisions collapse into one row wearing both labels — that is the
+  grouping rule holding twice over, not the chaining returning.
+- **The scan prints the largest few groups and names the count it dropped**, the rule
+  `oversized_proposal_lines` already kept. The cap is on ROWS, never on grouping: a
+  capped group would be an arbitrary slice of a subject rather than the whole of one,
+  and `heal --candidates` and the dry run still carry every group.
+
+### Fixed
+- **A work-item signal carries its type, so `PR 27` and `story 27` are two subjects.**
+  Every match used to emit `PR/story <n>` from one bare number, so two decisions about
+  unrelated things could group as sharing a subject — the same defect class as a bare
+  `#NNN` read as a decision index, in a second location. The split is exactly the one
+  3.46.0's declared `subject` field already makes (`decisions._SUBJECT_QUALIFIED` names
+  `pr` and `story` as the two collision-prone types and refuses a declared bare
+  integer), so the scraped and declared halves of the record agree about what `27`
+  means. It splits no further: a story, an issue and a work item are one id space, and
+  a scraper cannot invent the repo qualifier a declared `pr:<repo>#<n>` carries.
+
+### Unchanged, deliberately
+- **What `_WORK_ITEM_REF` matches is byte-identical.** The matching was already right;
+  only the label was wrong. Widening recall — the plural nouns it still misses — is a
+  separate, unmeasured change and does not ride along with a labelling fix.
+- The check is not deleted, softened, or made harder to trigger. It fires more often
+  and every firing is correct.
+
 ## [3.46.0] — 2026-08-31
 
 **A DECISION WAS AN UNTYPED STRING, SO EVERY CONSUMER RE-DERIVED ITS STRUCTURE FROM
