@@ -72,6 +72,7 @@ import time
 
 import checker as _checker
 import config as _config
+import gating as _gating
 import steps as _steps
 
 # The per-step key this module owns. Additive: every other reader ignores it.
@@ -150,17 +151,20 @@ def merge_gated(step):
 
 
 def merge_gate(task):
-    """`{"unmet", "merge_gated", "all_merge_gated"}` over the LIVE steps.
+    """`{"declared", "unmet", "merge_gated", "all_merge_gated"}` over the LIVE steps.
 
-    `all_merge_gated` is the load-bearing one, and it is False when nothing is unmet — a
-    task with no unmet conditions is not "pending merge", it is just fine. One ordinary
-    unmet condition alongside a merge-gated one also makes it False: something a merge
-    cannot fix means the work is not finished."""
-    unmet = [s for _n, s in _steps.live((task or {}).get("steps") or [])
-             if item_state(s) == UNMET]
-    gated = [s for s in unmet if merge_gated(s)]
-    return {"unmet": len(unmet), "merge_gated": len(gated),
-            "all_merge_gated": bool(unmet) and len(gated) == len(unmet)}
+    THE RULES THEMSELVES LIVE IN `gating`, and the move is not cosmetic: this module
+    imports `checker`, which imports `heal`, which reads the store — so nothing here can be
+    executed out of a git object, and an exit condition that must resolve `origin/main`
+    could never exercise the rule it was asserting. `gating` imports nothing at all. This
+    function is now only the part that needs a task dict: turning stored steps into the
+    `(state, merge_gated)` pairs the leaf decides on.
+
+    `declared` is new and additive — every declared condition, met or not — because a
+    surface that counted only the red ones would go silent the moment the work landed."""
+    return _gating.tally(
+        (item_state(s), merge_gated(s))
+        for _n, s in _steps.live((task or {}).get("steps") or []))
 
 
 def item_state(step):
@@ -177,7 +181,11 @@ def item_state(step):
 
 def items(task):
     """Every LIVE step carrying a condition, as
-    `{"n", "text", "done", "cmd", "expect", "state", "last"}`.
+    `{"n", "text", "done", "cmd", "expect", "state", "merge_gated", "last"}`.
+
+    `merge_gated` is carried HERE rather than re-read per surface, because every reader
+    that renders a condition is a reader that must be able to say whether it was declared
+    — and the one that could not is exactly how this key came to be added.
 
     Superseded steps are excluded, and that is a correctness point rather than tidiness:
     a retired step is off the active checklist, so letting its condition gate anything
@@ -191,7 +199,8 @@ def items(task):
             continue
         out.append({"n": n, "text": _steps.text(step), "done": _steps.is_done(step),
                     "cmd": cond["cmd"], "expect": cond["expect"],
-                    "state": item_state(step), "last": cond.get("last") or {}})
+                    "state": item_state(step), "merge_gated": bool(cond["merge_gated"]),
+                    "last": cond.get("last") or {}})
     return out
 
 
