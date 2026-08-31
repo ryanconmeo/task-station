@@ -1215,10 +1215,14 @@ def _add_config_args(sp):
                          "on, prompt a full /todo save before auto-compaction once measured context "
                          "reaches this %% (default 65; 1-95; 0/off disables)")
     sp.add_argument("--checkpoint-pct-get", dest="checkpoint_pct_get", action="store_true")
-    sp.add_argument("--context-window", dest="context_window", nargs="?", default=None,
-                    metavar="TOKENS",
-                    help="the model's context-window size, the denominator --checkpoint-pct "
-                         "measures against (default 200000; raise for a larger window)")
+    sp.add_argument("--context-window", dest="context_window", nargs="?", const="auto",
+                    default=None, metavar="TOKENS",
+                    help="OVERRIDE the context-window size — the denominator --checkpoint-pct "
+                         "measures against. Default is AUTO: the window is DETECTED from the "
+                         "session's own model, so it is right on a 200k session and a 1M one "
+                         "without anybody keeping a number in sync with a model roster. "
+                         "0/off/auto drops the override again; `task-station window` says "
+                         "which source won and whether an override disagrees with the session")
     sp.add_argument("--context-window-get", dest="context_window_get", action="store_true")
     sp.add_argument("--checkpoint-milestone-edits", dest="checkpoint_milestone_edits",
                     nargs="?", const="off", default=None, metavar="COUNT",
@@ -1226,6 +1230,15 @@ def _add_config_args(sp):
                          "this many meaningful events (edits / promotions) since the last digest "
                          "refresh (default 5; 0/off = nudge on any staleness)")
     sp.add_argument("--checkpoint-milestone-edits-get", dest="checkpoint_milestone_edits_get",
+                    action="store_true")
+    sp.add_argument("--boundary-maintenance", dest="boundary_maintenance", nargs="?",
+                    choices=["on", "off"], const="on", default=None,
+                    help="run the AUTO maintenance class at a work boundary — a turn ending "
+                         "with no unclaimed pickup, no undelivered order and no half-done "
+                         "merge — and REPORT what it did rather than asking. Splits and "
+                         "retro-dispositions only; a merge is never automatic (default off). "
+                         "`task-station timing` shows the verdict and writes nothing")
+    sp.add_argument("--boundary-maintenance-get", dest="boundary_maintenance_get",
                     action="store_true")
     sp.add_argument("--heal-prompt-nag", dest="heal_prompt_nag", nargs="?",
                     choices=["on", "off"], const="on", default=None,
