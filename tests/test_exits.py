@@ -43,6 +43,7 @@ _TMP_HOME = tempfile.mkdtemp(prefix="ts-exits-")
 os.environ["TASK_STATION_HOME"] = _TMP_HOME
 
 import exits                  # noqa: E402
+import gating                 # noqa: E402
 import steps as steps_mod     # noqa: E402
 import store                  # noqa: E402
 
@@ -421,6 +422,119 @@ class CliTest(_Base):
         self._out(ts.cmd_exit_tick, _Args(task=str(t["seq"]), step=2))
         out, _ = self._out(ts.cmd_exit_show, _Args(task=str(t["seq"])))
         self.assertIn("1 met · 1 unmet · 1 not run", out)
+
+
+# -- (6) MERGE-GATED IS VISIBLE WHERE CONDITIONS ARE READ -------------------------
+#
+# THE DEFECT THESE PIN, measured on 2026-08-30 against #591. Five conditions carried
+# `merge_gated=True` in the store, `exit-add` had printed the MERGE-GATED banner at
+# registration, and `exit-show` rendered them BYTE-IDENTICALLY to five undeclared ones.
+# A parent read that surface, concluded none were declared, and told the child to declare
+# a flag it had already declared. The flag was stored, load-bearing and unreadable.
+#
+# WHY IT IS NOT COSMETIC. Conditions run against the MAIN checkout, so while the one human
+# who may merge is away, EVERY condition on EVERY in-flight child is red for that reason
+# and no other. Without a mark, "red because unmerged" and "red because broken" are the
+# same picture, and only the wrong reading is available.
+#
+# EVERY TEST HERE HAS ITS NEGATIVE CONTROL, because the one thing worse than an invisible
+# declaration is a mark that appears without one.
+
+class MergeGatedIsVisible(_Base):
+
+    def _declared(self, *steps_):
+        """A task whose steps each carry a condition, `(step_text, merge_gated)`."""
+        t = self._task(*[text for text, _g in steps_])
+        for n, (_text, gated) in enumerate(steps_, start=1):
+            exits.set_condition(t["steps"], n, "check-%d" % n, ["OK"],
+                                merge_gated=gated)
+        return t
+
+    def _red(self, t, *ns):
+        for n in ns:
+            t["steps"][n - 1]["exit"]["last"] = {"ts": 1000.0, "ok": False,
+                                                 "status": "ran", "missing": ["OK"],
+                                                 "got": ""}
+
+    # -- the leaf ----------------------------------------------------------------
+
+    def test_the_tally_counts_declared_conditions_whether_or_not_they_are_red(self):
+        """The declaration is a property of the CONDITION, not of its last result — a
+        surface that counted only the red ones would go silent the moment work landed."""
+        t = gating.tally([("met", True), ("unmet", True), ("unknown", True)])
+        self.assertEqual(t["declared"], 3)
+        self.assertEqual(t["unmet"], 1)
+        self.assertEqual(t["merge_gated"], 1)
+
+    def test_nothing_unmet_is_never_pending_merge(self):
+        """A task with no unmet conditions is not waiting on a merge, it is just fine."""
+        t = gating.tally([("met", True), ("met", True)])
+        self.assertFalse(gating.pending_merge(t))
+        self.assertFalse([n for n in gating.header_notes(t) if "DONE PENDING MERGE" in n])
+        self.assertIsNone(gating.wait_note(t))
+
+    def test_one_ordinary_unmet_condition_outranks_any_number_of_gated_ones(self):
+        """Something a merge cannot fix means the work is not finished. This is the
+        negative control that stops the flag buying a soft reading for a real red."""
+        t = gating.tally([("unmet", True), ("unmet", True), ("unmet", False)])
+        self.assertFalse(gating.pending_merge(t))
+        self.assertIsNone(gating.wait_note(t))
+
+    def test_an_undeclared_condition_gets_no_mark_at_all(self):
+        self.assertIsNone(gating.step_note(False))
+        self.assertEqual(gating.header_notes(gating.tally([("unmet", False)])), [])
+
+    def test_the_leaf_imports_nothing_so_it_can_be_run_out_of_a_git_object(self):
+        """The whole reason these rules are not beside their callers: `exits` imports
+        `checker`, which imports `heal`, which reads the store — none of that loads from
+        `git show origin/main:`. A leaf does. Same move as timing.py in 3.44.0."""
+        src = open(os.path.join(LIB, "board", "gating.py")).read()
+        offenders = [ln for ln in src.splitlines()
+                     if ln.startswith("import ") or ln.startswith("from ")]
+        self.assertEqual(offenders, [], "gating.py must import nothing: %s" % offenders)
+
+    # -- the surface -------------------------------------------------------------
+
+    def test_show_marks_a_declared_condition_per_step(self):
+        t = self._declared(("a", True), ("b", False))
+        ts.save_task(t)
+        out, _ = self._out(ts.cmd_exit_show, _Args(task=str(t["seq"])))
+        self.assertEqual(out.count("merge-gated — it reads the merge target"), 1)
+
+    def test_show_counts_declared_conditions_in_its_header(self):
+        t = self._declared(("a", True), ("b", True), ("c", False))
+        ts.save_task(t)
+        out, _ = self._out(ts.cmd_exit_show, _Args(task=str(t["seq"])))
+        self.assertIn("2 of them are MERGE-GATED", out)
+
+    def test_show_says_DONE_PENDING_MERGE_when_every_unmet_one_is_declared(self):
+        t = self._declared(("a", True), ("b", True))
+        self._red(t, 1, 2)
+        ts.save_task(t)
+        out, _ = self._out(ts.cmd_exit_show, _Args(task=str(t["seq"])))
+        self.assertIn("DONE PENDING MERGE", out)
+
+    def test_show_does_NOT_say_DONE_PENDING_MERGE_on_a_mixed_red(self):
+        """One red a merge cannot fix, and the softer reading is off."""
+        t = self._declared(("a", True), ("b", False))
+        self._red(t, 1, 2)
+        ts.save_task(t)
+        out, _ = self._out(ts.cmd_exit_show, _Args(task=str(t["seq"])))
+        self.assertNotIn("DONE PENDING MERGE", out)
+
+    def test_an_all_undeclared_task_renders_exactly_as_it_did_before(self):
+        """The permanent negative control: nothing declared, nothing printed. A surface
+        that said `0 merge-gated` on every task would train the reader to skip the line,
+        and the line is the whole feature."""
+        t = self._declared(("a", False), ("b", False))
+        self._red(t, 1, 2)
+        ts.save_task(t)
+        out, _ = self._out(ts.cmd_exit_show, _Args(task=str(t["seq"])))
+        self.assertNotIn("merge-gated", out.lower())
+
+    def test_items_carries_the_declaration_so_no_surface_has_to_re_read_it(self):
+        t = self._declared(("a", True), ("b", False))
+        self.assertEqual([i["merge_gated"] for i in exits.items(t)], [True, False])
 
 
 if __name__ == "__main__":
