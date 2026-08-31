@@ -1737,7 +1737,6 @@ corruption for anything downstream to detect, only a shorter sentence that parse
 
 ### Fixed
 - …
-||||||| parent of 2a964fa (fix: a spawned window RUNS the command — hand it a file, not 1024 bytes of typing (3.22.0))
 
 ## [3.20.0] — 2026-08-27
 
@@ -1958,7 +1957,6 @@ reported and a person found the damage later.
   the ancestry fallback, so a detached re-exec with a scrubbed environment could close the
   wrong app's window. Both scripts now ask the one resolver, and a test greps to keep the
   detection from creeping back in.
-||||||| parent of 0d84d1b (feat: the org-setup wizard — four read-only scans write a valid OrgProfile (3.19.0))
 
 ## [3.18.0] — 2026-08-21
 
