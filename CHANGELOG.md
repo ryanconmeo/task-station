@@ -3,6 +3,91 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.46.0] — 2026-08-31
+
+**A DECISION WAS AN UNTYPED STRING, SO EVERY CONSUMER RE-DERIVED ITS STRUCTURE FROM
+ENGLISH.** The element carried `{text, superseded_by, pinned, owner}` and nothing else —
+no kind, no subject. So the record's own readers were becoming an English parser: merge
+candidates grouped by the "leading shape" of the text, a placement lint that counted
+name-mentions and was demoted because it could not fire correctly, and fifteen separate
+prose vocabularies. `heal.py` is **4,940 lines against this module's 905**: the module that
+*guesses at* the record is 5.5× the module that *is* the record, and it grows one
+vocabulary per prose shape rather than one per feature.
+
+**And the ceiling on guessing was already measured, the hard way.** A pass over 82
+decisions classified by subject keyword produced 61,163 chars of apparently-owned material;
+six spot-checks found roughly **two** right. A ruling *mentions* a subject far more often
+than it is *about* one, and the mentions outnumber the ownership about two to one. That is
+information which exists at **write** time being expensively and unreliably reconstructed
+at **read** time.
+
+**So the author declares it, and nothing ever infers it.** A decision element may now carry
+two optional author-written fields: `kind`, from a **closed** five-word vocabulary
+(`ruling` / `measurement` / `incident` / `release-record` / `process-note`), and `subject`,
+a list of qualified refs. The vocabulary is validated at the **setter** and never at the
+reader, because a reader that accepted anything would make `kind` a second prose field —
+which is the defect being closed, not a smaller version of it.
+
+**AN UNTYPED DECISION BEHAVES BYTE-IDENTICALLY TO HOW IT ALWAYS HAS — PERMANENTLY, NOT FOR
+A MIGRATION WINDOW.** Hundreds of untyped decisions already exist and backfill cannot be
+automated at the ~1/3 precision that got the placement tier demoted, so an untyped entry is
+a permanent citizen of the record. `kind()` returns `None` for one, `subject()` returns
+`[]`, `compact()` still stores it as a plain **string**, and **untyped is not a kind and
+never defaults to one**. One rule for every consumer rather than per-consumer defaults,
+because per-consumer defaults are exactly how two surfaces begin disagreeing about one
+entry.
+
+**A SUBJECT IS A QUALIFIED REF AND NEVER A BARE INTEGER, and this one is not taste.**
+`heal.subject_signals` already labels every work item `PR/story <n>` from one bare number,
+so **PR 27 and story 27 emit the identical signal and collide today** — two decisions about
+unrelated things can be grouped as sharing a subject. Today that is a scraping accident. A
+*declared* bare integer would make the same collision **structural**: trusted, fed to the
+merge grouper, and undoubtable by anything downstream, because "never infer" forbids the
+only correction mechanism a wrong value could have. **A wrong subject is strictly worse than
+none.** So a ref carries its type — `task:596`, `step:29`, `release:3.44.0` — and a work
+item carries its repo or project too: `pr:task-station#27`, `story:atlas#2704`. `pr:27` is
+refused, and so is `pr:27#3`.
+
+**The shape is a copy, not an invention.** 3.42.0 added `owner` to this same element with
+exactly this shape: a module-level FIELD constant, an accessor returning `None` for legacy
+entries, a guarded setter, and a companion field for a load-free render. `kind`/`subject`
+are the third instance of a proven move — with one deliberate departure and one thing that
+fell out for free. `set_owner` refuses to **re-point** an owned ruling because an owner has
+a second store (the owner task's index) that a re-point would leave stale; a kind has no
+second side, so **re-declaring is allowed** — the design forbids any check from ever
+contradicting a declared value, so the author is the only correction mechanism there is, and
+making a correction awkward is how a misdeclaration becomes permanent. And declaration needs
+no companion field at all: a `type:value` token carries its own display form, so it renders
+without a load, which is the thing `owner_seq` had to be invented for.
+
+**This is the write half only, and nothing reads it yet.** No consumer changed: `heal.py`,
+the digest, and the five text-only projections (`view`, `feeds`, `state`, `graph`,
+`knowledge`) are untouched, and a test asserts that `live` / `live_texts` / `total_chars` /
+`digest_order` give the identical answer before and after a decision declares. Write path
+first because the corpus only ever improves via **writes** — read-path work has nothing to
+read until writes exist — and because the safety is asymmetric in one direction only: an old
+reader meeting a new field is fine, while a new reader meeting *no* field is the permanent
+normal case rather than a transitional one.
+
+### Added
+- `decisions.KIND_FIELD` / `SUBJECT_FIELD`, the closed `KINDS` vocabulary and the closed
+  `SUBJECT_TYPES` set, with per-value constants.
+- `decisions.kind()` / `subject()` / `is_typed()` / `has_subject()` — all returning the
+  undeclared answer for a legacy entry, and never inferring one.
+- `decisions.kind_label()` / `subject_label()` — the render forms, kept in `decisions.py`
+  rather than per-surface so a kind cannot read one way in the digest and another in a feed.
+- `decisions.set_kind()` / `clear_kind()` / `set_subject()` / `clear_subject()` — guarded
+  setters on the `(ok, error)` contract, refusing a replaced decision exactly as `set_pin`
+  and `set_owner` do, each with a single-command inverse.
+- `tests/test_decision_declaration.py` — 38 tests, including the byte-identical legacy
+  round-trip, the bare-number refusal that names the PR-27/story-27 collision, and the
+  proof that a declaration moves no projection.
+
+### Changed
+- Nothing. No consumer reads the new fields in this release.
+
+### Fixed
+- Nothing. This is net-new schema, not a repair.
 ## [3.45.0] — 2026-08-31
 
 **A MERGE-GATED CONDITION RENDERED IDENTICALLY TO AN UNDECLARED ONE.** `exit-add
