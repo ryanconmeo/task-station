@@ -926,6 +926,100 @@ class TestClaimVerification(_Base):
 
 
 # ---------------------------------------------------------------------------
+# (f2) THE EXIT-CODE CONJUNCT — a green claim means the command SUCCEEDED.
+#
+# THE DEFECT THESE TESTS CLOSE, stated as the two lines that demonstrated it:
+#     _run_claim("echo T-PASS; exit 1", 20)      -> ("T-PASS", "ran")
+#     _run_claim("echo T-PASS >&2; exit 7", 20)  -> ("T-PASS", "ran")
+# `r.returncode` was never read, so a claim's verdict was SUBSTRING PRESENCE IN COMBINED
+# OUTPUT and nothing else, and a command that FAILED satisfied the thing watching it.
+#
+# EVERY TEST BELOW SPAWNS A REAL SHELL, deliberately. A table-driven fake can be written
+# to return whatever the assertion wants; only the real `subprocess.run` path can prove
+# that the return code is read at all. A source grep would go green on a line that is
+# never reached.
+# ---------------------------------------------------------------------------
+
+class TestExitCodeConjunct(_Base):
+    def test_the_runner_reports_the_return_code(self):
+        out, status, code = checker.run_command("echo T-PASS; exit 1", 30)
+        self.assertIn("T-PASS", out)
+        self.assertEqual(status, "ran")
+        self.assertEqual(code, 1)
+
+    def test_a_command_that_prints_its_marker_and_fails_does_NOT_pass(self):
+        t = self._task()
+        checker.register(t, ["C1|echo T-PASS; exit 1|T-PASS"])
+        r = checker.verify(t, timeout=30)[0]
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["code"], 1)
+        self.assertEqual(r["missing"], [])     # the substring WAS there; the command failed
+
+    def test_a_marker_on_stderr_with_a_failing_exit_does_NOT_pass(self):
+        # Combining stdout and stderr stays deliberate and defensible. What changed is
+        # that the exit status is now asked as well.
+        t = self._task()
+        checker.register(t, ["C1|echo T-PASS >&2; exit 7|T-PASS"])
+        r = checker.verify(t, timeout=30)[0]
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["code"], 7)
+
+    def test_a_marker_on_stderr_with_a_clean_exit_STILL_passes(self):
+        # The conjunct must not quietly re-litigate the stdout/stderr decision: a tool's
+        # evidence lands in whichever stream it chose, and exiting 0 means it worked.
+        t = self._task()
+        checker.register(t, ["C1|echo T-PASS >&2; exit 0|T-PASS"])
+        self.assertTrue(checker.verify(t, timeout=30)[0]["ok"])
+
+    def test_a_failing_exit_is_a_refutation_and_not_an_uncountable(self):
+        # A non-zero exit RAN. Rule 2 protects commands that never ran; borrowing its
+        # shelter here would let every failing command hide behind "nothing was proved".
+        t = self._task()
+        checker.register(t, ["C1|echo T-PASS; exit 1|T-PASS"])
+        r = checker.verify(t, timeout=30)[0]
+        self.assertEqual(r["status"], "ran")
+        self.assertFalse(r["ok"])
+
+    def test_a_two_tuple_runner_still_reads_as_a_clean_exit(self):
+        # The compatibility contract for injected fakes: a runner that says a command RAN
+        # and does not mention an exit status is stating the case it was written to state.
+        out, status, code = checker.invoke(lambda c, t: ("hi", "ran"), "x", 1)
+        self.assertEqual((out, status, code), ("hi", "ran", 0))
+
+    def test_a_two_tuple_runner_that_did_not_run_has_no_code(self):
+        self.assertEqual(checker.invoke(lambda c, t: ("", "timeout"), "x", 1)[2], None)
+
+    def test_the_failure_note_names_the_exit_status(self):
+        # The quiet case: the substring appeared, so `missing` is empty, and a reader
+        # shown only `missing` would see a bare FAIL with no reason under it.
+        note = checker.exit_note("ran", 3, [])
+        self.assertIn("EXITED 3", note)
+
+    def test_the_failure_note_names_both_halves_when_both_failed(self):
+        note = checker.exit_note("ran", 2, ["OK"])
+        self.assertIn("missing from the output: OK", note)
+        self.assertIn("EXITED 2", note)
+
+    def test_a_clean_pass_has_no_failure_note(self):
+        self.assertIsNone(checker.exit_note("ran", 0, []))
+
+    def test_there_is_no_way_to_exempt_a_claim_from_the_conjunct(self):
+        # THE INVARIANT IS THE POINT. Any per-claim opt-out would make a green mean "the
+        # author said this one may fail", which is exactly the authorship the gate exists
+        # to doubt. Asserted on the SOURCE because the absence of a feature cannot be
+        # demonstrated by running it.
+        import re
+        src = open(os.path.join(_REPO_ROOT, "lib", "board", "checker.py")).read()
+        src += open(os.path.join(_REPO_ROOT, "lib", "board", "exits.py")).read()
+        for banned in ("allow_nonzero", "ignore_exit", "any_exit", "expect_exit",
+                       "exit_ok", "nonzero_ok", "skip_returncode"):
+            self.assertNotIn(banned, src, banned)
+        # `exemption` appears in exits.py PROSE, saying there is none — so the guard is
+        # on the identifier form (a keyword argument or a stored key), not on the word.
+        self.assertEqual(re.findall(r"""["']?exempt\w*["']?\s*[=:]""", src), [])
+
+
+# ---------------------------------------------------------------------------
 # (g) the self-capping nags.
 # ---------------------------------------------------------------------------
 

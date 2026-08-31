@@ -19,6 +19,7 @@ import shlex
 import sys
 
 import channel as _channel
+import checker as _checker
 import config as _config
 import exits as _exits
 import gating as _gating
@@ -136,9 +137,10 @@ def _exit_show_lines(task):
             out.append("            %s" % note)
         out.append("            expects: %s" % " · ".join(item["expect"]))
         last = item["last"] or {}
-        if last.get("status") == "ran" and last.get("missing"):
-            out.append("            missing from the output: %s"
-                       % " · ".join(last["missing"]))
+        if last.get("status") == "ran":
+            note = _checker.exit_note("ran", last.get("code"), last.get("missing") or [])
+            if note:
+                out.append("            %s" % note)
         elif last.get("status") in ("timeout", "error"):
             out.append("            did NOT run (%s) — nothing was proved either way"
                        % last["status"])
@@ -350,8 +352,10 @@ def cmd_exit_tick(a):
                   "a refutation and no tick moved")
         elif r["status"] == "error":
             print("         could not be run: %s" % r["got"])
-        elif r["missing"]:
-            print("         missing from the output: %s" % " · ".join(r["missing"]))
+        else:
+            note = _checker.exit_note(r["status"], r.get("code"), r["missing"])
+            if note:
+                print("         %s" % note)
     if moved["ticked"]:
         print("  ticked: %s" % ", ".join("step %d" % n for n in moved["ticked"]))
     if moved["regressed"]:
