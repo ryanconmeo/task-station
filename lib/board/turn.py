@@ -202,6 +202,49 @@ def last_launch(task):
     return got[-1] if got else None
 
 
+# -- THE HAND-BACK RAIL RECORDS NO SENDER, SO A SENDER TEST FAILED EVERY CHILD --------
+#
+# `memo_send` stamps `from_sid` from the CLI's `--session`, and `from_task` from whatever
+# THAT session is linked to. The hand-back rail does not carry either: `invoke` tells the
+# child to file `memo send --task <its own> --text '<report>'`, a model types exactly that,
+# and the memo lands with `from_sid=None, from_task=None`. Nothing is wrong with the memo —
+# there is simply no session id for a typed command to stamp, and no env var carrying one.
+#
+# So a rule that demanded POSITIVE provenance ("came from a registered session, or declares
+# this task as its origin") rejected every report filed the documented way, and the G4
+# no-report finding fired on children whose full report was sitting on the ledger it reads.
+# Measured on the live record: #596 memo e2f12e39 and #598 memo 0c7cba32, both filed after
+# launch on the child's own task, both discarded here, both reported as "left no report".
+#
+# THE DISCRIMINATOR IS INVERTED, NOT DROPPED. Provenance still decides whenever it EXISTS:
+# a memo naming a session or an origin task that is not this child's is still somebody
+# else's. What changed is the unprovenanced case, which is the ordinary one — it is the
+# child's UNLESS the record identifies it as written by the machinery:
+#   * `routine` — the lifecycle memos the system mints (a link forming, a child standing
+#     down). A hand-back is typed, and typing never sets it.
+#   * the GATE marks below — the rejection and park texts the PARENT sends down this same
+#     ledger. They are BUILT from these constants a few hundred lines below, for the same
+#     reason `INVOKED_MARK` lives beside `launches`: the writer and the reader of a marker
+#     must not be able to drift apart.
+# WHAT THIS DOES NOT CATCH, stated rather than hidden: a free-form memo a parent TYPES onto
+# a child that filed nothing is unprovenanced and unmarked, and would be read as a report.
+# That is a narrower hole than the one it replaces (which failed every correct child), and
+# it closes the moment either side of that memo carries a session.
+
+ROUTINE_FIELD = "routine"           # mirrors channel.ROUTINE_FIELD — see CHILD_REPORT_MAX
+REJECTION_MARK = "GATE REJECTED — task #"
+PARK_MARK = "GATE PARKED ("
+
+
+def gate_written(memo):
+    """True when this memo is one the GATE sent down — a rejection or a park.
+
+    Keyed on the marks the generators below build from, so a memo the parent's verdict
+    wrote can never be counted as the child's hand-back even with no sender recorded."""
+    head = str((memo or {}).get("text") or "").lstrip()
+    return head.startswith(REJECTION_MARK) or head.startswith(PARK_MARK)
+
+
 def report_memo(task, after=None, unacked_only=False):
     """The child's OWN hand-back memo on its own task, newest first, or None.
 
@@ -210,11 +253,13 @@ def report_memo(task, after=None, unacked_only=False):
     already been engaged — and a child that is live again after an ack is working, not
     waiting.
 
-    THE SENDER IS THE DISCRIMINATOR. Every memo lands on the same ledger, including the
-    rejections the PARENT writes — counting one of those as the hand-back would mark
-    every rejected child as having reported, which is the opposite of what the finding
-    is for. A memo is the child's when it came from a session registered on this task,
-    or when it declares this task as its origin."""
+    THE SENDER DECIDES WHEN THERE IS ONE. Every memo lands on the same ledger, including
+    the rejections the PARENT writes — counting one of those as the hand-back would mark
+    every rejected child as having reported, which is the opposite of what the finding is
+    for. A memo that NAMES a sender is the child's when that session is registered on this
+    task or it declares this task as its origin. A memo that names neither — which is what
+    the documented `memo send --task <n> --text '<report>'` produces — is the child's
+    unless the record marks it as the machinery's: see the block above."""
     own = set(str(s) for s in (task.get("sessions") or []))
     tid = task.get("id")
     best = None
@@ -224,8 +269,11 @@ def report_memo(task, after=None, unacked_only=False):
         src, from_task = m.get("from_sid"), m.get("from_task")
         if from_task and from_task != tid:
             continue                       # somebody else's task wrote it
-        if not (str(src) in own or (from_task and from_task == tid)):
-            continue
+        if src or from_task:               # provenance recorded — it still decides
+            if not (str(src) in own or (from_task and from_task == tid)):
+                continue
+        elif m.get(ROUTINE_FIELD) or gate_written(m):
+            continue                       # unprovenanced, but the machinery wrote it
         if not str(m.get("text") or "").strip():
             continue
         if unacked_only and (m.get("acks") or []):
@@ -842,7 +890,7 @@ def rejection_memo(v, ref=None, note=None, findings=None):
     NAMES THE DIMENSION AND ITS GRADE, and keeps the two ways of not passing apart: a
     dimension BELOW the threshold is the child's work to redo, an UNGRADED one is the
     judge's work to finish. "Rejected" on its own tells a child nothing it can act on."""
-    head = "GATE REJECTED — task #%s" % (ref if ref is not None else "?")
+    head = "%s%s" % (REJECTION_MARK, ref if ref is not None else "?")
     lines_ = [head]
     for key, grade in (v.get("failed") or []):
         lines_.append("  below %s — %s %s: %s"
@@ -867,8 +915,9 @@ def park_memo(reason, why, ref=None):
     A park is the loop declining to ask again — most often because the decision is not
     the loop's to make. Text that hinted at another attempt would invite exactly the one
     thing a park exists to prevent."""
-    return ("GATE PARKED (%s) — task #%s\n  %s\n  This does not come back to the loop. "
-            "It waits for a person." % (reason, ref if ref is not None else "?", why))
+    return ("%s%s) — task #%s\n  %s\n  This does not come back to the loop. "
+            "It waits for a person."
+            % (PARK_MARK, reason, ref if ref is not None else "?", why))
 
 
 def retry_decision(task, v, retry_max=None, park=None):
