@@ -21,6 +21,7 @@ import sys
 import channel as _channel
 import config as _config
 import exits as _exits
+import gating as _gating
 import loop as _loop
 import steps as _steps
 import turn as _turn
@@ -119,10 +120,20 @@ def _exit_show_lines(task):
     out.append("  %d of %d live step(s) carry a condition — %d met · %d unmet · %d not run"
                % (counts["total"], len(_steps.live(task.get("steps") or [])),
                   counts[_exits.MET], counts[_exits.UNMET], counts[_exits.UNKNOWN]))
+    # THE MERGE-GATED HEADER, and it is the reason this surface was changed. Until 3.45.0
+    # a declared condition and an undeclared one printed byte-identically here, so on a
+    # night when nobody can merge — when EVERY condition on EVERY child is red for that one
+    # reason — the reader had no way to tell red-because-unmerged from red-because-broken.
+    # `gating.header_notes` prints nothing at all when nothing is declared, so the line
+    # only ever appears where it carries information.
+    out += ["  %s" % line for line in _gating.header_notes(_exits.merge_gate(task))]
     for item in items:
         mark = _STATE_MARK.get(item["state"], "  ? ")
         tick = "✓" if item["done"] else " "
         out.append("   %s %s step %-3d %s" % (mark, tick, item["n"], item["cmd"]))
+        note = _gating.step_note(item["merge_gated"])
+        if note:
+            out.append("            %s" % note)
         out.append("            expects: %s" % " · ".join(item["expect"]))
         last = item["last"] or {}
         if last.get("status") == "ran" and last.get("missing"):

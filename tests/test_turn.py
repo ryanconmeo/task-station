@@ -1039,6 +1039,62 @@ class ThePickupRail(unittest.TestCase):
         text = "\n".join(turn.lines(turn.plan(orch, [child], live=())))
         self.assertIn("DONE PENDING MERGE", text)
 
+    # -- (b2) THE TWO PLACES turn DROPPED THE DECLARATION -------------------------
+    #
+    # Found 2026-08-30 on #591 and reproduced as a matrix over (declared?, report state,
+    # liveness). The flag was read on ONE of turn's classification paths, so a merge-gated
+    # child was named correctly only while its report was still unacked — the shortest
+    # window it ever sits in. Once the parent had engaged the report, the same child fell
+    # through to a plain REPORTED and became indistinguishable from one with ordinary red
+    # conditions, which is precisely the state a queued merge leaves behind for hours.
+
+    def _gated(self, n=2, declared=True, memos=None):
+        block = {"cmd": "c", "expect": ["OK"],
+                 "last": {"ts": 1000.0, "ok": False, "status": "ran",
+                          "missing": ["OK"], "got": ""}}
+        if declared:
+            block["merge_gated"] = True
+        return _t("c1", 11, parent="orch", events=[_launch()], sessions=("child-sid",),
+                  memos=list(memos or []),
+                  steps=[{"text": "s%d" % i, "done": False, "exit": dict(block)}
+                         for i in range(1, n + 1)])
+
+    def test_an_ACKED_report_still_reads_DONE_PENDING_MERGE(self):
+        """The path that dropped it. An acked report means the parent has already engaged
+        the work; what is left is the merge, and that is what the state must say."""
+        child = self._gated(memos=[_memo(acks=[{"sid": "parent-sid", "ts": 2100.0}])])
+        self.assertEqual(turn.child_state(child, live=()), turn.DONE_PENDING_MERGE)
+
+    def test_an_ACKED_report_with_UNDECLARED_reds_is_unchanged(self):
+        """The negative control for the path above."""
+        child = self._gated(declared=False,
+                            memos=[_memo(acks=[{"sid": "parent-sid", "ts": 2100.0}])])
+        self.assertEqual(turn.child_state(child, live=()), turn.REPORTED)
+
+    def test_a_LIVE_child_that_has_not_reported_is_still_RUNNING_when_gated(self):
+        """THE RULE THAT KEEPS THIS HONEST. Conditions are registered BEFORE the work is
+        done, so "all declared and red" is the ordinary state of a child in its first
+        minute. Promoting on that alone would report a child done at the moment it
+        started — the false green this whole mechanism exists to prevent."""
+        self.assertEqual(turn.child_state(self._gated(), live={11}), turn.RUNNING)
+
+    def test_the_WAIT_line_names_the_merge_instead_of_asking_for_a_green(self):
+        """What was wrong was the SENTENCE, not the state. "Nor turned its exit conditions
+        green" names something a merge-gated child cannot do before a human merges, so the
+        reader was handed a test the child is not able to sit."""
+        orch = _t("orch", 10)
+        text = "\n".join(turn.lines(turn.plan(orch, [self._gated()], live={11})))
+        self.assertIn("WAIT", text)
+        self.assertIn("merge-gated", text)
+        self.assertNotIn("nor turned its exit conditions green", text)
+
+    def test_the_WAIT_line_is_UNCHANGED_for_an_undeclared_child(self):
+        orch = _t("orch", 10)
+        child = self._gated(declared=False)
+        text = "\n".join(turn.lines(turn.plan(orch, [child], live={11})))
+        self.assertIn("nor turned its exit conditions green", text)
+        self.assertNotIn("merge-gated", text)
+
     # -- (d) reaching an idle child is the harness's job --------------------------
 
     def test_the_turn_names_SendMessage_as_the_way_to_reach_a_live_child(self):
