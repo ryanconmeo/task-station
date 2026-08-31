@@ -1816,6 +1816,7 @@ def merge_candidates(task, minimum=MERGE_CANDIDATE_MIN):
 
 SUBJECT_CANDIDATE_MIN = 2      # decisions about one subject before it is worth proposing
 SUBJECT_LABEL_MAX = 3          # signals named in a group's label; the rest are "+N more"
+SUBJECT_TOP_N = 5              # proposal ROWS the scan prints; see `subject_candidate_lines`
 STEP_RANGE_MAX = 50            # widest `steps N-M` span expanded; see `step_refs`
 
 # A STEP-shaped reference in prose: `step 29`, `steps 3-6`, `steps 3, 4 and 5`. Same
@@ -1832,8 +1833,45 @@ _STEP_PIECE = re.compile(r"(?P<range>-|–|—|\bto\b)?\s*#?(?P<n>\d+)", re.I)
 
 # The subject signals, each one a thing an entry is ABOUT.
 _VERSION_TOKEN = re.compile(r"\b\d+\.\d+\.\d+\b")
+
+# A work-item reference, CAPTURING THE NOUN, because the number alone does not identify
+# the thing. This used to emit `PR/story <n>` from every match, so `PR 27` and `story 27`
+# produced the IDENTICAL signal and two decisions about unrelated things could group as
+# sharing a subject. THE ALTERNATIVES ARE UNCHANGED, deliberately and to the letter: what
+# this expression MATCHES was already right, and the only defect was what it then LABELLED
+# the match. Widening recall here — the plural nouns it misses, for one — is a separate,
+# unmeasured change and does not ride along with a labelling fix.
 _WORK_ITEM_REF = re.compile(
-    r"\b(?:pull request|pr|story|stories|issue|work item)\s*#?(?P<n>\d{1,7})\b", re.I)
+    r"\b(?P<kind>pull request|pr|story|stories|issue|work item)\s*#?(?P<n>\d{1,7})\b",
+    re.I)
+
+# The noun buckets, and they are #596's OWN closed set rather than a parallel vocabulary:
+# `decisions._SUBJECT_QUALIFIED` names `pr` and `story` as the two subject types whose bare
+# number is KNOWN to collide, and `_clean_subject_ref` refuses a declared bare integer
+# citing exactly the collision fixed here. Scraping splits the same pair the declaration
+# does, so the two halves of the record agree about what `27` means.
+#
+# IT SPLITS NO FURTHER THAN THAT, and the restraint is the point. A story, an issue and a
+# work item are the tracked-work side of one id space — in ADO literally so, where a Story
+# IS a work item and the ids are one sequence — and it is the CODE-CHANGE side that had to
+# be separated from them. A scraper also cannot invent the repo qualifier that
+# `pr:<repo>#<n>` carries, so a scraped signal is type-qualified and never repo-qualified:
+# strictly weaker than a declared subject, and never in conflict with one.
+_WORK_ITEM_PR_NOUNS = ("pull request", "pr")
+
+# How each type reads in a proposal row. The stored signal IS this string, so the label a
+# reader sees and the token the grouper compares are the same thing.
+_WORK_ITEM_LABEL = {_dec.SUBJECT_PR: "PR", _dec.SUBJECT_STORY: "story"}
+
+
+def _work_item_type(noun):
+    """`pr` or `story` — which of #596's two collision-prone subject types this noun names.
+
+    `story` is the DEFAULT rather than a third bucket, for the reason above: the split that
+    had to exist is code-change against tracked-work, and every noun that is not a pull
+    request is on the tracked-work side."""
+    w = " ".join(str(noun or "").lower().split())
+    return _dec.SUBJECT_PR if w in _WORK_ITEM_PR_NOUNS else _dec.SUBJECT_STORY
 
 
 def step_refs(text, total=None):
@@ -1894,11 +1932,17 @@ def completed_subjects(task):
 
 def subject_signals(text, total_steps=None):
     """What a decision is ABOUT, as a set of short labels — `step 29`, `version 2.13.1`,
-    `PR 1234`.
+    `PR 1234`, `story 1234`.
 
     THREE signal families, and each one is a thing the record names explicitly rather than
     a similarity between two texts. Nothing is inferred from wording: two entries share a
-    signal only when they name the same step, the same release or the same work item."""
+    signal only when they name the same step, the same release or the same work item.
+
+    A WORK ITEM CARRIES ITS TYPE, and that is not cosmetic. Every match used to emit
+    `PR/story <n>` from one bare number, so `PR 27` and `story 27` were one signal and two
+    decisions about unrelated things shared a subject. The type is read off the noun the
+    prose actually used, which is still the explicit-reference rule and not an inference —
+    the record says "PR" or it says "story"."""
     body = text or ""
     out = set()
     for n in step_refs(body, total=total_steps):
@@ -1906,18 +1950,42 @@ def subject_signals(text, total_steps=None):
     for m in _VERSION_TOKEN.finditer(body):
         out.add("version %s" % m.group(0))
     for m in _WORK_ITEM_REF.finditer(body):
-        out.add("PR/story %s" % m.group("n"))
+        stype = _work_item_type(m.group("kind"))
+        out.add("%s %s" % (_WORK_ITEM_LABEL[stype], m.group("n")))
     return out
 
 
 def subject_candidates(task, minimum=SUBJECT_CANDIDATE_MIN):
     """CURRENT decisions grouped by a SHARED SUBJECT, as
-    `[{"signal", "signals", "indices", "tags"}, …]`, lowest member first.
+    `[{"signal", "signals", "indices", "tags"}, …]`, largest group first.
 
-    Grouping is TRANSITIVE — a decision naming version 2.13.1 and step 4, a second naming
-    2.13.1, and a third naming step 4 are one group. That is deliberate and it is what the
-    shape tier cannot do: they are three entries about one piece of work, and proposing
-    them as three groups of two would leave a reader merging the same subject twice.
+    ONE GROUP PER SIGNAL. Every member of a group names the SAME step, the same release or
+    the same work item, so the proposal is one a reader can ACT on: read the thing it names,
+    decide whether those entries are still load-bearing, write the one summary.
+
+    THIS TIER USED TO UNION-FIND THE SIGNALS, and the reason it stopped is worth keeping
+    written down because the defect survived weeks of being looked at. The signals were
+    never the problem — `subject_signals` is reference-only and infers nothing from wording.
+    The problem was that a TRANSITIVE closure over correct signals is not a subject: A names
+    PR 27, B names PR 27 and PR 29, C names PR 29, so A and C landed in one group while
+    sharing nothing at all. On the record this was measured against, that chained 36 live
+    decisions across 31 signals into a single proposal, and it was correctly refused SEVEN
+    times. A group nobody can act on is not a conservative proposal; it is a check that has
+    stopped meaning anything, and it crowds out the ones that are right.
+
+    WHAT THE OLD DOCSTRING DEFENDED, and the honest accounting of what this costs: it said
+    proposing one subject as several groups "would leave a reader merging the same subject
+    twice". That cost is real and it is small — a reader who merges by PR 27 and then by
+    PR 29 has performed two coherent merges, and the second group's membership is re-read
+    from the record after the first. The cost it was trading against was a proposal that
+    could not be performed at all. Overlap between groups is a nuisance; a false group is a
+    check that cannot be trusted.
+
+    TWO SIGNALS CARRIED BY THE IDENTICAL SET OF DECISIONS ARE ONE ROW, wearing both labels.
+    That is not the chaining coming back: every member shares every merged label, which is
+    the grouping rule holding twice over rather than a path between them. It is why the
+    `(+N more)` label is now honest — those signals are all shared by all of these members,
+    where before they were scattered along a chain.
 
     `tags` carries `completed-subject` when every member that names a step has ALL of its
     steps finished — the strongest form of "true but no longer load-bearing" the record can
@@ -1935,34 +2003,19 @@ def subject_candidates(task, minimum=SUBJECT_CANDIDATE_MIN):
     for i in sorted(sigs):
         for sig in sigs[i]:
             by_signal.setdefault(sig, []).append(i)
-    parent = dict((i, i) for i in sigs)
-
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for members in by_signal.values():
-        for other in members[1:]:
-            # The LOWEST index wins the root, so a group's identity does not depend on
-            # which signal happened to be visited first.
-            ra, rb = find(members[0]), find(other)
-            if ra != rb:
-                parent[max(ra, rb)] = min(ra, rb)
-    grouped = {}
-    for i in sorted(sigs):
-        grouped.setdefault(find(i), []).append(i)
-    finished = completed_subjects(task)
-    out = []
-    for root in sorted(grouped):
-        idxs = grouped[root]
+    minimum = max(2, int(minimum or SUBJECT_CANDIDATE_MIN))
+    # Keyed by MEMBERSHIP, so signals naming the same decisions collapse to one proposal.
+    merged = {}
+    for sig in sorted(by_signal):
+        idxs = by_signal[sig]
         if len(idxs) < minimum:
             continue
-        # The signals that actually LINK the group — one carried by two or more members.
-        # A member's private signals are why it is worth reading, not why it is grouped.
-        shared = sorted(s for s, members in by_signal.items()
-                        if len([i for i in members if i in idxs]) >= 2)
+        merged.setdefault(tuple(idxs), []).append(sig)
+    finished = completed_subjects(task)
+    out = []
+    for key in merged:
+        idxs = list(key)
+        shared = merged[key]
         stepped = [i for i in idxs
                    if any(s.startswith("step ") for s in sigs[i])]
         tags = []
@@ -1973,6 +2026,10 @@ def subject_candidates(task, minimum=SUBJECT_CANDIDATE_MIN):
             label += " (+%d more)" % (len(shared) - SUBJECT_LABEL_MAX)
         out.append({"signal": label or "shared subject", "signals": shared,
                     "indices": idxs, "tags": tags})
+    # Biggest proposal first — the same worst-first order `oversized_proposals` prints in,
+    # so the row a capped render drops is always the weakest one. Ties break on the lowest
+    # member, which keeps the order reproducible between runs.
+    out.sort(key=lambda g: (-len(g["indices"]), g["indices"][0]))
     return out
 
 
@@ -4297,19 +4354,29 @@ def subject_candidate_lines(result):
     the same way. A group tagged `completed-subject` says the checklist itself reports the
     work finished, which is the closest the record ever comes to stating "true but no longer
     load-bearing" on its own — and it is still a PROPOSAL, because the surviving summary has
-    to be written by someone who read the group."""
+    to be written by someone who read the group.
+
+    CAPPED AND SAYING SO, the rule `oversized_proposal_lines` already keeps. One group per
+    signal means a busy task offers tens of them where the transitive closure offered one,
+    and every row here is ~500 chars of instruction — so the scan prints the largest few
+    against a `digest size` objective it is supposed to move DOWN, and names the count it
+    dropped. Nothing is hidden by the cap: `heal --candidates` and the dry run carry every
+    group, and the cap is on ROWS rather than on grouping, because a capped GROUP would be
+    an arbitrary slice of a subject rather than the whole of one."""
     cands = (result or {}).get("subject_candidates") or []
     if not cands:
         return []
     done = (result or {}).get("completed_subjects") or []
     head = ("  %-28s %d  (PROPOSALS — not findings: not counted as issues. Grouped by what "
-            "the entries are ABOUT — a shared step, release or PR/story — which is why two "
-            "members are enough here where the shape tier needs three%s)"
+            "the entries are ABOUT — ONE group per shared step, release, PR or story, so "
+            "every member names the same thing — which is why two members are enough here "
+            "where the shape tier needs three%s)"
             % ("Subject candidates", len(cands),
                (" · %d decision(s) on this task have ALL their subject steps finished"
                 % len(done)) if done else ""))
     out = [head]
-    for c in cands:
+    shown, more = cands[:SUBJECT_TOP_N], max(0, len(cands) - SUBJECT_TOP_N)
+    for c in shown:
         idxs = [str(i) for i in (c.get("indices") or [])]
         tags = c.get("tags") or []
         out.append("      • decisions %s share %s%s — READ them: if they are all TRUE BUT "
@@ -4323,6 +4390,10 @@ def subject_candidate_lines(result):
                       "so the work they record is finished]" if "completed-subject" in tags
                       else "",
                       ",".join(idxs)))
+    if more:
+        out.append("      • +%d more group(s) sharing one named subject — not listed, "
+                   "because a wall of them is not a proposal. `heal --candidates` and the "
+                   "dry run carry every group" % more)
     return out
 
 
