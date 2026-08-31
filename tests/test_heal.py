@@ -4405,13 +4405,77 @@ class TestSubjectCandidates(_Base):
             steps=[{"text": "hold the rename", "done": False}]))
         self.assertEqual(heal.subject_candidates(t)[0]["tags"], [])
 
-    def test_grouping_is_transitive_so_one_subject_is_one_group(self):
-        t = self._reload(self._task(
-            decisions=["2.13.1 shipped, and step 1 is done",
-                       "2.13.1 needed a follow-up note",
-                       "step 1 was the last blocker"],
+    def test_grouping_is_per_signal_and_never_chains_through_a_shared_member(self):
+        # The defect this tier was rebuilt for: A names PR 27, B names both, C names PR 29.
+        # A union-find made all three ONE group though A and C share nothing at all.
+        t = self._reload(self._task(decisions=[
+            "PR 27 carries the store change",
+            "PR 27 and PR 29 were reviewed together",
+            "PR 29 landed the rename"]))
+        got = sorted(g["indices"] for g in heal.subject_candidates(t))
+        self.assertEqual(got, [[1, 2], [2, 3]])
+        for g in heal.subject_candidates(t):
+            self.assertNotIn(3 if g["indices"] == [1, 2] else 1, g["indices"])
+
+    def test_every_member_of_a_group_names_the_groups_subject(self):
+        # The actionability contract, asserted directly rather than via a group's shape:
+        # whatever is proposed, each member's OWN signals contain every shared label.
+        t = self._reload(self._task(decisions=[
+            "2.13.1 shipped, and step 1 is done",
+            "2.13.1 needed a follow-up note",
+            "step 1 was the last blocker"],
             steps=[{"text": "hold the rename", "done": True}]))
-        self.assertEqual([g["indices"] for g in heal.subject_candidates(t)], [[1, 2, 3]])
+        groups = heal.subject_candidates(t)
+        self.assertTrue(groups)
+        texts = [dec.text(e) for _i, e in dec.live(t.get("decisions"))]
+        for g in groups:
+            for i in g["indices"]:
+                own = heal.subject_signals(texts[i - 1], total_steps=len(t["steps"]))
+                for label in g["signals"]:
+                    self.assertIn(label, own)
+
+    def test_two_signals_carried_by_the_same_members_are_one_group(self):
+        t = self._reload(self._task(decisions=[
+            "2.13.1 and 2.14.0 both carry the export change",
+            "2.13.1 and 2.14.0 were re-cut after the scrub"]))
+        groups = heal.subject_candidates(t)
+        self.assertEqual([g["indices"] for g in groups], [[1, 2]])
+        self.assertEqual(groups[0]["signals"], ["version 2.13.1", "version 2.14.0"])
+
+    def test_the_largest_group_is_proposed_first(self):
+        t = self._reload(self._task(decisions=[
+            "PR 27 and PR 29 both touch the store",
+            "PR 27 again", "PR 27 a third time", "PR 29 once more"]))
+        sizes = [len(g["indices"]) for g in heal.subject_candidates(t)]
+        self.assertEqual(sizes, sorted(sizes, reverse=True))
+
+    def test_a_PR_and_a_story_with_the_same_number_are_not_one_subject(self):
+        # The live collision: both used to emit `PR/story 27` from one bare number, so two
+        # decisions about unrelated things shared a subject.
+        t = self._reload(self._task(decisions=["PR 27 carries the store change",
+                                               "story 27 is the balance-sheet rework"]))
+        self.assertEqual(heal.subject_candidates(t), [])
+        self.assertEqual(heal.subject_signals("PR 27 carries the store change"), {"PR 27"})
+        self.assertEqual(heal.subject_signals("story 27 is the rework"), {"story 27"})
+
+    def test_the_same_work_item_under_either_noun_is_still_one_subject(self):
+        t = self._reload(self._task(decisions=["PR 27 carries the store change",
+                                               "pull request 27 was reviewed twice"]))
+        self.assertEqual([g["indices"] for g in heal.subject_candidates(t)], [[1, 2]])
+
+    def test_issues_and_work_items_sit_with_stories_not_with_PRs(self):
+        # #596 declares exactly two collision-prone work-item types (`pr`, `story`); the
+        # scraped signal splits the same pair and no further.
+        for noun in ("story", "stories", "issue", "work item"):
+            self.assertEqual(heal.subject_signals("%s 27 is the rework" % noun),
+                             {"story 27"}, noun)
+        for noun in ("PR", "pull request"):
+            self.assertEqual(heal.subject_signals("%s 27 is the change" % noun),
+                             {"PR 27"}, noun)
+
+    def test_the_scraped_types_are_the_two_596_refuses_a_bare_number_for(self):
+        self.assertEqual(sorted(heal._WORK_ITEM_LABEL),
+                         sorted(dec._SUBJECT_QUALIFIED))
 
     def test_two_is_enough_here_where_the_shape_tier_needs_three(self):
         t = self._reload(self._task(decisions=self.VERSIONED))
@@ -4448,6 +4512,21 @@ class TestSubjectCandidates(_Base):
         self.assertIn("Subject candidates", out)
         self.assertIn("PROPOSALS", out)
         self.assertIn("decisions 1, 2", out)
+
+    def test_the_scan_caps_the_rows_and_says_how_many_it_dropped(self):
+        # One group per signal means a busy task offers many; the scan prints the largest
+        # few against a size objective, and nothing is hidden — the count is named and the
+        # full set stays on the result.
+        n = heal.SUBJECT_TOP_N + 3
+        t = self._reload(self._task(
+            decisions=["PR %d is the change" % i for i in range(1, n + 1)]
+                      + ["PR %d was reviewed" % i for i in range(1, n + 1)]))
+        result = heal.scan(t)
+        self.assertEqual(len(result["subject_candidates"]), n)
+        rows = heal.subject_candidate_lines(result)
+        self.assertEqual(len([r for r in rows if r.lstrip().startswith("• decisions")]),
+                         heal.SUBJECT_TOP_N)
+        self.assertIn("+3 more group(s)", "\n".join(rows))
 
     def test_candidate_groups_puts_the_subject_tier_first(self):
         t = self._reload(self._task(decisions=self.VERSIONED + [
