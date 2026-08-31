@@ -960,21 +960,70 @@ def remove(task, ids):
 
 
 def _run_claim(cmd, timeout):
-    """Run one claim command, returning `(combined_output, status)` where status is
-    `"ran"`, `"timeout"` or `"error"`.
+    """Run one claim command, returning `(combined_output, status, returncode)` where
+    status is `"ran"`, `"timeout"` or `"error"` and returncode is the process exit
+    status (None when it never ran).
 
     stdout AND stderr, combined, because a claim's evidence lands in whichever one the
     tool chose and requiring the user to know which would make the format a puzzle.
     Never raises: a claim that could not be run is a claim that did not pass, and it
-    says which of the two happened."""
+    says which of the two happened.
+
+    THE RETURN CODE IS THE THIRD ELEMENT SINCE 3.49.0, and it used to be thrown away.
+    `echo TOKEN; exit 1` returned `("TOKEN", "ran")` and every caller read that as a
+    pass, so a verdict was SUBSTRING PRESENCE and nothing else — a command could fail
+    and still satisfy the thing that was watching it. The code is reported here and
+    judged by the callers (`verify`, `exits.evaluate`), never interpreted in this
+    function: what "ran" means is still only "the process started and finished"."""
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                            timeout=timeout)
-        return ((r.stdout or "") + (r.stderr or "")), "ran"
+        return ((r.stdout or "") + (r.stderr or "")), "ran", int(r.returncode)
     except subprocess.TimeoutExpired:
-        return "", "timeout"
+        return "", "timeout", None
     except Exception as exc:                       # noqa: BLE001 — fail-open by design
-        return str(exc), "error"
+        return str(exc), "error", None
+
+
+def invoke(run, cmd, timeout):
+    """Call a runner and normalise its answer to `(out, status, code)`.
+
+    THE COMPATIBILITY SHIM IS THE POINT. `verify(run=…)` and `exits.evaluate(run=…)`
+    take an INJECTED runner so the suite never spawns a shell, and dozens of those
+    fakes return the historic two-tuple `(out, status)`. A fake that says a command
+    RAN and does not mention an exit status is stating the case it was written to
+    state — the command produced this output and did not fail — so it normalises to
+    code 0. Anything that did not run normalises to None, which no caller can mistake
+    for success."""
+    res = run(cmd, timeout)
+    if isinstance(res, (tuple, list)) and len(res) >= 3:
+        out, status, code = res[0], res[1], res[2]
+    else:
+        out, status = res
+        code = 0 if status == "ran" else None
+    return (out or ""), status, (None if code is None else int(code))
+
+
+def exit_note(status, code, missing, timeout=None):
+    """One line saying WHY a result is not a pass, or None when it passed.
+
+    ONE FORMATTER, THREE SURFACES — `claims verify`, `exit-tick` and `exit-show` all
+    render the same verdict, and the failure that made this worth centralising is the
+    quiet one: a command whose token APPEARED and whose exit status was 3 has an empty
+    `missing` list, so every reader that printed only `missing` would have shown a
+    bare FAIL with no reason under it."""
+    if status == "timeout":
+        return ("timed out%s — nothing was proved either way, so this is NOT a "
+                "refutation" % ("" if timeout is None else " after %ss" % timeout))
+    if status == "error":
+        return "could not be run"
+    parts = []
+    if missing:
+        parts.append("missing from the output: %s" % " · ".join(missing))
+    if code:
+        parts.append("the command EXITED %s — a failing command proves nothing, "
+                     "however good its output looked" % code)
+    return "; ".join(parts) if parts else None
 
 
 def _tail(text, limit=CLAIM_OUTPUT_TAIL):
@@ -1002,12 +1051,20 @@ output_tail = _tail
 def verify(task, only=None, timeout=None, now=None, run=None):
     """Run the registered claims and record the outcome. Returns the results list.
 
-    A result is `{"id", "cmd", "ok", "status", "missing", "got"}`: `ok` is True only when
-    EVERY expected substring appears in the combined output, `missing` names the ones
-    that did not (so a failure says what was actually wrong rather than dumping output at
-    the reader), and `status` distinguishes a command that RAN and disagreed from one that
-    TIMED OUT or could not be launched at all. That distinction is the uncountable rule
-    again: a claim that never ran has not been refuted.
+    A result is `{"id", "cmd", "ok", "status", "code", "missing", "got"}`: `ok` is True
+    only when the command EXITED 0 and EVERY expected substring appears in the combined
+    output, `missing` names the ones that did not (so a failure says what was actually
+    wrong rather than dumping output at the reader), `code` is the exit status, and
+    `status` distinguishes a command that RAN and disagreed from one that TIMED OUT or
+    could not be launched at all. That distinction is the uncountable rule again: a claim
+    that never ran has not been refuted.
+
+    THE EXIT CODE IS A REQUIRED CONJUNCT, not a tie-breaker (3.49.0). It is a different
+    question from the substring and both have to answer yes: the substring asks "did the
+    command say the thing", the exit status asks "did the command SUCCEED". A claim whose
+    command printed its token on the way to failing proved nothing, and for a year this
+    function called that a pass. A non-zero exit is `unmet`, never `unknown` — the command
+    ran, and it disagreed.
 
     `only` restricts to one id (or a list). `run` is injected by the tests so the suite
     never spawns a shell. Stamps `task["claims"]["last_verify"]` and does NOT save — the
@@ -1022,15 +1079,16 @@ def verify(task, only=None, timeout=None, now=None, run=None):
     for item in claim_items(task):
         if wanted is not None and item["id"] not in wanted:
             continue
-        out, status = run(item["cmd"], timeout)
+        out, status, code = invoke(run, item["cmd"], timeout)
         missing = [e for e in item["expect"] if e not in out]
         if status == "timeout":
             got = "(no output — timed out after %ss)" % timeout
         else:
             got = _tail(out)
         results.append({"id": item["id"], "cmd": item["cmd"],
-                        "ok": bool(status == "ran" and not missing),
-                        "status": status, "missing": missing, "got": got})
+                        "ok": bool(status == "ran" and code == 0 and not missing),
+                        "status": status, "code": code,
+                        "missing": missing, "got": got})
     if results:
         _block(task)["last_verify"] = {"ts": now, "results": results}
     return results
