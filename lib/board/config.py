@@ -441,6 +441,28 @@ def context_window(model_id=None):
     return 200000
 
 
+def _context_window_row():
+    """The `config` listing's value for `--context-window`: the stored OVERRIDE when there is
+    one, else `auto`.
+
+    NEVER THE RESOLVED NUMBER. This listing has no session, so it cannot detect anything, and
+    printing `200000` here — which is what it did — is precisely how a five-fold-wrong
+    denominator read as a deliberate setting for months. `auto` is the honest answer to "what
+    is stored"; `task-station window` is the surface that answers "and what does this session
+    actually have"."""
+    raw = os.environ.get("TASK_STATION_CONTEXT_WINDOW")
+    where = "env"
+    if raw is None:
+        raw, where = get("context_window", None), "config"
+    if raw is None:
+        return "auto"
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return "auto"
+    return ("%d (override, %s)" % (n, where)) if n > 0 else "auto"
+
+
 def checkpoint_milestone_edits():
     """The MILESTONE staleness threshold: how many meaningful events (file edits /
     status promotions — the same substantive-work signals that mark the digest stale)
@@ -902,6 +924,35 @@ def succession_reserve():
                             40000)
 
 
+# -- the work-boundary scheduler (lib/board/timing.py) --------------------------
+#
+# DEFAULT OFF, and that is the same call `--auto-checkpoint` made for the same reason: this
+# is the one switch that lets a machine WRITE to the record with nobody watching. Every op it
+# may perform is deterministic, reversible and backed up first — but "reversible" is a
+# property of the write, not a consent to make it, and consent is what a default-off flag is.
+# Turning it on is one command and the report says exactly what it did.
+#
+# The report itself (`task-station timing`) needs no flag at all: reading what the scheduler
+# WOULD do writes nothing, and a feature you cannot look at before enabling is a feature
+# nobody enables.
+
+def boundary_maintenance_enabled():
+    """Whether the AUTO class runs at a work boundary — default OFF.
+
+    At a turn end with nothing in flight, ON means: apply the mechanical heal ops that are
+    auto-eligible (splits and retro-dispositions — never a merge, see `timing.CLASSES`),
+    record one history entry with the measured occupancy, and REPORT what was done. OFF means
+    the scheduler still computes and still reports through `task-station timing`; it just
+    never writes.
+
+    The env escape `TASK_STATION_BOUNDARY_MAINTENANCE` (on/off/1/0/true/false) WINS over
+    config, so a single session can turn it off without touching the stored setting."""
+    env = os.environ.get("TASK_STATION_BOUNDARY_MAINTENANCE")
+    if env is not None and env.strip() != "":
+        return env.strip().lower() in ("1", "on", "true", "yes")
+    return bool(get("boundary_maintenance", False))
+
+
 # -- heal's one tunable (lib/heal.py) -------------------------------------------
 
 def heal_goal_review_due():
@@ -1258,8 +1309,11 @@ def board_rows():
           "This trigger is measured from real token usage (not a byte estimate), so it fires",
           "at a true window-relative point; 0/off disables it (the PostCompact stash still runs)."],
          "/task-station:config --checkpoint-pct <1-95> | off"),
-        ("--context-window", str(context_window()), "<tokens>",
-         "The model's context-window size, the denominator --checkpoint-pct measures against (default 200000; raise it for a larger window, e.g. 1000000)", None,
+        ("--context-window", _context_window_row(), "<tokens> · auto",
+         "OVERRIDE the context window --checkpoint-pct measures against. Default AUTO: it is DETECTED from the session itself, so a 1M session gets 1,000,000 and a 200k one gets 200,000 with nothing to keep in sync by hand",
+         ["`task-station window` prints the resolved window, the source that won, and",
+          "says so out loud when a stored override disagrees with what the session detects.",
+          "0/off/auto drops the override again."],
          "/task-station:config --context-window <tokens>"),
         ("--checkpoint-at", str(checkpoint_at()) if checkpoint_at() else "off", "<tokens>",
          "with --auto-checkpoint on: LEGACY/fallback proactive trigger — prompt a full /todo save when the transcript-size token ESTIMATE grows past this, before auto-compaction (default off; use --checkpoint-pct instead; 0 = off)",
@@ -1271,6 +1325,14 @@ def board_rows():
         ("--checkpoint-milestone-edits", str(checkpoint_milestone_edits()) if checkpoint_milestone_edits() else "off", "<count>",
          "with --auto-checkpoint on: fire the light staleness nudge only after this many meaningful events (file edits / status promotions) since the last digest refresh (default 5; 0/off = nudge on any staleness)", None,
          "/task-station:config --checkpoint-milestone-edits <count> | off"),
+        ("--boundary-maintenance", "on" if boundary_maintenance_enabled() else "off",
+         "on · off",
+         "At a turn end with NOTHING IN FLIGHT, run the AUTO maintenance class and report "
+         "what it did instead of asking. Splits and retro-dispositions only — a merge is "
+         "excluded by class, never by threshold. Default off.",
+         ["`task-station timing` shows the whole verdict and writes nothing, so the",
+          "scheduler can be read before it is enabled."],
+         None),
         ("--heal-prompt-nag", "on" if heal_prompt_nag_enabled() else "off", "on · off",
          "Name a heal that comes DUE while you are working, on the prompt rail rather than "
          "waiting for the next session start (default: on)",
@@ -1972,7 +2034,8 @@ RESET_KEYS = [
     # The prompt rail's two nudges + their thresholds. Popped like everything else: a
     # station reset that left `save_nudge` off behind would leave the user with a signal
     # they had silenced and no longer remembered silencing.
-    "heal_prompt_nag", "save_nudge", "save_nudge_decisions", "save_nudge_hours",
+    "heal_prompt_nag", "boundary_maintenance",
+    "save_nudge", "save_nudge_decisions", "save_nudge_hours",
     # The memo nag's quieting + its quorum, popped for the same reason: a reset that left
     # `memo_quiet` off behind would keep re-listing settled memos on a station the user
     # just cleared, and a hand-tuned quorum would keep a threshold nobody remembers.
@@ -2195,11 +2258,24 @@ def cmd_config(a):
         n = checkpoint_pct()
         print("off" if n == 0 else str(n)); return
     if getattr(a, "context_window", None) is not None:
+        # `0` / `off` / `auto` DROPS the override rather than storing a 1-token window.
+        # `max(1, 0)` used to store 1 — a positive integer, therefore an override, therefore
+        # the one value from which there was no way back to detection. The whole point of
+        # demoting this key is that it can be put down again.
+        v = str(a.context_window).strip().lower()
+        if v in ("0", "off", "auto", ""):
+            unset("context_window")
+            print("context_window = auto — the override is gone; the window is now DETECTED "
+                  "from the session's own model. `task-station window` says which source "
+                  "answers and whether anything disagrees.")
+            return
         try:
-            set("context_window", max(1, int(str(a.context_window).strip())))
+            set("context_window", max(1, int(v)))
         except ValueError:
-            print("context_window: expected a positive token count"); return
-        print("context_window = %s" % context_window()); return
+            print("context_window: expected a positive token count, or 0/off/auto to drop "
+                  "the override and detect it"); return
+        print("context_window = %s  (an OVERRIDE — it wins over what this session detects. "
+              "`task-station window` says whether the two agree.)" % context_window()); return
     if getattr(a, "context_window_get", False):
         print(str(context_window())); return
     if getattr(a, "checkpoint_milestone_edits", None) is not None:
@@ -2216,6 +2292,12 @@ def cmd_config(a):
     if getattr(a, "checkpoint_milestone_edits_get", False):
         n = checkpoint_milestone_edits()
         print("off" if n == 0 else str(n)); return
+    if getattr(a, "boundary_maintenance", None) is not None:
+        set("boundary_maintenance", a.boundary_maintenance == "on")
+        print("boundary_maintenance = %s"
+              % ("on" if get("boundary_maintenance") else "off")); return
+    if getattr(a, "boundary_maintenance_get", False):
+        print("on" if boundary_maintenance_enabled() else "off"); return
     if getattr(a, "heal_prompt_nag", None) is not None:
         set("heal_prompt_nag", a.heal_prompt_nag == "on")
         print("heal_prompt_nag = %s" % ("on" if get("heal_prompt_nag") else "off")); return
