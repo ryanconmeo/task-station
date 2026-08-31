@@ -10,15 +10,17 @@
 # the thing worth catching. So the FLOOR lives in the COMMAND, here, where it is readable
 # and can be raised deliberately, and the claim expects a pass token.
 #
-# Usage:  bash tests/claims.sh <suite|rail|pickup|nowait|pushlimb|onmain|shipped>
+# Usage:  bash tests/claims.sh <suite|rail|pickup|turn|handback|onhandback|nowait|pushlimb|onmain|shipped>
 # Each prints exactly one token on the last line. Never exits non-zero for a failed
 # assertion — the token is the verdict, and `claims verify` reads the token.
 set -u
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 
-# The floors, as of 3.41.0. Raise them deliberately; never lower one to make a claim pass.
+# The floors, as of 3.41.0 (SUITE/PICKUP) and 3.47.0 (TURN). Raise them deliberately;
+# never lower one to make a claim pass.
 SUITE_FLOOR=5720
 PICKUP_FLOOR=47
+TURN_FLOOR=115
 
 _ran() {   # (output) -> the "Ran N tests" count, or 0. Never an absence: `Ran 0 tests`
            # followed by `OK` is what a renamed test class prints, and it exits 0.
@@ -49,6 +51,67 @@ case "${1:-}" in
     ;;
   rail)
     bash tests/e2e_pickup_rail.sh
+    ;;
+  turn)
+    out="$(python3 -m unittest tests.test_turn 2>&1)"
+    n="$(_ran "$out")"; n="${n:-0}"
+    if [ "$n" -ge "$TURN_FLOOR" ] && printf '%s' "$out" | grep -qx "OK"; then
+      echo "TURN-SUITE-FLOOR-OK ($n >= $TURN_FLOOR)"
+    else
+      echo "TURN-SUITE-REGRESSED (ran $n, floor $TURN_FLOOR)"
+    fi
+    ;;
+  handback)
+    # #602'S SHAPE, ASSERTED IN BOTH DIRECTIONS AGAINST THIS CHECKOUT. The hand-back rail
+    # records NO sender — `memo send --task <n> --text '<report>'` is what a child types,
+    # and there is no session id for a typed command to stamp — so a report lands with
+    # from_sid=None and from_task=None. The false-positive direction is the expensive one
+    # (it docks a correct child a graded G4 demerit), but replacing it with a false
+    # NEGATIVE would make the rail useless, so the controls are asserted in the same breath.
+    python3 - <<'PYIN'
+import sys
+sys.path.insert(0, "lib")
+import turn
+
+def child(memos):
+    return {"id": "c", "seq": 9, "title": "kid", "status": "open", "related": [],
+            "steps": [], "grades": [], "sessions": ["child-sid"],
+            "events": [{"id": "e1", "kind": "child", "ts": 1000.0,
+                        "text": "invoked by #1 as implementer: go"},
+                       {"id": "e2", "kind": "save", "ts": 1500.0, "text": "checkpoint"}],
+            "memos": list(memos)}
+
+def memo(text="report", **kw):
+    m = {"id": "m", "ts": 2000.0, "from_sid": None, "from_task": None,
+         "text": text, "acks": []}
+    m.update(kw)
+    return m
+
+def no_report(t):
+    return "no-report" in [f.get("code") for f in turn.gate(t)["findings"]]
+
+filed = not no_report(child([memo()]))
+silent = no_report(child([]))
+rejected = no_report(child([memo(text=turn.rejection_memo(
+    {"threshold": "A-", "failed": [("G4", "B")], "missing": []}, ref=9))]))
+routine = no_report(child([memo(text="CHILD #9 stood down", routine=True)]))
+ok = filed and silent and rejected and routine
+print("HANDBACK-DETECTED-BOTH-WAYS-OK" if ok
+      else ("HANDBACK-RULE-BROKEN (filed=%s silent=%s rejected=%s routine=%s)"
+            % (filed, silent, rejected, routine)))
+PYIN
+    ;;
+  onhandback)
+    # MERGE-GATED, and it reads the MERGE TARGET. Same shape as `onmain`, and for the same
+    # reason: every other assertion here resolves this worktree, so all of them would go
+    # green with nothing merged. This one pipes #602's judge OUT of origin/main and runs it
+    # against `git archive origin/main`, so a branch cannot supply its own judge — and it
+    # exercises the SHIPPED reader rather than grepping for a line that may never be
+    # reached. Red until the PR lands; green afterwards from any checkout.
+    MAIN="$HOME/Workspace-Other/task-station"
+    git -C "$MAIN" fetch -q origin main 2>/dev/null
+    git -C "$MAIN" show origin/main:scripts/prove_report_memo_detected.py 2>/dev/null \
+      | python3 - --repo "$MAIN" --step 1
     ;;
   nowait)
     # THE #532 SHAPE, ASSERTED IN BOTH DIRECTIONS. A live child whose checklist has gone
@@ -107,5 +170,5 @@ PY
     python3 -c 'import json,os,sys; sys.path.insert(0,"lib"); import turn; p=os.path.expanduser("~/.claude/task-station-engine/../.claude-plugin/plugin.json"); v=json.load(open(p))["version"] if os.path.exists(p) else "0.0.0"; print("SHIPPED-AT-OR-PAST-OK "+v if turn._version_key(v) >= turn._version_key("3.40.0") else "SHIPPED-BEHIND "+v)'
     ;;
   *)
-    echo "usage: claims.sh <suite|rail|pickup|nowait|pushlimb|onmain|shipped>"; exit 2 ;;
+    echo "usage: claims.sh <suite|rail|pickup|turn|handback|onhandback|nowait|pushlimb|onmain|shipped>"; exit 2 ;;
 esac

@@ -196,6 +196,54 @@ class DrivenTurn(_CliCase):
                                 from_sid="orch-sid", from_task="o1")])
         self.assertEqual(turn.child_state(child, live=()), turn.SILENT_EXIT)
 
+    # THE HAND-BACK RAIL RECORDS NO SENDER. `memo send --task <n> --text '<report>'` is
+    # what `invoke` tells the child to file, a model types exactly that, and there is no
+    # session id for a typed command to stamp — so the report lands with from_sid=None
+    # AND from_task=None. A rule that demanded positive provenance rejected every report
+    # filed the documented way; measured on the live record, #596's memo e2f12e39 and
+    # #598's 0c7cba32 were both discarded and both children were told they filed nothing.
+    # These four pin the rule in BOTH directions: unstamped counts, and the machinery's
+    # own unstamped memos still do not.
+
+    def test_an_unstamped_hand_back_is_the_childs_report(self):
+        child = _t("c1", 11, sessions=["child-sid"], events=[_launch()],
+                   memos=[_memo(ts_=1500.0, from_sid=None, from_task=None)])
+        self.assertEqual(turn.child_state(child, live=()), turn.REPORTED)
+        self.assertNotIn("no-report", [f["code"] for f in turn.gate(child)["findings"]])
+
+    def test_an_unstamped_gate_rejection_is_not_the_childs_report(self):
+        """The parent's verdict travels down this same ledger and carries no sender
+        either. Keyed on the mark `rejection_memo` BUILDS FROM, so the writer and the
+        reader cannot drift — the same rule `INVOKED_MARK` follows."""
+        text = turn.rejection_memo({"threshold": "A-", "failed": [("G4", "B")],
+                                    "missing": []}, ref=11)
+        child = _t("c1", 11, sessions=["child-sid"], events=[_launch()],
+                   memos=[_memo(text=text, ts_=1500.0, from_sid=None, from_task=None)])
+        self.assertIn("no-report", [f["code"] for f in turn.gate(child)["findings"]])
+
+    def test_an_unstamped_gate_park_is_not_the_childs_report(self):
+        text = turn.park_memo("human-gate", "a person decides this", ref=11)
+        child = _t("c1", 11, sessions=["child-sid"], events=[_launch()],
+                   memos=[_memo(text=text, ts_=1500.0, from_sid=None, from_task=None)])
+        self.assertIn("no-report", [f["code"] for f in turn.gate(child)["findings"]])
+
+    def test_an_unstamped_routine_lifecycle_memo_is_not_the_childs_report(self):
+        """`routine` is set only by the system minting a lifecycle notice. A hand-back is
+        typed, and typing never sets it."""
+        m = _memo(text="CHILD #12 stood down", ts_=1500.0, from_sid=None, from_task=None)
+        m[turn.ROUTINE_FIELD] = True
+        child = _t("c1", 11, sessions=["child-sid"], events=[_launch()], memos=[m])
+        self.assertIn("no-report", [f["code"] for f in turn.gate(child)["findings"]])
+
+    def test_an_unstamped_report_filed_before_the_launch_does_not_count(self):
+        """The `after=last_launch` bound stays live: a memo from a previous attempt is
+        not this attempt's hand-back."""
+        child = _t("c1", 11, sessions=["child-sid"],
+                   events=[_launch(ts_=1000.0),
+                           {"kind": "save", "ts": 1500.0, "text": "checkpoint"}],
+                   memos=[_memo(ts_=900.0, from_sid=None, from_task=None)])
+        self.assertIn("no-report", [f["code"] for f in turn.gate(child)["findings"]])
+
     def test_a_live_child_is_running_whatever_its_conditions_say(self):
         child = _t("c1", 11, events=[_launch()], conditions={1: "unmet"})
         self.assertEqual(turn.child_state(child, live={11}), turn.RUNNING)

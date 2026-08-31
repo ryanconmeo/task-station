@@ -44,6 +44,58 @@ merge whose members are about different things.
   separate, unmeasured change and does not ride along with a labelling fix.
 - The check is not deleted, softened, or made harder to trigger. It fires more often
   and every firing is correct.
+## [3.47.0] — 2026-08-31
+
+**THE GATE TOLD TWO CORRECT CHILDREN THEY HAD FILED NO REPORT, WHILE READING THE LEDGER
+THEIR REPORTS WERE SITTING ON.** `turn`'s G4 `no-report` finding asks whether the child
+left a hand-back memo on its own task. It decided that by demanding POSITIVE provenance:
+a memo counted only if `from_sid` named a session registered on the task, or `from_task`
+declared the task as its origin. **The documented hand-back rail records neither.**
+`invoke` tells the child to file `memo send --task <its own> --text '<report>'`, a model
+types exactly that, and `memo_send` stamps `from_sid` only from the CLI's `--session` —
+which a typed command never passes, there being no session id in the environment for it
+to read. So every report filed the documented way landed with `from_sid=None` and
+`from_task=None`, both arms of the accept rule failed, and the finding fired.
+
+Measured on the live record, not inferred: #596's memo `e2f12e39` and #598's `0c7cba32`
+were both filed after launch on the child's own task, both non-empty, both discarded by
+this reader, and both children were reported by `turn --task 600` as having "left no
+report memo on this task" — the first two children the loop ever gated. The `after=last_launch`
+bound was innocent (both memos post-date their launch by ~28 minutes, and clearing the
+bound changed nothing), and so was the hypothesised `str(session)` repr hazard: `sessions`
+holds bare id strings.
+
+Why it mattered more than a miscount: G4 is graded, acceptance is A- on EVERY dimension
+rather than an average, and the verdict travels back to the child as a memo. A false
+`no-report` could therefore REJECT a child that did everything right and send it back to
+fix a complaint that was never true — the loop spending a retry on a defect in itself.
+
+### Fixed
+- **The sender discriminator is inverted, not dropped.** Provenance still decides whenever
+  it EXISTS: a memo naming a session or an origin task that is not this child's is still
+  somebody else's, unchanged. What changed is the unprovenanced case — the ordinary one —
+  which is now read as the child's UNLESS the record marks it as the machinery's: a
+  `routine` lifecycle notice (only the system sets that; typing never does), or a text
+  built from `REJECTION_MARK` / `PARK_MARK`. Those two constants now live beside
+  `report_memo` and `rejection_memo` / `park_memo` are BUILT from them, for the same
+  reason `INVOKED_MARK` lives beside `launches`: the writer and the reader of a marker
+  must not be able to drift apart. Stated rather than hidden — a free-form memo a parent
+  *types* onto a child that filed nothing is unprovenanced and unmarked, and would still
+  read as a report; that is a far narrower hole than one which failed every correct child,
+  and it closes as soon as either side of that memo carries a session.
+
+### Added
+- `scripts/prove_report_memo_detected.py` — #602's merge-gated judge, in #598's shape.
+  Piped out of `origin/main` and run against `git archive origin/main`, so a branch
+  cannot supply its own judge. It runs the SHIPPED reader (`turn.child_state`, `turn.gate`,
+  `turn.plan`) over the exact record shape that caused the bug, and proves both directions:
+  two checks for the fix, TEN controls (no memo at all; the gate's own rejection and park
+  texts; a routine notice; a memo predating the launch; a memo from another task; a memo
+  naming a foreign session; an empty one; and a stamped hand-back, which must keep
+  working). Reverting only the changed logic fails exactly the two and passes all ten.
+- Five tests in `tests/test_turn.py` pinning the same rule in both directions, and
+  three new `tests/claims.sh` arms (`turn`, `handback`, `onhandback`) behind #602's
+  registered claims — the last of them merge-gated, like `onmain`.
 
 ## [3.46.0] — 2026-08-31
 
