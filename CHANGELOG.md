@@ -3,6 +3,69 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.49.0] — 2026-08-31
+
+**A CONDITION PASSED ON SUBSTRING PRESENCE ALONE — THE EXIT CODE WAS THROWN AWAY.**
+`checker._run_claim` returned `((r.stdout or "") + (r.stderr or "")), "ran"` and never
+read `r.returncode`, so the verdict on every registered claim and every exit condition
+was *is this text somewhere in the combined output* and nothing else. Two lines showed
+it: `_run_claim("echo T-PASS; exit 1", 20)` and `_run_claim("echo T-PASS >&2; exit 7", 20)`
+both returned `("T-PASS", "ran")`, and both read as a pass. A command could FAIL and
+still satisfy the thing that was watching it — and an exit condition that passes ticks a
+step, so a failing command could report a plan item finished.
+
+**THE BLAST RADIUS WAS MEASURED BEFORE THE CHANGE, NOT ASSERTED AFTER IT.** The whole
+stored corpus — **234 registered commands** (170 exit conditions on 42 tasks, 64 claims
+on 15 tasks) — was run once, with both verdicts computed from the same invocation:
+**209 green under the old rule, 209 green under the new one, 0 flipped.** Every one of
+the 209 exited 0; the 6 commands that exited non-zero were already red because they were
+also missing their substring. The house style is why — `… && echo <marker>` and
+`… || { echo FAIL; exit 1; }` make the marker and the exit status agree by construction —
+so the hole was real and permitted but never yet used. Nothing was exempted, because
+nothing needed to be.
+
+### Changed
+- **`returncode == 0` is a required conjunct alongside the expected substring**, for
+  claims (`checker.verify`) and exit conditions (`exits.evaluate`) alike, since both run
+  through the same runner. The two ask different questions and both must answer yes: the
+  substring asks whether the command SAID the thing, the exit status asks whether it
+  WORKED. This is `exits.py` rule 5.
+- **A non-zero exit is `unmet`, never `unknown`.** Rule 2 — *a condition that did not run
+  refutes nothing* — shelters a timeout or a launch failure. A command that ran and
+  failed has refuted itself, and letting it borrow that shelter would hand every failing
+  command a way to prove nothing and cost nothing.
+- **`checker.run_command` now returns `(output, status, returncode)`**, and
+  `checker.invoke(run, cmd, timeout)` normalises any runner's answer to that triple. An
+  injected two-tuple runner — the shape dozens of tests use — normalises to code 0: a
+  fake that says a command RAN and does not mention an exit status is stating the case it
+  was written to state.
+- **The verdict says which half failed.** `checker.exit_note` is one formatter behind
+  `claims verify`, `exit-tick` and `exit-show`, because the interesting new failure is the
+  quiet one: a command whose substring APPEARED and whose exit status was 3 has an empty
+  `missing` list, and every reader that printed only `missing` would have shown a bare
+  FAIL with no reason under it.
+- **The exit status is stored on the result** (`code`, on the step's `exit.last` block and
+  in each claim result), so a later reader can tell *the substring was missing* from *the
+  command failed* without re-running anything. Stored verdicts are not rewritten: the
+  conjunct applies when a condition is RUN, so an older green is re-judged by the next
+  `exit-tick` or `claims verify` rather than silently flipped on upgrade.
+
+### Added
+- **`scripts/prove_exit_code_conjunct.py`** — the merge-gated judge for this change. It
+  materialises `origin/main` with `git archive`, imports the shipped `checker` and `exits`
+  out of that tree, and RUNS `echo <marker>; exit 1` through them. It discriminates on the
+  RULE rather than the source, because a grep for `returncode` goes green on a line that
+  is never reached. Every failing case is paired with the identical command exiting 0, so
+  a checker that had simply broken could not pass it either.
+
+### Fixed
+- **There is no exemption flag, and a test enforces that there never is one.** A
+  per-condition opt-out would make a green mean *the author said this one may fail* —
+  exactly the authorship the gate exists to doubt. A condition that legitimately exits
+  non-zero while printing its marker is a condition to REWRITE. `checker.py` and
+  `exits.py` are asserted to carry no `allow_nonzero` / `ignore_exit` / `expect_exit` /
+  `exit_ok` / `nonzero_ok` / `skip_returncode` hatch, nor any `exempt…` identifier.
+
 ## [3.48.0] — 2026-08-31
 
 **A MERGE PROPOSAL WAS A TRANSITIVE CLOSURE, SO IT NAMED A SUBJECT NO MEMBER SHARED.**
