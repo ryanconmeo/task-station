@@ -53,6 +53,15 @@ saying "read this first":
     the element keys, because every other key on an element is owned here and a second
     owner of the same dict is how two readers start disagreeing about one entry.
 
+  * DECLARATION — WHAT A RULING IS AND WHAT IT IS ABOUT, written by its author and never
+    inferred. A decision may declare a `kind` from a CLOSED vocabulary (ruling /
+    measurement / incident / release-record / process-note) and a `subject` of qualified
+    refs. Both are optional and stay optional: an UNTYPED decision behaves byte-identically
+    to how it behaved before these fields existed, permanently and not for a migration
+    window, because hundreds already exist and backfill cannot be automated at the ~1/3
+    precision that got the keyword placement tier demoted. Untyped is not a kind and never
+    defaults to one. See the DECLARATION section below for the whole argument.
+
 ELEMENT SHAPE — dual, and permanently so. An element is EITHER:
 
     "chose sqlite over flat files"                      (legacy: a plain string)
@@ -829,6 +838,325 @@ def clear_owner(entries, index1, flag="--unassign"):
     rich.pop(OWNER_FIELD, None)
     rich.pop(OWNER_SEQ_FIELD, None)
     rich.pop(STUB_FIELD, None)
+    entries[i - 1] = compact(rich)
+    return True, None
+
+
+# -- DECLARATION: what a ruling IS and what it is ABOUT, written by its author --------
+#
+# THE PROBLEM, MEASURED. An element carried `{text, superseded_by, pinned, owner}` and
+# nothing else, so every consumer re-derived structure from ENGLISH. `heal.py` is 4,940
+# lines against this module's 905 — the module that GUESSES at the record is 5.5x the
+# module that IS the record — and it grows one vocabulary per prose shape rather than one
+# per feature. The ceiling on guessing is already measured, and it was earned by trying:
+# a pass over 82 decisions classified by subject keyword spot-checked at roughly ONE IN
+# THREE right, which is why the keyword placement tier was demoted to an informational
+# re-read list. A ruling MENTIONS a subject far more often than it is ABOUT one, and the
+# mentions outnumber the ownership about two to one.
+#
+# SO THE AUTHOR DECLARES IT AND NOTHING EVER INFERS IT. Information that exists at WRITE
+# time stops being expensively and unreliably reconstructed at READ time. Two fields, both
+# optional, both author-written: `kind` (what class of record this is) and `subject` (the
+# refs it is about).
+#
+# UNTYPED IS NOT A KIND, AND NOT FOR A MIGRATION WINDOW — PERMANENTLY. Hundreds of
+# decisions already exist carrying neither field, and backfill cannot be automated at 1/3
+# precision, so an untyped decision is a permanent citizen of the record rather than a
+# transitional one. `kind()` returns None for one, `subject()` returns [], `compact()`
+# still stores it as a plain STRING, and EVERY consumer must behave byte-identically to
+# how it behaved before these fields existed. Untyped is not a default kind and never
+# "probably a process-note". ONE rule for every consumer rather than per-consumer
+# defaults, because per-consumer defaults are exactly how two surfaces begin disagreeing
+# about one entry.
+#
+# THE KIND VOCABULARY IS CLOSED AND VALIDATED AT THE SETTER, never at the reader. A
+# free-text kind would be a second prose field, which is the defect this closes rather
+# than a smaller instance of it. Adding a kind is a deliberate one-line change here.
+#
+# A SUBJECT IS A QUALIFIED REF AND NEVER A BARE INTEGER, and this one is not taste.
+# `heal.subject_signals` already labels every work item `PR/story <n>` from one bare
+# number, so PR 27 and story 27 emit the IDENTICAL signal and collide TODAY — two
+# decisions about unrelated things can be grouped as sharing a subject. That is a scraping
+# accident. If a DECLARED subject stored a bare integer the same collision would become
+# STRUCTURAL: trusted, fed to the merge grouper, and undoubtable by anything downstream,
+# because "never infer" forbids the only correction mechanism a wrong value could have. A
+# wrong subject is therefore strictly WORSE than none. So a subject ref carries its TYPE,
+# and a work-item ref carries its repo or project as well.
+#
+# WHY NOT `_clean_ref`'s DICT SHAPE. `_clean_ref` names one DECISION on one task (a task
+# id plus a 1-based index) — one subject class out of five, and the rarest. A heterogeneous
+# subject list needs ONE shape for all five, and a `type:value` token gives three things
+# the dict does not: it compares by equality, it renders WITHOUT A LOAD (the thing
+# `owner_seq` had to be invented for, so declaration needs no companion field of its own),
+# and it cannot degrade to a bare number.
+
+KIND_FIELD = "kind"             # what class of record this decision IS
+SUBJECT_FIELD = "subject"       # the qualified refs it is ABOUT
+
+# The CLOSED kind vocabulary. Five classes, and the split that matters is the first
+# against the rest: a RULING is the constitution, true until refuted, and must brief every
+# session. The other four are case law — true forever, relevant only when touching the
+# subject — which is what makes a two-tier render possible without hiding anything by AGE.
+KIND_RULING = "ruling"                    # a binding decision; what the work must obey
+KIND_MEASUREMENT = "measurement"          # a number taken at a moment, true forever
+KIND_INCIDENT = "incident"                # what went wrong once, and why
+KIND_RELEASE_RECORD = "release-record"    # X.Y.Z shipped, or a consolidation summary
+KIND_PROCESS_NOTE = "process-note"        # how the work is RUN, not what it decided
+
+KINDS = (KIND_RULING, KIND_MEASUREMENT, KIND_INCIDENT,
+         KIND_RELEASE_RECORD, KIND_PROCESS_NOTE)
+
+# The CLOSED set of subject ref types. Closed for the same reason `KINDS` is: an
+# unvalidated type is free text wearing a colon, and two surfaces reading `PR:27` and
+# `pr:27` as different subjects is the disagreement this whole field exists to end.
+SUBJECT_TASK = "task"           # `task:596` — another task on this board
+SUBJECT_STEP = "step"           # `step:29` — a numbered step on the holding task
+SUBJECT_PR = "pr"               # `pr:task-station#27` — a pull request, repo-qualified
+SUBJECT_STORY = "story"         # `story:atlas#2704` — a work item, project-qualified
+SUBJECT_RELEASE = "release"     # `release:3.44.0` — a shipped version
+
+SUBJECT_TYPES = (SUBJECT_TASK, SUBJECT_STEP, SUBJECT_PR,
+                 SUBJECT_STORY, SUBJECT_RELEASE)
+
+# The two types whose bare number is KNOWN to collide, so the qualifier is mandatory
+# rather than encouraged. `pr:27` and `story:27` no longer collide with each other once
+# the type is declared — but PR 27 on two repos still does, and this record has already
+# been bitten by exactly one unqualified work-item number.
+_SUBJECT_QUALIFIED = (SUBJECT_PR, SUBJECT_STORY)
+
+# How long one subject ref may run. Not a budget and not a cap on how many refs a
+# decision may declare — a shape assertion. A token longer than this is prose, and prose
+# in the subject field is the thing being replaced, not a longer version of it.
+SUBJECT_REF_CHARS = 80
+
+
+def _clean_subject_ref(raw):
+    """Canonicalise ONE declared subject ref to its `type:value` token, or say why it is
+    not one. Returns `(token, None)` or `(None, reason)`.
+
+    The reason string is half the point: this is the only gate on the field, and a
+    refusal that does not say what shape was wanted just gets worked around."""
+    token = " ".join(str(raw or "").split())
+    if not token:
+        return None, "a subject ref cannot be empty"
+    if len(token) > SUBJECT_REF_CHARS:
+        return None, ("%r is %d chars — a subject is a REF, not prose; keep it under %d"
+                      % (token, len(token), SUBJECT_REF_CHARS))
+    if ":" not in token:
+        return None, ("%r is not a qualified ref. A subject names its TYPE as "
+                      "`<type>:<value>`, one of %s. A bare number is REFUSED: heal's "
+                      "subject tier already labels every work item `PR/story <n>` from "
+                      "one bare number, so PR 27 and story 27 collide today — and a "
+                      "DECLARED bare number would make that collision structural instead "
+                      "of accidental, in a field nothing downstream is allowed to doubt."
+                      % (token, "/".join(SUBJECT_TYPES)))
+    stype, value = token.split(":", 1)
+    stype = stype.strip().lower()
+    value = value.strip()
+    if stype not in SUBJECT_TYPES:
+        return None, ("%r names no known subject type; the closed set is %s"
+                      % (token, ", ".join(SUBJECT_TYPES)))
+    if not value:
+        return None, "%r names a %s with no value" % (token, stype)
+    if " " in value:
+        return None, "%r — a subject ref carries no spaces" % token
+    if stype == SUBJECT_STEP and not value.isdigit():
+        return None, ("%r — a step subject is the 1-based step number on the task that "
+                      "HOLDS the decision, as `/todo <n>` prints it" % token)
+    if stype in _SUBJECT_QUALIFIED:
+        repo, sep, num = value.rpartition("#")
+        if not sep or not repo or not num or repo.isdigit():
+            return None, ("%r — a %s subject must be REPO-QUALIFIED, as "
+                          "`%s:<repo>#<number>`. %s 27 in two repos is two different "
+                          "things, and an unqualified number is the collision this field "
+                          "exists to remove rather than to inherit."
+                          % (token, stype, stype, stype.upper()))
+    return "%s:%s" % (stype, value), None
+
+
+def kind(entry):
+    """The DECLARED kind of this decision, or None when it declares none — which is the
+    case for every decision ever written before this field existed, and stays the normal
+    case permanently.
+
+    An unrecognised stored value also reads as None, deliberately. A kind written by a
+    NEWER version must never be mistaken for one this version knows, and untyped is the
+    one behaviour that is safe forever; `compact()` keeps the stored key either way, so
+    reading it as absent loses nothing on disk."""
+    if not isinstance(entry, dict):
+        return None
+    val = str(entry.get(KIND_FIELD) or "").strip().lower()
+    return val if val in KINDS else None
+
+
+def subject(entry):
+    """Every qualified ref this decision DECLARES as its subject, in declared order and
+    de-duplicated. `[]` for a legacy entry and for one that declares none.
+
+    Tolerates a lone string as well as a list, because a subject of one is the common
+    case and some writer will eventually pass it unwrapped. Silently DROPS a ref it
+    cannot parse: the setter is the gate, and a reader that met an unparseable ref and
+    guessed at it would reintroduce exactly the inference this field removes."""
+    if not isinstance(entry, dict):
+        return []
+    raw = entry.get(SUBJECT_FIELD)
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out = []
+    for item in raw:
+        ref, _why = _clean_subject_ref(item)
+        if ref is not None and ref not in out:
+            out.append(ref)
+    return out
+
+
+def is_typed(entry):
+    """True iff this decision declares a kind."""
+    return kind(entry) is not None
+
+
+def has_subject(entry):
+    """True iff this decision declares at least one parseable subject ref."""
+    return bool(subject(entry))
+
+
+def kind_label(entry):
+    """`MEASUREMENT` — how a declared kind reads in a render, or "" when undeclared. The
+    display form lives HERE and not per-surface: five text-only consumers project this
+    log, and a kind that reads one way in the digest and another in a feed is "what a
+    cold session believes" diverging by surface."""
+    val = kind(entry)
+    return val.upper() if val else ""
+
+
+def subject_label(entry):
+    """`pr:task-station#27, task:596` — how a declared subject reads in a render, or ""
+    when undeclared. Load-free by construction: the ref token carries its own display
+    form, which is why declaration needs no companion field."""
+    return ", ".join(subject(entry))
+
+
+def set_kind(entries, index1, value, flag="--kind"):
+    """Declare decision `index1` to be of kind `value`. `(ok, error)`.
+
+    TWO REFUSALS, each because something breaks without it:
+
+      * a REPLACED decision — superseded, split or merged. It renders on no present-tense
+        surface, so typing it declares the kind of a record nobody reads, and a two-tier
+        render would then have a classified entry it must never show.
+      * a value OUTSIDE THE CLOSED VOCABULARY, with the vocabulary named in the error.
+        Validated HERE and never at the reader: a reader that accepted anything would
+        make `kind` a second prose field, which is the defect being closed.
+
+    RE-DECLARING IS ALLOWED, and this is the one place the `owner` precedent deliberately
+    does NOT carry. `set_owner` refuses to re-point because an owner has a SECOND store —
+    the owner task's index — and re-pointing in place would leave that index naming a
+    ruling it no longer owns. A kind has no second side. It has to stay correctable: the
+    design forbids any check from ever contradicting a declared value, so the AUTHOR is
+    the only correction mechanism that exists, and making a correction awkward is how a
+    misdeclaration becomes permanent."""
+    i, err = _check_index(entries, index1, flag)
+    if err:
+        return False, err
+    entry = entries[i - 1]
+    how = _already_phrase(entry)
+    if how is not None:
+        return False, ("%s %d — that decision is %s, so it renders nowhere; there is no "
+                       "record left to classify" % (flag, i, how))
+    val = " ".join(str(value or "").split()).lower()
+    if not val:
+        return False, ("%s %d — no kind given; the vocabulary is %s, and `clear_kind` "
+                       "removes a declaration" % (flag, i, ", ".join(KINDS)))
+    if val not in KINDS:
+        return False, ("%s %d — %r is not a kind. The vocabulary is CLOSED: %s. It is "
+                       "closed on purpose — a free-text kind is a second prose field, "
+                       "which is the thing this replaces." % (flag, i, val,
+                                                              ", ".join(KINDS)))
+    rich = as_rich(entry)
+    rich[KIND_FIELD] = val
+    entries[i - 1] = compact(rich)
+    return True, None
+
+
+def clear_kind(entries, index1, flag="--clear-kind"):
+    """Remove the kind declaration from `index1` — the ONE inverse of `set_kind`, so a
+    declaration is undone by a single command. `(ok, error)`.
+
+    Errors rather than silently succeeding on an already-untyped decision, for the same
+    reason `clear_owner` does: "cleared" after a typo reads as success, and the caller
+    then believes it retracted a classification it never touched."""
+    i, err = _check_index(entries, index1, flag)
+    if err:
+        return False, err
+    if not is_typed(entries[i - 1]):
+        return False, ("%s %d — that decision declares no kind; there is nothing to "
+                       "clear" % (flag, i))
+    rich = as_rich(entries[i - 1])
+    rich.pop(KIND_FIELD, None)
+    entries[i - 1] = compact(rich)
+    return True, None
+
+
+def set_subject(entries, index1, refs, flag="--subject"):
+    """Declare what decision `index1` is ABOUT, as qualified refs. `(ok, error)`.
+
+    Takes one ref or an iterable of them, and REPLACES whatever was declared before —
+    a subject is the whole answer to "what is this about", not a growing pile, and an
+    append-only subject would make a correction impossible.
+
+    THREE REFUSALS:
+
+      * a REPLACED decision, for the same reason `set_kind` refuses one.
+      * NO refs at all — use `clear_subject` to retract, so a typo that produced an
+        empty list cannot read as a successful retraction.
+      * ANY unqualified or unparseable ref, and the refusal is WHOLESALE rather than
+        per-ref. A partially accepted subject is the worst possible outcome here: it is
+        structural, it is trusted, nothing downstream may doubt it, and it is silently
+        incomplete. The refusal names the offending token and the shape wanted."""
+    i, err = _check_index(entries, index1, flag)
+    if err:
+        return False, err
+    entry = entries[i - 1]
+    how = _already_phrase(entry)
+    if how is not None:
+        return False, ("%s %d — that decision is %s, so it renders nowhere; there is no "
+                       "record left to give a subject" % (flag, i, how))
+    if refs is None:
+        items = []
+    elif isinstance(refs, str):
+        items = [refs]
+    else:
+        items = list(refs)
+    clean = []
+    for item in items:
+        ref, why = _clean_subject_ref(item)
+        if ref is None:
+            return False, "%s %d — %s" % (flag, i, why)
+        if ref not in clean:
+            clean.append(ref)
+    if not clean:
+        return False, ("%s %d — no subject refs given; `clear_subject` retracts a "
+                       "declared subject" % (flag, i))
+    rich = as_rich(entry)
+    rich[SUBJECT_FIELD] = clean
+    entries[i - 1] = compact(rich)
+    return True, None
+
+
+def clear_subject(entries, index1, flag="--clear-subject"):
+    """Retract the declared subject of `index1` — the ONE inverse of `set_subject`.
+    `(ok, error)`. Errors on a decision that declares none, exactly as `clear_kind`
+    does."""
+    i, err = _check_index(entries, index1, flag)
+    if err:
+        return False, err
+    rich = as_rich(entries[i - 1])
+    if SUBJECT_FIELD not in rich:
+        return False, ("%s %d — that decision declares no subject; there is nothing to "
+                       "retract" % (flag, i))
+    rich.pop(SUBJECT_FIELD, None)
     entries[i - 1] = compact(rich)
     return True, None
 
