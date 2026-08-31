@@ -593,3 +593,91 @@ class DirectionTemplateTest(unittest.TestCase):
         self.assertEqual(cli.count("tools/checker-template.sh"), 2, cli.count(
             "tools/checker-template.sh"))
         self.assertIn("DIRECTION, NOT A LITERAL", cli)
+
+
+# ---------------------------------------------------------------------------
+# RULE 5 — A GREEN CONDITION MEANS THE COMMAND SUCCEEDED.
+#
+# `returncode == 0` is a required conjunct alongside the expected substring. Before
+# 3.49.0 only the substring was asked, so `echo T-PASS; exit 1` ticked a step, and a
+# condition could be satisfied by a command that failed. The two questions are
+# different and both have to answer yes: the substring asks whether the command SAID
+# the thing, the exit status asks whether it WORKED.
+#
+# The shell tests here spawn a REAL shell on purpose. Only the real subprocess path can
+# prove the return code is read at all — a fake runner returns whatever it was written
+# to return, and a source grep goes green on a line that is never reached.
+# ---------------------------------------------------------------------------
+
+class TestTheExitCodeConjunct(_Base):
+    def _one(self, cmd, expect):
+        t = self._task("step one")
+        exits.set_condition(t["steps"], 1, cmd, [expect])
+        return t
+
+    def test_a_failing_command_that_prints_the_substring_is_UNMET(self):
+        t = self._one("echo T-PASS; exit 1", "T-PASS")
+        res = exits.evaluate(t)
+        self.assertFalse(res[0]["ok"])
+        self.assertEqual(res[0]["code"], 1)
+        self.assertEqual(res[0]["missing"], [])       # it printed exactly what was asked
+        self.assertEqual(exits.item_state(t["steps"][0]), exits.UNMET)
+
+    def test_a_failing_command_is_UNMET_and_never_UNKNOWN(self):
+        # Rule 2 shelters commands that did NOT RUN. This one ran and disagreed, so it
+        # must refute — otherwise every failing command hides behind "nothing was proved"
+        # and the invariant buys nothing.
+        t = self._one("echo T-PASS >&2; exit 7", "T-PASS")
+        exits.evaluate(t)
+        self.assertEqual(exits.item_state(t["steps"][0]), exits.UNMET)
+        self.assertEqual(exits.state(t), exits.UNMET)
+
+    def test_a_failing_command_does_not_tick_its_step(self):
+        # The whole point: a tick is a statement that the step is FINISHED, and a command
+        # that failed has not shown that however good its output looked.
+        t = self._one("echo T-PASS; exit 1", "T-PASS")
+        moved = exits.apply_results(t, exits.evaluate(t))
+        self.assertEqual(moved["ticked"], [])
+        self.assertFalse(steps_mod.is_done(t["steps"][0]))
+
+    def test_a_clean_command_still_ticks_its_step(self):
+        t = self._one("echo T-PASS", "T-PASS")
+        moved = exits.apply_results(t, exits.evaluate(t))
+        self.assertEqual(moved["ticked"], [1])
+
+    def test_the_exit_code_is_stored_on_the_step(self):
+        # A later reader has to be able to say WHY a condition is red without re-running
+        # it — and "the substring was missing" and "the command failed" are different
+        # findings that lead to different fixes.
+        t = self._one("echo T-PASS; exit 3", "T-PASS")
+        exits.evaluate(t)
+        self.assertEqual(exits.condition(t["steps"][0])["last"]["code"], 3)
+
+    def test_a_command_that_starts_green_and_turns_failing_is_a_REGRESSION(self):
+        t = self._one("echo T-PASS", "T-PASS")
+        exits.apply_results(t, exits.evaluate(t))
+        self.assertTrue(steps_mod.is_done(t["steps"][0]))
+        t["steps"][0]["exit"]["cmd"] = "echo T-PASS; exit 1"
+        moved = exits.apply_results(t, exits.evaluate(t))
+        self.assertEqual(moved["regressed"], [1])
+        self.assertTrue(steps_mod.is_done(t["steps"][0]))   # rule 4 still holds
+
+    def test_a_timeout_is_still_UNKNOWN_and_moves_nothing(self):
+        # The conjunct must not swallow rule 2 on its way past.
+        t = self._one("sleep", "T-PASS")
+        res = exits.evaluate(t, run=_runner({"sleep": ("", "timeout")}))
+        self.assertEqual(res[0]["status"], "timeout")
+        self.assertIsNone(res[0]["code"])
+        self.assertEqual(exits.item_state(t["steps"][0]), exits.UNKNOWN)
+
+    def test_an_injected_two_tuple_runner_still_means_success(self):
+        t = self._one("c", "OK")
+        res = exits.evaluate(t, run=_runner({"c": ("OK", "ran")}))
+        self.assertTrue(res[0]["ok"])
+        self.assertEqual(res[0]["code"], 0)
+
+    def test_an_injected_three_tuple_runner_is_judged_on_its_code(self):
+        t = self._one("c", "OK")
+        res = exits.evaluate(t, run=lambda cmd, to: ("OK", "ran", 2))
+        self.assertFalse(res[0]["ok"])
+        self.assertEqual(res[0]["code"], 2)

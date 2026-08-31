@@ -1228,13 +1228,15 @@ def _claims_verify(a, task):
           % (task.get("seq") or task["id"][:8], task.get("title"), len(ok), len(results)))
     for r in results:
         print("  %s %-8s %s" % ("ok  " if r["ok"] else "FAIL", r["id"], r["cmd"]))
-        if r["status"] == "timeout":
-            print("         timed out — nothing was proved either way, so this is NOT "
-                  "a refutation")
-        elif r["status"] == "error":
+        if r["status"] == "error":
             print("         could not be run: %s" % r["got"])
-        elif r["missing"]:
-            print("         missing from the output: %s" % " · ".join(r["missing"]))
+        else:
+            # ONE formatter, so `claims verify` and `exit-tick` can never disagree about
+            # what a failure was — and so the quiet case (token present, command exited
+            # non-zero, `missing` empty) is never printed as a reasonless FAIL.
+            note = _checker.exit_note(r["status"], r.get("code"), r["missing"])
+            if note:
+                print("         %s" % note)
         if r["got"] and r["status"] == "ran" and not r["ok"]:
             print("         got (tail): %s" % " ".join(r["got"].split())[-200:])
     return (VERIFY_PASSED if not [r for r in results if not r["ok"]]

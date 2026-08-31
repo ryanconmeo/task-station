@@ -22,9 +22,9 @@ The checklist then reports its own state, and "what is still open" becomes a
 computation instead of a list somebody has to maintain.
 
 THE SHAPE IS DELIBERATELY THE ONE `claims` ALREADY USES — `(command, expected
-substrings)`, combined stdout+stderr, one runner deciding what `ran` / `timeout` /
-`error` mean (`checker.run_command`, shared rather than re-implemented here so the two
-can never drift apart). What is different is only WHERE it attaches: a claim is an
+substrings)` judged against the command's EXIT STATUS as well, combined stdout+stderr,
+one runner deciding what `ran` / `timeout` / `error` mean (`checker.run_command`,
+shared rather than re-implemented here so the two can never drift apart). What is different is only WHERE it attaches: a claim is an
 assertion about a DOCUMENT bound to the task, an exit condition is an assertion about
 ONE STEP of the checklist. That is why this is a separate field and not a fourth claim
 key — a claim answers "is this plan still true", an exit condition answers "is this item
@@ -34,7 +34,7 @@ STORAGE — additive, on the step element itself:
 
     {"text": "…", "done": false,
      "exit": {"cmd": "…", "expect": ["…"], "added_ts": 1.7e9,
-              "last": {"ts": …, "ok": …, "status": "ran",
+              "last": {"ts": …, "ok": …, "status": "ran", "code": 0,
                        "missing": [], "got": "…"}}}
 
 On the step, not in a parallel task-level table keyed by index, because the two would
@@ -65,6 +65,18 @@ THE FOUR RULES, inherited from the checker and not negotiable:
      rewriting a human's record of completed work on the strength of one command's exit
      status is a bigger claim than this module gets to make unasked. `--untick` opts
      into the symmetric behaviour for a plan that wants it.
+  5. A GREEN CONDITION MEANS THE COMMAND SUCCEEDED (3.49.0). `returncode == 0` is a
+     REQUIRED CONJUNCT alongside the expected substring, and the two ask different
+     questions: the substring asks whether the command SAID the thing, the exit status
+     asks whether it WORKED. Until 3.49.0 only the first was asked, so
+     `echo T-PASS; exit 1` was a pass and a condition could be satisfied by a command
+     that failed — the substrate under four separately-patched incidents in which a
+     condition asserted that some text appeared in the output of a command run
+     somewhere, against something. There is NO exemption flag, deliberately: a
+     condition that legitimately exits non-zero while printing its token is a condition
+     to REWRITE, because the moment an author can declare their own condition exempt
+     the invariant means nothing. A non-zero exit is `unmet`, never `unknown` — rule 2
+     protects commands that did not RUN, and this one ran.
 
 Stdlib only. Imports `checker`, `config` and `steps`; nothing imports it back.
 """
@@ -357,12 +369,17 @@ def evaluate(task, only=None, timeout=None, now=None, run=None):
     """RUN the registered conditions and record each outcome on its step. Returns the
     results list; does NOT tick anything and does NOT save.
 
-    A result is `{"n", "text", "cmd", "expect", "ok", "status", "missing", "got",
-    "was_done"}`. `missing` names the expected substrings that did not appear, so a
-    failure says what was actually wrong instead of dumping output at the reader, and
-    `status` separates a command that RAN and disagreed from one that never ran at all
-    — the distinction rule 2 turns on. `was_done` is the tick state BEFORE this run, so
-    the caller can tell a fresh completion from a regression.
+    A result is `{"n", "text", "cmd", "expect", "ok", "status", "code", "missing",
+    "got", "was_done"}`. `missing` names the expected substrings that did not appear, so
+    a failure says what was actually wrong instead of dumping output at the reader,
+    `code` is the command's exit status, and `status` separates a command that RAN and
+    disagreed from one that never ran at all — the distinction rule 2 turns on.
+    `was_done` is the tick state BEFORE this run, so the caller can tell a fresh
+    completion from a regression.
+
+    `ok` REQUIRES BOTH (rule 5): exit status 0 AND every expected substring. A non-zero
+    exit is UNMET rather than UNKNOWN, because the command ran — it just failed, and a
+    failing command cannot tick a step no matter what it printed on the way down.
 
     `only` restricts to one step number or a list of them. `run` is injected by the
     tests so the suite never spawns a shell."""
@@ -378,20 +395,20 @@ def evaluate(task, only=None, timeout=None, now=None, run=None):
         cond = condition(step)
         if cond is None or (wanted is not None and n not in wanted):
             continue
-        out, status = run(cond["cmd"], timeout)
+        out, status, code = _checker.invoke(run, cond["cmd"], timeout)
         missing = [e for e in cond["expect"] if e not in out]
-        ok = bool(status == "ran" and not missing)
+        ok = bool(status == "ran" and code == 0 and not missing)
         got = ("(no output — timed out after %ss)" % timeout) if status == "timeout" \
             else _checker.output_tail(out)
         rich = _steps.as_rich(step)
         block = dict(rich.get(EXIT_FIELD) or {})
-        block["last"] = {"ts": now, "ok": ok, "status": status,
+        block["last"] = {"ts": now, "ok": ok, "status": status, "code": code,
                          "missing": missing, "got": got}
         rich[EXIT_FIELD] = block
         steps[n - 1] = _steps.compact(rich)
         results.append({"n": n, "text": _steps.text(step), "cmd": cond["cmd"],
                         "expect": cond["expect"], "ok": ok, "status": status,
-                        "missing": missing, "got": got,
+                        "code": code, "missing": missing, "got": got,
                         "was_done": _steps.is_done(step)})
     return results
 
