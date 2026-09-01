@@ -95,7 +95,10 @@ class _Args:
                         # the same reason `ref` is — every existing caller names none of
                         # them, and they must change nothing for those callers.
                         dismiss=None, undismiss=None, why=None, dismissals=False,
-                        candidates=False, goal_reviewed=False, probe_links=False)
+                        candidates=False, goal_reviewed=False, probe_links=False,
+                        # 3.52.0: --dry-run reaches --split/--merge too, so the writing
+                        # verbs can all be looked at before they are leapt.
+                        dry_run=False)
         defaults.update(kw)
         self.__dict__.update(defaults)
 
@@ -2101,12 +2104,178 @@ class TestExplicitVerbsOnTheCli(_Base):
         out = self._heal(t, split=9, into="1")
         self.assertIn("no such decision", out)
 
-    def test_split_int_list_parses_the_shapes_the_cli_accepts(self):
-        self.assertEqual(ts._split_int_list("3,7, 9"), [3, 7, 9])
-        self.assertEqual(ts._split_int_list("4"), [4])
-        self.assertEqual(ts._split_int_list([1, 2]), [1, 2])
-        self.assertEqual(ts._split_int_list(None), [])
-        self.assertEqual(ts._split_int_list("a,b"), [])
+    def test_the_dropping_list_parser_is_gone_from_the_module(self):
+        """`_split_int_list` DROPPED what it could not coerce, and every caller it had was
+        a verb that writes the record. It is not deprecated, it is removed — a dropping
+        parser left in this module is one the next writing verb reaches for."""
+        self.assertFalse(hasattr(ts, "_split_int_list"))
+
+    def test_the_shared_parser_reads_the_shapes_the_cli_accepts(self):
+        t = self._task(decisions=["one", "two", "three", "four", "five"])
+        parse = ts._split_decision_refs
+        self.assertEqual(parse("3,1, 5", t, "--into"), ([3, 1, 5], None))
+        self.assertEqual(parse("4", t, "--into"), ([4], None))
+        self.assertEqual(parse([1, 2], t, "--into"), ([1, 2], None))
+        self.assertEqual(parse(None, t, "--into"), ([], None))
+        # the QUALIFIED form the decision list actually prints
+        self.assertEqual(parse("%s:2,3" % t["seq"], t, "--into"), ([2, 3], None))
+        nums, err = parse("a,b", t, "--into")
+        self.assertIsNone(nums)
+        self.assertIn("not a decision number", err)
+
+
+class TestWritingVerbsRefuseWhatTheyCannotRead(_Base):
+    """#594 — `--split`, `--merge` and `--into` used to DROP an item they could not parse.
+
+    `--reassign 1,foo` moving ruling 1 in silence was fixed in 3.43.0 (#592); these three
+    kept the old parser. They write the record, so a typo did not fail — it performed a
+    SMALLER operation than the operator asked for and reported success. Worse here than on
+    reassign: a dropped merge member leaves a summary claiming to be the one record of N
+    rulings while N-1 actually moved, with the survivor still live and unreferenced.
+
+    THE ASSERTION IN EVERY REFUSAL TEST IS A BLOB COMPARISON, not an absence of one mark.
+    The point of an all-or-nothing refusal is that it changes NOTHING, and only comparing
+    the whole stored record before and after distinguishes "nothing" from "something
+    small" — a heal stamp, a bumped counter, a half-marked batch."""
+
+    def _blob(self, t):
+        """The whole stored task, minus the two fields any write bumps. Everything else —
+        every decision, every mark, every heal stamp — has to be byte-identical."""
+        d = dict(self._reload(t))
+        d.pop("updated_ts", None)
+        return json.dumps(d, sort_keys=True, default=str)
+
+    def _refuses_and_changes_nothing(self, t, **kw):
+        before = self._blob(t)
+        out = self._heal(t, **kw)
+        self.assertEqual(before, self._blob(t),
+                         "the refusal wrote something:\n%s" % out)
+        return out
+
+    def _five(self):
+        return self._task(decisions=["Ruling one. Body one.", "Ruling two. Body two.",
+                                     "Ruling three. Body three.", "Ruling four. Body.",
+                                     "Ruling five. Body five."])
+
+    # -- the unparseable item, on each of the three lists ------------------------
+
+    def test_merge_refuses_the_whole_batch_on_an_unparseable_member(self):
+        t = self._five()
+        out = self._refuses_and_changes_nothing(t, merge="2,foo", into="5")
+        self.assertIn("not a decision number", out)
+        self.assertIn("Nothing was changed", out)
+        self.assertFalse(dec.is_replaced(self._reload(t)["decisions"][1]))
+
+    def test_into_refuses_the_whole_batch_on_an_unparseable_target(self):
+        t = self._five()
+        out = self._refuses_and_changes_nothing(t, split="1", into="3,foo")
+        self.assertIn("not a decision number", out)
+        self.assertFalse(dec.is_replaced(self._reload(t)["decisions"][0]))
+
+    def test_split_refuses_an_unparseable_subject(self):
+        t = self._five()
+        out = self._refuses_and_changes_nothing(t, split="foo", into="3")
+        self.assertIn("not a decision number", out)
+
+    def test_split_takes_exactly_one_subject(self):
+        t = self._five()
+        out = self._refuses_and_changes_nothing(t, split="1,2", into="3")
+        self.assertIn("exactly ONE decision", out)
+
+    # -- all-or-nothing past the parse ------------------------------------------
+
+    def test_merge_refuses_the_whole_batch_on_an_out_of_range_member(self):
+        """THE PARTIAL WRITE, in its second shape. This used to mark 2, print an error
+        about 99, and report both in one message — half a reconcile."""
+        t = self._five()
+        out = self._refuses_and_changes_nothing(t, merge="2,99", into="5")
+        self.assertIn("no such decision", out)
+        self.assertIn("Nothing was changed", out)
+        self.assertEqual(len(dec.live_texts(self._reload(t)["decisions"])), 5)
+
+    def test_merge_refuses_the_whole_batch_on_an_already_replaced_member(self):
+        t = self._five()
+        self._heal(t, merge="1", into="5")
+        out = self._refuses_and_changes_nothing(t, merge="2,1", into="5")
+        self.assertIn("already merged", out)
+        self.assertFalse(dec.is_replaced(self._reload(t)["decisions"][1]))
+
+    # -- naming what is about to be acted on ------------------------------------
+
+    def test_merge_names_every_ruling_before_it_marks_them(self):
+        t = self._five()
+        out = self._heal(t, merge="2,3", into="5")
+        self.assertIn("about to mark 2 ruling(s)", out)
+        self.assertIn("merging %s:2. Ruling two" % t["seq"], out)
+        self.assertIn("merging %s:3. Ruling three" % t["seq"], out)
+        self.assertIn("into %s:5. Ruling five" % t["seq"], out)
+        self.assertIn("merged 2, 3 into 5", out)
+
+    def test_split_names_the_ruling_and_its_parts_before_it_marks_them(self):
+        t = self._five()
+        out = self._heal(t, split="1", into="3,4")
+        self.assertIn("splitting %s:1. Ruling one" % t["seq"], out)
+        self.assertIn("into %s:3. Ruling three" % t["seq"], out)
+
+    def test_a_refusal_names_the_rulings_too_when_it_got_that_far(self):
+        """An out-of-range member is named as such, beside the ones that were legal — the
+        reader sees WHICH number was wrong without re-reading their own command."""
+        t = self._five()
+        out = self._refuses_and_changes_nothing(t, merge="2,99", into="5")
+        self.assertIn("NO SUCH DECISION", out)
+
+    # -- the qualified form ------------------------------------------------------
+
+    def test_all_three_lists_take_the_qualified_form_the_log_prints(self):
+        t = self._five()
+        out = self._heal(t, split="%s:1" % t["seq"],
+                         into="%s:3,4" % t["seq"])
+        self.assertIn("split decision 1 into 3, 4", out)
+        self.assertEqual(dec.replacement(self._reload(t)["decisions"][0]),
+                         (dec.REPLACED_SPLIT, [3, 4]))
+
+    def test_a_qualified_ref_naming_another_task_is_refused_not_resolved(self):
+        t = self._five()
+        other = self._task(title="somewhere else", decisions=["x", "y", "z"])
+        out = self._refuses_and_changes_nothing(t, merge="2,%s:3" % other["seq"],
+                                                into="5")
+        self.assertIn("PER-TASK", out)
+
+    # -- --dry-run ---------------------------------------------------------------
+
+    def test_dry_run_on_merge_validates_the_batch_and_writes_nothing(self):
+        t = self._five()
+        before = self._blob(t)
+        out = self._heal(t, merge="2,3", into="5", dry_run=True)
+        self.assertIn("--dry-run: nothing was changed", out)
+        self.assertIn("merging %s:2" % t["seq"], out)
+        self.assertEqual(before, self._blob(t))
+
+    def test_dry_run_on_split_validates_the_batch_and_writes_nothing(self):
+        t = self._five()
+        before = self._blob(t)
+        out = self._heal(t, split="1", into="3,4", dry_run=True)
+        self.assertIn("--dry-run: nothing was changed", out)
+        self.assertIn("splitting %s:1" % t["seq"], out)
+        self.assertEqual(before, self._blob(t))
+
+    def test_a_dry_run_refusal_is_the_refusal_the_real_run_would_give(self):
+        t = self._five()
+        dry = self._refuses_and_changes_nothing(t, merge="2,99", into="5",
+                                                dry_run=True)
+        wet = self._refuses_and_changes_nothing(t, merge="2,99", into="5")
+        self.assertEqual(dry, wet)
+
+    # -- the legal path still does what it did -----------------------------------
+
+    def test_a_legal_batch_still_marks_and_still_stamps_the_heal(self):
+        t = self._five()
+        self._heal(t, merge="1,2", into="5")
+        after = self._reload(t)
+        self.assertEqual(dec.live_texts(after["decisions"]),
+                         ["Ruling three. Body three.", "Ruling four. Body.",
+                          "Ruling five. Body five."])
+        self.assertTrue(after.get("last_heal_ts"))
 
 
 class TestTodoRouting(_Base):
