@@ -53,7 +53,10 @@ import importlib.util
 import io
 import json
 import os
+import re
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -84,6 +87,24 @@ _spec.loader.exec_module(ts)
 # honours ahead of everything else — so no test depends on the developer's own `/model`
 # pick, and none of them has to fake the HUD snapshot.
 WINDOW = 200000
+
+_SID_RE = re.compile(r"--session-id (\S+)")
+
+
+def _sid_in(cmd):
+    """The session id a launch command carries — the successor's, read back out of the
+    line the opener was handed, which is the only place the test can learn it before the
+    command returns."""
+    m = _SID_RE.search(cmd or "")
+    return m.group(1) if m else None
+
+
+def _dead_pid():
+    """A pid that is genuinely gone: a real child process, waited on. Inventing a large
+    integer would be a guess about the pid space; this is a fact about this machine."""
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
+    p.wait()
+    return p.pid
 
 
 class _Args:
@@ -133,15 +154,57 @@ class _SuccessionTest(unittest.TestCase):
         self.transcripts = {}
         self._orig_find = ts._find_session_path
         ts._find_session_path = lambda sid: self.transcripts.get(sid)
+        # THE FAKE OPENER OPENS A FAKE WINDOW, and a window's observable effect is a
+        # REGISTRATION: Claude Code drops one `<pid>.json` naming its session id, which
+        # is what `task-station sessions` reads and what `relay --spawn` now confirms
+        # against. An opener that returned True and registered nothing would make every
+        # spawn here read as unconfirmed — and, worse, would let the failure path be
+        # "tested" by stubbing out the very check under test. So the successful case
+        # writes the file the real thing writes, and the failure case is a window that
+        # genuinely never reports for duty (`self.window_registers = False`).
+        self.sessions_dir = os.path.join(self.tmp, "sessions")
+        os.makedirs(self.sessions_dir, exist_ok=True)
+        self._orig_sessions_dir = os.environ.get("TASK_STATION_SESSIONS_DIR")
+        os.environ["TASK_STATION_SESSIONS_DIR"] = self.sessions_dir
+        # A wait the tests can afford. The polling loop is the shipped one; only the
+        # ceiling moves, and it moves through the same env override an operator has.
+        self._orig_confirm = os.environ.get("TASK_STATION_SPAWN_CONFIRM_S")
+        os.environ["TASK_STATION_SPAWN_CONFIRM_S"] = "1"
+        self.window_registers = True
         self.opened = []
         self._orig_open = ts._open_jump_window
-        ts._open_jump_window = lambda cmd: (self.opened.append(cmd) or True)
+        ts._open_jump_window = self._fake_open
+
+    def _fake_open(self, cmd):
+        """Stand in for `open-session-window.sh`: record the command, and — when the
+        window is meant to come up — register the session it launches, exactly as a real
+        `claude --session-id <sid>` does."""
+        self.opened.append(cmd)
+        if self.window_registers:
+            self._register(_sid_in(cmd))
+        return True
+
+    def _register(self, sid, pid=None):
+        """Write the `<pid>.json` a running Claude Code process writes. The pid is this
+        test process's own, so `live_sessions.pid_alive` sees a genuinely live one
+        without inventing a fake liveness probe."""
+        pid = os.getpid() if pid is None else pid
+        with open(os.path.join(self.sessions_dir, "%d.json" % pid), "w") as f:
+            json.dump({"pid": pid, "sessionId": sid, "cwd": self.tmp,
+                       "kind": "interactive", "entrypoint": "cli",
+                       "status": "busy", "startedAt": 1000, "updatedAt": 1000}, f)
 
     def tearDown(self):
         ts._open_jump_window = self._orig_open
         ts._find_session_path = self._orig_find
         ts.claude_code_model_selection = self._orig_sel
         store.reset_cache()
+        for name, orig in (("TASK_STATION_SESSIONS_DIR", self._orig_sessions_dir),
+                           ("TASK_STATION_SPAWN_CONFIRM_S", self._orig_confirm)):
+            if orig is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = orig
         os.environ.pop("TASK_STATION_HOME", None)
         if self._orig_window is None:
             os.environ.pop("TASK_STATION_CONTEXT_WINDOW", None)
@@ -1276,6 +1339,264 @@ class GradedHandoff(_SuccessionTest):
         plan = _loop.waves([task], lambda i: None)
         self.assertNotIn("ungraded handoff",
                          _loop_cmds._scan_row(_loop.node_report(task, plan)))
+
+
+# ================================== 3b · the spawn reports what actually happened ====
+
+class SpawnReportsWhatHappened(_SuccessionTest):
+    """`relay --spawn` claims a window only when one is there, and writes a handoff only
+    when a successor exists.
+
+    THE TWO SENTENCES IT USED TO PRINT WERE ABOUT DIFFERENT THINGS AND READ THE SAME.
+    `_open_jump_window` returning True says the opener exited 0 — a command was ISSUED.
+    "opened the successor's window" says a session came up. Between them sit every way a
+    launch dies without an error: a terminal that refused the Apple Event, a `claude`
+    that exited at startup, a first-run trust dialog nobody was there to answer.
+
+    AND THE LEDGER WAS WRITTEN ON THAT SAME HOPE. A handoff is a claim ABOUT A SESSION,
+    graded by the parent through the same six dimensions as any child work — so an entry
+    naming a successor that never ran is not merely absent evidence, it is evidence of
+    the wrong thing, indistinguishable later from a handoff that happened.
+
+    THE CHECK IS THE ONE `task-station sessions` ALREADY PERFORMS — a live pid carrying
+    that session id (`live_sessions.running`). Reused rather than rewritten: a second
+    notion of "registered" would drift from the one an operator reads next to it, and
+    the drift would be invisible until a handoff disagreed with the session list.
+
+    ONE PATH WAS DELIBERATELY LEFT ALONE. `invoke` prints its own claim from its own
+    literal; the two spawners share the OPENER and share no claim-printing code, so
+    nothing here changes what `invoke` says (pinned in test_invoke_hardening.py).
+    """
+
+    def _ledger(self, task_id):
+        return _succ.handoffs(ts.load_task(task_id))
+
+    def _trail(self, task_id):
+        return " ".join(e.get("text", "")
+                        for e in (ts.load_task(task_id).get("events") or []))
+
+    # -- the window came up -------------------------------------------------------
+
+    def test_a_window_that_registers_is_reported_as_opened_and_confirmed(self):
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("opened the successor's window", out)
+        self.assertIn("CONFIRMED", out)
+
+    def test_a_confirmed_spawn_records_the_handoff(self):
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self._ledger(task["id"])), 1)
+        self.assertIn("handoff #1 recorded", out)
+
+    def test_the_confirmed_successor_is_the_session_that_registered(self):
+        """Not merely SOME session: the ledger's `to` must be the id the window carried,
+        which is what makes the entry a claim about a real successor rather than about
+        a spawn that happened nearby."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self._ledger(task["id"])[0]["to"], _sid_in(self.opened[0]))
+
+    # -- the window never reported for duty ---------------------------------------
+
+    def test_a_window_that_never_registers_is_reported_as_prepared(self):
+        """THE FAILURE IS REAL, not a stubbed return value. The opener still succeeds —
+        it is the WINDOW that never reports for duty, which is precisely the case the old
+        claim could not tell from a working one."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        self.window_registers = False
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.opened), 1, self.opened)
+        self.assertIn("PREPARED", out)
+
+    def test_it_does_not_claim_a_window_opened_when_none_registered(self):
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        self.window_registers = False
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("opened the successor's window", out)
+
+    def test_an_unconfirmed_spawn_records_no_handoff(self):
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        self.window_registers = False
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self._ledger(task["id"]), [])
+        self.assertIn("NO handoff was recorded", out)
+
+    def test_an_unconfirmed_spawn_still_prints_the_command(self):
+        """A human is the fallback, and a fallback nobody can run is a dead end."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        self.window_registers = False
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("--session-id %s" % _sid_in(self.opened[0]), out)
+
+    def test_an_unconfirmed_spawn_is_a_manual_launch_on_the_trail(self):
+        """The durable half has to agree with the printed half. The report scrolls away;
+        the history entry is what a later reader finds."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        self.window_registers = False
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        trail = self._trail(task["id"])
+        self.assertIn(ts.MANUAL_LAUNCH, trail)
+        self.assertIn("PREPARED", trail)
+
+    def test_the_gate_has_nothing_to_grade_after_an_unconfirmed_spawn(self):
+        """The whole cost of the old behaviour, stated as a gate outcome: a phantom
+        entry was gradeable, so a grader could score a handoff that never happened."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        self.window_registers = False
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        out, code = self._grade(task=str(task["seq"]), handoff=1,
+                                dim=["G%d=A" % i for i in range(1, 7)])
+        self.assertEqual(code, 2, out)
+        self.assertIn("recorded no session handoff", out)
+
+    def test_an_opener_that_refuses_records_no_handoff(self):
+        """The other failure, and the one the fallback text was already written for."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        ts._open_jump_window = lambda cmd: (self.opened.append(cmd) or False)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("could not open a window", out)
+        self.assertEqual(self._ledger(task["id"]), [])
+
+    def test_print_command_records_no_handoff(self):
+        """A launch a human has not run yet is a prepared command, whatever the flag was
+        called. It stays a MANUAL LAUNCH on the trail, as it always was."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True,
+                                print_command=True)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self._ledger(task["id"]), [])
+        self.assertIn(ts.MANUAL_LAUNCH, self._trail(task["id"]))
+
+    # -- the check is the one `sessions` performs ---------------------------------
+
+    def test_a_stale_session_file_with_a_dead_pid_is_not_a_registration(self):
+        """The sharpest reuse test. A crash leaves the `<pid>.json` behind, and the
+        sessions viewer tolerates it by asking whether the PID IS ALIVE. Confirmation
+        that only looked for the file would go green on the wreckage of a session that
+        died — a second notion of "registered", disagreeing with the list an operator
+        reads."""
+        dead = _dead_pid()
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        self.window_registers = False
+        ts._open_jump_window = lambda cmd: (self.opened.append(cmd)
+                                            or self._register(_sid_in(cmd), pid=dead)
+                                            or True)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("PREPARED", out)
+        self.assertEqual(self._ledger(task["id"]), [])
+
+    def test_the_confirmation_agrees_with_the_sessions_list(self):
+        """One notion, two readers. Whatever `relay` confirmed must be a row
+        `task-station sessions` would print, or the two have already drifted."""
+        import live_sessions
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        successor = self._ledger(task["id"])[0]["to"]
+        self.assertIn(successor, [r.get("session_id") for r in live_sessions.running()])
+
+
+# ============================ 3c · an orchestrator's successor starts at the hub ====
+
+class SuccessorStartsAtTheHub(_SuccessionTest):
+    """Where a successor's window opens is a DEFAULT, and the default was wrong for
+    exactly one kind of task.
+
+    The relay inherits the directory the predecessor last ran in, which is right for a
+    leaf — that IS where its work lives — and wrong for an ORCHESTRATOR, which by
+    construction holds no work of its own (`loop.is_orchestrator`, the flag that makes
+    `delegate` refuse). On #503 the inherited directory was a CHILD'S BRANCH WORKTREE:
+    the coordinator's successor woke inside a repo it had no business editing.
+
+    THE ROSTER ENTRY IS THE OTHER HALF. It is what the next spawn reads as its default,
+    so an entry recording one directory while the window opens in another re-seeds the
+    propagation that turns one bad directory into a run of dead sessions — which is why
+    the directory is resolved ONCE, before the mint, and handed to both.
+    """
+
+    def _orchestrator(self):
+        task, sid = self._task()
+        task[_loop.ORCHESTRATOR_FIELD] = True
+        ts.save_task(task)
+        store.reset_cache()
+        return ts.load_task(task["id"]), sid
+
+    def test_an_orchestrators_successor_starts_at_the_hub(self):
+        """#503: the predecessor had last run inside a CHILD'S BRANCH WORKTREE, and the
+        successor inherited it — a coordinator woken inside a repo it holds no work in,
+        one commit away from writing its notes onto somebody else's branch."""
+        task, sid = self._orchestrator()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        home = os.path.expanduser("~")
+        self.assertTrue(self.opened[0].startswith("cd %s && claude" % shlex.quote(home)),
+                        self.opened[0])
+
+    def test_a_leaf_successor_still_inherits_where_the_work_is(self):
+        """The default is right for a leaf and only wrong for an orchestrator — a leaf's
+        last directory IS where its work lives, and moving it would be a second bug."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.opened[0].startswith("cd %s && claude"
+                                                  % shlex.quote(self.tmp)),
+                        self.opened[0])
+
+    def test_an_explicit_cwd_wins_on_an_orchestrator(self):
+        """A human naming a directory is not a guess, and this only replaces guesses."""
+        task, sid = self._orchestrator()
+        self._transcript(sid, 130000)
+        named = os.path.join(self.tmp, "named")
+        os.makedirs(named)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True,
+                                cwd=named)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.opened[0].startswith("cd %s && claude" % shlex.quote(named)),
+                        self.opened[0])
+
+    def test_the_roster_records_the_directory_the_window_opens_in(self):
+        """The roster entry is what the NEXT spawn reads as its default. One recording a
+        directory the window never opened in re-seeds the propagation `--cwd` was added
+        to escape — which is how one wrong directory became a run of dead sessions."""
+        task, sid = self._orchestrator()
+        self._transcript(sid, 130000)
+        before = list(task.get("sessions") or [])
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        fresh = ts.load_task(task["id"])
+        new = sorted(set(fresh.get("sessions") or []) - set(before))[0]
+        recorded = (fresh.get("session_meta") or {})[new]["cwd"]
+        self.assertEqual(recorded, os.path.expanduser("~"))
+        self.assertTrue(self.opened[0].startswith("cd %s && claude"
+                                                  % shlex.quote(recorded)),
+                        self.opened[0])
 
 
 if __name__ == "__main__":

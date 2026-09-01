@@ -37,7 +37,7 @@ __all__ = [
     "DRY_RUN_SID", "MANUAL_LAUNCH", "_record_launch",
     "cmd_exit_add", "cmd_exit_rm", "cmd_exit_show", "cmd_exit_tick",
     "cmd_scan", "cmd_invoke", "cmd_grade", "cmd_orchestrator_check",
-    "cmd_decompose", "cmd_relay",
+    "cmd_decompose", "cmd_relay", "HUB_CWD", "_successor_cwd", "_await_registration",
     "_live_seqs", "_announce_spec_change", "_channel_report_back", "cmd_channel",
     "cmd_pickup", "_pickup_report_text", "_subscribe_lines",
     "cmd_turn",
@@ -995,6 +995,60 @@ def _predecessor_label(task, session):
     return session[:8]
 
 
+# WHERE THE HUB IS. A directory, not a role: the session that coordinates a programme
+# runs from the home directory, and every repo worktree it invokes children into is
+# somewhere below it. There is no config key for this because there is nothing to tune —
+# `~` is where a shell starts, and a station that wanted something else would be naming
+# a second hub nobody else's tooling knows about.
+HUB_CWD = "~"
+
+
+def _successor_cwd(task, cwd):
+    """Where the successor's window opens, resolved ONCE for the mint, the roster entry
+    and the command.
+
+    AN ORCHESTRATOR'S SUCCESSOR STARTS AT THE HUB. The default is otherwise inherited
+    from wherever the predecessor last ran, which is right for a leaf task — that IS
+    where the work lives — and wrong for an orchestrator, which holds no work by
+    construction (`loop.is_orchestrator`, and the refusal that guards `delegate`). On
+    #503 the inherited directory was a BRANCH WORKTREE belonging to one of its children,
+    so the successor woke inside a repo it had no business editing, one `git commit`
+    away from writing a coordinator's notes onto a child's branch.
+
+    An explicit `--cwd` always wins: a human naming a directory is not a guess, and this
+    function only replaces the guess."""
+    if cwd:
+        return os.path.expanduser(cwd)
+    if _loop.is_orchestrator(task):
+        return os.path.expanduser(HUB_CWD)
+    return _fresh_session_cwd(task.get("session_meta"))
+
+
+def _registration_timeout():
+    """How long `--spawn` waits for the successor to register. Read through the same
+    module that performs the check, so the wait and the check cannot drift."""
+    try:
+        import live_sessions
+        return live_sessions.registration_timeout()
+    except Exception:                                   # noqa: BLE001
+        return 0.0
+
+
+def _await_registration(sid):
+    """True when session `sid` actually came up — the check `task-station sessions`
+    performs, asked here so the claim printed above it is a report rather than a hope.
+
+    FAIL-CLOSED, unlike `_live_seqs`. A scan that cannot read process state is better
+    off printing the plan without a liveness column; a spawner that cannot read it must
+    NOT print "a window opened", because that sentence is the whole defect. Cannot-tell
+    lands in the PREPARED branch, which prints the command a human can run."""
+    try:
+        import live_sessions
+        return bool(live_sessions.await_registration(sid))
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
 def cmd_relay(a):
     """`task-station relay [--task REF] [--spawn]`
 
@@ -1005,11 +1059,18 @@ def cmd_relay(a):
     verb whose whole job is to end the session that typed it.
 
     `--spawn` performs the handoff: mint a session pre-attached to THIS task, launch it
-    with the generated continuation prompt, record the handoff on the ledger the gate
-    grades. It REFUSES a verdict of keep-going or unknown, and refuses a record that
-    cannot carry a handoff, naming the gaps. `--force` overrides both — sometimes the
-    right call at 95% — and is recorded as forced with its blockers, because a forced
-    handoff that nobody could see afterwards makes G1 ungradeable.
+    with the generated continuation prompt, CONFIRM the successor actually registered,
+    and only then record the handoff on the ledger the gate grades. It REFUSES a verdict
+    of keep-going or unknown, and refuses a record that cannot carry a handoff, naming
+    the gaps. `--force` overrides both — sometimes the right call at 95% — and is
+    recorded as forced with its blockers, because a forced handoff that nobody could see
+    afterwards makes G1 ungradeable.
+
+    WHAT IT REPORTS IS WHAT HAPPENED. The window opener returning 0 means the command
+    was ISSUED; it is `task-station sessions`' own check — a live process carrying that
+    session id — that says a window opened. Unconfirmed, this says it PREPARED the
+    command, prints it, and writes NO handoff: a ledger entry naming a session that
+    never existed cannot be told apart later from a real one.
 
     EXIT CODES: 0 done (or reported) · 2 the command was wrong · 3 refused, with the
     reason printed."""
@@ -1055,14 +1116,18 @@ def cmd_relay(a):
     forced = force and (rep["verdict"] != _succ.RELAY or bool(blockers))
 
     predecessor = _predecessor_label(task, session)
+    cwd = getattr(a, "cwd", None)
+    where = _successor_cwd(task, cwd)
     # Mint FIRST: the successor's own ordinal is assigned here, and the prompt names it.
-    sid, base = fresh_resume_command(task, preborn=True)
+    # THE MINT CARRIES THE DIRECTORY rather than deriving a second one. The roster entry
+    # this writes is what the NEXT spawn reads as its default, so an entry recording one
+    # directory while the window opens in another re-seeds the exact propagation the
+    # `--cwd` override was added to escape — the same defect `invoke` resolved by
+    # computing `where` once and handing it to every path.
+    sid, base = fresh_resume_command(task, preborn=True, cwd=where)
+    base = "cd %s && claude --session-id %s" % (shlex.quote(where), sid)
     task = load_task(task["id"]) or task
     successor = ordinal_label(task, sid) or sid[:8]
-    cwd = getattr(a, "cwd", None)
-    if cwd:
-        base = "cd %s && claude --session-id %s" % (shlex.quote(os.path.expanduser(cwd)),
-                                                    sid)
     verdict = _workspace.assess(cwd)
     done = _workspace.apply(verdict)
     prompt = _succ.continuation_prompt(task, rep=rep,
@@ -1084,21 +1149,53 @@ def cmd_relay(a):
           "from." % (sid[:8], successor, ref))
     for line in _workspace.lines(verdict, done):
         print(line)
+    # PREPARED VERSUS HANDED OFF, and the difference is a measurement rather than a
+    # hope. `_open_jump_window` returning True says the opener exited 0 — the command
+    # was ISSUED. Whether a session came up is a separate question, and
+    # `_await_registration` asks the one `task-station sessions` answers.
     manual = True
+    confirmed = False
     if getattr(a, "print_command", False):
-        print("  run it yourself:")
+        print("  PREPARED — nothing has been handed off yet. Run it yourself:")
         print("    %s" % cmd)
     elif g("_open_jump_window")(cmd):
-        manual = False
-        print("  opened the successor's window (this one is untouched):")
-        print("    %s" % cmd)
+        confirmed = _await_registration(sid)
+        if confirmed:
+            manual = False
+            print("  opened the successor's window and CONFIRMED session %s is running "
+                  "(this one is untouched):" % sid[:8])
+            print("    %s" % cmd)
+        else:
+            # The wait is named only when there WAS one. A zero here means the check
+            # itself could not run, and "registered within 0s" would read as a
+            # measurement of the successor rather than of this command's own blindness.
+            waited = int(_registration_timeout())
+            print("  PREPARED ONLY — the window opener returned, but no session %s "
+                  "registered %s, so this command cannot say a window opened. Run it "
+                  "yourself (or check `task-station sessions` if you believe one came "
+                  "up late):"
+                  % (sid[:8], ("within %ds" % waited) if waited > 0 else "at all"))
+            print("    %s" % cmd)
     else:
         print("  could not open a window (macOS/Terminal only) — run it yourself:")
         print("    %s" % cmd)
-    entry, index1 = _succ.record_handoff(task, session, sid, rep, forced=forced,
-                                         blockers=blockers)
-    head = "%s — relay %s → %s" % (MANUAL_LAUNCH, predecessor, successor) if manual \
-        else "relay %s → %s" % (predecessor, successor)
+    # A HANDOFF IS A CLAIM ABOUT A SESSION, so it is written only once that session
+    # exists. Recorded on intent, it named a successor that had never run — and a later
+    # reader cannot tell that entry from a real one, which is strictly worse than an
+    # absent entry: the ledger is what the gate grades, and a phantom handoff is a
+    # handoff nobody can grade honestly.
+    #
+    # RELOADED FIRST because the wait above is real time, during which the successor has
+    # attached and stamped its own roster entry. Saving the copy minted before the poll
+    # would drop that.
+    entry = index1 = None
+    if confirmed:
+        task = load_task(task["id"]) or task
+        entry, index1 = _succ.record_handoff(task, session, sid, rep, forced=forced,
+                                             blockers=blockers)
+    head = "relay %s → %s" % (predecessor, successor) if confirmed \
+        else "%s — relay %s → %s PREPARED, no successor confirmed" \
+             % (MANUAL_LAUNCH, predecessor, successor)
     # THE EVENT SAYS WHAT WAS MEASURED, and says so only when something was. This line is
     # the durable one — the report scrolls away and the history entry does not — so an
     # invented `~0% of a 1000k window` here outlives every other copy of the same lie.
@@ -1111,8 +1208,14 @@ def cmd_relay(a):
               session=session)
     task["updated_ts"] = _now()
     save_task(task)
-    print("  handoff #%d recorded — the parent grades it like any other child work "
-          "(`grade --task %s --handoff %d --dim G1=… …`)." % (index1, ref, index1))
+    if index1 is not None:
+        print("  handoff #%d recorded — the parent grades it like any other child work "
+              "(`grade --task %s --handoff %d --dim G1=… …`)." % (index1, ref, index1))
+    else:
+        print("  NO handoff was recorded — a handoff is a claim about a session, and "
+              "none has registered. The session id above is minted and linked, so the "
+              "command still works when a human runs it; what is withheld is a ledger "
+              "entry claiming a handoff that has not happened.")
     if forced:
         print("  FORCED, and the record says so — the grader sees the gaps you overrode.")
 
