@@ -30,7 +30,7 @@ __all__ = [
     "_heal_positional_ref", "_heal_targets", "_heal_scan_one",
     "_heal_scan_report", "_heal_block", "_heal_applied_block",
     "_heal_no_operations_block", "_heal_verb", "_heal_reassign",
-    "_split_str_list", "_split_int_list",
+    "_split_str_list", "_split_decision_refs",
     "_heal_mark", "_heal_dismissals_report", "_heal_dismiss_writes",
     "_heal_goal_reviewed", "_heal_candidates_report", "_heal_dispose",
     "_CLAIMS_ACTIONS",
@@ -544,7 +544,28 @@ def _heal_verb(a):
     These exist so the LLM pass can act on ITS OWN reading of the content — it adds the
     atomic parts (or the one summary) with `update --decision`, then names the mapping
     here. Returns a result line. Non-destructive and reversible like every other path:
-    the original is marked, never removed."""
+    the original is marked, never removed.
+
+    THESE VERBS WRITE THE RECORD, SO THEY REFUSE WHAT THEY CANNOT READ. Until 3.52.0 all
+    three lists went through `_split_int_list`, which DROPPED an item it could not coerce:
+    `--merge 2,foo --into 5` marked ruling 2 merged, said nothing about `foo`, and
+    reported success. That is worse here than it was on `--reassign` — a dropped reassign
+    leaves ownership unmoved and the next render shows it, while a dropped merge leaves a
+    summary that CLAIMS to be the one record of N rulings and is actually the record of
+    N-1, with the survivor still live and unreferenced. A false consolidation, written by
+    a typo, with nobody aware a call was made. So every list here now goes through
+    `_split_decision_refs` — #592's parser, the same one `--reassign` has used since
+    3.43.0 — and one parser is the point: two parsers for one list format is how the two
+    begin disagreeing about a typo.
+
+    ALL-OR-NOTHING EXTENDS PAST THE PARSE, on the same reasoning. The marks are TRIALLED
+    on a deep copy first, so an out-of-range or already-replaced member refuses the whole
+    batch. `--merge 2,99 --into 5` used to mark 2 and print an error about 99 beside a
+    success line about 2; now it marks nothing.
+
+    AND EACH NAMES WHAT IT IS ABOUT TO ACT ON BEFORE ACTING, with the ruling's own first
+    sentence, because the numbers alone read as correct whichever list they were copied
+    from and the sentences do not."""
     if getattr(a, "all", False):
         return ("heal: --split/--merge name decision numbers on ONE task, so they cannot "
                 "be combined with --all. Target it with `--task <n>`.")
@@ -555,42 +576,77 @@ def _heal_verb(a):
     entries = task.get("decisions") or []
     if not entries:
         return "heal: task #%s has no decisions to reconcile." % task.get("seq")
-    into = _split_int_list(getattr(a, "into", None))
+    dry = bool(getattr(a, "dry_run", False))
+    into, err = _split_decision_refs(getattr(a, "into", None), task, "--into")
+    if err:
+        return err
     msgs = []
     split_ref = getattr(a, "split", None)
     merge_ref = getattr(a, "merge", None)
     if split_ref is not None:
+        subject, err = _split_decision_refs(split_ref, task, "--split")
+        if err:
+            return err
+        if len(subject) != 1:
+            return ("heal --split %s: name exactly ONE decision to split — the parts go "
+                    "in `--into`. Nothing was changed." % split_ref)
         if not into:
             return ("heal --split %s: pass `--into <n1,n2,…>` naming the decisions it "
                     "became (add them first with `update --decision`)." % split_ref)
-        ok, e = _dec.mark_split(entries, split_ref, into)
-        msgs.append(("split decision %s into %s — the original is kept in history, "
-                     "marked, and `update --restore-decision %s` undoes it"
-                     % (split_ref, ", ".join(str(n) for n in into), split_ref))
-                    if ok else "heal: %s" % e)
+        preview = _verb_preview(task, "--split", [("splitting", subject),
+                                                  ("into", into)])
+        ok, e = _trial(entries, lambda es: _dec.mark_split(es, subject[0], into))
+        if not ok:
+            return "\n".join(preview + ["heal: %s Nothing was changed." % e])
+        if dry:
+            return "\n".join(preview + [
+                "  --dry-run: nothing was changed. The batch is legal — re-run without "
+                "--dry-run to mark it, and `update --task %s --restore-decision %d` "
+                "reverses it afterwards."
+                % (_heal._task_ref(task), subject[0])])
+        _dec.mark_split(entries, subject[0], into)
+        msgs.extend(preview)
+        msgs.append("split decision %d into %s — the original is kept in history, "
+                    "marked, and `update --restore-decision %d` undoes it"
+                    % (subject[0], ", ".join(str(n) for n in into), subject[0]))
     if merge_ref is not None:
-        members = _split_int_list(merge_ref)
+        members, err = _split_decision_refs(merge_ref, task, "--merge")
+        if err:
+            return err
         if len(into) != 1:
             return ("heal --merge %s: pass `--into <n>` naming the ONE decision that "
                     "absorbed them (add it first with `update --decision`)." % merge_ref)
         if not members:
             return "heal --merge: name the decisions to merge, e.g. `--merge 3,7,9`."
-        done = []
-        for n in members:
-            ok, e = _dec.mark_merged(entries, n, into[0])
-            if ok:
-                done.append(n)
-            else:
-                msgs.append("heal: %s" % e)
-        if done:
-            # The indices are known HERE, so the undo names them. This path writes
-            # immediately and takes no backup, so a generic `<n>` would leave the reader
-            # reconstructing which numbers moved at the one moment they need them.
-            msgs.append("merged %s into %d — each original is kept in history, marked, "
-                        "and `update --task %s %s` undoes it (the flag repeats; it does "
-                        "not take a list)"
-                        % (", ".join(str(n) for n in done), into[0],
-                           _heal._task_ref(task), _heal._restore_flags(done)))
+        preview = _verb_preview(task, "--merge", [("merging", members),
+                                                  ("into", into)])
+        # TRIAL THE WHOLE BATCH ON A COPY. This loop used to write as it went and collect
+        # the failures beside the successes, so one bad number left a PARTIAL merge and a
+        # report that told both stories at once.
+        def _mark_all(es):
+            for n in members:
+                ok, e = _dec.mark_merged(es, n, into[0])
+                if not ok:
+                    return False, e
+            return True, None
+        ok, e = _trial(entries, _mark_all)
+        if not ok:
+            return "\n".join(preview + ["heal: %s Nothing was changed." % e])
+        if dry:
+            return "\n".join(preview + [
+                "  --dry-run: nothing was changed. The batch is legal — re-run without "
+                "--dry-run to mark it, and `update --task %s %s` reverses it afterwards."
+                % (_heal._task_ref(task), _heal._restore_flags(members))])
+        _mark_all(entries)
+        msgs.extend(preview)
+        # The indices are known HERE, so the undo names them. This path writes
+        # immediately and takes no backup, so a generic `<n>` would leave the reader
+        # reconstructing which numbers moved at the one moment they need them.
+        msgs.append("merged %s into %d — each original is kept in history, marked, "
+                    "and `update --task %s %s` undoes it (the flag repeats; it does "
+                    "not take a list)"
+                    % (", ".join(str(n) for n in members), into[0],
+                       _heal._task_ref(task), _heal._restore_flags(members)))
     if not msgs:
         return "heal: nothing to do (pass --split or --merge with --into)."
     task["decisions"] = entries
@@ -603,6 +659,17 @@ def _heal_verb(a):
     save_task(task)
     maybe_refresh_board()
     return "\n".join(msgs)
+
+
+def _trial(entries, mark):
+    """Run `mark` against a DEEP COPY of the decision log and report `(ok, error)` without
+    touching the real one — how a writing verb makes an all-or-nothing refusal possible.
+
+    The rule it enforces is the one `--reassign` and `--dispose-acks` already keep: a
+    batch with one bad item must change NOTHING. Half a reconcile is not a smaller
+    reconcile, it is a record that disagrees with the report that described it."""
+    import copy
+    return mark(copy.deepcopy(entries))
 
 
 def _heal_reassign(a):
@@ -744,26 +811,21 @@ def _heal_unassign_writes(task, indices):
 
 def _split_str_list(raw):
     """`"ab12cd34, 9e01f2aa"` / `"all"` / `["ab12cd34"]` → a list of trimmed strings.
-    The string counterpart of `_split_int_list`, for `--dispose-acks` (memo id8s, or the
-    single word `all`)."""
+    The string counterpart of `_split_decision_refs`, for `--dispose-acks` (memo id8s, or
+    the single word `all`). It does not drop: an empty item is skipped, everything else is
+    passed through and judged by the caller against the acks that exist."""
     if raw is None:
         return []
     items = raw if isinstance(raw, (list, tuple)) else str(raw).replace(" ", ",").split(",")
     return [str(v).strip() for v in items if str(v).strip()]
 
 
-def _split_int_list(raw):
-    """`"3,7, 9"` / `3` / `[3,7]` → `[3, 7, 9]`, dropping anything uncoercible."""
-    if raw is None:
-        return []
-    items = raw if isinstance(raw, (list, tuple)) else str(raw).replace(" ", ",").split(",")
-    out = []
-    for v in items:
-        try:
-            out.append(int(str(v).strip()))
-        except (TypeError, ValueError):
-            continue
-    return out
+# `_split_int_list` LIVED HERE AND IS GONE (3.52.0). It parsed `"3,7,9"` and DROPPED
+# anything it could not coerce, which is safe for a reader and wrong for a writer. Every
+# caller it had was a verb that writes the record, so a typo performed a smaller operation
+# than the operator asked for and reported success. Nothing replaced it in place: the
+# writing verbs all use `_split_decision_refs` below, and there is deliberately no
+# dropping list parser left in this module for the next one to reach for.
 
 
 def _split_decision_refs(raw, task, flag):
@@ -776,10 +838,16 @@ def _split_decision_refs(raw, task, flag):
     "you meant #586's 13, I moved #444's" is not a mistake anything downstream could
     catch.
 
-    NOTHING IS DROPPED SILENTLY. `_split_int_list` discards what it cannot coerce, which
-    is safe for a reader and wrong for a writer: `--reassign 1,foo` would move ruling 1
-    and say nothing about `foo`. Here an unreadable item refuses the whole batch, which is
-    the same all-or-nothing rule the write itself already keeps."""
+    NOTHING IS DROPPED SILENTLY. The parser this replaced discarded what it could not
+    coerce, which is safe for a reader and wrong for a writer: `--reassign 1,foo` would
+    move ruling 1 and say nothing about `foo`. Here an unreadable item refuses the whole
+    batch, which is the same all-or-nothing rule the write itself already keeps.
+
+    ONE PARSER FOR THE WHOLE FAMILY (3.52.0). `--split`, `--merge` and `--into` used to
+    have their own, and it was the dropping one. They read through here now — not because
+    the code is shared for its own sake, but because two parsers for one list format is
+    how the two begin disagreeing about a typo, one level up from the defect this
+    function exists to remove."""
     if raw is None:
         return [], None
     items = raw if isinstance(raw, (list, tuple)) else str(raw).replace(" ", ",").split(",")
@@ -809,6 +877,21 @@ def _split_decision_refs(raw, task, flag):
     return out, None
 
 
+def _decision_lines(task, indices, prefix=""):
+    """`  586:30. <first sentence>` — one line per index, carrying the QUALIFIED index and
+    the ruling's own first sentence. The shared body of every "about to" preview, so a
+    reader who has seen one verb name its subjects can read the next one at a glance."""
+    entries = (task or {}).get("decisions") or []
+    lines = []
+    for n in indices:
+        if 1 <= n <= len(entries):
+            body = _dec.stub(entries[n - 1]) or "(no text)"
+        else:
+            body = "(NO SUCH DECISION on #%s)" % task.get("seq")
+        lines.append("  %s%s. %s" % (prefix, _own.index_label(task, n), body))
+    return lines
+
+
 def _reassign_preview(task, indices, owner_task=None, flag="--reassign"):
     """NAME BACK WHAT IS ABOUT TO MOVE, BEFORE IT MOVES — one line per ruling, carrying
     the qualified index and the ruling's own first sentence.
@@ -817,16 +900,27 @@ def _reassign_preview(task, indices, owner_task=None, flag="--reassign"):
     `--reassign`, five of them named a different ruling than the caller intended, and
     nothing in the exchange would have said so until the write had happened. The numbers
     alone read as correct whichever list they came from; the SENTENCES do not."""
-    entries = (task or {}).get("decisions") or []
-    where = (" → #%s (%s)" % (owner_task.get("seq"), owner_task.get("title") or ""))         if owner_task else ""
-    lines = ["heal %s: about to move %d ruling(s) out of #%s%s —"
-             % (flag, len(indices), task.get("seq"), where)]
-    for n in indices:
-        if 1 <= n <= len(entries):
-            body = _dec.stub(entries[n - 1]) or "(no text)"
-        else:
-            body = "(NO SUCH DECISION on #%s)" % task.get("seq")
-        lines.append("  %s. %s" % (_own.index_label(task, n), body))
+    where = (" → #%s (%s)" % (owner_task.get("seq"), owner_task.get("title") or "")) \
+        if owner_task else ""
+    return ["heal %s: about to move %d ruling(s) out of #%s%s —"
+            % (flag, len(indices), task.get("seq"), where)] \
+        + _decision_lines(task, indices)
+
+
+def _verb_preview(task, flag, groups):
+    """The same courtesy for `--split` and `--merge`: name every ruling the command is
+    about to mark, and every ruling it is about to point them at, before anything is
+    written.
+
+    `groups` is `[(role, indices), …]` — `("merging", [2, 3]), ("into", [5])`. The ROLE is
+    printed beside each line because these two verbs are directional: reading back "2 and
+    3 are about to become footnotes to 5" is the check that catches a swapped `--merge`
+    and `--into`, and the bare numbers never made that visible."""
+    total = sum(len(idxs) for role, idxs in groups[:1])
+    lines = ["heal %s: about to mark %d ruling(s) on #%s —"
+             % (flag, total, task.get("seq"))]
+    for role, idxs in groups:
+        lines.extend(_decision_lines(task, idxs, prefix="%s " % role))
     return lines
 
 

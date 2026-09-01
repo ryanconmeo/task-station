@@ -201,6 +201,10 @@ heal --split <k> --into <n1,n2,…>
 heal --merge <n1,n2,…> --into <n>
 ```
 
+**All four writing verbs refuse a batch they cannot fully read.** `--split`, `--merge`, `--into`, `--reassign` and `--unassign` share one list parser. Every item is a bare `<n>` or the qualified `<task>:<n>` the decision log prints; one item that is unreadable, out of range, already replaced, or qualified with a *different* task refuses the **whole** command and changes nothing. Each verb **names every ruling it is about to mark, with that ruling's first sentence, before it marks it** — the numbers read as correct whichever list they were copied from, and the sentences do not. `--dry-run` works on all of them and validates the batch exactly as the real run does, so a refusal in a dry run is the refusal you would get.
+
+Until 3.52.0 the two consolidation verbs **dropped** what they could not parse: `heal --merge 2,foo --into 5` marked ruling 2, said nothing about `foo`, and reported success. That is why the rule matters more here than it did on `--reassign` — a dropped reassign leaves ownership unmoved and the next render shows it, while a dropped merge member leaves a summary **claiming to be the one record of N rulings** that is actually the record of N-1, with the survivor still live and unreferenced. A false consolidation, written by a typo, with nobody aware a call was made.
+
 **`reassign <n,…> --to <task>`** — the ruling is **in the wrong place**. This is the verb for the shape neither consolidation verb can touch, and the measurement is what proves it: task #444 carried 31,072 chars of one child's subject, 12,612 of a second's and 3,737 of a third's, and a heal that split eight oversized entries and cut the longest from 8,095 to 3,581 chars **barely moved the total**. Nothing there was redundant. It was misplaced.
 
 ```

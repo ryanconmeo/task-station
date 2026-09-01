@@ -3,6 +3,68 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.52.0] — 2026-09-01
+
+**`heal --split`, `--merge` AND `--into` SILENTLY DROPPED AN ITEM THEY COULD NOT PARSE, ON
+VERBS THAT WRITE THE RECORD.** `heal --merge 2,foo --into 5` marked ruling 2 merged, said
+nothing at all about `foo`, and reported success. The list parser these three shared
+discarded whatever it could not coerce to an integer — safe for a reader, wrong for a
+writer. A typo did not fail; it performed a SMALLER operation than the operator asked for
+and left no trace of what went missing.
+
+*Why it matters more here than it did on `--reassign`.* The same class was fixed for
+`--reassign` in 3.43.0. A dropped reassign item leaves ownership unmoved, which the next
+render shows plainly. A dropped `--merge` or `--split` item leaves a **consolidation that
+is wrong about what it replaced** — a summary claiming to be the one record of N decisions
+that is actually the record of N-1, with the survivor still live and unreferenced. This
+record already refuses to write a false consolidation on judgement grounds; writing one by
+typo is worse, because nobody is even aware a call was made.
+
+*One parser, not a second one.* All three lists now read through `_split_decision_refs` —
+the parser `--reassign` has used since 3.43.0, reused rather than reimplemented. Two
+parsers for one list format is how the two begin disagreeing about a typo, which is this
+defect arriving one level up. `_split_int_list`, the dropping parser, is **removed**
+rather than deprecated: every caller it had was a writing verb, and one left in the module
+is one the next writing verb reaches for.
+
+*All-or-nothing extends past the parse.* The marks are trialled on a deep copy first, so
+an out-of-range or already-replaced member refuses the whole batch. `--merge 2,99 --into
+5` used to mark 2 and print an error about 99 beside a success line about 2 — half a
+reconcile, described by a report that told both stories at once. It now marks nothing.
+
+*Each names what it is about to act on, before acting.* One line per ruling, carrying the
+qualified index and that ruling's own first sentence, in the same shape `--reassign`
+prints — because the numbers read as correct whichever list they were copied from and the
+sentences do not. Directional, so a swapped `--merge` and `--into` is visible:
+`merging 594:2. …` above `into 594:5. …`.
+
+*The qualified `<task>:<n>` form is accepted on all three*, alongside the bare number,
+because that is what the decision log actually prints. One naming a DIFFERENT task is
+refused, never resolved — decision numbers are per-task.
+
+*And `--dry-run` reaches all four writing verbs.* It validates the batch exactly as the
+real run validates it, so a refusal in a dry run is byte-identical to the refusal you
+would get — pinned by a test that compares the two.
+
+*Proved both ways, and re-runnably.* `scripts/prove_heal_verb_parser.sh` materialises
+`origin/main` from a `--shared` clone at the resolved sha, requires that tree to carry the
+code under test, and runs the shipped suite against the shipped engine. Its `--part
+mutant` puts the OLD dropping parser back into `origin/main`'s own tree and REQUIRES the
+tests to go red — a suite that only ever sees the fix proves nothing about the defect. The
+partial write itself was demonstrated RED on a throwaway `TASK_STATION_HOME` before the
+fix and GREEN after, by comparing the whole stored task blob: the refusal changes
+**nothing**, not something small.
+
+
+### Added
+- …
+
+### Changed
+- …
+
+### Fixed
+- …
+
 ## [3.51.0] — 2026-08-31
 
 **`relay --spawn` REPORTED A WINDOW IT HAD NOT SEEN, AND WROTE A HANDOFF TO A SESSION
