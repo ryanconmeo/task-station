@@ -3,6 +3,67 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.50.0] — 2026-08-31
+
+**THE RELAY PROMPT TOLD ITS SUCCESSOR THREE THINGS THAT WERE NOT TRUE.** All three were
+read off one real handoff on 2026-08-31, and two of them reproduced again the same day in
+the prompt that started a second session.
+
+**AN UNMEASURED OCCUPANCY WAS PRINTED AS A CONFIDENT ZERO — the harmful one.** The report
+the OUTGOING session read refused to conclude anything: *"occupancy could not be measured
+— no transcript for this session, or no usage block in it yet. A policy that did not run
+has not decided anything, so this is not a keep-going."* The same run then wrote into the
+SUCCESSOR's prompt: **`The predecessor stopped at ~0% of a 1000k-token window.`** The
+predecessor had used roughly **810,000 tokens**. So one absent measurement produced a
+refusal on one surface and a fabricated zero on the next, and the successor was told its
+predecessor had burned nothing — which makes a correct handoff look premature and invites
+exactly the wrong inference about what context costs.
+
+*Fixed at the source rather than per-renderer.* `used_pct`, `left_pct` and `remaining` are
+arithmetic ON the measurement, so on an `unknown` verdict all three are now `None` instead
+of `0`, `100` and the whole window. The absence travels, and a formatter that forgets to
+ask now crashes loudly instead of lying quietly. `measured` and `window` stay numeric —
+they are the INPUTS, and `0` read is an honest zero. **Every surface that formats it was
+swept, not just the one that was reported**: the successor's prompt, the outgoing report
+row (`occupancy ~0% used · ~100% left` sat directly above `verdict unknown`), the handoff
+ledger the gate reads, the grader's own G1 evidence row, and the boundary-mark history
+entry that outlives the terminal. The refusal wording is now ONE string
+(`succession.UNMEASURED_WHY`) that both the report and the prompt interpolate, because two
+literals is how two surfaces begin telling one session two different things.
+
+**THIS IS THE SIXTH SIGHTING OF ONE DEFECT CLASS** — an absent measurement rendered as a
+measured value. A pipe swallowing an exit code; a `git archive` tree with no `.git`; a
+percentage against a hardcoded window; `checker._run_claim` discarding a return code;
+`exit-show` omitting the merge-gated flag; and this.
+
+**THE PREDECESSOR'S ORDINAL DID NOT RESOLVE.** The prompt opened `you are session 600-0,
+succeeding 29c54f8c` — one sentence naming the same kind of thing two different ways, the
+second unreadable. (The originally filed instance printed `succeeding ?`.) `ordinal_label`
+is per-task by construction, and a `relay --task <other>` hands a NEW task to a session
+rostered on the OLD one: the successor's ordinal resolved because it was minted on the
+target, and the predecessor's did not because the target had never heard of it. The link
+knew the answer the whole time — that session was `444-32`. The lookup now falls through to
+the session's OWN task, and the raw id survives only as the last resort for a session no
+roster can name (a worker carries a descriptive name and never an ordinal, by design).
+
+**`OPEN:` LISTED UNTICKED CHECKLIST STEPS AND READ AS A QUEUE OF READY WORK.** One
+successor was handed five checklist steps under that label while the actual ready work was
+eleven children; in the filed instance several of the listed steps were superseded items
+from July, so a successor reading `OPEN` as "what to do next" started on retired work. The
+label now says what the list is — **`UNTICKED CHECKLIST STEPS — this task's own list, not
+a queue of ready work`** — and names `scan --task <n>` as what answers the other question.
+The label is the fix rather than a different source: the generator is pure over the task
+dict, so reading the child graph would mean loading the store there and would still leave
+a leaf task with an empty list to degrade around.
+
+**WHAT WAS ALREADY RIGHT IS PINNED THROUGH A REAL SPAWN.** The state line is still QUOTED
+AND ATTRIBUTED, never issued, and an outward imperative is still named as the
+predecessor's authority rather than the user's — the 3.35.0 work that, on the day this
+was filed, stopped a successor from acting on a predecessor's claimed authorisation.
+A new test asserts it on the command a `relay --spawn` actually launches, and on POSITION
+as well as presence: wherever the predecessor's words appear, the attribution must already
+have been read.
+
 ## [3.49.0] — 2026-08-31
 
 **A CONDITION PASSED ON SUBSTRING PRESENCE ALONE — THE EXIT CODE WAS THROWN AWAY.**
