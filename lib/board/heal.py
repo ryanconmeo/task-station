@@ -4073,6 +4073,20 @@ def apply(task, ops, append=None):
                 lines.append("could not split decision %s — %s" % (op.get("index"), err))
         elif verb == "merge":
             into = append(op.get("into") or "")
+            # THE ABSORBING SUMMARY DECLARES ITSELF A CONSOLIDATION RECORD, and this is
+            # the one exhibit on #596's list that dies outright. `_merge_summary`'s own
+            # docstring says it is "WORDED TO AVOID SUPERSESSION_LANGUAGE" — the tool
+            # wrote prose to dodge its own parser, because a generated decision that
+            # tripped the scan that generated it made a freshly-healed task read as dirty.
+            # A declared kind is the structural answer the wording was standing in for.
+            # Declared HERE rather than inside `_merge_summary` because that function
+            # returns text and knows no index; the kind is an element field, so it belongs
+            # at the write. Set through the guarded setter, and a failure is not fatal —
+            # the merge already happened and losing the summary over a classification
+            # would be strictly worse than an untyped summary.
+            if into:
+                _dec.set_kind(entries, into, _dec.KIND_RELEASE_RECORD,
+                              flag="heal --apply --merge")
             done = []
             for i in op.get("indices") or []:
                 ok, err = _dec.mark_merged(entries, i, into)

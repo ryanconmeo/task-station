@@ -641,7 +641,10 @@ class TestMemoDisposition(_Base):
                                            session="acker", decision=True))
         self.assertIn("promoted to a decision", out)
         r = ts.load_task(t["id"])
-        self.assertIn("promote me", r["decisions"])
+        # By TEXT rather than by raw membership: an ack promotion now declares itself a
+        # process-note, so the entry is a rich element. The projection is what this test
+        # was ever about, and `live_texts` is the seam that owns it.
+        self.assertIn("promote me", dec.live_texts(r["decisions"]))
         self.assertEqual(r["memos"][-1]["acks"][0]["disposition"]["kind"], "decision")
 
     def test_ack_with_memory_records_the_note_slug(self):

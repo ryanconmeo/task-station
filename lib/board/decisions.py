@@ -430,6 +430,43 @@ def length_warning(entry, index1=None, limit=LONG_DECISION_CHARS):
             % (where, n, limit))
 
 
+def declaration_advisory(entry, index1=None, limit=LONG_DECISION_CHARS):
+    """One ADVISORY line asking a long, undeclared decision to say what it IS, else None.
+
+    IT NEVER REFUSES, and it inherits that law from `length_warning` rather than
+    restating it: the write has already happened when this is called, the entry is stored
+    in full, and the author gets a suggestion. A gate here would be strictly worse than
+    the pin cap's was — a refusal on a MISSING declaration teaches the author to type
+    SOMETHING, and a guessed kind is precisely the 1/3-precision inference this field
+    exists to remove. An untyped decision must stay writable forever, because hundreds
+    already exist and untyped is a permanent citizen of the record, not a transitional one.
+
+    IT RIDES THE 600-CHAR INTERRUPT RATHER THAN FIRING ON EVERY WRITE, which is the ask
+    #596's goal makes in its own words — "asked for at the existing 600-char advisory
+    interrupt". Two reasons, and neither is squeamishness about noise: the write path
+    ALREADY stops the author at exactly this moment, so the question costs nothing extra
+    to ask; and a long decision is the one that will actually be paid for by a reader, so
+    it is the one whose class a two-tier render most needs to know. A one-line decision
+    that declares nothing costs a reader one line.
+
+    IT ASKS ABOUT `kind` AND NOT `subject`. A kind comes from a closed five-word
+    vocabulary the author can answer instantly. A subject is a qualified ref that may not
+    exist yet (a PR unopened, a release unshipped), and nagging for one is how a field
+    gets filled with something plausible — which is the failure mode, not the fix. The
+    line NAMES `--subject` so it is discoverable, and asks for nothing."""
+    if kind(entry) is not None:
+        return None
+    if len(text(entry)) <= limit:
+        return None
+    where = ("decision %d" % index1) if index1 else "that decision"
+    return ("%s declares no kind — add `--kind <%s>` so a reader does not have to parse "
+            "it back out of the prose (and `--subject <type>:<value>` when it is about a "
+            "specific task, step, PR, story or release). ADVISORY ONLY: the decision is "
+            "stored exactly as written, an undeclared one is valid forever, and no value "
+            "here is ever guessed for you."
+            % (where, "|".join(KINDS)))
+
+
 # -- mutation (each returns `(ok, error_message)`) --------------------------------
 
 def _check_index(entries, index1, flag):
@@ -875,9 +912,13 @@ def clear_owner(entries, index1, flag="--unassign"):
 #
 # A SUBJECT IS A QUALIFIED REF AND NEVER A BARE INTEGER, and this one is not taste.
 # `heal.subject_signals` already labels every work item `PR/story <n>` from one bare
-# number, so PR 27 and story 27 emit the IDENTICAL signal and collide TODAY — two
-# decisions about unrelated things can be grouped as sharing a subject. That is a scraping
-# accident. If a DECLARED subject stored a bare integer the same collision would become
+# number, so PR 27 and story 27 emit ONE SIGNAL and can therefore COLLIDE — two decisions
+# about unrelated things grouped as sharing a subject. The collision is LATENT rather than
+# live, and the distinction is measured, not assumed: #601 scanned all 131 live decisions
+# on this project's largest task and found ZERO work-item numbers carrying more than one
+# noun, and the parent re-measured the same zero independently. What exists today is the
+# CAPACITY to collide. That is a scraping accident. If a DECLARED subject stored a bare
+# integer the same collision would become
 # STRUCTURAL: trusted, fed to the merge grouper, and undoubtable by anything downstream,
 # because "never infer" forbids the only correction mechanism a wrong value could have. A
 # wrong subject is therefore strictly WORSE than none. So a subject ref carries its TYPE,
@@ -946,9 +987,10 @@ def _clean_subject_ref(raw):
         return None, ("%r is not a qualified ref. A subject names its TYPE as "
                       "`<type>:<value>`, one of %s. A bare number is REFUSED: heal's "
                       "subject tier already labels every work item `PR/story <n>` from "
-                      "one bare number, so PR 27 and story 27 collide today — and a "
-                      "DECLARED bare number would make that collision structural instead "
-                      "of accidental, in a field nothing downstream is allowed to doubt."
+                      "one bare number, so PR 27 and story 27 emit one signal and CAN "
+                      "collide — and a DECLARED bare number would make that collision "
+                      "structural instead of accidental, in a field nothing downstream "
+                      "is allowed to doubt."
                       % (token, "/".join(SUBJECT_TYPES)))
     stype, value = token.split(":", 1)
     stype = stype.strip().lower()

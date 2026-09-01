@@ -22,6 +22,7 @@ sys.path.insert(0, LIB)
 _TMP_HOME = tempfile.mkdtemp(prefix="ts-memo-")
 os.environ["TASK_STATION_HOME"] = _TMP_HOME
 
+import decisions as _dec  # noqa: E402
 import store  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("task_station", os.path.join(LIB, "task-station.py"))
@@ -125,13 +126,13 @@ class MemoCoreTest(_MemoBase):
         t = self._seed()
         memo = ts.memo_send(t, "the memo body", from_sid="sender")
         ts.memo_ack(t, memo, "acker", promote=True)               # no text → promote body
-        self.assertIn("the memo body", t.get("decisions", []))
+        self.assertIn("the memo body", _dec.live_texts(t.get("decisions", [])))
         dec_ev = [e for e in t["events"] if e.get("kind") == "decision"][-1]
         self.assertEqual(dec_ev["sid"], "acker")
         # Explicit text overrides the body.
         memo2 = ts.memo_send(t, "another body", from_sid="sender")
         ts.memo_ack(t, memo2, "acker", promote=True, decision_text="curated wording")
-        self.assertIn("curated wording", t.get("decisions", []))
+        self.assertIn("curated wording", _dec.live_texts(t.get("decisions", [])))
 
     def test_trim_keeps_unacked_and_drops_oldest_acked(self):
         t = self._seed()
@@ -290,7 +291,10 @@ class MemoCliTest(_MemoBase):
         memo = ts.load_task(t["id"])["memos"][-1]
         self._out(ts.cmd_memo, _Args(sub="ack", task=str(t["seq"]), id=memo["id"][:8],
                                      session="acker", decision=True))
-        self.assertIn("promote me", ts.load_task(t["id"]).get("decisions", []))
+        # By TEXT: an ack promotion declares kind=process-note, so the stored entry is a
+        # rich element and raw membership would ask about the storage shape instead.
+        self.assertIn("promote me",
+                      _dec.live_texts(ts.load_task(t["id"]).get("decisions", [])))
 
     def test_show_list_and_full_body(self):
         t = self._seed()

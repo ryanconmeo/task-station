@@ -15,9 +15,11 @@ THE TWO INVARIANTS EVERY TEST HERE IS A TEST OF:
     is [], and nothing infers a default. Untyped is not a kind.
   * A SUBJECT IS A QUALIFIED REF AND NEVER A BARE INTEGER. `heal.subject_signals` already
     labels every work item `PR/story <n>` from one bare number, so PR 27 and story 27
-    collide TODAY. A declared bare number would make that collision structural, in a
-    field nothing downstream is permitted to doubt — and a wrong subject is therefore
-    strictly worse than none.
+    emit ONE SIGNAL and can therefore COLLIDE. The collision is LATENT, not live: a scan
+    of 131 live decisions found zero work-item numbers carrying more than one noun, so
+    what exists is the capacity. A declared bare number would make that collision
+    structural, in a field nothing downstream is permitted to doubt — and a wrong subject
+    is therefore strictly worse than none.
 
 Increment 1 is the element fields ONLY. No consumer reads them yet, which is why nothing
 here touches heal, the digest or any projection.

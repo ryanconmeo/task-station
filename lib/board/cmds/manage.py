@@ -964,10 +964,12 @@ def _update_one(ref, a):
         # silent no-op: a dropped supersession leaves the wrong decision live, which is
         # precisely the bug. `--pin-decision`/`--unpin-decision` act on existing entries.
         last_decision_idx = None
+        appended_idxs = []
         for text in (getattr(a, "decision", None) or []):
             if append_decision(task, text, session):
                 changed.append("decision")
                 last_decision_idx = len(task.get("decisions") or [])
+                appended_idxs.append(last_decision_idx)
                 # LENGTH ADVISORY — a suggestion, never a gate. The entry is already
                 # stored, in full: refusing a long decision would push the author to
                 # drop a fact or fake two entries out of one, which is exactly what
@@ -1015,6 +1017,91 @@ def _update_one(ref, a):
                     changed.append("pin")
                 else:
                     msgs.append("update %s: %s" % (ref, err))
+        # DECLARATION — `--kind` / `--subject` attach to the LAST --decision of this
+        # update, which is `--pin`'s rule and `--supersedes`'s, and this is the THIRD flag
+        # to carry it. Both of the first two have been got wrong in practice: a call
+        # passing several --decision flags and one --supersedes credits the wrong entry.
+        # So the binding is stated in the help text of every one of these flags, and the
+        # refusal below names --kind-decision the way --pin's names --pin-decision.
+        if getattr(a, "kind", None):
+            if last_decision_idx is None:
+                msgs.append("update %s: --kind needs a --decision in the same update "
+                            "(to declare an existing one use --kind-decision <n>=<kind>)"
+                            % ref)
+            else:
+                ok, err = _dec.set_kind(entries, last_decision_idx, a.kind, flag="--kind")
+                if ok:
+                    changed.append("kind")
+                else:
+                    msgs.append("update %s: %s" % (ref, err))
+        subject_refs = list(getattr(a, "subject", None) or [])
+        if subject_refs:
+            if last_decision_idx is None:
+                msgs.append("update %s: --subject needs a --decision in the same update "
+                            "(to declare an existing one use "
+                            "--subject-decision <n>=<ref>)" % ref)
+            else:
+                # EVERY --subject in this update is ONE subject on ONE decision, not one
+                # subject each. `set_subject` replaces wholesale, so passing them
+                # separately would leave only the last ref stored.
+                ok, err = _dec.set_subject(entries, last_decision_idx, subject_refs,
+                                           flag="--subject")
+                if ok:
+                    changed.append("subject")
+                else:
+                    msgs.append("update %s: %s" % (ref, err))
+        # THE HAND-CLASSIFICATION PATH, one entry at a time with a human-named value.
+        # There is deliberately no batch form: subject inference measured ~1/3 precision
+        # on this record, and `kind` is refused a batch for its own reason — nobody has
+        # measured whether it is cheaper to classify than subject, and an unmeasured batch
+        # is the same bet that got the placement tier demoted.
+        for raw in (getattr(a, "kind_decision", None) or []):
+            n, sep, val = str(raw).partition("=")
+            if not sep:
+                msgs.append("update %s: ignoring --kind-decision %r — expected "
+                            "`<n>=<kind>`, e.g. `7=ruling`" % (ref, raw))
+                continue
+            ok, err = _dec.set_kind(entries, n.strip(), val, flag="--kind-decision")
+            if ok:
+                changed.append("kind")
+            else:
+                msgs.append("update %s: %s" % (ref, err))
+        for raw in (getattr(a, "subject_decision", None) or []):
+            n, sep, val = str(raw).partition("=")
+            if not sep:
+                msgs.append("update %s: ignoring --subject-decision %r — expected "
+                            "`<n>=<ref>[,<ref>]`, e.g. `7=task:596,pr:repo#43`"
+                            % (ref, raw))
+                continue
+            refs = [p for p in (x.strip() for x in val.split(",")) if p]
+            ok, err = _dec.set_subject(entries, n.strip(), refs,
+                                       flag="--subject-decision")
+            if ok:
+                changed.append("subject")
+            else:
+                msgs.append("update %s: %s" % (ref, err))
+        for n in (getattr(a, "clear_kind", None) or []):
+            ok, err = _dec.clear_kind(entries, n)
+            if ok:
+                changed.append("kind↺")
+            else:
+                msgs.append("update %s: %s" % (ref, err))
+        for n in (getattr(a, "clear_subject", None) or []):
+            ok, err = _dec.clear_subject(entries, n)
+            if ok:
+                changed.append("subject↺")
+            else:
+                msgs.append("update %s: %s" % (ref, err))
+        # THE DECLARATION ADVISORY, emitted only AFTER --kind has had its chance to land —
+        # nagging a decision that declared its kind in the same breath is how an advisory
+        # gets ignored. It rides the same 600-char interrupt as `length_warning` and
+        # inherits its law to the letter: the entry is already stored, in full, and this
+        # NEVER refuses a write. An undeclared decision is a permanent citizen of the
+        # record, not a transitional one, so this may nag and may never gate.
+        for n in appended_idxs:
+            nag = _dec.declaration_advisory(entries[n - 1], n) if n <= len(entries) else None
+            if nag:
+                msgs.append("update %s: %s" % (ref, nag))
         for n in (getattr(a, "pin_decision", None) or []):
             ok, err = _dec.set_pin(entries, n, True)
             if ok:
@@ -1219,6 +1306,8 @@ def _update_one(ref, a):
         msgs.append("update %s: nothing to change (pass --title/--summary/--append-summary/"
                     "--restore-summary/--goal/--state/--step-add/--step-done/--step-undone/"
                     "--step-supersede/--step-restore/--decision/--supersedes/--pin/"
+                    "--kind/--subject/--kind-decision/--subject-decision/--clear-kind/"
+                    "--clear-subject/"
                     "--pin-decision/--unpin-decision/--restore-decision/--log/--relate/"
                     "--depends-on/--parent/--absorbed-by/--replaces/--duplicates/"
                     "--unrelate/--pr/--pr-desc/--story/--story-desc/--project-rm/"
