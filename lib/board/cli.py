@@ -572,15 +572,25 @@ def main(argv=None):
     sp.add_argument("--all", dest="all", action="store_true",
                     help="sweep every open/active task instead of one — warns about its "
                          "scope before doing anything")
-    sp.add_argument("--split", type=int, default=None, metavar="N",
+    sp.add_argument("--split", default=None, metavar="N|TASK:N",
                     help="mark decision N as SPLIT into the decisions named by --into "
-                         "(add those first with `update --decision`)")
+                         "(add those first with `update --decision`). Takes a bare `<n>` "
+                         "or the qualified `<task>:<n>` the decision list prints; a "
+                         "qualified ref naming a DIFFERENT task is refused, never "
+                         "resolved. NAMES THE RULING BACK, with its first sentence, "
+                         "before it marks anything, and an unreadable item refuses the "
+                         "WHOLE batch instead of being dropped.")
     sp.add_argument("--merge", default=None, metavar="N1,N2,…",
                     help="mark these decisions as MERGED into the one named by --into "
-                         "(add that summary first with `update --decision`)")
+                         "(add that summary first with `update --decision`). Same list "
+                         "grammar as --reassign: bare or qualified, all-or-nothing. A "
+                         "batch with one unreadable or out-of-range item changes NOTHING "
+                         "— a merge that quietly dropped a member would write a summary "
+                         "claiming to replace N rulings while N-1 moved.")
     sp.add_argument("--into", default=None, metavar="N1,N2,…",
                     help="the decision(s) a --split became, or the ONE that a --merge "
-                         "was absorbed into")
+                         "was absorbed into. Bare or qualified numbers; an unreadable "
+                         "item refuses the whole command.")
     sp.add_argument("--reassign", default=None, metavar="N1,N2,…",
                     help="move OWNERSHIP of these decisions to the task named by --to. "
                          "The decision does NOT move: one copy, one store, at its "
@@ -606,12 +616,12 @@ def main(argv=None):
                          "place of the prose. Defaults to the decision's first sentence; "
                          "pass it when that sentence is not the subject.")
     sp.add_argument("--dry-run", dest="dry_run", action="store_true",
-                    help="with --reassign/--unassign: NAME what would move and move "
-                         "nothing. The batch is validated exactly as the real run "
-                         "validates it, so a refusal here is the refusal you would get. "
-                         "(These two verbs write without --apply — the close report that "
-                         "names `--reassign` has to be true as printed — so this is how "
-                         "you look before you leap.)")
+                    help="with --reassign/--unassign/--split/--merge: NAME what would be "
+                         "marked and mark nothing. The batch is validated exactly as the "
+                         "real run validates it, so a refusal here is the refusal you "
+                         "would get. (All four verbs write without --apply — the close "
+                         "report that names `--reassign` has to be true as printed — so "
+                         "this is how you look before you leap.)")
     sp.add_argument("--unassign", default=None, metavar="N1,N2,…",
                     help="the ONE inverse of --reassign: bring these decisions' ownership "
                          "back to the task that holds them, which renders them in full "
