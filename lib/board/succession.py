@@ -85,6 +85,16 @@ RELAY = "relay"             # due, and the reserve to do it properly is still th
 COMPACT = "compact"         # due, but the reserve is spent — the seam was missed
 UNKNOWN = "unknown"         # occupancy could not be measured, so the policy did not run
 
+# THE REFUSAL, WRITTEN ONCE. Two surfaces have to say that no measurement was taken — the
+# report the OUTGOING session reads, and the prompt the INCOMING one is launched with —
+# and on 2026-08-31 they disagreed: the report refused to conclude anything while the
+# prompt rendered the same absent measurement as `~0% of a 1000k-token window`. A second
+# literal is how two surfaces begin telling one session two different things, so there is
+# one string and both sites interpolate it. Deliberately says "the measured session"
+# rather than "this session": the two readers are different sessions.
+UNMEASURED_WHY = ("occupancy could not be measured — no transcript for the measured "
+                  "session, or no usage block in it yet")
+
 # The default trigger matches `checkpoint_pct`'s default deliberately: the moment a
 # session should write a structured checkpoint is the moment it should consider handing
 # off, and two different defaults for the same threshold would be two answers to one
@@ -137,9 +147,8 @@ def band(measured, window, trigger, keep):
     nonsense. The reserve answers "can the handoff be afforded", and that question only
     arises once the trigger says a handoff is wanted."""
     if measured <= 0 or window <= 0:
-        return UNKNOWN, ("occupancy could not be measured — no transcript for this "
-                         "session, or no usage block in it yet. A policy that did not "
-                         "run has not decided anything, so this is not a keep-going.")
+        return UNKNOWN, ("%s. A policy that did not run has not decided anything, so "
+                         "this is not a keep-going." % UNMEASURED_WHY)
     used = round(measured * 100.0 / window)
     threshold = (trigger * window) // 100
     if measured < threshold:
@@ -206,19 +215,37 @@ def report(task, measured, window, session=None, trigger=None, keep=None, now=No
     `trigger_tokens` is in here because the DECISION is made on tokens while the display
     is a rounded percentage, and those two can straddle the boundary: 129,999 of 200,000
     displays as 65% and is still under a 65% trigger. Printing only the percentage would
-    make that read as a bug in the policy instead of the rounding it is."""
+    make that read as a bug in the policy instead of the rounding it is.
+
+    THE THREE MEASUREMENT-DERIVED FIELDS ARE `None` WHEN NOTHING WAS MEASURED, and that is
+    the whole of #599's first defect fixed where it starts. `used_pct`, `left_pct` and
+    `remaining` are arithmetic ON `measured`, so on an UNKNOWN verdict they carried a zero
+    that no measurement produced — and every renderer downstream printed it as one: `~0%
+    used · ~100% left`, `stopped at ~0% of a 1000k-token window`, `~0% of a 1,000,000-token
+    window` in the grader's own evidence. Defaulting them to 0 in each renderer would have
+    fixed one surface at a time; `None` makes the absence travel, so a formatter that
+    forgets to ask crashes loudly instead of lying quietly. `measured` and `window` stay
+    numeric because they are the INPUTS and 0 is their honest value for "nothing read".
+
+    THIS IS THE SIXTH TIME THIS PROGRAMME HAS RECORDED THE SAME CLASS — an absent
+    measurement rendered as a measured value. A pipe swallowing an exit code; a `git
+    archive` tree with no `.git`; a percentage against a hardcoded window;
+    `checker._run_claim` discarding a return code; `exit-show` omitting the merge-gated
+    flag; and this."""
     trigger = trigger_pct() if trigger is None else int(trigger)
     keep = reserve() if keep is None else int(keep)
     measured = max(0, int(measured or 0))
     window = max(0, int(window or 0))
     verdict, why = band(measured, window, trigger, keep)
-    used = round(measured * 100.0 / window) if window else 0
+    unmeasured = verdict == UNKNOWN
+    used = None if unmeasured else round(measured * 100.0 / window)
     blockers = handoff_blockers(task)
     return {
         "ts": time.time() if now is None else now,
         "task": task.get("id"), "seq": task.get("seq"), "session": session,
-        "measured": measured, "window": window, "remaining": max(0, window - measured),
-        "used_pct": used, "left_pct": max(0, 100 - used),
+        "measured": measured, "window": window,
+        "remaining": None if unmeasured else max(0, window - measured),
+        "used_pct": used, "left_pct": None if used is None else max(0, 100 - used),
         "trigger_pct": trigger, "trigger_tokens": (trigger * window) // 100,
         "reserve": keep,
         "verdict": verdict, "why": why,
@@ -242,13 +269,22 @@ def report_lines(rep):
 
     A READY RECORD IS STILL PRINTED, in one line — the same rule `save.gap_lines` and
     `heal.scan_lines` follow. Silence about the blockers reads identically to never
-    having checked them."""
+    having checked them.
+
+    AN UNMEASURED OCCUPANCY IS A WORD, NEVER A NUMBER. `~0% used · ~100% left` and "no
+    transcript to read" are the same row today, and only one of them is true. The window
+    still prints when it is known: it is resolved from the harness rather than measured
+    from the transcript, so it is a fact even when the occupancy is not."""
     rep = rep or {}
-    out = ["  %-13s %s used · %s left  (%s of %s tokens)"
-           % ("occupancy", "~%d%%" % rep.get("used_pct", 0),
-              "~%d%%" % rep.get("left_pct", 0),
-              "{:,}".format(rep.get("measured", 0)),
-              "{:,}".format(rep.get("window", 0))),
+    if rep.get("used_pct") is None:
+        occupancy = "unknown — not measured, against a %s-token window" % (
+            "{:,}".format(rep.get("window") or 0))
+    else:
+        occupancy = "%s used · %s left  (%s of %s tokens)" % (
+            "~%d%%" % rep["used_pct"], "~%d%%" % (rep.get("left_pct") or 0),
+            "{:,}".format(rep.get("measured", 0)),
+            "{:,}".format(rep.get("window", 0)))
+    out = ["  %-13s %s" % ("occupancy", occupancy),
            "  %-13s %d%% of the window = %s tokens · handoff reserve %s tokens"
            % ("policy", rep.get("trigger_pct", 0),
               "{:,}".format(rep.get("trigger_tokens", 0)),
@@ -377,7 +413,20 @@ def continuation_prompt(task, rep=None, blockers=None, predecessor=None, success
         shown = ["%d %s" % (i, _clip(t, STEP_CHARS)) for i, t in steps[:STEP_CAP]]
         tail = ("  (+%d more on the checklist)" % (len(steps) - STEP_CAP)
                 if len(steps) > STEP_CAP else "")
-        out += ["", "OPEN: " + " · ".join(shown) + tail]
+        # LABELLED FOR WHAT IT IS, because `OPEN:` said something else. These are this
+        # task's own UNTICKED CHECKLIST STEPS and nothing else — not a queue of ready
+        # work, and on an orchestrator not the ready CHILDREN either. On 2026-08-31 a
+        # successor was handed five of them under `OPEN:` while the actual ready work was
+        # eleven children, and in the filed instance several of the steps were superseded
+        # items from July. THE LABEL IS THE FIX, not a different source: this function is
+        # pure over the task dict (see the block above), so reading `scan`'s child graph
+        # would mean loading the store here and would still leave a LEAF task with an
+        # empty list to degrade. Naming the list correctly costs one clause and cannot
+        # itself go stale.
+        out += ["", "UNTICKED CHECKLIST STEPS — this task's own list, not a queue of "
+                    "ready work (`task-station scan --task %s` is what names ready "
+                    "children, if this task has any): " % seq
+                + " · ".join(shown) + tail]
     if blockers:
         out += ["", "GAPS the predecessor left in the record — close these first, because "
                     "the record you are about to read is incomplete by exactly this much:"]
@@ -385,9 +434,18 @@ def continuation_prompt(task, rep=None, blockers=None, predecessor=None, success
         if len(blockers) > BLOCKER_CAP:
             out.append("  · (+%d more — `/todo save` names them all)"
                        % (len(blockers) - BLOCKER_CAP))
-    if rep and rep.get("window"):
+    if rep and rep.get("used_pct") is None:
+        # NEVER A NUMBER FOR A MEASUREMENT NOBODY TOOK. On 2026-08-31 this line told a
+        # successor its predecessor "stopped at ~0% of a 1000k-token window" when the
+        # truth was roughly 810,000 tokens used — the report had refused to conclude
+        # anything from the same absent measurement one function away. `UNMEASURED_WHY`
+        # is that refusal, and both surfaces now interpolate the one string.
+        out += ["", "OCCUPANCY UNKNOWN — not measured, so how full your predecessor was "
+                    "is not a fact you have (%s). Do not read it as an empty window."
+                % UNMEASURED_WHY]
+    elif rep and rep.get("window"):
         out += ["", "The predecessor stopped at ~%d%% of a %dk-token window."
-                % (rep.get("used_pct", 0), rep["window"] // 1000)]
+                % (rep["used_pct"], rep["window"] // 1000)]
     text = "\n".join(out)
     if len(text) > PROMPT_BUDGET:
         text = text[:PROMPT_BUDGET - 30].rstrip() + "\n… (trimmed — read the record)"
@@ -480,8 +538,15 @@ def handoff_evidence_lines(task, index1):
                    % "forced")
     out.append("  %-13s %s → %s" % ("sessions", h.get("from") or "?",
                                     h.get("to") or "?"))
-    out.append("  %-13s ~%s%% of a %s-token window (%s measured), verdict %s"
-               % ("occupancy", h.get("used_pct"),
-                  "{:,}".format(h.get("window") or 0),
-                  "{:,}".format(h.get("measured") or 0), h.get("verdict")))
+    # THE SAME REFUSAL THE REPORT AND THE PROMPT MAKE. A grader scoring G1 on "~0% of a
+    # 1,000,000-token window" is being handed a measurement nobody took, and this row is
+    # the one a grader is most likely to take at face value.
+    if h.get("used_pct") is None:
+        out.append("  %-13s unknown — not measured against a %s-token window, verdict %s"
+                   % ("occupancy", "{:,}".format(h.get("window") or 0), h.get("verdict")))
+    else:
+        out.append("  %-13s ~%s%% of a %s-token window (%s measured), verdict %s"
+                   % ("occupancy", h.get("used_pct"),
+                      "{:,}".format(h.get("window") or 0),
+                      "{:,}".format(h.get("measured") or 0), h.get("verdict")))
     return out
