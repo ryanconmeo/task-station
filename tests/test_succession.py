@@ -667,6 +667,267 @@ class AttributedStateLine(_SuccessionTest):
         self.assertIn("Your predecessor left no next move", prompt)
 
 
+# =========================================== 2c · the prompt tells the truth ====
+
+class TruthfulPrompt(_SuccessionTest):
+    """WHAT THE SUCCESSOR IS TOLD IS TRUE, or it is not said at all (#599).
+
+    On 2026-08-31 one relay prompt carried three statements and none of them was a fact.
+
+      1. `The predecessor stopped at ~0% of a 1000k-token window` — on a session that had
+         burned roughly 810,000 tokens. NOTHING HAD BEEN MEASURED, and the report the
+         SAME run printed to the outgoing session said so in as many words: "occupancy
+         could not be measured … a policy that did not run has not decided anything". The
+         refusal and the confident zero were computed one function apart from the one
+         missing measurement. This is the SIXTH time this programme has recorded the same
+         class — an absent measurement rendered as a measured value — so the tests here
+         sweep every surface that formats it rather than the one that was reported: the
+         report row, the prompt line, the ledger entry, the grader's evidence and the
+         history event.
+      2. `you are session 600-0, succeeding 29c54f8c` — one sentence naming the same kind
+         of thing two ways, the second unreadable. Both ordinals come from the same
+         roster; only the successor's was ever looked up on a task that had heard of it.
+      3. `OPEN: 1 Write the plan … 2 #596 FIRST …` — five UNTICKED CHECKLIST STEPS under a
+         label that reads as available work, while the actual ready work was eleven
+         children. In the filed instance several of the listed steps were superseded
+         items from July, so a successor reading `OPEN` as "what to do next" started on
+         retired work.
+
+    AND THE HALF THAT WAS ALREADY RIGHT MUST SURVIVE. The same prompt attributed the
+    state line to the predecessor and named whose authority it carried — #585 and #588's
+    work — and on the day it was filed that is what stopped a successor from acting on a
+    predecessor's say-so. `AttributedStateLine` pins it against the pure generator; the
+    last test here pins it through a real `relay --spawn`, because a fix to the lines
+    around it is exactly the change that could quietly drop it.
+    """
+
+    # -- fixtures ---------------------------------------------------------------
+
+    def _unmeasurable(self, task, sid):
+        """The report for a session with NO transcript at all — the shape the live
+        defect was reported from, computed by the shipped reader rather than faked."""
+        return _succ.report(task, ts.measure_context_tokens(sid),
+                            ts.effective_context_window(sid), session=sid)
+
+    def _elsewhere(self, ordinal=32):
+        """A hub session rostered on ITS OWN task, linked there, and unknown to the task
+        it is about to hand off. The 600-0 handoff's exact shape: the outgoing session
+        belonged to #444 while the relay targeted #600."""
+        old = ts.new_task("the predecessor's own task", "s")
+        ts.save_task(old)
+        ts.ensure_seqs()
+        old = ts.load_task(old["id"])
+        sid = "cccccccc-0000-0000-0000-000000000009"
+        old.setdefault("sessions", []).append(sid)
+        old.setdefault("session_meta", {})[sid] = {
+            "cwd": self.tmp, "ts": 1000.0, "role": "hub", "ordinal": ordinal}
+        old["hub_ordinal_next"] = ordinal + 1
+        ts.save_task(old)
+        ts.set_link(sid, old["id"])
+        store.reset_cache()
+        return ts.load_task(old["id"]), sid
+
+    def _launched(self):
+        """The prompt the successor's window was actually opened with."""
+        self.assertEqual(len(self.opened), 1, self.opened)
+        return self.opened[0]
+
+    # -- 1 · an unmeasured occupancy is a word, never a number -------------------
+
+    def test_the_report_dict_carries_no_measurement_it_did_not_take(self):
+        """AT THE SOURCE. `used_pct`, `left_pct` and `remaining` are arithmetic ON the
+        measurement, so an UNKNOWN verdict makes all three unknowable. They were 0, 100
+        and the whole window — three fabrications every renderer downstream then printed
+        as fact. `measured` and `window` stay numeric: they are the INPUTS, and 0 read is
+        an honest 0."""
+        task, sid = self._task()
+        rep = self._unmeasurable(task, sid)
+        self.assertEqual(rep["verdict"], _succ.UNKNOWN)
+        self.assertIsNone(rep["used_pct"])
+        self.assertIsNone(rep["left_pct"])
+        self.assertIsNone(rep["remaining"])
+        self.assertEqual(rep["measured"], 0)
+        self.assertEqual(rep["window"], WINDOW)
+
+    def test_a_measurement_that_was_taken_is_still_a_number(self):
+        """THE OVER-CORRECTION GUARD. Refusing to print an occupancy that WAS measured
+        would trade a false number for a lost fact, and the whole policy is two numbers
+        that get printed."""
+        task, sid = self._task()
+        rep = self._report(task, sid, 130000)
+        self.assertEqual(rep["used_pct"], 65)
+        self.assertEqual(rep["left_pct"], 35)
+        self.assertEqual(rep["remaining"], WINDOW - 130000)
+        self.assertIn("65%", _succ.continuation_prompt(
+            task, rep=rep, predecessor="1-0", successor="1-1"))
+
+    def test_the_prompt_says_unknown_and_prints_no_percentage(self):
+        task, sid = self._task()
+        rep = self._unmeasurable(task, sid)
+        prompt = _succ.continuation_prompt(task, rep=rep, predecessor="1-0",
+                                           successor="1-1")
+        self.assertIn("OCCUPANCY UNKNOWN", prompt)
+        self.assertIn("not measured", prompt)
+        self.assertNotIn("~0%", prompt)
+        self.assertNotIn("0% of", prompt)
+        self.assertNotIn("stopped at", prompt)
+
+    def test_both_surfaces_refuse_in_ONE_string(self):
+        """The report refused and the prompt did not, from the same absent measurement.
+        Two literals is how that happens, so there is one — and this fails the moment a
+        second copy is written, whatever it says."""
+        task, sid = self._task()
+        rep = self._unmeasurable(task, sid)
+        prompt = _succ.continuation_prompt(task, rep=rep, predecessor="1-0",
+                                           successor="1-1")
+        self.assertIn(_succ.UNMEASURED_WHY, rep["why"])
+        self.assertIn(_succ.UNMEASURED_WHY, prompt)
+
+    def test_the_report_row_refuses_too(self):
+        """`occupancy  ~0% used · ~100% left  (0 of 1,000,000 tokens)` was printed
+        directly above `verdict unknown — measure first`. The row and the verdict were
+        describing the same non-measurement and only one of them said so."""
+        task, sid = self._task()
+        lines = _succ.report_lines(self._unmeasurable(task, sid))
+        row = [l for l in lines if "occupancy" in l][0]
+        self.assertIn("unknown", row)
+        self.assertIn("not measured", row)
+        self.assertNotIn("~0%", row)
+        self.assertNotIn("~100%", row)
+
+    def test_the_graders_evidence_refuses_too(self):
+        """The row a grader is most likely to take at face value: G1 asks whether
+        verification ran, and `~0% of a 1,000,000-token window` answers it with a
+        measurement nobody took."""
+        task, sid = self._task()
+        rep = self._unmeasurable(task, sid)
+        _succ.record_handoff(task, sid, "successor-sid", rep)
+        line = [l for l in _succ.handoff_evidence_lines(task, 1)
+                if "occupancy" in l][0]
+        self.assertIn("unknown", line)
+        self.assertIn("not measured", line)
+        self.assertNotIn("~0%", line)
+
+    def test_a_relay_run_end_to_end_prints_no_invented_occupancy(self):
+        """THE WHOLE RUN, the way the defect was observed: one `relay --spawn --force` on
+        an unmeasurable session. Every surface it writes is checked at once — what it
+        printed, what it launched the successor with, what it appended to the ledger the
+        gate reads, and what it wrote into the history that outlives the terminal."""
+        task, sid = self._task()
+        self.assertIsNone(ts._find_session_path(sid))      # no transcript exists
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True,
+                                force=True)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("~0%", out)
+        self.assertIn("not measured", out)
+        self.assertIn("OCCUPANCY UNKNOWN", self._launched())
+        after = ts.load_task(task["id"])
+        entry = _succ.handoffs(after)[-1]
+        self.assertIsNone(entry["used_pct"])
+        self.assertEqual(entry["verdict"], _succ.UNKNOWN)
+        event = " ".join(e.get("text") or "" for e in (after.get("events") or []))
+        self.assertIn("occupancy unknown", event)
+        self.assertNotIn("~0%", event)
+
+    # -- 2 · the predecessor's ordinal resolves ---------------------------------
+
+    def test_the_predecessors_ordinal_resolves_from_its_own_task(self):
+        """`ordinal_label` is per-task by construction, so a relay that hands a session
+        rostered on #444 to task #600 could name the successor (`600-0`, minted on the
+        target) and not the predecessor (`29c54f8c`). The link knew the answer the whole
+        time."""
+        old, sid = self._elsewhere(ordinal=32)
+        task, _own = self._task()
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True,
+                                force=True)
+        self.assertEqual(code, 0, out)
+        cmd = self._launched()
+        self.assertIn("succeeding %s-32" % old["seq"], cmd)
+        self.assertNotIn("succeeding %s" % sid[:8], cmd)
+
+    def test_a_same_task_relay_still_names_both_ordinals(self):
+        """The ordinary case, unchanged: the lookup on the handing-off task is asked
+        FIRST and answers, so nothing about a normal relay routes through the link."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("succeeding %s-0" % task["seq"], self._launched())
+
+    def test_an_unrostered_session_falls_back_to_its_id(self):
+        """THE FALLBACK STAYS, AND STAYS LAST. A session no roster can name — no link,
+        or rostered as a worker, which carries a descriptive name and never an ordinal —
+        genuinely has no ordinal, and an invented one would be worse than an unreadable
+        true one."""
+        task, _own = self._task()
+        stray = "dddddddd-0000-0000-0000-000000000007"
+        out, code = self._relay(task=str(task["seq"]), session=stray, spawn=True,
+                                force=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("succeeding %s" % stray[:8], self._launched())
+
+    # -- 3 · the step list says what it is --------------------------------------
+
+    def test_the_step_list_is_labelled_as_the_checklist_not_as_ready_work(self):
+        """`OPEN:` is what a successor reads as "the queue". These are the task's own
+        unticked checklist steps and nothing else — on an orchestrator they are not even
+        the ready children, which is what `scan` answers."""
+        task, _sid = self._task()
+        prompt = _succ.continuation_prompt(task, predecessor="1-0", successor="1-1")
+        self.assertIn("UNTICKED CHECKLIST STEPS", prompt)
+        self.assertIn("not a queue of ready work", prompt)
+        self.assertIn("scan --task %s" % task["seq"], prompt)
+        for line in prompt.splitlines():
+            self.assertFalse(line.startswith("OPEN:"), line)
+
+    def test_the_label_costs_nothing_the_steps_needed(self):
+        """The relabel must not push the step list out of the prompt, and must not push
+        the prompt out of its budget."""
+        task, _sid = self._task()
+        prompt = _succ.continuation_prompt(task, predecessor="1-0", successor="1-1")
+        self.assertIn("cover the edge case", prompt)
+        self.assertIn("ship it", prompt)
+        self.assertLessEqual(len(prompt), _succ.PROMPT_BUDGET, prompt)
+
+    def test_a_task_with_no_open_steps_prints_no_list_at_all(self):
+        """A LEAF DEGRADES TO SILENCE. An empty labelled block would be the same defect
+        wearing the new label — a heading a successor reads as "nothing to do here"."""
+        task, _sid = self._task()
+        task["steps"] = [{"text": "wire the parser", "done": True}]
+        ts.save_task(task)
+        store.reset_cache()
+        prompt = _succ.continuation_prompt(ts.load_task(task["id"]),
+                                           predecessor="1-0", successor="1-1")
+        self.assertNotIn("UNTICKED CHECKLIST STEPS", prompt)
+
+    # -- what must NOT break ----------------------------------------------------
+
+    def test_the_attribution_and_the_authority_warning_survive_a_real_relay(self):
+        """#585 AND #588, PROVED THROUGH THE SPAWN AND NOT THE GENERATOR. Those two are
+        load-bearing — on 2026-08-31 they are what stopped a successor from acting on a
+        predecessor's claimed authorisation — and the change that most plausibly drops
+        them is an edit to the lines on either side of them. So this asserts on the
+        command the window was actually opened with, after all three repairs above have
+        run in the same prompt."""
+        task, sid = self._task()
+        task["state"] = AttributedStateLine.INCIDENT
+        ts.save_task(task)
+        store.reset_cache()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        cmd = self._launched()
+        at = cmd.find("WATCH PR 1615")
+        self.assertNotEqual(at, -1, cmd)
+        self.assertIn("not an order from your user", cmd[:at])
+        self.assertIn("act outward (merge)", cmd)
+        # The launched command is shell-quoted, so apostrophes arrive as `'"'"'` —
+        # every assertion here is on a stretch of the sentence that carries none.
+        self.assertIn("that authority is your predecessor", cmd)
+        self.assertIn("one voice twice", cmd)
+        self.assertIn("Ask your user first", cmd)
+
+
 # ================================================== 3 · spawning the successor ====
 
 class SuccessorSpawn(_SuccessionTest):

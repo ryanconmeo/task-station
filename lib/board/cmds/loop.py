@@ -960,6 +960,41 @@ def cmd_invoke(a):
 # was never about.
 
 
+def _predecessor_label(task, session):
+    """The OUTGOING session's own ordinal — `444-32` — or its bare id when no roster can
+    name it, or `?` when the caller supplied no session at all.
+
+    RESOLVED ON THE SESSION'S OWN TASK, NOT ON THE TASK BEING HANDED OFF, and that is the
+    whole of #599's second defect. `ordinal_label` is per-task by construction: it reads
+    `task["session_meta"][sid]["ordinal"]` and answers None for a session that task has
+    never seen. A relay usually hands one task to itself, so the two tasks are the same
+    one and the lookup worked — but `relay --task <other>` hands a NEW task to a session
+    that is rostered on the OLD one, and there the successor's ordinal resolved (`600-0`,
+    minted on the target) while the predecessor's did not. On 2026-08-31 the prompt read
+    `you are session 600-0, succeeding 29c54f8c` — one sentence naming the same kind of
+    thing two different ways, the second of them unreadable. The predecessor was `444-32`,
+    and `get_link` knew it: that session's link pointed at #444 the whole time.
+
+    THE UUID FALLBACK STAYS, and stays LAST. A session with no link, or one rostered as a
+    worker (workers carry a descriptive name and never an ordinal, by design), genuinely
+    has no ordinal — and a made-up one would be worse than an unreadable true one."""
+    if not session:
+        return "?"
+    label = ordinal_label(task, session)
+    if label:
+        return label
+    try:
+        owner_id = get_link(session)
+        owner = load_task(owner_id) if owner_id and owner_id != task.get("id") else None
+    except Exception:                                   # noqa: BLE001
+        owner = None
+    if owner:
+        label = ordinal_label(owner, session)
+        if label:
+            return label
+    return session[:8]
+
+
 def cmd_relay(a):
     """`task-station relay [--task REF] [--spawn]`
 
@@ -1019,7 +1054,7 @@ def cmd_relay(a):
     blockers = list(rep["blockers"])
     forced = force and (rep["verdict"] != _succ.RELAY or bool(blockers))
 
-    predecessor = ordinal_label(task, session) or (session or "?")[:8]
+    predecessor = _predecessor_label(task, session)
     # Mint FIRST: the successor's own ordinal is assigned here, and the prompt names it.
     sid, base = fresh_resume_command(task, preborn=True)
     task = load_task(task["id"]) or task
@@ -1064,8 +1099,14 @@ def cmd_relay(a):
                                          blockers=blockers)
     head = "%s — relay %s → %s" % (MANUAL_LAUNCH, predecessor, successor) if manual \
         else "relay %s → %s" % (predecessor, successor)
-    add_event(task, "child", "%s (session %s) — ~%d%% of a %dk window%s"
-              % (head, sid[:8], rep["used_pct"], rep["window"] // 1000,
+    # THE EVENT SAYS WHAT WAS MEASURED, and says so only when something was. This line is
+    # the durable one — the report scrolls away and the history entry does not — so an
+    # invented `~0% of a 1000k window` here outlives every other copy of the same lie.
+    occ = ("occupancy unknown (not measured), %dk window" % (rep["window"] // 1000)
+           if rep["used_pct"] is None
+           else "~%d%% of a %dk window" % (rep["used_pct"], rep["window"] // 1000))
+    add_event(task, "child", "%s (session %s) — %s%s"
+              % (head, sid[:8], occ,
                  ", FORCED past %d gap(s)" % len(blockers) if forced else ""),
               session=session)
     task["updated_ts"] = _now()

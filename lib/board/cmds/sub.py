@@ -1805,11 +1805,18 @@ def _checkpoint_mark_text(sched, extras):
     is expensive to reconstruct an hour later, and free right now."""
     res = extras["window"]
     rep = extras["relay"]
-    return ("boundary mark: ~%d%% of a %s-token window used (window source: %s) · %d record "
+    # AN UNMEASURED OCCUPANCY IS NOT 0%, and this entry is written into the record where
+    # it long outlives the turn that wrote it. `used_pct` is None exactly when no usage
+    # block could be read; `or 0` rendered that as a session that had burned nothing.
+    occ = ("occupancy unknown — not measured, against a %s-token window"
+           % "{:,}".format(res.get("window") or 0)
+           if rep.get("used_pct") is None
+           else "~%d%% of a %s-token window used"
+                % (rep["used_pct"], "{:,}".format(res.get("window") or 0)))
+    return ("boundary mark: %s (window source: %s) · %d record "
             "change(s) since the last full checkpoint. Facts only — no checkpoint was "
             "stamped and the digest was not touched."
-            % (rep.get("used_pct") or 0, "{:,}".format(res.get("window") or 0),
-               res.get("source"), sched.get("checkpoint_accrued") or 0))
+            % (occ, res.get("source"), sched.get("checkpoint_accrued") or 0))
 
 
 def _boundary_maintain(a, task):
