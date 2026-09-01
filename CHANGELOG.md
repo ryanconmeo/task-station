@@ -3,6 +3,66 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.51.0] — 2026-08-31
+
+**`relay --spawn` REPORTED A WINDOW IT HAD NOT SEEN, AND WROTE A HANDOFF TO A SESSION
+THAT DID NOT EXIST.** Both came from one substitution: the window opener returning `0`
+means a command was **issued**, and the line printed on the strength of it —
+*"opened the successor's window"* — says a session **came up**. Between those two
+sentences sits every way a launch dies quietly: a terminal that refuses the Apple Event,
+a `claude` that exits at startup, a first-run trust dialog with nobody there to answer it.
+
+*What it says now.* The spawn CONFIRMS the successor registered before claiming anything,
+using the check `task-station sessions` already performs — a live pid carrying that
+session id (`live_sessions.running`). Reused, not rewritten: a second notion of
+"registered" would drift from the one an operator reads next to it, and the drift would be
+invisible until a handoff disagreed with the session list. Unconfirmed, the command says
+it **PREPARED** the line, prints it, and names the wait it gave up on.
+
+*And the ledger waits for a session to exist.* A handoff is a claim ABOUT A SESSION, and
+the parent grades it through the same six dimensions as any child work — so an entry
+naming a successor that never ran is worse than no entry, because a later reader cannot
+tell it from a real one. Nothing is written until the successor registers. The trail still
+records the attempt, marked `MANUAL LAUNCH … PREPARED, no successor confirmed`, so a
+prepared relay is legible without being gradeable. `--print-command` records no handoff
+either, for the same reason and with no special case: a command a human has not run yet
+has produced no successor.
+
+*The wait is bounded and tunable* — 60 seconds, `TASK_STATION_SPAWN_CONFIRM_S` overrides;
+a non-positive value falls back to the default rather than disabling the check, because
+"wait for nothing" is the same lie pointing the other way. It fails CLOSED, unlike the
+scan's liveness column: a spawner that cannot read process state must not print "a window
+opened".
+
+**`invoke` WAS DELIBERATELY LEFT ALONE, AND THAT IS A FINDING RATHER THAN A SCOPE
+DECISION.** #603 was filed against *"opened a new window running it"* — `invoke`'s words.
+The two spawners share the OPENER and share no claim-printing code, each holding its own
+literal, so nothing here changes what `invoke` says. On the day this was filed that line
+was TRUE on `invoke --task 599`: two sessions registered against the child. A test now
+pins it, so a later sweep of the phrase finds a stated reason instead of an oversight.
+
+**AN ORCHESTRATOR'S SUCCESSOR STARTED IN A CHILD'S BRANCH WORKTREE.** The relay inherits
+the directory the predecessor last ran in, which is right for a leaf — that IS where its
+work lives — and wrong for a task flagged orchestrator-only, which by construction holds
+no work of its own. On #503 the inherited directory belonged to one of its children, so a
+coordinator's successor woke inside a repo it had no business editing. An orchestrator's
+successor now defaults to the hub (`~`); an explicit `--cwd` still wins, because a human
+naming a directory is not a guess.
+
+*The roster entry was the other half of it.* The relay derived the directory twice — once
+for the mint and once for the command — so a `--cwd` run recorded one directory while the
+window opened in another. That entry is what the NEXT spawn reads as its default, which is
+how one wrong directory becomes a run of dead sessions (#570). It is now resolved ONCE,
+before the mint, and handed to both, the same fix `invoke` already carries.
+
+*Proved both ways, against a real spawn and a deliberately failed one.* The failed spawn
+fails for a real reason — the opener succeeds and the WINDOW never reports for duty —
+rather than by stubbing the return value of the check under test; the test double now
+writes the `<pid>.json` a real `claude --session-id` writes, so the shipped confirmation
+runs unmodified in both cases. A stale session file left by a crash is pinned as NOT a
+registration, which is what proves the reuse: a check that only looked for the file would
+go green on the wreckage of a session that died.
+
 ## [3.50.0] — 2026-08-31
 
 **THE RELAY PROMPT TOLD ITS SUCCESSOR THREE THINGS THAT WERE NOT TRUE.** All three were

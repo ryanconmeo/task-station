@@ -21,6 +21,7 @@ a dead pid is skipped, never deleted.
 """
 import json
 import os
+import time
 
 import paths
 import store as store_mod
@@ -197,3 +198,85 @@ def running():
         })
     rows.sort(key=lambda r: r.get("updated_ts") or 0, reverse=True)
     return rows
+
+
+# ------------------------------------------------- did a spawn actually arrive? ----
+#
+# A SPAWNER MAY CLAIM ONLY WHAT IT CAN SEE. `relay --spawn` printed "opened the
+# successor's window" the moment the window opener returned — which reports that a
+# command was ISSUED, not that a session came up. The two differ exactly where it
+# matters: a terminal that refused, a `claude` that died at startup, a trust dialog
+# nobody was there to answer. The claim then outlived the run, because the handoff
+# ledger was written on the strength of it.
+#
+# `running()` above already answers the question the claim needs — is there a LIVE
+# PROCESS carrying this session id — so the confirmation reuses it rather than growing
+# a second notion of "registered". Two notions would drift, and the one that drifted
+# would be the one nobody reads next to `task-station sessions`.
+#
+# WHAT THIS DOES AND DOES NOT PROVE. It proves a process exists under that session id.
+# It says nothing about whether that session has done, or will do, any work — that is
+# the record's question (#600's decision 8: any signal derived from process state is a
+# signal about the process, never about the work). "A window opened" is a claim about a
+# process, which is precisely why process state is the right evidence for THIS claim and
+# the wrong evidence for the other one.
+
+REGISTRATION_TIMEOUT_S = 60.0   # how long a spawner waits for a window to report in
+REGISTRATION_POLL_S = 0.5
+
+
+def registration_timeout():
+    """Seconds a spawner waits for a freshly launched window to register.
+
+    `TASK_STATION_SPAWN_CONFIRM_S` overrides it — a slow machine may want longer, and
+    the tests want a wait they can afford. A non-positive or unparseable value falls
+    back to the default rather than disabling the wait: "wait for nothing" would report
+    every successful spawn as unconfirmed, which is the same lie pointing the other
+    way."""
+    raw = os.environ.get("TASK_STATION_SPAWN_CONFIRM_S")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return REGISTRATION_TIMEOUT_S
+    return v if v > 0 else REGISTRATION_TIMEOUT_S
+
+
+def registered(sid):
+    """True when `sid` is one of the ACTUALLY-running sessions `running()` reports.
+
+    Never raises: a sessions-dir hiccup answers NO, because the caller's next move on a
+    no is to print the command for a human, and the caller's next move on a yes is to
+    write a claim into the record."""
+    if not sid:
+        return False
+    try:
+        return any(r.get("session_id") == sid for r in running())
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
+def await_registration(sid, timeout=None, interval=REGISTRATION_POLL_S,
+                       sleep=None, clock=None):
+    """Poll until `sid` registers, or the wait runs out. True only on a session that
+    was actually seen.
+
+    ASKS ONCE BEFORE IT WAITS AT ALL, so a zero-length timeout is still a check rather
+    than an automatic no — and a session that registered while the opener was still
+    returning is caught on the first look.
+
+    `sleep`/`clock` are injectable for tests that must not spend real seconds; the
+    default is a real wall-clock poll, because the thing being waited on is a real
+    process coming up."""
+    if not sid:
+        return False
+    timeout = registration_timeout() if timeout is None else timeout
+    sleep = time.sleep if sleep is None else sleep
+    clock = time.monotonic if clock is None else clock
+    deadline = clock() + max(0.0, float(timeout))
+    while True:
+        if registered(sid):
+            return True
+        left = deadline - clock()
+        if left <= 0:
+            return False
+        sleep(max(0.01, min(interval, left)))

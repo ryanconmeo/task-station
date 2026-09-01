@@ -744,5 +744,36 @@ class TheLaunchLineTellsTheTruth(_InvokeTest):
         self.assertIn("task-station search --detail %s" % child["seq"], cmd)
 
 
+class InvokeKeepsItsOwnClaim(_InvokeTest):
+    """#603 CHANGED THE RELAY AND NOT THIS PATH, and that was a finding rather than a
+    scoping choice.
+
+    #603 was filed against "opened a new window running it" — this line's words. The two
+    spawners share the OPENER (`_open_jump_window`) and share NO claim-printing code:
+    `cmd_invoke` and `cmd_relay` each hold their own literal. So the relay's fix could
+    not reach here, and making it reach would have been a second decision nobody asked
+    for — on 2026-08-31 this exact line was TRUE on `invoke --task 599`, where two
+    sessions registered against the child.
+
+    This test exists so a later sweep of the phrase finds a stated reason instead of an
+    oversight: nothing here registers a session, and `invoke` still says what it says.
+    """
+
+    def test_the_launch_line_is_unchanged(self):
+        parent, child = self._pair()
+        out, _ = self._invoke(parent=parent, child=child)
+        self.assertIn("opened a new window running it", out)
+
+    def test_the_trail_still_records_a_real_invoke(self):
+        """Not a MANUAL LAUNCH. The parent's RUNNING column reads this trail to stop a
+        double-invoke, so a launch that started reading as manual would change what the
+        loop does next."""
+        parent, child = self._pair()
+        self._invoke(parent=parent, child=child)
+        trail = " ".join(self._events(child))
+        self.assertIn("invoked by #%s" % parent["seq"], trail)
+        self.assertNotIn(ts.MANUAL_LAUNCH, trail)
+
+
 if __name__ == "__main__":
     unittest.main()
