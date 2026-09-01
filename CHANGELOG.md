@@ -3,6 +3,79 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.53.0] — 2026-09-01
+
+**A DECISION CAN NOW SAY WHAT IT IS AND WHAT IT IS ABOUT, AT WRITE TIME.** 3.46.0 added the
+`kind` and `subject` fields to the decision element and deliberately shipped no caller.
+This is the write path that reaches them: the flags an author uses, the advisory that asks,
+and the three machine writers that declare their own kind.
+
+*Why the record needed this.* Every consumer re-derived structure from English. `heal.py`
+is 5,011 lines against `decisions.py`'s 1,270 and it grows one vocabulary per prose shape,
+not per feature. The ceiling on guessing was earned by trying — a pass classifying 82
+decisions by subject keyword spot-checked at roughly **one in three** right, which is why
+the keyword placement tier was demoted to an informational re-read list. Information that
+exists at write time was being expensively and unreliably reconstructed at read time.
+
+### Added
+- **`update --kind <ruling|measurement|incident|release-record|process-note>`** and
+  **`update --subject <type>:<value>`** (repeatable) — they declare the `--decision` **in
+  the same update**, binding to the **LAST** one exactly as `--pin` does. This is the third
+  flag to carry that rule and the first two have both been got wrong in practice, so the
+  binding is stated in every one of these flags' help text and is asserted by a test that
+  writes two decisions and checks which one got typed.
+- **`--kind-decision <n>=<kind>`** and **`--subject-decision <n>=<ref>[,<ref>]`** — the
+  same primitive's existing-entry form, shaped on `--pin-decision`. The hand-classification
+  path, **one entry at a time with a human-named value**. There is no batch backfill and
+  there will not be one: subject inference measures ~1/3 precision, and a batch of `kind`
+  is refused for its own reason — nobody has measured whether it is cheaper to classify.
+- **`--clear-kind <n>`** and **`--clear-subject <n>`** — the single-command inverses. They
+  exist because the design forbids any check from ever contradicting a declared value,
+  which makes the author the only correction mechanism there is; a correction that is
+  awkward is how a misdeclaration becomes permanent.
+- **A WRITE-TIME ADVISORY that asks a long, undeclared decision to say what it is.** It
+  rides the existing 600-char interrupt rather than firing on every write, and it inherits
+  `length_warning`'s law to the letter: **it may nag and it may never refuse.** A gate on a
+  *missing* declaration would be strictly worse than the old pin cap's was — it would teach
+  the author to type *something*, and a guessed kind is exactly the inference this field
+  removes. An undeclared decision stays writable forever.
+
+### Changed
+- **The three MACHINE writers declare their own kind**, which is inference-free by
+  construction because a writer knows what it is writing without reading a word of it:
+  `grade`'s gate decision is a **measurement**, `heal --apply`'s merge summary is a
+  **release-record**, and a memo promoted on ack is a **process-note**.
+- *That last one retires the sharpest exhibit on the record.* `heal._merge_summary`'s own
+  docstring says it is "WORDED TO AVOID SUPERSESSION_LANGUAGE" — an earlier draft said "no
+  longer load-bearing", which is one of the phrases heal's own prose check looks for, so
+  every summary it generated re-tripped the scan that generated it and made a freshly
+  healed task read as dirty. The tool wrote prose to dodge its own parser. A declared kind
+  is the structural answer that wording was standing in for.
+- `append_decision` takes an optional `kind`. **A kind it cannot validate still appends the
+  decision, untyped** — losing the record over a classification is the serious failure and
+  the missing type is the trivial one.
+- Four tests asserted a promoted decision by raw membership in the `decisions` list. They
+  now assert by **text**, through `decisions.live_texts`. They were asking about the
+  storage shape when what they meant was the projection.
+
+### Fixed
+- **Three shipped strings overstated a LATENT collision as a LIVE one.** `decisions.py` and
+  its tests said PR 27 and story 27 "collide TODAY". A scan of all 131 live decisions on
+  this project's largest task found **zero** work-item numbers carrying more than one noun,
+  and a second, independent measurement agreed to the number. What exists is the **capacity**
+  to collide, which is reason enough for the field — the refusal message now says so.
+  Wording only; no behaviour changed.
+
+### Not in this release
+- **No reader reads a declaration yet.** The two-tier digest render, heal's declared-subject
+  union and the skip tiers are gated on roughly 50 declared decisions being accumulated and
+  hand spot-checked for precision. Declaration precision at write time is **plausible and
+  unmeasured**, and a wrong subject is strictly worse than none: it is structural, trusted,
+  and nothing downstream is permitted to doubt it. The gate is that measurement.
+- **`heal --split` does not carry a declared kind onto the parts it creates.** The parts are
+  a new record cut out of an old one and the machine did not author their content, so this
+  is left to be decided by whoever builds the readers, not settled silently here.
+
 ## [3.52.0] — 2026-09-01
 
 **`heal --split`, `--merge` AND `--into` SILENTLY DROPPED AN ITEM THEY COULD NOT PARSE, ON

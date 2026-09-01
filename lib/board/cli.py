@@ -1011,6 +1011,52 @@ def main(argv=None):
                          "digest anyway, and pinned ones sort FIRST (marked ★) as the "
                          "architecture spine, ahead of everything else oldest-first. No "
                          "limit on how many are pinned.")
+    # DECLARATION — what a decision IS and what it is ABOUT, written by its author and
+    # never inferred. Shaped on the pin primitive to the letter, including its three
+    # flags: one that ATTACHES to the --decision in this same update, one that targets an
+    # EXISTING entry by number, and one that undoes it. NOTE: `add-event --kind` is a
+    # DIFFERENT flag on a different subcommand with its own vocabulary (log|decision|
+    # milestone|…) — the two are unrelated and neither reads the other's values.
+    sp.add_argument("--kind", default=None, choices=list(_dec.KINDS),
+                    help="declare what the --decision IN THIS SAME UPDATE is: %s. "
+                         "ATTACHES TO THE LAST --decision of this call, exactly as --pin "
+                         "does — so a call passing two --decision flags and one --kind "
+                         "types the SECOND one. Pass one --kind per update, or the "
+                         "declaration lands on a decision you did not mean. Optional and "
+                         "stays optional: an undeclared decision is valid forever."
+                         % ", ".join(_dec.KINDS))
+    sp.add_argument("--subject", action="append", default=None, metavar="TYPE:VALUE",
+                    help="declare what the --decision IN THIS SAME UPDATE is ABOUT "
+                         "(repeatable). ATTACHES TO THE LAST --decision of this call, as "
+                         "--kind and --pin do. Every ref is QUALIFIED — %s — and a bare "
+                         "number is refused; `pr` and `story` also carry their repo, as "
+                         "`pr:<repo>#<n>`. All the refs in one update are one subject, "
+                         "and a single bad ref refuses the whole set rather than storing "
+                         "half of it." % "/".join(_dec.SUBJECT_TYPES))
+    sp.add_argument("--kind-decision", dest="kind_decision", action="append",
+                    default=None, metavar="N=KIND",
+                    help="declare the kind of EXISTING decision N (1-based; repeatable), "
+                         "e.g. `--kind-decision 7=ruling`. The hand-classification path, "
+                         "ONE ENTRY AT A TIME with a human-named value — there is no "
+                         "batch backfill and there will not be one. Re-declaring is "
+                         "allowed: the author is the only correction mechanism the design "
+                         "permits, so it stays a single command.")
+    sp.add_argument("--subject-decision", dest="subject_decision", action="append",
+                    default=None, metavar="N=REF[,REF]",
+                    help="declare the subject of EXISTING decision N (1-based; "
+                         "repeatable), e.g. `--subject-decision 7=task:596,pr:repo#43`. "
+                         "REPLACES whatever that entry declared — a subject is the whole "
+                         "answer to what a decision is about, not a growing pile.")
+    sp.add_argument("--clear-kind", dest="clear_kind", action="append", type=int,
+                    default=None, metavar="N",
+                    help="retract the kind declaration on decision N (1-based; "
+                         "repeatable) — the single-command inverse of --kind. Errors on "
+                         "an entry that declares none, rather than reporting a success "
+                         "that retracted nothing.")
+    sp.add_argument("--clear-subject", dest="clear_subject", action="append", type=int,
+                    default=None, metavar="N",
+                    help="retract the declared subject of decision N (1-based; "
+                         "repeatable) — the single-command inverse of --subject")
     sp.add_argument("--pin-decision", dest="pin_decision", action="append", type=int,
                     default=None, metavar="N",
                     help="pin EXISTING decision N (1-based; repeatable) — sorts it into "

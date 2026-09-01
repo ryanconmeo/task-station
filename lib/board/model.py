@@ -5,6 +5,7 @@ from board.state import *
 import re
 import uuid
 
+import decisions as _dec
 import heal as _heal
 import steps as _steps
 
@@ -737,14 +738,29 @@ def step_progress(task):
     return _steps.progress(task.get("steps"))
 
 
-def append_decision(task, text, session=None):
+def append_decision(task, text, session=None, kind=None):
     """Append to the task's append-only `decisions` log (choices made as the work
     progressed). Blank is a no-op; returns True when appended. `session` attributes
-    the emitted decision event to its author."""
+    the emitted decision event to its author.
+
+    `kind` DECLARES what the appended decision IS, from `decisions.KINDS`. It exists for
+    the MACHINE writers — the gate grade, the heal merge summary, the memo promotion —
+    each of which is inference-free by construction because a writer knows what it is
+    writing. It is NOT a default and never a guess: omitted, the entry is stored as the
+    same plain string it has always been.
+
+    A REFUSED KIND STILL APPENDS THE DECISION, and that is the advisory law from
+    `length_warning` applied to the one place it could quietly bite. A caller passing a
+    kind this version does not know (a rename, a newer writer) must not lose its
+    decision over a classification — losing the record is the serious failure and the
+    missing type is the trivial one."""
     text = (text or "").strip()
     if not text:
         return False
-    task.setdefault("decisions", []).append(text)
+    entries = task.setdefault("decisions", [])
+    entries.append(text)
+    if kind:
+        _dec.set_kind(entries, len(entries), kind, flag="kind=")
     add_event(task, "decision", text, session)
     return True
 
