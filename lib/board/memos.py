@@ -296,7 +296,13 @@ def memo_ack(task, memo, session, promote=False, decision_text=None, disposition
                                          (" (%s)" % disposition["kind"]) if disposition else ""),
               session)
     if promote:
-        append_decision(task, (decision_text or "").strip() or memo.get("text", ""), session)
+        # DECLARED AS A PROCESS NOTE, and inference-free for the same reason the gate
+        # grade is: this decision exists because a memo was ACKED, so what it records is
+        # how the work is being RUN — who read what, and what they did about it — rather
+        # than a ruling the work must obey. The writer knows that without reading a word
+        # of the text, which is precisely what makes a machine writer allowed to declare.
+        append_decision(task, (decision_text or "").strip() or memo.get("text", ""),
+                        session, kind=_dec.KIND_PROCESS_NOTE)
     return "acked"
 
 

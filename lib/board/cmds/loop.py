@@ -21,6 +21,7 @@ import sys
 import channel as _channel
 import checker as _checker
 import config as _config
+import decisions as _dec
 import exits as _exits
 import gating as _gating
 import loop as _loop
@@ -1290,10 +1291,15 @@ def cmd_grade(a):
     ref = task.get("seq") or task["id"][:8]
     line = ("PARKED (%s) — %s" % (park, note)) if park else _loop.verdict_line(v)
     if not getattr(a, "no_decision", False):
+        # DECLARED, NOT INFERRED, and inference-free by construction: a gate grade is
+        # dimension scores against a threshold taken at one moment, which is a
+        # MEASUREMENT. The writer knows what it is writing, so nothing here is a guess —
+        # this is the whole reason the machine writers could declare before any human did.
         append_decision(task, "Gate %s: %s%s"
                         % (ref, line,
                            (" — %s" % note) if note and not park else ""),
-                        session=getattr(a, "session", None))
+                        session=getattr(a, "session", None),
+                        kind=_dec.KIND_MEASUREMENT)
     # THE VERDICT GOES BACK DOWN THE RAIL, not just into the ledger. A rejection recorded
     # on the task and nowhere else is a rejection the child never reads: the child is a
     # session nobody types into again, and by gate time it has usually stopped. A memo is

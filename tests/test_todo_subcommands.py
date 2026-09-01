@@ -24,6 +24,7 @@ _spec = importlib.util.spec_from_file_location("task_station", os.path.join(LIB,
 ts = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ts)
 import config  # noqa: E402  (config store shares TASK_STATION_HOME)
+import decisions as _dec  # noqa: E402
 
 
 class _Args:
@@ -347,7 +348,9 @@ class TodoSubcommandsTest(unittest.TestCase):
         self._attach("acker", t)
         memo = ts.load_task(t["id"])["memos"][-1]
         self._render("acker", "memo ack %s curated decision wording" % memo["id"][:8])
-        self.assertIn("curated decision wording", ts.load_task(t["id"]).get("decisions", []))
+        # By TEXT: an ack promotion declares kind=process-note, so the entry is rich.
+        self.assertIn("curated decision wording",
+                      _dec.live_texts(ts.load_task(t["id"]).get("decisions", [])))
 
     def test_todo_memo_show_lists_memos(self):
         t = self._task(title="Show target")
