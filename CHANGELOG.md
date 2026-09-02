@@ -3,6 +3,50 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.54.0] — 2026-09-01
+
+**TWO VERBS THAT THREW SOMETHING AWAY AND REPORTED SUCCESS.** Both failed in the dangerous
+direction — the operation completes, the record looks tidier, and what you deliberately put
+there is gone. One of them fires unattended at a turn boundary, so nobody is watching.
+
+**A REPLACEMENT VERB NOW CARRIES THE METADATA IT WAS GIVEN.** `mark_split`'s docstring has
+always said "the parts carry the load now" — but nothing ever handed them the load. The pin
+was popped off the original and given to nobody, and `kind`/`subject` were never copied at
+all, because the automatic path appends the parts as bare text. Split a pinned ruling and it
+left the spine with nothing saying so. Now `kind` and `subject` copy to every part (an
+explicit declaration on a part is never overwritten — the author outranks the inheritance),
+and the pin MOVES to the first part and only the first: pinning all N would multiply the
+spine, which is the cost a pin is rationed against. `mark_split` takes an optional `carried`
+dict so the caller can say what moved instead of moving it behind the reader's back.
+
+**`restore` IS AN INVERSE AGAIN.** It advertises itself as the one undo for all three
+replacement verbs, and it returned the text UNPINNED — so undoing a heal silently cost a
+spine entry you then had to notice by hand. The pin-drop is now non-destructive: every
+replacement verb records that there was a pin, and `restore` hands it back. A DELIBERATE
+`--unpin` still leaves no crumb and still recompacts to the legacy plain string, because
+an author unpinning is not a retirement and has nothing to restore.
+
+**AN EXCHANGE CAN NOW LIVE INSIDE A REPO IT DOES NOT OWN**, which is what decision 444:187
+asks for — `tasks/` sitting beside the knowledge content in a brain repo, reusing the remote
+that repo already has, at zero new repos. Three things blocked it, all in `sync.py`:
+
+- `is_git_repo` asked `isdir(root/.git)`, which answers "is this a repo ROOT" — a different
+  question. Every SUBTREE read as "no repo, no remote" and silently never synced. It now
+  asks git, which walks up, exactly as every other call in the module already does.
+- `init_root` then ran `git init` there and NESTED a repo, after which the OUTER repo could
+  not even stage: `git add -A` fails outright with "does not have a commit checked out". So
+  pointing sync at a brain subtree broke the knowledge plane's own commits. It no longer
+  creates a repo inside one.
+- `_finish` ran a bare `add -A`, which from a subdirectory stages the WHOLE repository
+  (git ≥ 2.0) — sweeping a human's unstaged notes into a sync commit and pushing them. It is
+  now scoped with `-- .` to the exchange subtree.
+
+`scripts/prove_subtree_and_pin_carry.py` proves all of it, and `--part mutant` puts the old
+behaviour back and REQUIRES the checks to go red.
+
+### Fixed
+- …
+
 ## [3.53.0] — 2026-09-01
 
 **A DECISION CAN NOW SAY WHAT IT IS AND WHAT IT IS ABOUT, AT WRITE TIME.** 3.46.0 added the

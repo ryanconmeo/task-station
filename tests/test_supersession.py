@@ -431,6 +431,60 @@ class TestPinnedDecisions(_Base):
         r = ts.load_task(t["id"])
         self.assertEqual(r["decisions"][0], "a")     # back to the legacy shape exactly
 
+    # -- A REPLACEMENT VERB MUST NOT THROW METADATA AWAY (3.54.0) ---------------
+    # `mark_split`'s docstring always claimed "the parts carry the load now", but
+    # nothing handed them the load: the pin was popped and given to nobody, and
+    # kind/subject were never copied (the auto path appends parts as bare text).
+    # A pinned ruling split at an unattended turn boundary left the spine silently.
+
+    def test_split_moves_the_pin_to_the_first_part_and_only_the_first(self):
+        entries = [{"text": "compound ruling", "pinned": True},
+                   {"text": "part one"}, {"text": "part two"}]
+        ok, err = dec.mark_split(entries, 1, [2, 3])
+        self.assertEqual((ok, err), (True, None))
+        self.assertTrue(dec.is_pinned(entries[1]))
+        self.assertFalse(dec.is_pinned(entries[2]))
+        self.assertFalse(dec.is_pinned(entries[0]))
+
+    def test_split_copies_kind_and_subject_to_every_part(self):
+        subj = [{"task": "532"}]
+        entries = [{"text": "orig", "kind": "ruling", "subject": subj},
+                   {"text": "p1"}, {"text": "p2"}]
+        dec.mark_split(entries, 1, [2, 3])
+        for i in (1, 2):
+            self.assertEqual(entries[i].get("kind"), "ruling")
+            self.assertEqual(entries[i].get("subject"), subj)
+
+    def test_split_never_overwrites_a_part_that_declares_its_own(self):
+        entries = [{"text": "orig", "kind": "ruling"},
+                   {"text": "p1", "kind": "measurement"}]
+        dec.mark_split(entries, 1, [2])
+        self.assertEqual(entries[1].get("kind"), "measurement")
+
+    def test_split_reports_what_it_moved(self):
+        carried = {}
+        entries = [{"text": "o", "pinned": True, "kind": "ruling"},
+                   {"text": "p1"}, {"text": "p2"}]
+        dec.mark_split(entries, 1, [2, 3], carried=carried)
+        self.assertEqual(carried["pin_to"], 2)
+        self.assertEqual(carried["kind_to"], [2, 3])
+
+    def test_restore_gives_back_the_pin_a_replacement_verb_took(self):
+        # `restore` advertises itself as the ONE inverse of all three verbs. It used to
+        # return the text UNPINNED, so undoing a heal silently cost a spine entry.
+        entries = [{"text": "pinned ruling", "pinned": True}, {"text": "replacement"}]
+        dec.mark_superseded(entries, 1, 2)
+        self.assertFalse(dec.is_pinned(entries[0]))
+        ok, err = dec.restore(entries, 1)
+        self.assertEqual((ok, err), (True, None))
+        self.assertTrue(dec.is_pinned(entries[0]))
+
+    def test_restore_does_not_invent_a_pin_that_never_existed(self):
+        entries = [{"text": "unpinned"}, {"text": "replacement"}]
+        dec.mark_superseded(entries, 1, 2)
+        dec.restore(entries, 1)
+        self.assertFalse(dec.is_pinned(entries[0]))
+
     def test_pinning_a_superseded_decision_is_an_error(self):
         t = self._task(decisions=["stale"])
         self._update(t, decision=["fresh"], supersedes=[1])

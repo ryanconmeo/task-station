@@ -604,11 +604,24 @@ def _heal_verb(a):
                 "--dry-run to mark it, and `update --task %s --restore-decision %d` "
                 "reverses it afterwards."
                 % (_heal._task_ref(task), subject[0])])
-        _dec.mark_split(entries, subject[0], into)
+        carried = {}
+        _dec.mark_split(entries, subject[0], into, carried=carried)
         msgs.extend(preview)
         msgs.append("split decision %d into %s — the original is kept in history, "
                     "marked, and `update --restore-decision %d` undoes it"
                     % (subject[0], ", ".join(str(n) for n in into), subject[0]))
+        # NAME THE METADATA THAT MOVED. A pin silently relocating is the whole reason
+        # the carry exists; reporting it is what separates "moved" from "vanished".
+        if carried.get("pin_to"):
+            msgs.append("  the pin moved to decision %d — decision %d no longer renders, "
+                        "so it cannot hold a spine slot. `--unpin-decision %d` if the "
+                        "wrong part inherited it."
+                        % (carried["pin_to"], subject[0], carried["pin_to"]))
+        moved = sorted(set(carried.get("kind_to") or [])
+                       | set(carried.get("subject_to") or []))
+        if moved:
+            msgs.append("  kind/subject copied to %s"
+                        % ", ".join(str(n) for n in moved))
     if merge_ref is not None:
         members, err = _split_decision_refs(merge_ref, task, "--merge")
         if err:

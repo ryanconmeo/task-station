@@ -4058,7 +4058,9 @@ def apply(task, ops, append=None):
             continue
         if verb == "split":
             new_idx = [append(p) for p in op.get("parts") or []]
-            ok, err = _dec.mark_split(entries, op.get("index"), new_idx)
+            carried = {}
+            ok, err = _dec.mark_split(entries, op.get("index"), new_idx,
+                                      carried=carried)
             if ok:
                 applied += 1
                 op["undo"] = ("SPLIT of decision %s → `update --task %s %s` (the parts it "
@@ -4068,6 +4070,16 @@ def apply(task, ops, append=None):
                                  _restore_flags([op.get("index")])))
                 lines.append("split decision %s into %s (original kept in history)"
                              % (op.get("index"), ", ".join(str(n) for n in new_idx)))
+                # SAY WHAT MOVED. This runs UNATTENDED at a turn boundary, so metadata
+                # relocating in silence is exactly the failure the carry was added for.
+                if carried.get("pin_to"):
+                    lines.append("  ↳ the pin moved to decision %s (it was on %s, which "
+                                 "no longer renders)" % (carried["pin_to"], op.get("index")))
+                if carried.get("kind_to") or carried.get("subject_to"):
+                    lines.append("  ↳ kind/subject copied to %s"
+                                 % ", ".join(str(n) for n in sorted(
+                                     set(carried.get("kind_to") or [])
+                                     | set(carried.get("subject_to") or []))))
             else:
                 skipped += 1
                 lines.append("could not split decision %s — %s" % (op.get("index"), err))
