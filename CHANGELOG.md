@@ -3,6 +3,41 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.55.0] — 2026-09-01
+
+**THREE PLACES THE LOOP REPORTED SOMETHING IT HAD NOT ESTABLISHED.** All three fail in the
+direction that looks like success, which is why none of them was noticed by using the tool.
+
+**`turn` AND `scan` USED DIFFERENT SETTLEDNESS RULES ON THE SAME RECORD.** `scan` passed the
+DEEP rule — `settled_fn`, under which a parent whose children are unbuilt is not settled
+however green its own checklist is. `turn.plan` accepted no such argument and silently took
+the LEAF default, and so did `loop.orchestrator_refusal`, whose whole job is to recommend the
+ready children to run instead. On a nested tree the two surfaces disagreed: a finished subtree
+read COMPLETE from one and BLOCKED from the other, and the agenda came back empty. `turn.plan`
+now takes `is_settled` and the CLI hands it the rule built over the whole store; the refusal
+path builds its own. **A FLAT BOARD CANNOT SHOW THIS** — the leaf and deep rules agree on a
+flat tree by construction — which is exactly why it survived.
+
+**AN UNRESOLVABLE `--task` EXITED 0.** `exit-tick`'s own docstring says *"Not proven met must
+never exit 0, because the exit code is what lets this gate a release step"* — and a task that
+could not even be RESOLVED has proven nothing at all. A typo'd task number was indistinguishable
+from every condition passing, in the one direction a release gate must never have. `exit-tick`
+and `scan` now exit 2.
+
+**LIVENESS THAT COULD NOT BE READ LOOKED LIKE AN IDLE MACHINE.** `_live_seqs()` fails open to
+an empty set. That is right for the scan's display column — a planner that refuses to answer is
+worse than one that answers without a column — and catastrophic for the children cap, which
+read "nothing is running" and spawned over the limit into a machine it could not see. The two
+consumers now have two functions: `_live_seqs()` still degrades for display, and
+`_live_seqs_or_none()` returns `None` for "cannot tell", on which `invoke` REFUSES with the
+same retryable exit 3 the full-budget path uses. `--force` still overrides, and is recorded.
+
+`scripts/prove_loop_honesty.py` proves all three: 9 checks, and `--part mutant` puts the old
+behaviour back and forces 8 of them red.
+
+### Fixed
+- …
+
 ## [3.54.0] — 2026-09-01
 
 **TWO VERBS THAT THREW SOMETHING AWAY AND REPORTED SUCCESS.** Both failed in the dangerous
