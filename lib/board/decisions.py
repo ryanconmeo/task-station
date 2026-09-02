@@ -561,12 +561,26 @@ def mark_superseded(entries, index1, by_index1, flag="--supersedes"):
         return False, "%s %d — a decision cannot supersede itself" % (flag, i)
     rich = as_rich(entries[i - 1])
     rich["superseded_by"] = int(by_index1)
-    rich.pop("pinned", None)                 # a superseded decision loses its pin
+    _drop_pin(rich)                 # a superseded decision loses its pin
     entries[i - 1] = compact(rich)
     return True, None
 
 
-def mark_split(entries, index1, into_index1s, flag="--split"):
+PINNED_BEFORE = "pinned_before"   # the pin a replacement verb took away, kept so it comes back
+
+
+def _drop_pin(rich):
+    """Take the pin off a decision a replacement verb is retiring — REMEMBERING that it
+    had one. A replaced decision must not hold a guaranteed digest slot, but discarding
+    the fact outright made `restore` a LIAR: it advertises itself as the one inverse of
+    all three verbs, and it brought the text back UNPINNED, so an author who undid a
+    heal silently lost a spine entry and had to notice by hand. Nothing else in this
+    module throws information away; this no longer does either."""
+    if rich.pop("pinned", None):
+        rich[PINNED_BEFORE] = True
+
+
+def mark_split(entries, index1, into_index1s, flag="--split", carried=None):
     """Mark decision `index1` as SPLIT INTO the decisions `into_index1s`.
 
     The split verb exists because supersession is too blunt for a COMPOUND decision:
@@ -578,8 +592,26 @@ def mark_split(entries, index1, into_index1s, flag="--split"):
 
     NON-DESTRUCTIVE: the original keeps its full text and stays in `history`, marked
     `SPLIT into decisions …` so the trail names exactly what it became. Reversible via
-    `restore`. The pin is cleared — the parts carry the load now, and a decision that
-    no longer renders must not hold a guaranteed digest slot."""
+    `restore`.
+
+    THE METADATA MOVES WITH THE CONTENT — it used to EVAPORATE. This docstring always
+    said "the parts carry the load now", but nothing ever handed them the load: the pin
+    was popped off the original and given to nobody, and `kind`/`subject` were never
+    copied at all (the auto path appends parts as bare text). A pinned ruling split at
+    an unattended turn boundary therefore left the spine silently, which is the failure
+    that motivated this — it happened to a reading key for a pinned decision and nobody
+    was watching. So:
+
+      * `kind` and `subject` COPY TO EVERY PART, because every part is the same class of
+        record and is about the same thing. An explicit declaration already on a part is
+        never overwritten — the author outranks the inheritance.
+      * `pinned` MOVES TO THE FIRST PART, and only the first. Pinning all N would
+        multiply the spine, which is the cost a pin is supposed to be rationed against;
+        dropping it silently is what broke. The first part is the head of the original
+        ruling, so it is the one a reader needs to reach.
+
+    `carried`, when a dict is passed, is filled with what moved so the caller can SAY so
+    rather than moving metadata behind the reader's back."""
     i, err = _check_index(entries, index1, flag)
     if err:
         return False, err
@@ -590,9 +622,27 @@ def mark_split(entries, index1, into_index1s, flag="--split"):
     if err:
         return False, err
     rich = as_rich(entries[i - 1])
+    was_pinned = bool(rich.get("pinned"))
+    inherit_kind = rich.get(KIND_FIELD)
+    inherit_subject = rich.get(SUBJECT_FIELD)
+    moved = {"pin_to": None, "kind_to": [], "subject_to": []}
+    for pos, n in enumerate(parts):
+        part = as_rich(entries[n - 1])
+        if inherit_kind and not part.get(KIND_FIELD):
+            part[KIND_FIELD] = inherit_kind
+            moved["kind_to"].append(n)
+        if inherit_subject and not part.get(SUBJECT_FIELD):
+            part[SUBJECT_FIELD] = inherit_subject
+            moved["subject_to"].append(n)
+        if was_pinned and pos == 0:
+            part["pinned"] = True
+            moved["pin_to"] = n
+        entries[n - 1] = compact(part)
     rich["split_into"] = parts
-    rich.pop("pinned", None)
+    _drop_pin(rich)
     entries[i - 1] = compact(rich)
+    if carried is not None:
+        carried.update(moved)
     return True, None
 
 
@@ -619,7 +669,7 @@ def mark_merged(entries, index1, into_index1, flag="--merge"):
         return False, err
     rich = as_rich(entries[i - 1])
     rich["merged_into"] = into[0]
-    rich.pop("pinned", None)
+    _drop_pin(rich)
     entries[i - 1] = compact(rich)
     return True, None
 
@@ -642,6 +692,12 @@ def restore(entries, index1, flag="--restore-decision"):
     rich = as_rich(entries[i - 1])
     for key, _kind, _many in _REPLACEMENTS:
         rich.pop(key, None)
+    # THE PIN COMES BACK TOO, or this is not an inverse. `restore` clearing only the
+    # replacement mark left the caller holding an unpinned copy of what had been a
+    # pinned ruling, with nothing saying so — the undo reported success and quietly
+    # returned less than it took. `_drop_pin` recorded the pin; this is where it lands.
+    if rich.pop(PINNED_BEFORE, None):
+        rich["pinned"] = True
     # The cross-task mark is a replacement like any other, so the ONE inverse clears it
     # too. The `supersedes_across` back-pointer on the OTHER task's refuting entry is NOT
     # reachable from here — `restore` takes one log — so the caller that undoes a
@@ -675,7 +731,14 @@ def set_pin(entries, index1, pinned, flag=None):
     if pinned:
         rich["pinned"] = True
     else:
+        # A DELIBERATE UNPIN IS NOT A RETIREMENT, so it leaves no `pinned_before` crumb.
+        # `_drop_pin` remembers the pin so `restore` can hand it back after a REPLACEMENT
+        # verb took it; here the author is saying the decision should not be pinned, and
+        # there is nothing to restore. Remembering anyway would also keep the entry a
+        # dict forever, when an unpinned decision with no other flags must recompact to
+        # a plain string — the legacy shape the whole store is still readable as.
         rich.pop("pinned", None)
+        rich.pop(PINNED_BEFORE, None)
     entries[i - 1] = compact(rich)
     return True, None
 
@@ -1228,7 +1291,7 @@ def mark_superseded_across(entries, index1, ref, flag="--supersedes"):
                        % (flag, i))
     rich = as_rich(entries[i - 1])
     rich[SUPERSEDED_ACROSS] = clean
-    rich.pop("pinned", None)                 # a refuted decision loses its pin
+    _drop_pin(rich)                 # a refuted decision loses its pin
     entries[i - 1] = compact(rich)
     return True, None
 
