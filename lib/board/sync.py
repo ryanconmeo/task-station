@@ -1008,11 +1008,17 @@ def init_root(root, kind=KIND_BACKUP):
     if not os.path.exists(readme):
         _atomic_write(readme, SHARE_README if actual == KIND_SHARE else README)
     created_repo = False
-    if not os.path.isdir(os.path.join(root, ".git")) and _git_available():
+    # NEVER NEST A REPO. An exchange placed inside an existing repo (a brain repo's
+    # `tasks/` tree, decision 444:187) is already versioned by that repo and already
+    # has its remote. `git init` there would create an embedded repo the outer one
+    # cannot even stage — `git add -A` fails outright with "does not have a commit
+    # checked out" — so the knowledge plane's own commits break. Checked via
+    # is_git_repo, which asks git rather than looking for a .git directory.
+    if not is_git_repo(root) and _git_available():
         created_repo = _git(root, "init", "-q").ok
     return {"root": root, "kind": actual, "requested_kind": kind,
             "partition": own_partition_dir(root),
-            "git": os.path.isdir(os.path.join(root, ".git")),
+            "git": is_git_repo(root),
             "created_repo": created_repo}
 
 
@@ -1043,7 +1049,15 @@ def _git(root, *args, **kw):
 
 
 def is_git_repo(root):
-    return os.path.isdir(os.path.join(root, ".git"))
+    """Is `root` INSIDE a git repo — not "is it a repo ROOT", which is a different
+    question and the one this used to answer. `isdir(root/.git)` is False for every
+    SUBTREE of a repo, so an exchange living at `<brain repo>/tasks` read as "no repo,
+    no remote" and silently never synced. Worse, `init_root` then ran `git init` there
+    and NESTED a repo, after which the outer repo could not commit at all. Ask git,
+    which walks up; every other call here already goes through `git -C root`."""
+    if not os.path.isdir(root):
+        return False
+    return _git(root, "rev-parse", "--git-dir").ok
 
 
 def has_remote(root):
@@ -1535,8 +1549,12 @@ def _finish(root, rep, dry_run):
         except Exception:
             pass
     if rep["git"]["repo"] and not dry_run:
-        _git(root, "add", "-A")
-        st = _git(root, "status", "--porcelain")
+        # SCOPED TO THE EXCHANGE, NOT THE REPO. From a subdirectory, a bare
+        # `add -A` stages the WHOLE repository (git >= 2.0), so an exchange inside a
+        # brain repo would sweep the human's unstaged notes into a sync commit and
+        # push them. The `-- .` pathspec confines staging to the exchange subtree.
+        _git(root, "add", "-A", "--", ".")
+        st = _git(root, "status", "--porcelain", "--", ".")
         if st.ok and st.out.strip():
             c = _git(root, "commit", "-q", "-m",
                      "%s: %s %s" % (rep.get("kind") or KIND_BACKUP,
