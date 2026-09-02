@@ -656,7 +656,9 @@ def orchestrator_refusal(task, tasks, verb="delegate run"):
     every = list(tasks or [])
     by_id = {t.get("id"): t for t in every}
     kids = children(task, every)
-    report = scan(kids, by_id.get)
+    # Deep rule here too: this refusal RECOMMENDS the ready children to run instead, and
+    # on the leaf rule it would recommend a parent whose own children are still unbuilt.
+    report = scan(kids, by_id.get, is_settled=settled_fn(every))
     ref = task.get("seq") or (task.get("id") or "")[:8]
     lines = ["%s refused: task #%s is flagged orchestrator-only." % (verb, ref),
              "An orchestrator plans and grades; the work belongs to a child task, which "

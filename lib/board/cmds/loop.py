@@ -55,12 +55,24 @@ def _live_seqs():
     hiccup must degrade the scan to "nothing reported running", never break it, because
     a planner that refuses to answer is worse than one that answers without this column.
     """
+    seqs = _live_seqs_or_none()
+    return set() if seqs is None else seqs
+
+
+def _live_seqs_or_none():
+    """The same derivation, but `None` when liveness CANNOT BE DETERMINED — which is a
+    different fact from "nothing is running" and the two must not share a value.
+
+    Fail-open is right for the scan's display column and WRONG for the concurrency cap:
+    an empty set tells the budget that no children are live, so a sessions-dir hiccup
+    silently raises the cap to unlimited and the loop spawns into a machine it cannot
+    see. The display keeps degrading gracefully; the budget refuses instead."""
     try:
         import live_sessions
         return {r.get("task_seq") for r in live_sessions.running()
                 if r.get("task_seq") is not None}
     except Exception:
-        return set()
+        return None
 
 
 def _loop_target(a, flag):
@@ -312,8 +324,13 @@ def cmd_exit_tick(a):
     two: an unmet condition was refuted, an unrun one was not."""
     task, err = _loop_target(a, "exit-tick")
     if err:
+        # NOT ZERO. This function's own docstring says "Not proven met must never exit 0,
+        # because the exit code is what lets this gate a release step" — and a task that
+        # could not even be RESOLVED has proven nothing at all. Exiting 0 here made an
+        # unresolvable --task indistinguishable from every condition passing, which is
+        # the failure direction a release gate must never have.
         print(err)
-        return
+        sys.exit(2)
     only = getattr(a, "step", None)
     was_satisfied = _exits.satisfied(task)
     ref = task.get("seq") or task["id"][:8]
@@ -528,7 +545,7 @@ def cmd_scan(a):
     nodes, parent, depths = _scan_population(a)
     if nodes is None:
         print(parent)      # the resolution error line
-        return
+        sys.exit(2)        # a population that could not be resolved is not "nothing to do"
     ran = bool(getattr(a, "run", False))
     if ran:
         # ONE slot for the whole sweep, not one per node: a sweep is a build. Locking
@@ -826,7 +843,21 @@ def cmd_invoke(a):
     # a window opened, so a refusal leaves nothing behind that looks invoked. Exit 3
     # rather than 2, deliberately: 2 means "you asked wrong" and asking again will not
     # help, 3 means the budget is full and this is worth retrying when a child finishes.
-    budget = _loop.children_budget(orch, all_tasks(), _live_seqs())
+    # LIVENESS THAT COULD NOT BE READ IS NOT "NOTHING IS RUNNING". `_live_seqs()` fails
+    # open to an empty set, which is right for the scan's display column and catastrophic
+    # here: it tells the budget no children are live, so a sessions-dir hiccup silently
+    # lifts the cap and this spawns into a machine it cannot see. Refuse instead, with the
+    # same retryable exit 3 the full-budget path uses — the condition is transient.
+    live = _live_seqs_or_none()
+    if live is None and not getattr(a, "force", False):
+        print("invoke: cannot determine which child sessions are RUNNING, so the "
+              "children cap cannot be enforced.\n"
+              "Refusing rather than spawning blind — an unreadable sessions directory "
+              "looks identical to an idle machine, and guessing wrong launches over the "
+              "cap.\n"
+              "Retry in a moment, or pass --force to launch anyway and have that recorded.")
+        sys.exit(3)
+    budget = _loop.children_budget(orch, all_tasks(), live or set())
     if budget["over"]:
         lines = ["invoke: #%s already has %d child session(s) RUNNING (%s) and "
                  "loop_children_max is %d."
@@ -1387,6 +1418,7 @@ def cmd_turn(a):
         tree = [(t, d) for t, d in tree if d <= int(cap)]
     children = [t for t, _d in tree]
     p = _turn.plan(task, children, live=_live_seqs(),
+                   is_settled=_loop.settled_fn(every),
                    resolve={t.get("id"): t for t in every}.get,
                    ask=getattr(a, "ask", None))
     # The stale-install probe is a MACHINE fact, so it is read here rather than in the
