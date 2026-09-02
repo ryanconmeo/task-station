@@ -966,7 +966,7 @@ def _grade_command(child):
 
 
 def plan(orch, children, live=(), resolve=None, cap=None, retry_max=None, worked=None,
-         ask=None, threshold=None):
+         ask=None, threshold=None, is_settled=None):
     """ONE TURN, as an ordered agenda. Runs the scan itself; writes nothing.
 
     THE ORDER OF THE AGENDA IS LOAD-BEARING. What came back is gated FIRST, because
@@ -988,7 +988,16 @@ def plan(orch, children, live=(), resolve=None, cap=None, retry_max=None, worked
         by_id = {t.get("id"): t for t in population}
         resolve = by_id.get
     live = set(live or ())
-    report = _loop.scan(children, resolve, live=live)
+    # THE SAME SETTLEDNESS RULE `scan` USES, and it must be passed in rather than
+    # defaulted. Omitting it fell back to the LEAF rule while `cmds/loop.py`'s `scan`
+    # passed the DEEP one, so the two surfaces disagreed about the same record: a
+    # finished nested tree read COMPLETE from `scan` and BLOCKED from `turn`, and the
+    # agenda came back empty. The caller owns the whole store and can build the rule
+    # over ALL of it; falling back to the scanned population here is still deep, just
+    # narrower, and is strictly better than the leaf default that caused the split.
+    if is_settled is None:
+        is_settled = _loop.settled_fn(population)
+    report = _loop.scan(children, resolve, live=live, is_settled=is_settled)
     rows = {r["seq"]: r for r in report["rows"]}
     retry_max = _config.loop_retry_max() if retry_max is None else int(retry_max)
     threshold = threshold or _config.loop_accept_threshold()
