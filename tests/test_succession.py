@@ -270,6 +270,29 @@ class _SuccessionTest(unittest.TestCase):
 
     # -- drivers -----------------------------------------------------------------
 
+    def _launched(self):
+        """The command the successor's window was actually opened with."""
+        self.assertEqual(len(self.opened), 1, self.opened)
+        return self.opened[0]
+
+    def _pointed_at(self):
+        """The handoff path the launch argument names, PARSED BACK OUT of that command.
+
+        Every assertion about the file goes through here rather than rebuilding the path,
+        so what is read is the file the successor was actually sent to. A relay that
+        wrote a good handoff and pointed somewhere else would pass a test that looked in
+        the expected place and fail this one."""
+        m = re.search(r"\S+-CONTINUATION\.md", self._launched())
+        self.assertIsNotNone(m, self._launched())
+        path = m.group(0)
+        self.assertTrue(os.path.isfile(path), path)
+        return path
+
+    def _handoff_text(self):
+        """The handoff the successor will read, off disk."""
+        with open(self._pointed_at(), encoding="utf-8") as fh:
+            return fh.read()
+
     def _relay(self, **kw):
         """Run `relay` and return `(stdout, exit_code)`. `SystemExit` is caught so a
         refusal is an assertion about a code, not an aborted test."""
@@ -537,14 +560,18 @@ class ContinuationPrompt(_SuccessionTest):
                       "sessionstart injects", "is already"):
             self.assertNotIn(claim, low)
 
-    def test_the_caps_are_not_the_fix_and_stay_where_they_are(self):
-        """Pinned because the obvious wrong repair for both #583 and #585 is to widen
-        the clip so "more context" travels. The clip was never the defect: the false
-        premise was, and #585's was an unattributed one. Raising either number makes a
-        relay prompt into the context dump this module exists to avoid."""
-        self.assertEqual(_succ.NEXT_CHARS, 320)
-        self.assertEqual(_succ.PROMPT_BUDGET, 1600)
-        self.assertEqual((_succ.STEP_CAP, _succ.STEP_CHARS), (5, 60))
+    def test_the_caps_do_not_exist_and_so_cannot_be_tuned_again(self):
+        """THE CAPS WERE NEVER THE FIX, and the version of that guard which pinned their
+        VALUES was still a guard on the wrong thing — it protected 320 and 1600 from
+        being widened while the premise underneath them went unexamined for four
+        releases. The premise was that the handoff travels in an argv string. It travels
+        in a FILE, so a cap has nothing to protect, and a number that does not exist is
+        the only one nobody can tune. This fails the moment one comes back."""
+        for gone in ("PROMPT_BUDGET", "NEXT_CHARS", "STEP_CHARS", "STEP_CAP",
+                     "BLOCKER_CHARS", "BLOCKER_CAP", "_clip"):
+            self.assertFalse(hasattr(_succ, gone),
+                             "%s is back — the handoff is a file and has no budget "
+                             "to bound" % gone)
 
     def test_it_carries_the_next_move(self):
         """The one thing the digest cannot supply as an instruction: the concrete first
@@ -573,18 +600,24 @@ class ContinuationPrompt(_SuccessionTest):
         task, _sid = self._task()
         self.assertEqual(self._prompt(task), self._prompt(task))
 
-    def test_it_stays_within_budget_however_big_the_record(self):
-        """Twenty open steps and a runaway state line still produce a bounded prompt:
-        the step list is capped and says how many it dropped, and the NEXT line is
-        previewed with a pointer to the digest that holds all of it. An unbounded
-        generator would reintroduce the context dump this design exists to remove."""
+    def test_it_travels_whole_however_big_the_record(self):
+        """THE INVERSE OF THE GUARD THIS REPLACES, and deliberately so. The old version
+        asserted that twenty open steps and a 5,000-character state came out BOUNDED —
+        correct while the prompt was an argv string, and the reason four defect reports
+        said the handoff arrived cut. There is no argv to fit now, so the same record
+        comes out complete: every step named, the state entire, and nothing anywhere
+        that says something was dropped."""
         task, _sid = self._task()
         task["steps"] = [{"text": "step number %d with a long descriptive title" % i,
                           "done": False} for i in range(20)]
         task["state"] = "NEXT: " + ("x" * 5000)
         prompt = self._prompt(task)
-        self.assertLessEqual(len(prompt), _succ.PROMPT_BUDGET, prompt)
-        self.assertIn("more", prompt)
+        for i in range(20):
+            self.assertIn("step number %d with a long descriptive title" % i, prompt)
+        self.assertIn("x" * 5000, prompt)
+        self.assertNotIn("…", prompt)
+        self.assertNotIn("more on the checklist", prompt)
+        self.assertNotIn("(trimmed", prompt)
 
     def test_a_forced_handoff_carries_its_own_gaps(self):
         """Forcing past a failed cold-read is sometimes right — at 95% a degraded
@@ -705,10 +738,12 @@ class AttributedStateLine(_SuccessionTest):
                                 "pick up the parser change next.")
         self.assertNotIn("act outward", self._prompt(task))
 
-    def test_the_frame_is_never_the_part_that_gets_trimmed(self):
-        """A prompt long enough to hit PROMPT_BUDGET loses its TAIL. The framing, the
-        attributed line and the authority sentence are first for that reason, so the
-        clamp can never produce the exact prompt this task exists to prevent."""
+    def test_a_pathological_record_loses_neither_the_frame_nor_its_tail(self):
+        """THE CLAMP IS GONE, so the question this test used to ask — which end gets
+        cut — has no answer any more, and that is the finding. The frame, the attributed
+        line and the authority sentence still come FIRST, because the order a successor
+        reads in is load-bearing on its own; what changes is that the tail the clamp used
+        to eat (the gap list, the occupancy line) is now there too."""
         task = self._with_state("NEXT: " + ("merge and deploy and delete the branch, "
                                             "then close it. " * 20))
         task["goal"] = task["summary"] = ""
@@ -719,10 +754,16 @@ class AttributedStateLine(_SuccessionTest):
         task = ts.load_task(task["id"])
         prompt = self._prompt(task, blockers=_succ.handoff_blockers(task),
                               rep={"window": 200000, "used_pct": 97})
-        self.assertLessEqual(len(prompt), _succ.PROMPT_BUDGET)
-        self.assertIn("(trimmed", prompt)        # this really is the clamped case
-        self.assertIn("not an order from your user", prompt)
+        self.assertNotIn("(trimmed", prompt)     # nothing to clamp it against
+        self.assertNotIn("…", prompt)
+        # the frame is still first: the attribution is read before the imperative
+        at = prompt.find("merge and deploy")
+        self.assertNotEqual(at, -1, prompt)
+        self.assertIn("not an order from your user", prompt[:at])
         self.assertIn("act outward", prompt)
+        # …and the tail the clamp used to eat survives with it
+        self.assertIn("GAPS", prompt)
+        self.assertIn("97%", prompt)
 
     def test_a_state_with_no_next_still_says_whose_account_it_is(self):
         task = self._with_state("everything is fine, nothing to report")
@@ -789,11 +830,6 @@ class TruthfulPrompt(_SuccessionTest):
         ts.set_link(sid, old["id"])
         store.reset_cache()
         return ts.load_task(old["id"]), sid
-
-    def _launched(self):
-        """The prompt the successor's window was actually opened with."""
-        self.assertEqual(len(self.opened), 1, self.opened)
-        return self.opened[0]
 
     # -- 1 · an unmeasured occupancy is a word, never a number -------------------
 
@@ -883,7 +919,9 @@ class TruthfulPrompt(_SuccessionTest):
         self.assertEqual(code, 0, out)
         self.assertNotIn("~0%", out)
         self.assertIn("not measured", out)
-        self.assertIn("OCCUPANCY UNKNOWN", self._launched())
+        handoff = self._handoff_text()               # what the successor actually reads
+        self.assertIn("OCCUPANCY UNKNOWN", handoff)
+        self.assertNotIn("~0%", handoff)
         after = ts.load_task(task["id"])
         entry = _succ.handoffs(after)[-1]
         self.assertIsNone(entry["used_pct"])
@@ -904,9 +942,9 @@ class TruthfulPrompt(_SuccessionTest):
         out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True,
                                 force=True)
         self.assertEqual(code, 0, out)
-        cmd = self._launched()
-        self.assertIn("succeeding %s-32" % old["seq"], cmd)
-        self.assertNotIn("succeeding %s" % sid[:8], cmd)
+        handoff = self._handoff_text()
+        self.assertIn("succeeding %s-32" % old["seq"], handoff)
+        self.assertNotIn("succeeding %s" % sid[:8], handoff)
 
     def test_a_same_task_relay_still_names_both_ordinals(self):
         """The ordinary case, unchanged: the lookup on the handing-off task is asked
@@ -915,7 +953,11 @@ class TruthfulPrompt(_SuccessionTest):
         self._transcript(sid, 130000)
         out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
         self.assertEqual(code, 0, out)
-        self.assertIn("succeeding %s-0" % task["seq"], self._launched())
+        # BOTH ORDINALS, in the artefact that carries the sentence. The argv names the
+        # successor because it is addressing it; the predecessor is the handoff's own
+        # first line.
+        self.assertIn("succeeding %s-0" % task["seq"], self._handoff_text())
+        self.assertIn("you are session %s-1" % task["seq"], self._launched())
 
     def test_an_unrostered_session_falls_back_to_its_id(self):
         """THE FALLBACK STAYS, AND STAYS LAST. A session no roster can name — no link,
@@ -927,7 +969,32 @@ class TruthfulPrompt(_SuccessionTest):
         out, code = self._relay(task=str(task["seq"]), session=stray, spawn=True,
                                 force=True)
         self.assertEqual(code, 0, out)
-        self.assertIn("succeeding %s" % stray[:8], self._launched())
+        self.assertIn("succeeding %s" % stray[:8], self._handoff_text())
+
+    def test_a_relay_with_no_session_names_no_predecessor_rather_than_a_question_mark(self):
+        """LIVE EVIDENCE, 2026-09-03. `relay` runs without `--session` whenever the
+        caller has no session id to hand it, and `_predecessor_label` answered `"?"`.
+        Session 444-34's own launch prompt therefore opened `you are session 444-34,
+        succeeding ?` — which reads as a broken interpolation, and is worse than silence:
+        a name a successor cannot resolve invites it to go looking for one. The clause is
+        dropped instead.
+
+        THE TRAIL STILL NAMES BOTH SIDES. The prompt can omit a predecessor it cannot
+        name; the durable event cannot, because a history line with one side missing is
+        unreadable later — so it says in words that there was nobody to name."""
+        task, _sid = self._task()
+        out, code = self._relay(task=str(task["seq"]), spawn=True, force=True)
+        self.assertEqual(code, 0, out)
+        handoff = self._handoff_text()
+        first = handoff.splitlines()[0]
+        self.assertEqual("RELAY on task #%s — you are session %s-1."
+                         % (task["seq"], task["seq"]), first)
+        self.assertNotIn("succeeding", handoff)
+        self.assertNotIn("?", handoff)
+        trail = " ".join(e.get("text", "")
+                         for e in (ts.load_task(task["id"]).get("events") or []))
+        self.assertIn("an unidentified session", trail)
+        self.assertNotIn("relay ? →", trail)
 
     # -- 3 · the step list says what it is --------------------------------------
 
@@ -944,13 +1011,11 @@ class TruthfulPrompt(_SuccessionTest):
             self.assertFalse(line.startswith("OPEN:"), line)
 
     def test_the_label_costs_nothing_the_steps_needed(self):
-        """The relabel must not push the step list out of the prompt, and must not push
-        the prompt out of its budget."""
+        """The relabel must not push the step list out of the prompt."""
         task, _sid = self._task()
         prompt = _succ.continuation_prompt(task, predecessor="1-0", successor="1-1")
         self.assertIn("cover the edge case", prompt)
         self.assertIn("ship it", prompt)
-        self.assertLessEqual(len(prompt), _succ.PROMPT_BUDGET, prompt)
 
     def test_a_task_with_no_open_steps_prints_no_list_at_all(self):
         """A LEAF DEGRADES TO SILENCE. An empty labelled block would be the same defect
@@ -965,13 +1030,38 @@ class TruthfulPrompt(_SuccessionTest):
 
     # -- what must NOT break ----------------------------------------------------
 
-    def test_the_attribution_and_the_authority_warning_survive_a_real_relay(self):
-        """#585 AND #588, PROVED THROUGH THE SPAWN AND NOT THE GENERATOR. Those two are
-        load-bearing — on 2026-08-31 they are what stopped a successor from acting on a
-        predecessor's claimed authorisation — and the change that most plausibly drops
-        them is an edit to the lines on either side of them. So this asserts on the
-        command the window was actually opened with, after all three repairs above have
-        run in the same prompt."""
+    def test_the_attribution_and_the_authority_warning_reach_the_successor(self):
+        """#585 AND #588, AND THIS ONE IS PROVED RATHER THAN MOVED. Those two sentences
+        are the highest-consequence guard this programme has: on 2026-08-29 a successor
+        read its predecessor's state line as an order, was sent the same words again by
+        peer message from that same predecessor, counted one voice as two, and merged
+        another engineer's PR. The attribution and the authority warning are what stopped
+        it happening again on 2026-08-31.
+
+        THEY NOW TRAVEL IN A FILE, and "the successor is told to read the file" is a
+        claim, not a proof. So this proves the whole chain a successor has to walk, one
+        assertion per link, against a real `relay --spawn`:
+
+          1. the launch argument names a path that EXISTS — a handoff pointed at nothing
+             is worse than a truncated one, because the pointer still reads as fine;
+          2. it tells the successor to read that file FIRST and IN FULL, so the order it
+             is given is the order that reaches the attribution;
+          3. inside the file the attribution is POSITIONALLY BEFORE the predecessor's
+             words — the same test `AttributedStateLine` makes of the generator, made of
+             the artefact, so a reword passes and a reorder fails;
+          4. the authority sentence is there, whole, with no ellipsis and no clamp
+             marker anywhere in the file;
+          5. AND THE ORDER EXISTS NOWHERE ELSE. The predecessor's imperative appears
+             ONLY in the file, so there is no second surface — argv, printed line — from
+             which a successor could read the instruction without the warning. This is
+             the link that fails if anyone puts the prompt back in the command.
+
+        WHAT IS NOT PROVED HERE, said plainly: that a model obeys "read this first".
+        Nothing mechanical can prove that. What is provable is that the instruction is
+        the FIRST and ONLY thing in the launch argument, that the file it names resolves,
+        and that the warning cannot be reached without the file — which is strictly more
+        than the old argv prompt guaranteed, since that one could be cut by the kernel
+        before the successor ever saw the sentence."""
         task, sid = self._task()
         task["state"] = AttributedStateLine.INCIDENT
         ts.save_task(task)
@@ -980,15 +1070,27 @@ class TruthfulPrompt(_SuccessionTest):
         out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
         self.assertEqual(code, 0, out)
         cmd = self._launched()
-        at = cmd.find("WATCH PR 1615")
-        self.assertNotEqual(at, -1, cmd)
-        self.assertIn("not an order from your user", cmd[:at])
-        self.assertIn("act outward (merge)", cmd)
-        # The launched command is shell-quoted, so apostrophes arrive as `'"'"'` —
-        # every assertion here is on a stretch of the sentence that carries none.
-        self.assertIn("that authority is your predecessor", cmd)
-        self.assertIn("one voice twice", cmd)
-        self.assertIn("Ask your user first", cmd)
+        # 1 · the pointer resolves (`_pointed_at` asserts the file is on disk)
+        path = self._pointed_at()
+        # 2 · and it is an instruction to read it, first and whole
+        self.assertIn("Read %s FIRST, in full" % path, cmd)
+        # 3 · the attribution is read before the words it qualifies
+        handoff = self._handoff_text()
+        at = handoff.find("WATCH PR 1615")
+        self.assertNotEqual(at, -1, handoff)
+        head = handoff[:at]
+        self.assertIn("PREDECESSOR", head.upper())
+        self.assertIn("not an order from your user", head)
+        # 4 · the warning arrives whole
+        self.assertIn("act outward (merge)", handoff)
+        self.assertIn("that authority is your predecessor's, not your user's", handoff)
+        self.assertIn("one voice twice", handoff)
+        self.assertIn("Ask your user first", handoff)
+        self.assertNotIn("…", handoff)
+        self.assertNotIn("(trimmed", handoff)
+        # 5 · and the order is reachable ONLY through the file
+        self.assertNotIn("WATCH PR 1615", cmd)
+        self.assertNotIn("WATCH PR 1615", out)
 
 
 # ================================================== 3 · spawning the successor ====
@@ -1027,15 +1129,23 @@ class SuccessorSpawn(_SuccessionTest):
         self.assertEqual(len(ts.all_tasks()), n_before)
         self.assertEqual(ts.load_task(task["id"]).get("related") or [], [])
 
-    def test_the_window_carries_the_continuation_prompt(self):
+    def test_the_window_carries_a_pointer_and_the_file_carries_the_handoff(self):
+        """THE SAME GUARANTEE, MOVED TO THE ARTEFACT THAT NOW HOLDS IT. The successor
+        used to be launched with the handoff itself in its argv, which is where a length
+        limit bites — reported cut mid-sentence four times. So the argv NAMES the file
+        and the FILE carries the next move, and both halves are checked here because
+        either one alone is a successor that gets nothing."""
         task, sid = self._task()
         self._transcript(sid, 130000)
         out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
         self.assertEqual(code, 0, out)
-        self.assertEqual(len(self.opened), 1, self.opened)
-        cmd = self.opened[0]
-        self.assertIn("land the parser change in lib/x.py", cmd)
+        cmd = self._launched()
         self.assertIn("--session-id", cmd)
+        self.assertIn(self._pointed_at(), cmd)          # the path, and it resolves
+        self.assertIn("land the parser change in lib/x.py", self._handoff_text())
+        # THE POINTER IS NOT A SECOND COPY. The move lives in the file and nowhere else,
+        # so there is no argv string that can drift from it or be cut short of it.
+        self.assertNotIn("land the parser change in lib/x.py", cmd)
 
     def test_the_successor_inherits_the_1m_window(self):
         """A bare alias is a 200k window. A relay that dropped `[1m]` would hand the
@@ -1080,17 +1190,21 @@ class SuccessorSpawn(_SuccessionTest):
                       "already has the context"):
             self.assertNotIn(claim, low)
 
-    def test_the_spawn_line_names_the_read_the_prompt_names(self):
-        """The report and the prompt must say the same thing. They disagreed for
-        longer than they agreed, and the reader believes whichever one they read
-        first."""
+    def test_the_spawn_line_names_the_file_and_the_file_names_the_read(self):
+        """THE CHAIN IS PRINTED, NOT DESCRIBED. The operator's line and the successor's
+        prompt must say the same thing — they disagreed for longer than they agreed, and
+        the reader believes whichever they read first (#583). The chain is one hop longer
+        now: the argv names the FILE, the file names the READ. So the printed line names
+        the same path it handed the successor, and the read command is in the file."""
         task, sid = self._task()
         self._transcript(sid, 130000)
         out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
         self.assertEqual(code, 0, out)
         read = "task-station search --detail %s" % task["seq"]
-        self.assertIn(read, out)
-        self.assertIn(read, self.opened[0])
+        path = self._pointed_at()
+        self.assertIn(path, out)                # the operator is told where it went
+        self.assertIn(read, out)                # …and what the successor is sent to read
+        self.assertIn(read, self._handoff_text())
 
     def test_the_hub_ordinal_advances(self):
         task, sid = self._task()
@@ -1130,6 +1244,35 @@ class SuccessorSpawn(_SuccessionTest):
         self.assertEqual(code, 3)
         self.assertIn(_succ.UNKNOWN, out)
         self.assertEqual(self.opened, [])
+
+    def test_a_handoff_that_cannot_be_written_refuses_and_spawns_nothing(self):
+        """THE THIRD REFUSAL, and the reason it is a refusal rather than a fallback.
+        Until 3.61.0 an unwritable handoff fell back to putting the prompt in the launch
+        argument. That was merely worse while the prompt was capped at 1,600 characters;
+        with the caps gone it would push a whole handoff — 27,891 characters, measured on
+        #444 — through argv and let the kernel decide where it ends, which is the exact
+        failure the file exists to prevent AND is invisible afterwards. Refusing costs
+        one command; a successor spawned on a truncated prompt looks like it worked.
+
+        THE FAILURE IS REAL, not stubbed: a plain FILE sits where the handoff directory
+        has to be, so the shipped `os.makedirs` raises the way it would on a read-only
+        volume or a permissions change."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        with open(os.path.join(self.tmp, "handoff"), "w") as fh:
+            fh.write("something else is already here\n")
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 3, out)
+        self.assertIn("REFUSED", out)
+        self.assertIn("handoff could not be written", out)
+        # NOTHING SPAWNED, and nothing recorded — the two things a degrading fallback
+        # would have done anyway.
+        self.assertEqual(self.opened, [])
+        after = ts.load_task(task["id"])
+        self.assertEqual(_succ.handoffs(after), [])
+        # AND THE HANDOFF DID NOT LEAK INTO A COMMAND on the way out, which is the whole
+        # point: no printed line carries the content the file was going to hold.
+        self.assertNotIn("land the parser change in lib/x.py", out)
 
     def test_force_overrides_both_refusals(self):
         task, sid = self._task(ready=False)
