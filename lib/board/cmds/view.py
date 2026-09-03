@@ -1043,8 +1043,10 @@ def cmd_render(a):
     if toks and toks[0].lower() in g("_TODO_SUBCMDS"):
         kw = toks[0].lower()
         rest = raw[len(toks[0]):].strip()   # everything after the leading keyword
-        g("_TODO_SUBCMDS")[kw](a, rest)
-        return
+        # RETURNED, so a subcommand that reports a status can. Only `/todo heal` does
+        # today (a refusing writing verb leaves non-zero, 3.60.0); every other handler
+        # returns None, which `sys.exit(None)` reports as 0.
+        return g("_TODO_SUBCMDS")[kw](a, rest)
     # /todo <n> history (also `history <n>`) — the on-demand FULL trace: the
     # complete decisions log + the dated milestone log + the full activity log.
     # READ-ONLY: unlike `/todo <n>`, it does NOT attach, reopen, or mutate the
