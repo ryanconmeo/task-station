@@ -501,6 +501,21 @@ class TheStatusReachesTheProcess(unittest.TestCase):
         self.assertEqual(0, rc, out)
         self.assertIn("merged 2, 3 into 4", out)
 
+    def test_the_todo_surface_carries_the_same_status(self):
+        """`/todo heal --merge 2,foo --into 5` runs the SAME verb through a different
+        door. A fix that held only on the top-level subcommand would not fix anything —
+        the false green would just move to the surface a session actually types."""
+        rc, out = self._run(["render", "--session", "s606", "--arg",
+                             "heal --task 1 --merge 2,foo --into 4"])
+        self.assertEqual(REFUSED, rc, out)
+        self.assertIn("not a decision number", out)
+
+    def test_the_todo_surface_still_exits_zero_when_the_verb_performs(self):
+        rc, out = self._run(["render", "--session", "s606", "--arg",
+                             "heal --task 1 --scan"])
+        self.assertEqual(0, rc, out)
+        self.assertIn("[HEAL-SCAN]", out)
+
     def test_every_other_subcommand_still_exits_zero(self):
         """`cli.main` now returns the handler's value, and every handler but `heal`
         returns None. `sys.exit(None)` is 0 — asserted rather than assumed, because a

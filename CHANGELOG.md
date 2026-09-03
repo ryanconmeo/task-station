@@ -64,6 +64,9 @@ status more would turn every pre-merge red green.
   Every handler but `heal` still returns None, and `sys.exit(None)` is 0. Returned rather
   than `sys.exit`ed inside the handler because `cmd_*` functions are called in process —
   by the whole of `tests/test_heal.py` and by `lib/stop_steps.py`.
+- `/todo heal` carries the same status. It runs the same verbs through a different door,
+  so a fix that held only on the top-level subcommand would move the false green rather
+  than close it — `cmd_render`'s keyword dispatch returns its subcommand's value now.
 
 ## [3.59.0] — 2026-09-03
 

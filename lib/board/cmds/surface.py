@@ -670,7 +670,13 @@ def _todo_heal(a, rest):
     # place deciding what a positional means, and one place refusing the combinations it
     # cannot mean. A second precedence rule here is how two surfaces start disagreeing
     # about which task a command was aimed at.
-    cmd_heal(ns)
+    #
+    # AND ITS STATUS IS RETURNED (3.60.0). `/todo heal --merge 2,foo --into 5` runs the
+    # SAME verb through a different door, so a refusal here has to report the same
+    # non-zero the top-level `heal` reports — otherwise the fix holds on one surface and
+    # the false green simply moves to the other. `cmd_render` returns this, and
+    # `cli.main` returns that.
+    return cmd_heal(ns)
 
 
 _TODO_SUBCMDS = {

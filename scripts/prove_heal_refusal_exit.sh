@@ -59,9 +59,10 @@
 #                                                                           → T606F-PASS
 #   --part merged   origin/main carries this work — the merge itself.       → T606G-PASS
 #   --part mutant   THE OTHER DIRECTION. Puts the OLD behaviour back into origin/main's own
-#                   tree — at each of the three layers the status has to cross — and
-#                   requires the tests to go RED. A suite that only ever sees the fix
-#                   proves nothing about the defect.                        → T606H-PASS
+#                   tree — at each of the FOUR layers the status has to cross, plus the
+#                   blanket non-zero that would be worse than the bug — and requires the
+#                   tests to go RED. A suite that only ever sees the fix proves nothing
+#                   about the defect.                                       → T606H-PASS
 #
 # Written 2026-09-03 by 606-0.
 set -u
@@ -122,6 +123,8 @@ if [ "$PART" = "merged" ]; then
     | grep -q "return a.fn(a)" || miss="$miss the status-carrying dispatch;"
   git -C "$FOUND" show origin/main:lib/task-station.py 2>/dev/null \
     | grep -q "sys.exit(main())" || miss="$miss the status-carrying entry point;"
+  git -C "$FOUND" show origin/main:lib/board/cmds/surface.py 2>/dev/null \
+    | grep -q "return cmd_heal(ns)" || miss="$miss the /todo surface carrying it;"
   git -C "$FOUND" show origin/main:tests/test_heal_refusal_exit.py 2>/dev/null \
     | grep -q "class TheStatusReachesTheProcess" || miss="$miss the exit-status tests;"
   if [ -z "$miss" ]; then
@@ -151,6 +154,7 @@ git -C "$WORK" checkout -q --detach "$FULL" 2>/dev/null \
 # before the merge every one of these files is present and the behaviour is not, and a run
 # that just passed the old tests would tick this condition.
 for f in lib/board/cmds/maintain.py lib/board/cli.py lib/task-station.py \
+         lib/board/cmds/surface.py lib/board/cmds/view.py \
          tests/test_heal_refusal_exit.py scripts/measure_heal_exit_blast_radius.py; do
   [ -f "$WORK/$f" ] || { echo "$FAIL: origin/main ($SHA) carries no $f"; exit 1; }
 done
@@ -162,6 +166,8 @@ grep -q "    return a.fn(a)" "$WORK/lib/board/cli.py" \
   || { echo "$FAIL: origin/main ($SHA) still discards the handler's status at the dispatch"; exit 1; }
 grep -q "    sys.exit(main())" "$WORK/lib/task-station.py" \
   || { echo "$FAIL: origin/main ($SHA) still discards the handler's status at the entry point"; exit 1; }
+grep -q "    return cmd_heal(ns)" "$WORK/lib/board/cmds/surface.py" \
+  || { echo "$FAIL: origin/main ($SHA) still discards the status on the /todo surface"; exit 1; }
 
 LOG="$WORK/run.log"
 
@@ -255,7 +261,16 @@ PYM
     || { echo "$FAIL: origin/main ($SHA) still passes the dry-run tests with every refusal reporting 0 — they do not test it"; exit 1; }
   restore lib/board/cmds/maintain.py
 
-  # MUTANT 4 — THE READS LOSE THEIR ZERO. The blanket non-zero that would be WORSE than
+  # MUTANT 4 — THE /todo SURFACE DISCARDS THE STATUS. The same verbs through the door a
+  # session actually types. A fix that held only on the top-level subcommand would leave
+  # the false green sitting one surface over.
+  mutate lib/board/cmds/surface.py '    return cmd_heal(ns)' '    cmd_heal(ns)' \
+    || { echo "$FAIL: cannot mutate the /todo surface on origin/main ($SHA)"; exit 1; }
+  fails "$MOD.TheStatusReachesTheProcess" \
+    || { echo "$FAIL: origin/main ($SHA) still passes the process tests with /todo heal discarding the status — they do not test it"; exit 1; }
+  restore lib/board/cmds/surface.py
+
+  # MUTANT 5 — THE READS LOSE THEIR ZERO. The blanket non-zero that would be WORSE than
   # the bug: `_heal_leave` refuses everything. The read tests must catch it, or "every
   # heal fails now" would ship as a fix.
   mutate lib/board/cmds/maintain.py \
@@ -266,7 +281,7 @@ PYM
     || { echo "$FAIL: origin/main ($SHA) still passes the writing-verb tests with EVERY heal refusing — a blanket non-zero would ship as a fix"; exit 1; }
   restore lib/board/cmds/maintain.py
 
-  echo "$MARK on origin/main $SHA — all four mutants went red: discarding the status at the entry point and at the dispatch both fail the process tests, making every refusal report 0 fails the writing-verb and dry-run tests, and making EVERY path refuse fails them too (read from $FOUND)."
+  echo "$MARK on origin/main $SHA — all five mutants went red: discarding the status at the entry point, at the dispatch and on the /todo surface each fail the process tests; making every refusal report 0 fails the writing-verb and dry-run tests; and making EVERY path refuse fails them too (read from $FOUND)."
   exit 0
 fi
 
