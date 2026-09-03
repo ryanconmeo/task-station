@@ -46,7 +46,7 @@ import hook_health                                                    # noqa: E4
 # a format string. No real argument in these fixed templates can collide with it.
 SESSION = "<session-id>"
 STEPS = (
-    ("stop-nudge", "engine", ["stop-nudge", "--session", SESSION]),
+    ("stop-nudge", "engine", ["hook", "stop-nudge", "--session", SESSION]),
     ("board-refresh", "engine", ["board", "--refresh-if-live"]),
     ("obsidian-flush", "engine", ["obsidian", "--flush", "--quiet"]),
     ("usage-flush", "engine", ["usage", "--flush", "--quiet"]),

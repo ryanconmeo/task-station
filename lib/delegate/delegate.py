@@ -1612,7 +1612,7 @@ def _post_add_cost(seq, worker_sid, seq_label, category):
     usage, model, cost = _transcript_usage_summary(worker_sid)
     if usage is None and cost is None:
         return
-    cmd = ["python3", TASK_STATION_PY, "add-cost", "--task", str(seq),
+    cmd = ["python3", TASK_STATION_PY, "hook", "add-cost", "--task", str(seq),
            "--usd", str(cost) if cost is not None else "0",
            "--category", category]
     if model:
@@ -1635,7 +1635,7 @@ def _register_worker(seq, sid, name, model, harness_name, status):
     /todo detail + brief show the worker with its live status. No `seq`/`sid` → no-op."""
     if not seq or not sid:
         return
-    cmd = ["python3", TASK_STATION_PY, "register-worker-session",
+    cmd = ["python3", TASK_STATION_PY, "hook", "register-worker-session",
            "--task", str(seq), "--session", sid, "--status", status]
     if name:
         cmd += ["--name", name]
@@ -2042,7 +2042,7 @@ def _orchestrator_guard(seq, force=False, session=None):
     if not seq:
         return
     try:
-        out = subprocess.run(["python3", TASK_STATION_PY, "orchestrator-check",
+        out = subprocess.run(["python3", TASK_STATION_PY, "hook", "orchestrator-check",
                               "--task", str(seq)],
                              capture_output=True, text=True, timeout=30)
     except Exception:
@@ -2210,7 +2210,7 @@ def cmd_run(a):
                 detail="%s%s" % (project, (":" + label) if label else ""))
         if seq:
             try:
-                subprocess.run(["python3", TASK_STATION_PY, "add-project",
+                subprocess.run(["python3", TASK_STATION_PY, "hook", "add-project",
                                 "--task", str(seq), "--project", project],
                                capture_output=True, text=True, timeout=20)
             except Exception:
@@ -2358,7 +2358,7 @@ def cmd_run(a):
     # Link the repo to the /todo task so its detail view lists this worker.
     if seq:
         try:
-            subprocess.run(["python3", TASK_STATION_PY, "add-project", "--task", str(seq),
+            subprocess.run(["python3", TASK_STATION_PY, "hook", "add-project", "--task", str(seq),
                             "--project", project],
                            capture_output=True, text=True, timeout=20)
         except Exception:
@@ -2377,7 +2377,7 @@ def cmd_run(a):
         # yielded ANY of cost/model/usage — an older CLI may report only some. The
         # running-total accumulation still no-ops on a missing/zero cost. Best-effort.
         if cost is not None or result_model or usage:
-            add_cost_cmd = ["python3", TASK_STATION_PY, "add-cost", "--task", str(seq),
+            add_cost_cmd = ["python3", TASK_STATION_PY, "hook", "add-cost", "--task", str(seq),
                             "--usd", str(cost) if cost is not None else "0"]
             if run_model:
                 add_cost_cmd += ["--model", run_model]

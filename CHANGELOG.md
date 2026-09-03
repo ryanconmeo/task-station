@@ -3,6 +3,90 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.63.0] — 2026-09-03
+
+**SIX MECHANICAL SIMPLIFICATIONS, AND ONE RULE THAT DECIDED WHICH ONES WERE SAFE.** A
+scan found eighteen hand-tuned preview constants, 22 hook verbs sharing a namespace with
+the commands people type, a factory reset that left live settings in force, and 369 lines
+of docs describing deleted code. The rule that governed all of it: **does this number, or
+this name, bound what is RENDERED, or guard what is STORED or ACCEPTED?** Only the first
+kind may be consolidated. Applying it at each USE SITE rather than to the list dropped
+seven of the fifteen candidates and found two the scan had missed.
+
+### Added
+- **`lib/board/previews.py` — one preview helper and two named tiers.** `RECOGNISE` (80:
+  the reader must identify WHICH thing a line names; the full text is one command away)
+  and `READ` (200: the reader must take in the sentence). Eight constants across
+  `save.py`, `checker.py`, `decisions.py`, `heal.py`, `cmds/view.py` and `turn.py` now
+  name a tier instead of carrying their own number and their own near-identical comment.
+  The module is a leaf that imports nothing from the package, which is what lets `turn.py`
+  use it without the dependency inversion its own comment refuses.
+  **Its docstring carries the rule and NAMES the ten constants considered and correctly
+  excluded**, so a later session reaching for "one more cap to tidy" meets the rule
+  instead of the temptation. Four were near-misses that read exactly like previews:
+  `NUDGE_PROMPT_MAX` (writes a user prompt into `task["log"]`), `PICKUP_HEADLINE_MAX`
+  (stored on the pickup row AND compared for equality to re-arm a block count),
+  `STUB_CHARS` (`derive_stub`'s output is WRITTEN to `entry["stub"]` on reassign) and
+  `MEMO_LINE_MAX` (also caps a stored subscription-memo body).
+- **`task-station hook <verb>` — the 22 plumbing verbs left the human namespace.** They
+  are invoked by a script in `hooks/`, the Stop hook's step runner, the worktree hook the
+  installer writes into `settings.json`, or a `delegate` worker writing back, and by
+  nothing a person types. `--help`'s subcommand list falls from **81 names / 736 chars to
+  60 / 435**. Every legacy top-level spelling still works: an argv normaliser rewrites a
+  bare `session-start` into `hook session-start` before argparse sees it, because an
+  installed `settings.json` entry names the old form and this is the only install.
+- **`config.RESET_EXCLUDED`** — the keys `--reset` deliberately does NOT pop, each with
+  its reason, so the escape hatch costs a sentence instead of a silent omission.
+- **`tests/test_reset_keys_guard.py`** — reads the source, collects every config key the
+  board WRITES (three write forms plus declared computed-key sites) and fails unless each
+  is in `RESET_KEYS` or `RESET_EXCLUDED`.
+- **`tests/test_hook_namespace.py`** — runs every task-station invocation written in
+  `hooks/*.sh` through the REAL parser, pins that both spellings resolve, and pins that
+  `hooks/hooks.json` names no subcommand (which is why this move did not touch it).
+
+### Fixed
+- **`config --reset confirm` left three live settings in force.** `stream`, `stream_dir`
+  and `share_dir` are board-written and board-read and were absent from `RESET_KEYS`, so a
+  factory reset kept a silenced event ledger, a stale external tee, and a share exchange
+  the user had just cleared. All three are popped now.
+- **`invoke` claimed "opened a new window running it" without confirming one opened**
+  (#605). The window opener returning True says a command was ISSUED, not that a session
+  came up — a terminal that refused, a `claude` that died at startup, and a trust dialog
+  nobody answered all return the same True, and an orchestrator then waits on an idle rail
+  for a session that never existed. `invoke` now uses `_await_registration` — the check
+  `task-station sessions` performs, already used by `relay --spawn` since 3.51.0 — and is
+  FAIL-CLOSED: cannot-tell prints `PREPARED ONLY` and the command, and records a MANUAL
+  LAUNCH on the trail so nothing stops a re-invoke. Costs the same up-to-60s wait the
+  relay already pays; that wait is the fix, not overhead beside it.
+
+### Changed
+- `docs/specs/2026-07-19-board2-prototype.md` (182 lines) and `2026-07-19-board3.md`
+  (187) are **DELETED**. They described `lib/board3.py` and `tools/board3_shell.py`, which
+  do not exist, and the cost was never the 369 lines — it was that a reader who opened
+  them believed that code shipped. Everything still true in them was already in
+  `lib/board/feeds.py`'s module docstring; the two things that were not — the feed schema
+  numbering (1 → 2 → 3, and what each added) and the `boundaries` → `sharing` vocabulary
+  correction — moved into `docs/specs/BOARD-RETIREMENT.md` first. **371 doc lines removed,
+  32 folded in: a removal of 339, not of 369.**
+- `feeds.py`'s vocabulary docstring said `boundaries`, a word retired with the prototype.
+  A brain is a PLACE; a sharing rule is an audience grant.
+
+### Reported (no change made)
+- **63 of the 81 registered config keys have never been set on this install** (18 are
+  set; no key in `config.json` is unregistered). They are NOT deleted — a config key is an
+  escape hatch, and `digest_budget_chars 0` is a designed one. Exactly one is DEAD:
+  `board_engine`, retired by `docs/specs/BOARD-RETIREMENT.md`, refused by
+  `config --board-engine`, and pinned gone by `tests/test_config.py`. Its status is now
+  written down in `RESET_EXCLUDED` rather than inferred from its absence.
+
+### Line accounting (moves and removals kept separate)
+- **Docs: −371 removed, +32 moved in → net −339.**
+- **Shipped code: +315 / −83 → net +232.** Item 1 deleted eight constants and added a
+  108-line leaf module (mostly the rule and the exclusion list) — a GROWTH in lines bought
+  for one question having one answer in one place. Nothing here shrank the code.
+- **Tests: +532 / −26.** Two new guard files and #605's rewritten acceptance class.
+- The measured shrink is the CLI surface, not the line count: 81 → 60 subcommand names.
+
 ## [3.62.0] — 2026-09-03
 
 **A HANDOFF IS ADDRESSED TO ONE SESSION, SO IT IS STORED UNDER THAT SESSION'S NAME.**

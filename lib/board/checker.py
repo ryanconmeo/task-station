@@ -70,6 +70,7 @@ import time
 import config as _config
 import heal as _heal
 import paths
+import previews as _prev
 import steps as _steps
 
 # -- thresholds (module-level so one edit retunes the whole pass) -----------------
@@ -102,7 +103,6 @@ STEP_CONDITION_OVERLAP = 0.20
 CONDITION_MIN_WORDS = 3
 
 GATE_DIR = "checker"                  # <data_dir>/checker/ — its OWN dir, not heal's
-CONDITION_PREVIEW_CHARS = 80          # enough to recognise which condition a line means
 NAG_ITEMS = 2                         # findings named inline; the rest roll up as "+N more"
 
 CLAIMS_FIELD = "claims"               # the additive task field this module owns
@@ -422,10 +422,9 @@ def _goal_touched_ts(task):
 
 
 def _preview(text):
-    flat = " ".join(str(text or "").split())
-    if len(flat) <= CONDITION_PREVIEW_CHARS:
-        return flat
-    return flat[:CONDITION_PREVIEW_CHARS - 1] + "…"
+    """A condition, cut to the RECOGNISE tier — enough to say WHICH condition a line
+    means. `exit-list` prints the full text."""
+    return _prev.line(text)
 
 
 def goal_drift(task, now=None, report=None, escalate=None):

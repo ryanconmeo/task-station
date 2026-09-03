@@ -70,6 +70,7 @@ import re
 import time
 
 import decisions as _dec
+import previews as _prev
 import steps as _steps
 
 # -- thresholds (module-level so one edit retunes the whole report) ---------------
@@ -77,18 +78,11 @@ import steps as _steps
 NEXT_PREFIX = "NEXT:"        # what a state line must LEAD with to be a next action
 STALE_SUMMARY_ENTRIES = 3    # decisions + log entries recorded after the summary before it reads stale
 STALE_STATE_ENTRIES = 6      # the same currency, for a state line nothing has moved
-PREVIEW_CHARS = 90           # enough to recognise which line a finding is about
 TOKENS_PER_CHAR = 4          # the conventional rough chars→tokens estimate, always labelled ≈
 
 # The six NAMED SLOTS a checkpoint fills, in the order the report walks them —
 # roughly the order a resuming session reads them in.
 SLOTS = ("goal", "state", "summary", "steps", "decisions", "links")
-
-
-def _preview(text, limit=PREVIEW_CHARS):
-    """`text` whitespace-collapsed to one line and cut to `limit`, ellipsis included."""
-    flat = " ".join(str(text or "").split())
-    return (flat[:limit - 1] + "…") if len(flat) > limit else flat
 
 
 def _gap(slot, detail):
@@ -332,7 +326,7 @@ def stale_slots(task):
             out.append(_gap("state",
                             "does not begin with `%s`, so it says where things STAND "
                             "rather than what to DO first: %r"
-                            % (NEXT_PREFIX, _preview(state))))
+                            % (NEXT_PREFIX, _prev.line(state))))
         else:
             since = _since_counts(task, "state_counts")
             if since and sum(since) >= STALE_STATE_ENTRIES:

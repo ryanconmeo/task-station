@@ -14,6 +14,7 @@ import os
 import sys
 
 import decisions as _dec
+import previews as _prev
 import ownership as _own
 import loop as _loop
 import save as _save
@@ -611,7 +612,8 @@ def _format_history(task):
     return "\n".join(out)
 
 
-DONE_STEP_CHARS = 60          # a finished step collapses to this; its full text is in `history`
+DONE_STEP_CHARS = _prev.RECOGNISE   # a finished step collapses to the RECOGNISE tier;
+                                    # its full text is in `history`
 
 
 def _subject_open_fn(load_task):

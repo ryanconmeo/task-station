@@ -285,11 +285,25 @@ class _ProseTableTest(unittest.TestCase):
         covered = {(c, d) for c, ds in pi.PROSE_FLAGS.items() for d in ds}
         self.assertEqual(set(), required - covered)
 
+    def _find_parser(self, sub, name):
+        """The parser for `name`, wherever it is filed. A subcommand may sit at the top
+        level or under the `hook` group (3.63.0 moved the 22 plumbing verbs there), and
+        the prose contract is about the FLAG, not about which group holds it."""
+        parser = sub.choices.get(name)
+        if parser is not None:
+            return parser
+        group = sub.choices.get("hook")
+        for act in getattr(group, "_subparsers", None)._actions if group else []:
+            inner = getattr(act, "choices", None)
+            if inner and name in inner:
+                return inner[name]
+        return None
+
     def test_every_table_entry_is_a_real_flag_and_is_annotated(self):
         sub = self._subparsers()
         annotated = 0
         for name, dests in pi.PROSE_FLAGS.items():
-            parser = sub.choices.get(name)
+            parser = self._find_parser(sub, name)
             self.assertIsNotNone(parser, "PROSE_FLAGS names subcommand %r, which "
                                          "the parser does not define" % name)
             for dest in dests:
@@ -309,7 +323,8 @@ class _ProseTableTest(unittest.TestCase):
         keep correct and a second thing for a caller to guess wrong."""
         sub = self._subparsers()
         for name, dests in pi.PROSE_FLAGS.items():
-            parser = sub.choices[name]
+            parser = self._find_parser(sub, name)
+            self.assertIsNotNone(parser, name)
             opts = {o for act in parser._actions for o in act.option_strings}
             for dest in dests:
                 twin = "--%s-file" % dest.replace("_", "-")

@@ -28,6 +28,6 @@ trigger=$(printf '%s' "$input" | python3 "$CLAUDE_PLUGIN_ROOT/lib/hookjson.py" t
 # hits argv limits. Still silent to the user — ts_run inherits the pipe's stdin and
 # records a failure of the FINAL stage rather than swallowing it.
 printf '%s' "$input" | python3 "$CLAUDE_PLUGIN_ROOT/lib/hookjson.py" compact_summary 2>/dev/null \
-  | ts_run post-compact python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" post-compact \
+  | ts_run post-compact python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" hook post-compact \
       --session "$session_id" --trigger "$trigger"
 exit 0

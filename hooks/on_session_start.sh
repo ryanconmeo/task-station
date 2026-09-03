@@ -59,7 +59,7 @@ if [ -n "$CLAUDE_PLUGIN_ROOT" ] && [ "$(ts_capture bare-cmds-get python3 "$CLAUD
   done
 fi
 
-ctx=$(python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" session-start --session "$session_id" --source "$source")
+ctx=$(python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook session-start --session "$session_id" --source "$source")
 _seen="${TASK_STATION_HOME:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/task-station-data}/.setup-nudged"
 nudge=""
 if [ ! -e "$_seen" ] && [ -n "$CLAUDE_PLUGIN_ROOT" ]; then
@@ -73,7 +73,7 @@ fi
 # Tint the originating window to the attached task's category on attach/resume —
 # the full-palette escape, written to the real TTY (same rail as the title; not
 # stdout, which carries the SessionStart JSON). No-op when unattached or no tint.
-tint=$(ts_capture session-tint python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" session-tint --session "$session_id")
+tint=$(ts_capture session-tint python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook session-tint --session "$session_id")
 if [ -n "$tint" ]; then
   # origin-tty.sh exits 1 whenever the tty is undeterminable — normal, not a
   # failure — and the tty write is a redirect, so both stay masked as before.
@@ -99,9 +99,9 @@ ts_run usage-flush python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" usage --f
 # never fails the session start (it is now RECORDED instead of silently swallowed).
 # Reaps nothing whenever liveness is unknown; `--session` is passed so it can never
 # reap this session's own workers.
-ts_run sweep-orphans python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" sweep-orphans --session "$session_id"
+ts_run sweep-orphans python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook sweep-orphans --session "$session_id"
 
-title=$(python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" session-title --session "$session_id")
+title=$(python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook session-title --session "$session_id")
 if [ -n "$ctx" ] || [ -n "$title" ]; then
   # Build the SessionStart output JSON with python3 (jq-free). ctx/title arrive as
   # argv, so embedded quotes/newlines need no escaping; empty fields are omitted,

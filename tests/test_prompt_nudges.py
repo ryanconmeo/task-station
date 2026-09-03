@@ -54,6 +54,7 @@ os.environ["TASK_STATION_HOME"] = _TMP_HOME
 import board.nudges as nudges    # noqa: E402
 import config as ts_config       # noqa: E402
 import heal                      # noqa: E402
+import previews                  # noqa: E402
 import save as ts_save           # noqa: E402
 import store                     # noqa: E402
 
@@ -620,7 +621,7 @@ class TestSaveGateNamesTheFinding(_Base):
     def test_it_is_cut_to_one_short_line(self):
         t = self._task(memos=self._undispositioned_ack())
         line = heal.first_finding_line(heal.scan(t))
-        self.assertLessEqual(len(line), heal.FINDING_PREVIEW_CHARS)
+        self.assertLessEqual(len(line), previews.RECOGNISE)
         self.assertNotIn("\n", line)
         self.assertTrue(line.endswith("…"))     # the fix command is NOT half-printed
 

@@ -42,4 +42,4 @@ if [ ! -f "$engine" ]; then
   echo 'task-station: restore native worktree creation with: task-station config --worktree-hook off' >&2
   exit 1
 fi
-exec python3 "$engine" worktree-create
+exec python3 "$engine" hook worktree-create
