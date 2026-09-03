@@ -105,3 +105,35 @@ class TestLimbC(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRoutineNoticesSettleOnOneDisposition(unittest.TestCase):
+    """Limb (d), 3.59.0. Quorum is a test for JUDGEMENT ABOUT A DISPUTED CLAIM, and a
+    machine-minted "child #591 closed" is not a claim anyone disputes.
+
+    Measured on #444 before the change: 51 memos were noop-only and stuck, and EXACTLY 40
+    of them were routine — which was the nag count. The other 11 are correspondence and
+    keep needing quorum, because disagreeing with those is the entire point of the test.
+    """
+
+    def _routine(self, **kw):
+        memo = {"id": "m", "routine": True, "acks": []}
+        memo.update(kw)
+        return memo
+
+    def test_one_noop_settles_a_routine_notice(self):
+        memo = self._routine(acks=[{"sid": "s1", "disposition": {"kind": "noop"}}])
+        self.assertTrue(m.memo_settled(memo))
+
+    def test_one_noop_does_NOT_settle_correspondence(self):
+        memo = {"id": "m", "acks": [{"sid": "s1", "disposition": {"kind": "noop"}}]}
+        self.assertFalse(m.memo_settled(memo))
+
+    def test_an_unacked_routine_notice_is_still_unsettled(self):
+        # Limb (d) settles on a DISPOSITION, not on being routine. A notice nobody has
+        # touched has had nothing done with it.
+        self.assertFalse(m.memo_settled(self._routine()))
+
+    def test_a_bare_ack_with_no_disposition_does_not_settle_it_either(self):
+        memo = self._routine(acks=[{"sid": "s1"}])
+        self.assertFalse(m.memo_settled(memo))

@@ -137,6 +137,21 @@ def memo_settled(memo, after=MEMO_QUIET_AFTER):
     # sessions to agree that a child was graded is how 51 of 93 memos became immortal.
     if kinds & set(_MEMO_VERB_KINDS):
         return True
+    # LIMB (d): A ROUTINE LIFECYCLE NOTICE SETTLES ON ONE DISPOSITION, of any kind.
+    #
+    # QUORUM IS A TEST FOR JUDGEMENT ABOUT A DISPUTED CLAIM, and a machine-minted "child
+    # #591 closed" is not a claim anyone disputes. Requiring three sessions to concur on
+    # it was asking consensus of a fact, and it is the last reason memos were immortal:
+    # measured on #444, EXACTLY 40 of its 51 noop-only memos are routine, and 40 was the
+    # nag count. The other 11 are correspondence — a session's fact, decision or verdict
+    # — and they keep needing quorum, because disagreeing with those is the whole point.
+    #
+    # `noop` counts here where it deliberately does not below. On correspondence a bare
+    # noop is one session's opinion that nothing was owed, which is exactly what quorum
+    # exists to check. On a lifecycle notice it is a reader saying "seen, nothing to do",
+    # and there is nothing further to establish.
+    if bool((memo or {}).get(_channel.ROUTINE_FIELD)) and (sessions or kinds):
+        return True
     return len(sessions) >= after
 
 

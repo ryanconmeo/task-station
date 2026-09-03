@@ -3,6 +3,40 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.59.0] — 2026-09-03
+
+**A ROUTINE LIFECYCLE NOTICE NOW SETTLES ON ONE DISPOSITION.** Measured on #444: the memo
+nag goes from **40 to 3**, and the 3 that remain are correspondence genuinely awaiting a
+person.
+
+**THE 40 WERE NEVER UNACKED**, which is why every attempt to clear them by acking harder
+failed. Sessions HAD dispositioned them — as `noop` — and they stuck because `memo_settled`
+required a durable disposition or **three distinct sessions** to agree.
+
+**Quorum is a test for JUDGEMENT ABOUT A DISPUTED CLAIM.** A machine-minted "child #591
+closed" is not a claim anyone disputes, and asking three sessions to concur on it was asking
+consensus of a fact. Limb (d) settles a memo carrying `routine: true` on a single
+disposition of any kind.
+
+**The split is exact, and it is why this is a rule change rather than a bulk edit.** Of
+#444's 51 stuck noop-only memos, **exactly 40 are routine** — which was the nag count. The
+other **11 are correspondence** (a session's fact, decision or verdict) and keep needing
+quorum, because disagreeing with those is the entire point of the test.
+
+`noop` counts here where it deliberately does not for correspondence. On correspondence a
+bare noop is one session's opinion that nothing was owed — exactly what quorum exists to
+check. On a lifecycle notice it is a reader saying "seen, nothing to do", and there is
+nothing further to establish.
+
+**Nothing was rewritten to achieve this.** No retro pass, no fabricated dispositions, no
+edited acks — the sessions' original acks and timestamps are untouched. The rule was simply
+asking the wrong question of the wrong kind of memo. An UNACKED routine notice is still
+unsettled, and so is one carrying a bare ack with no disposition: limb (d) settles on a
+disposition, not on being routine.
+
+### Fixed
+- …
+
 ## [3.58.0] — 2026-09-03
 
 **A HANDOFF NOW CARRIES A COMPLETE SENTENCE INSTEAD OF 320 CHARACTERS CUT MID-WORD.**
