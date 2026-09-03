@@ -349,8 +349,49 @@ def report_lines(rep):
 # the reason they existed, and a cap deleted cannot be tuned again.
 
 
-def write_handoff(task, prompt, root=None):
-    """Write the handoff to `<data>/handoff/<seq>-CONTINUATION.md` and return its path.
+def _seq_of(task):
+    return (task or {}).get("seq") or ((task or {}).get("id") or "")[:8]
+
+
+def handoff_dir(root=None):
+    """The directory handoffs are written to, created if it is not there yet."""
+    base = root or os.path.join(_paths.data_dir(), "handoff")
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def stable_handoff_path(task, root=None):
+    """`<data>/handoff/<seq>-CONTINUATION.md` — the STABLE PER-TASK name, which is a
+    POINTER and never a handoff. Pinned decision 444:511 tells a cold session to open
+    this exact path by hand, so it has to keep working; what it must not be is the place
+    a handoff is stored, because one storage slot per task is what two relays collide
+    over."""
+    return os.path.join(handoff_dir(root), "%s-CONTINUATION.md" % _seq_of(task))
+
+
+def write_handoff(task, prompt, sid, root=None):
+    """Write ONE successor's handoff to `<data>/handoff/<seq>-<sid8>-CONTINUATION.md`
+    and return its path.
+
+    THE PATH CARRIES THE SUCCESSOR, so two relays on one task cannot name one file.
+    The old name was per TASK and opened `"w"` — an unconditional truncate at a shared
+    path — and the collision it allowed was not theoretical: `<data>/handoff/` held
+    `444-CONTINUATION.hand-2026-08-31.md` and `444-CONTINUATION.md.bak-2026-08-31`,
+    two files renamed BY HAND to free the generated path for the next relay. A handoff
+    is a claim about ONE session, so it is named after that session and the collision
+    is impossible by construction rather than avoided by timing.
+
+    NOT A LOCK AND NOT A TIMESTAMP SUFFIX, both refused on the record. A lock
+    serialises the WRITERS, and the writers were never the problem — the READER is: it
+    reads minutes later, in another process, after its own SessionStart. A timestamp
+    suffix leaves that reader with exactly the question the single path leaves it with,
+    which is *which of these is mine*. The successor's own id is the one discriminator
+    the reader already knows, because its launch argument names it.
+
+    A HANDOFF WITH NO SUCCESSOR TO NAME IS NOT WRITABLE, and `sid` is required for that
+    reason. Defaulting it would put the per-task name back — silently, on exactly the
+    path that has no successor yet — which is the defect this signature exists to make
+    unrepresentable.
 
     RAISES ON FAILURE, DELIBERATELY, and this is the one design call in the function.
     The old shape fell back to putting the prompt in the launch argument, which was
@@ -360,13 +401,57 @@ def write_handoff(task, prompt, root=None):
     prevent, and it would do it silently. So `relay` refuses instead. Refusing costs
     one command to retry; spawning a successor whose prompt was cut by the kernel looks
     like it worked."""
-    base = root or os.path.join(_paths.data_dir(), "handoff")
-    os.makedirs(base, exist_ok=True)
-    seq = task.get("seq") or (task.get("id") or "")[:8]
-    path = os.path.join(base, "%s-CONTINUATION.md" % seq)
+    if not sid:
+        raise ValueError("write_handoff needs the successor's session id — the file is "
+                         "named after the session it is addressed to, and a handoff "
+                         "addressed to nobody is the collision this name prevents.")
+    path = os.path.join(handoff_dir(root),
+                        "%s-%s-CONTINUATION.md" % (_seq_of(task), sid[:8]))
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(prompt.rstrip() + "\n")
     return path
+
+
+def link_handoff(task, path, root=None):
+    """Point the stable per-task name at `path` and return the pointer's own path.
+
+    A SYMLINK, NEVER A SECOND COPY. Copying the handoff to the stable name would put
+    two files on disk with one origin and no way to tell which a reader got — the
+    staleness the sid-qualified name just removed, reintroduced one line later — and
+    `relay`'s own comment says why it does not do this: a second copy of the record is
+    the thing that module exists not to make. So the stable name resolves to the newest
+    handoff and stores none.
+
+    RAISES OSError, and the caller degrades to a NAMED SKIP rather than to a copy. The
+    sid-qualified file is already written and the successor is already pointed at it, so
+    a missing pointer costs a human one `ls` — while a failed relay costs the handoff.
+
+    A REAL FILE ALREADY AT THE STABLE NAME IS MOVED ASIDE, NOT DELETED. Every task that
+    relayed before this release has one, and it is a genuine handoff whose only copy
+    that is; `os.replace` onto it would destroy it to make room for a pointer. It
+    happens at most once per task, because afterwards the stable name is a symlink."""
+    link = stable_handoff_path(task, root)
+    if os.path.isfile(link) and not os.path.islink(link):
+        os.replace(link, link[:-len(".md")] + ".superseded.md")
+    # RELATIVE, so the pointer survives a moved or copied data directory — an absolute
+    # target would name the machine's old path from inside the new one.
+    target = os.path.relpath(os.path.abspath(path), os.path.dirname(link))
+    # ATOMIC BY REPLACE, so a reader arriving mid-relay finds the old pointer or the new
+    # one and never an absent name. `os.symlink` cannot overwrite, so the new link is
+    # made beside its final name and renamed over it.
+    swap = link + ".swap"
+    try:
+        if os.path.lexists(swap):
+            os.unlink(swap)
+        os.symlink(target, swap)
+        os.replace(swap, link)
+    except OSError:
+        try:
+            os.unlink(swap)
+        except OSError:
+            pass
+        raise
+    return link
 
 
 def open_steps(task):
@@ -377,7 +462,8 @@ def open_steps(task):
             if not _steps.is_done(s)]
 
 
-def continuation_prompt(task, rep=None, blockers=None, predecessor=None, successor=None):
+def continuation_prompt(task, rep=None, blockers=None, predecessor=None, successor=None,
+                        now=None):
     """The prompt the successor is launched with — generated from the RECORD.
 
     `blockers` is the forced path, and it is the reason this function does not simply
@@ -393,11 +479,28 @@ def continuation_prompt(task, rep=None, blockers=None, predecessor=None, success
     THE ORDER OF THE SECTIONS IS STILL LOAD-BEARING, for the other reason: the framing,
     the attributed state line and its authority warning come FIRST because that is the
     order a successor reads in, and the 2026-08-29 incident is what happens when the
-    attribution arrives after the instruction it qualifies."""
-    seq = task.get("seq") or (task.get("id") or "")[:8]
+    attribution arrives after the instruction it qualifies.
+
+    THE HEADER SAYS WHO IT WAS WRITTEN FOR AND WHEN, because a human read of the file is
+    a SUPPORTED path: pinned decision 444:511 tells a cold session to open the stable
+    per-task name by hand, and that name resolves to whichever handoff is newest. A
+    reader who arrives that way needs one thing the record cannot give them — whether
+    this file is still the live one — and a write time answers it without a roster
+    lookup. NOTHING MACHINE-READABLE IS ADDED FOR IT: no front-matter, no preamble, no
+    checksum. The reader is a model reading prose, and each of those would be machinery
+    serving no constraint (444:642)."""
+    seq = _seq_of(task)
     who = " — you are session %s" % successor if successor else ""
     from_who = ", succeeding %s" % predecessor if predecessor else ""
+    written = time.strftime("%Y-%m-%d %H:%M %Z",
+                            time.localtime(time.time() if now is None else now))
+    spent = ("WRITTEN %s. If that is not recent%s, a later relay on this task has "
+             "written its own handoff and this file is spent — `ls` the handoff "
+             "directory and read the newest."
+             % (written, (", or you are not session %s" % successor) if successor else ""))
     out = ["RELAY on task #%s%s%s." % (seq, who, from_who),
+           "",
+           spent,
            "",
            "This is a handoff, not a fresh start. Nothing is loaded for you — read the "
            "record FIRST: `task-station search --detail %s`, and re-derive nothing it "

@@ -1184,8 +1184,16 @@ def cmd_relay(a):
     # measured on #444 — through argv and let the kernel decide where it ends. Refusing
     # costs one command to retry; a successor spawned on a truncated prompt looks like
     # it worked. Nothing is launched and no handoff is recorded on this path.
+    #
+    # THE FILE IS NAMED AFTER THE SUCCESSOR, which is why `sid` is passed here and why
+    # this write happens after the mint. Two relays on one task used to write one path —
+    # `<seq>-CONTINUATION.md`, opened `"w"` — so the second silently replaced a handoff
+    # the first successor had not read yet. It reads minutes later, in its own process,
+    # after its own SessionStart, so no ordering here could have closed that window. The
+    # STABLE per-task name survives as a pointer, and it moves further down: only once a
+    # session is confirmed.
     try:
-        handoff_path = _succ.write_handoff(task, prompt)
+        handoff_path = _succ.write_handoff(task, prompt, sid)
     except OSError as e:
         print("  REFUSED: the handoff could not be written (%s). The successor is "
               "launched with a POINTER to that file, so there is nothing to hand it — "
@@ -1197,9 +1205,14 @@ def cmd_relay(a):
     # THE ARGUMENT STAYS SHORT BY CONSTRUCTION. It is not a summary of the handoff —
     # a second copy of the record is the thing this module exists not to make — it is
     # the one instruction that reaches the file, so it cannot itself go stale or be cut.
+    #
+    # AND THE PATH IT NAMES IS NAMED AFTER THE READER, which the sentence says out loud
+    # because that is what makes it checkable: a successor handed a path carrying its
+    # own session id can tell the file is addressed to it without asking anything.
     pointer = ("RELAY on task #%s — you are session %s. Read %s FIRST, in full: it is "
-               "your handoff, written by your predecessor, and nothing else is loaded "
-               "for you. Then read the record it points at."
+               "your handoff, named for your own session and written by your "
+               "predecessor, and nothing else is loaded for you. Then read the record "
+               "it points at."
                % (ref, successor, handoff_path))
     # THE WORKSPACE WRITES COME AFTER THE HANDOFF, because they are writes. Granting a
     # directory trust for a successor this command then refuses to launch would leave a
@@ -1267,10 +1280,27 @@ def cmd_relay(a):
     # attached and stamped its own roster entry. Saving the copy minted before the poll
     # would drop that.
     entry = index1 = None
+    linked = link_note = None
     if confirmed:
         task = load_task(task["id"]) or task
         entry, index1 = _succ.record_handoff(task, session, sid, rep, forced=forced,
                                              blockers=blockers)
+        # THE STABLE POINTER MOVES ONLY HERE, FOR THE SAME REASON THE LEDGER ENTRY DOES.
+        # `<seq>-CONTINUATION.md` is the path pinned decision 444:511 tells a cold
+        # session to open by hand, so it has to keep resolving — and what it resolves to
+        # is a CLAIM ABOUT A SESSION. Moved before this branch it would name a successor
+        # that never ran on every `--print-command` and every failed opener, which is
+        # the phantom the sentence above refuses for the ledger.
+        #
+        # A POINTER THAT CANNOT BE MADE IS A NAMED SKIP, never a second copy and never a
+        # failed relay. The sid-qualified file is already written and the successor's
+        # launch argument already names it, so the whole cost of a missing pointer is
+        # one `ls` for a human; copying the handoff there instead would put two files on
+        # disk with one origin, which is the staleness the sid-qualified name removed.
+        try:
+            linked = _succ.link_handoff(task, handoff_path)
+        except OSError as e:
+            link_note = str(e)
     # THE TRAIL HAS TO NAME BOTH SIDES, so where the prompt drops an unresolvable
     # predecessor the durable event says in words that there was not one to name.
     from_who = predecessor or "an unidentified session"
@@ -1297,6 +1327,17 @@ def cmd_relay(a):
               "none has registered. The session id above is minted and linked, so the "
               "command still works when a human runs it; what is withheld is a ledger "
               "entry claiming a handoff that has not happened.")
+    # WHAT THE STABLE NAME NOW POINTS AT, and where it does not, said out loud. A skip
+    # that nobody printed would leave a human typing the path from 444:511 at a name
+    # that resolves to an older handoff — or to nothing — with no way to learn why.
+    if linked:
+        print("  %s now points at it — that is the stable name a human types, and it "
+              "resolves to the newest handoff rather than storing one." % linked)
+    elif link_note:
+        print("  the stable name %s was NOT updated (%s) — SKIPPED, not copied. The "
+              "successor is pointed at %s, which is written; a human reading by hand "
+              "wants the newest file in that directory."
+              % (_succ.stable_handoff_path(task), link_note, handoff_path))
     if forced:
         print("  FORCED, and the record says so — the grader sees the gaps you overrode.")
 

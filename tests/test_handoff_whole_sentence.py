@@ -62,12 +62,16 @@ class _HandoffTest(unittest.TestCase):
                 "steps": [{"text": "step %d %s" % (i, "y" * chars), "done": False}
                           for i in range(steps)]}
 
+    # The SUCCESSOR'S SESSION ID, which the handoff is now named after — one constant, so
+    # every call site here says the same thing about which session it is writing for.
+    SID = "beef1234-0000-0000-0000-000000000001"
+
     def _written(self, task, **kw):
         """The handoff as the successor will read it: generated, written by the shipped
         writer, and read back off disk rather than asserted on in memory."""
         prompt = _succ.continuation_prompt(task, predecessor="619-0", successor="619-1",
                                            **kw)
-        path = _succ.write_handoff(task, prompt, root=self.tmp)
+        path = _succ.write_handoff(task, prompt, self.SID, root=self.tmp)
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
@@ -127,7 +131,7 @@ class TestNothingIsCutAnywhereInTheWrittenFile(_HandoffTest):
         task = self._task()
         prompt = _succ.continuation_prompt(task, predecessor="619-0", successor="619-1",
                                            rep={"window": 1000000, "used_pct": 81})
-        path = _succ.write_handoff(task, prompt, root=self.tmp)
+        path = _succ.write_handoff(task, prompt, self.SID, root=self.tmp)
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
         self.assertTrue(text.endswith("\n"))
@@ -145,7 +149,7 @@ class TestTheWriterRefusesRatherThanDegrading(_HandoffTest):
         with open(blocked, "w") as fh:
             fh.write("a file where the directory has to be\n")
         with self.assertRaises(OSError):
-            _succ.write_handoff(self._task(), "anything", root=blocked)
+            _succ.write_handoff(self._task(), "anything", self.SID, root=blocked)
 
 
 if __name__ == "__main__":
