@@ -783,7 +783,35 @@ def pickup_take(task, row, sid=None, how=PICKUP_TAKEN):
     row["taken_ts"] = time.time()
     row["taken_by"] = sid
     row["how"] = how
+    _ack_pickup_memo(task, row, sid, how)
     return "taken", None
+
+
+def _ack_pickup_memo(task, row, sid, how):
+    """Write the pickup's disposition onto the MEMO it points at.
+
+    THE VERB THAT COMPLETES WRITES THE DISPOSITION. The rail already worked — every
+    pickup on this programme's own record shows `delivered_ts` and `taken_ts` within
+    about twenty seconds, so the parent genuinely was forced to look. What it never did
+    was tell the OTHER ledger: a taken pickup wrote `task["pickups"]` and left the memo
+    it was a pointer to sitting unacked, forever. Two ledgers describing one event, and
+    neither able to close the other.
+
+    Deliberately best-effort. A memo this cannot find must never fail the take — the
+    pickup is the load-bearing half and an ack is bookkeeping. Imported locally because
+    `memos` already imports this module, and a cycle here would break both."""
+    mid = (row or {}).get("memo_id")
+    if not mid:
+        return
+    try:
+        import memos as _m
+        for memo in (task.get("memos") or []):
+            if memo.get("id") == mid:
+                _m.memo_ack(task, memo, sid or "rail",
+                            disposition={"kind": how, "by": "pickup"})
+                return
+    except Exception:              # noqa: BLE001 — bookkeeping must not break the rail
+        return
 
 
 def pickup_command(task, row):

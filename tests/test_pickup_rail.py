@@ -280,12 +280,26 @@ class TheGate(_PickupBase):
 
     def test_the_reason_says_how_to_read_the_report_and_how_to_take_it(self):
         """A notice that says a report exists without saying how to read it is half a
-        rail — and the report is on the CHILD's ledger, which nothing on the parent shows."""
+        rail — and the report is on the CHILD's ledger, which nothing on the parent shows.
+
+        UPDATED IN 3.57.0. This asserted `memo list --task <n>`, which is the FALLBACK
+        `pickup_read_command` prints when the row carries no `memo_id`. It always did,
+        because `report_to_parent` never filled the slot — so the test was pinning the
+        degraded output. Now the rail names the exact memo, and the fallback is asserted
+        separately below where it can actually be reached."""
         parent, child = self._waiting()
         reason = self._gate("parent-sid")["reason"]
-        self.assertIn("memo list --task %s" % child["seq"], reason)
+        self.assertIn("memo show --task %s --id " % child["seq"], reason)
         self.assertIn("pickup take --task %s" % parent["seq"], reason)
         self.assertIn("turn --task %s" % parent["seq"], reason)
+
+    def test_the_read_command_falls_back_when_there_is_no_memo_id(self):
+        """A pickup filed without a memo id — a legacy row, or any caller that does not
+        have one — still says how to find the report, just less precisely."""
+        self.assertIn("memo list --task 7",
+                      channel.pickup_read_command({"child_seq": 7}))
+        self.assertIn("memo show --task 7 --id abc",
+                      channel.pickup_read_command({"child_seq": 7, "memo_id": "abc"}))
 
     def test_it_names_the_harness_rails_rather_than_rebuilding_them(self):
         """The programme-wide ruling: adopt what the harness already gives you. This rail

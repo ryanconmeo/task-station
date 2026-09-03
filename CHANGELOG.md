@@ -3,6 +3,43 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.57.0] — 2026-09-03
+
+**THE VERB THAT COMPLETES NOW WRITES THE DISPOSITION.** Notification memos stop
+accumulating forever, and the ledger starts telling the truth about graded children.
+
+**THE LEAK WAS SPECIFIED, NOT NEGLECTED**, which is why nobody could fix it by being more
+diligent. Every closed child posts a routine memo on its parent AND files a pickup pointing
+at it. **The rail already worked** — on this programme's own record all seven pickups show
+`delivered_ts` and `taken_ts` within about twenty seconds, so the parent genuinely was
+forced to look. What it never did was tell the OTHER ledger: a taken pickup wrote
+`task["pickups"]` and left the memo it was a pointer to sitting unacked, forever. Two
+ledgers describing one event, and neither able to close the other. #444 has closed 21
+children and carries 93 memos, 40 of them still nagging.
+
+Two facts made it permanent, and both are now fixed:
+
+- **`pickup_file` has always had a `memo_id` slot and nothing ever filled it.**
+  `report_to_parent` now passes the id of the memo it just posted, so the pickup knows
+  what it is a pointer to.
+- **`memo_settled` had no way to accept a fact.** It required a durable disposition or a
+  three-session quorum — so "this child was graded" could never settle anything, because
+  quorum is a test for JUDGEMENT and a completed verb is not judgement. Limb (c) accepts
+  `graded`, `taken`, `parked` and `delivered` on their own. A `noop` still needs quorum,
+  because a noop IS a judgement — and that distinction is exactly why 51 of 93 memos were
+  immortal: one hub's bulk noop sweep satisfied neither limb.
+
+**ONE CHANGE COVERS TAKE, GRADE AND PARK.** The ack lives inside `pickup_take`, and every
+retire path already funnels through it — including `sub.py`'s automatic retire, which
+detects a grade newer than the hand-back and passes `PICKUP_GRADED`. `cmd_grade` needs no
+change of its own; the structural signal was already there.
+
+**Bookkeeping never breaks the rail.** A memo the ack cannot find, or any error reaching
+it, leaves the take succeeding — the pickup is the load-bearing half and the ack is not.
+
+### Fixed
+- …
+
 ## [3.56.0] — 2026-09-03
 
 **A DIGEST NOW COSTS WHAT THE OPEN WORK COSTS, NOT WHAT THE WHOLE HISTORY COSTS.** #444's
