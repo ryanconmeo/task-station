@@ -122,4 +122,8 @@ _MSGCOUNT_DISK = None    # {"file", "entries": {path: [mtime_ns, size, count, us
 
 
 if __name__ == "__main__":
-    main()
+    # THE HANDLER'S STATUS BECOMES THE PROCESS'S. `main` returns whatever the dispatched
+    # cmd_* returned — None for all but `heal`, and `sys.exit(None)` is 0 — so this is the
+    # one line that turns "the verb refused" into an exit code a caller can read. See the
+    # note at the dispatch in board/cli.py.
+    sys.exit(main())

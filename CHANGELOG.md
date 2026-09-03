@@ -3,6 +3,68 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.60.0] — 2026-09-03
+
+**A HEAL VERB THAT REFUSES NOW EXITS NON-ZERO.** Every `heal` path used to exit 0, so a
+refusal and a performed write were indistinguishable to anything reading the status:
+
+```
+heal --task 1 --merge 2,foo --into 5     REFUSES, changes nothing     exit 0
+heal --task 1 --merge 2,3   --into 5     SUCCEEDS, writes             exit 0
+```
+
+**IT STOPPED BEING HARMLESS IN 3.49.0.** That release made `returncode == 0` a REQUIRED
+CONJUNCT for exit conditions and claims — "a green condition means the command SUCCEEDED,
+not that its text appeared". A conjunct added to close *the output looked right but the
+command failed* cannot close anything against a command that fails QUIETLY AT STATUS 0,
+and a heal refusal names the verb and the decision numbers, so a loosely-written expected
+substring matches the refusal it was meant to catch.
+
+**THE BOUNDARY IS WRITE-VS-READ, NOT "ANY PATH THAT CAN DECLINE".**
+
+- **A writing verb that declines exits 2** — all nine: `--split`, `--merge`, `--reassign`,
+  `--unassign`, `--dismiss`/`--undismiss`, `--apply`, `--mark-healed`, `--dispose-acks`,
+  `--goal-reviewed`. Stopping at the five that happened to get probed would have shipped a
+  fix that was correct for five verbs and silently wrong for four more of the same kind.
+- **A read that RAN keeps its 0 whatever it found** — `--scan`, `--dismissals`,
+  `--candidates`, `--probe-links`, `--probe-ado`, and bare `heal` (a dry run is the
+  default). A scan that finds problems has not failed; it has succeeded at scanning, and
+  making a finding non-zero would break every caller that wraps one.
+- **An invocation refused BEFORE it ran exits 2** whichever flags it named, read ones
+  included. Nothing was read and nothing was written, so 0 would report success for a
+  command that did not happen.
+- **`--dry-run` follows its verb.** A refusal previewed is a refusal reported; a legal
+  batch previewed is a 0. The preview validates exactly as the real run does, or it is
+  useless as a gate.
+
+**THE BLAST RADIUS WAS MEASURED BEFORE THE CHANGE LANDED, NOT ASSERTED AFTER.** The whole
+stored corpus — 262 commands, 174 exit conditions, 88 claims — read ONCE, with both
+verdicts computed off that one snapshot so the delta cannot be confounded by two runs:
+**0 stored commands wrap a heal writing verb**, so nothing flips and nothing needed
+exempting. `scripts/measure_heal_exit_blast_radius.py` is the instrument, and it proves
+itself non-vacuous in the same run against 12 positive and 10 negative controls.
+
+**WHAT THIS DELIBERATELY IS NOT.** It is not a rule about how the condition runner reads
+status. The house merge gate is `git show origin/main:scripts/prove_x.sh | bash -s --`,
+and before the merge **bash reads an empty program and exits 0** — there the status is the
+lie and the expected substring is the only true signal. Hardening the runner to trust
+status more would turn every pre-merge red green.
+
+### Added
+- `HEAL_REFUSED` (2) and the `Refusal` marker in `board.cmds.maintain` — a `str` subclass,
+  so every caller prints and joins it unchanged and only the command seam reads the type.
+- `scripts/measure_heal_exit_blast_radius.py` — the one-invocation corpus measurement, with
+  a `--probe` that runs all nine verbs against a throwaway store and prints real exit codes.
+- `scripts/prove_heal_refusal_exit.sh` — the merge-gated judge, with a `--part mutant` that
+  puts the old behaviour back at each of the three layers and requires the tests to go red.
+- `tests/test_heal_refusal_exit.py` — 44 tests, every verb asserted in BOTH directions.
+
+### Changed
+- `cli.main` returns the dispatched handler's value and `task-station.py` exits on it.
+  Every handler but `heal` still returns None, and `sys.exit(None)` is 0. Returned rather
+  than `sys.exit`ed inside the handler because `cmd_*` functions are called in process —
+  by the whole of `tests/test_heal.py` and by `lib/stop_steps.py`.
+
 ## [3.59.0] — 2026-09-03
 
 **A ROUTINE LIFECYCLE NOTICE NOW SETTLES ON ONE DISPOSITION.** Measured on #444: the memo

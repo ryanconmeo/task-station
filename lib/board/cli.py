@@ -1392,4 +1392,16 @@ def main(argv=None):
     annotate_prose_help(sub)
     a = p.parse_args(argv)
     resolve_prose_args(a)
-    a.fn(a)
+    # THE HANDLER'S RETURN VALUE IS THE PROCESS STATUS (3.60.0). Every cmd_* returned
+    # None and this line threw it away, so a command that REFUSED to act exited 0 —
+    # indistinguishable, to anything reading the status, from one that did the work. That
+    # was harmless until 3.49.0 made `returncode == 0` a required conjunct for exit
+    # conditions and claims; after it, a condition wrapping a refusing `heal` verb went
+    # green on the refusal. `heal` returns `HEAL_REFUSED` now (see board.cmds.maintain);
+    # every other handler still returns None, which `sys.exit(None)` reports as 0.
+    #
+    # RETURNED RATHER THAN `sys.exit`ed INSIDE THE HANDLER, because cmd_* functions are
+    # called IN PROCESS — by the whole of tests/test_heal.py and by lib/stop_steps.py's
+    # `main(argv)` — and raising SystemExit where none was raised before would make every
+    # one of those callers catch an exception to read a status.
+    return a.fn(a)

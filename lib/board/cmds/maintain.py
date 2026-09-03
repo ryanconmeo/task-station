@@ -27,6 +27,7 @@ import store
 g, set_g = _shared.g, _shared.set_g
 
 __all__ = [
+    "HEAL_REFUSED", "Refusal", "_refused", "_heal_leave",
     "_heal_positional_ref", "_heal_targets", "_heal_scan_one",
     "_heal_scan_report", "_heal_block", "_heal_applied_block",
     "_heal_no_operations_block", "_heal_verb", "_heal_reassign",
@@ -38,6 +39,86 @@ __all__ = [
     "VERIFY_PASSED", "VERIFY_FAILED", "VERIFY_NOTHING",
     "cmd_claims", "cmd_heal", "cmd_session_start", "cmd_sync", "_sync_targets",
 ]
+
+
+# ------------------------------------------------------- a heal that refuses ----
+#
+# A HEAL VERB THAT REFUSES LEAVES NON-ZERO. Until 3.60.0 every heal path exited 0 — a
+# refusal and a performed write were indistinguishable to any caller reading the status.
+# That was harmless while nothing read it and stopped being harmless in 3.49.0, when
+# `returncode == 0` became a REQUIRED CONJUNCT for exit conditions and claims: the
+# conjunct added to close "the output looked right but the command failed" cannot close
+# anything against a command that fails QUIETLY AT STATUS 0, and a refusal message names
+# the verb and the decision numbers, so a loosely-written expected substring matches it.
+# A condition wrapping `heal --merge 2,foo --into 5` went green on the merge never
+# happening.
+#
+# THE BOUNDARY IS WRITE-VS-READ (606:2), and it is drawn on the OUTCOME:
+#
+#   * a WRITING verb that declines to act leaves 2 — --split, --merge, --reassign,
+#     --unassign, --dismiss/--undismiss, --apply, --mark-healed, --dispose-acks,
+#     --goal-reviewed. `--dry-run` follows its verb: a refusal previewed is a refusal
+#     reported, a legal batch previewed is a 0, or the preview is useless as a gate.
+#   * a READ that RAN leaves 0 whatever it found — --scan, --dismissals, --candidates,
+#     --probe-links, --probe-ado and bare `heal` (a dry run is the default). A scan that
+#     finds problems has not failed; it has succeeded at scanning, and making a finding
+#     non-zero would break every caller that wraps one.
+#   * an invocation REFUSED BEFORE IT RAN leaves 2 whichever flags it named, read ones
+#     included — `heal --scan --apply`, `--dismissals --candidates`, an unresolvable
+#     `--task`. Nothing was read and nothing was written, so 0 would report success for a
+#     command that did not happen. `loop.py` already draws the line here for the same
+#     reason ("an unresolvable --task indistinguishable from every condition passing … the
+#     failure direction a release gate must never have"), and that is the precedent this
+#     follows rather than a wider rule of its own.
+#
+# WHAT THIS MUST NOT BECOME, and it is written down because the title invites it: this is
+# NOT a rule about how conditions read status (606:1). The house merge gate is
+# `git show origin/main:scripts/prove_x.sh | bash -s -- --part p`, and before the merge
+# bash reads an EMPTY PROGRAM AND EXITS 0 — there the status is the lie and the substring
+# is the only true signal. Hardening the runner to trust status more would turn every
+# pre-merge red green. The fix belongs here, inside the verbs.
+#
+# HOW IT IS CARRIED. `Refusal` is a `str`, so every existing caller prints it, joins it
+# and slices it unchanged; what it adds is a TYPE the command seam can read. The
+# alternative — threading an `(text, refused)` tuple through nine helpers and every one of
+# their `return err` passthroughs — is the same information with a dozen more places to
+# forget it.
+HEAL_REFUSED = 2          # the verb declined to act; nothing was written
+
+
+class Refusal(str):
+    """A heal message that reports a REFUSAL: the verb declined and nothing was written.
+
+    Being a `str` subclass is the whole design. `print(x)`, `"\\n".join(blocks)` and
+    `x.split()` all behave exactly as they did, so no caller had to change to keep
+    working; only the seam that decides the exit status has to know the type exists.
+
+    JOINING LOSES THE TYPE, deliberately. `"\\n".join([...])` returns a plain `str` even
+    when a member is a Refusal, so a helper that assembles a report out of parts must say
+    so explicitly (`_refused("\\n".join(...))`) rather than inheriting it by accident —
+    a report that is half refusal and half write is a judgement, not a coincidence."""
+    __slots__ = ()
+
+
+def _refused(text):
+    """Mark `text` as a refusal. Idempotent, and it never converts None."""
+    return text if text is None else Refusal(text)
+
+
+def _heal_leave(text):
+    """The exit status `text` reports: `HEAL_REFUSED` for a `Refusal`, else None (0).
+
+    RETURNED, NOT `sys.exit`ed, and that is deliberate. `cmd_heal` is called IN PROCESS by
+    the whole of tests/test_heal.py and by `lib/stop_steps.py`, and a handler that starts
+    raising SystemExit where it never did makes every one of those callers catch an
+    exception to read a status. `cli.main` returns whatever the handler returns and the
+    entry point exits on it, so the process status is identical and no in-process caller
+    has to change.
+
+    Read AFTER the printing and after `maybe_refresh_board()`: a refusal on one task of an
+    `--all` sweep must not swallow the report of the ones that were performed, and the
+    board redraw is a consequence of the writes that DID happen."""
+    return HEAL_REFUSED if isinstance(text, Refusal) else None
 
 
 def _heal_positional_ref(a):
@@ -72,12 +153,14 @@ def _heal_positional_ref(a):
     if not ref:
         return None
     if getattr(a, "all", False):
-        return ("heal: `%s` names ONE task and `--all` sweeps every open task, so the two "
+        return _refused(
+                "heal: `%s` names ONE task and `--all` sweeps every open task, so the two "
                 "cannot be combined — guessing the scope is how the wrong record gets "
                 "reconciled. Pass one or the other. Nothing was read." % ref)
     named = str(getattr(a, "task", None) or "").strip()
     if named and named.casefold() != ref.casefold():
-        return ("heal: `--task %s` and the positional `%s` name different tasks, and "
+        return _refused(
+                "heal: `--task %s` and the positional `%s` name different tasks, and "
                 "there is deliberately no precedence rule between them — a silent winner "
                 "would reconcile a record you did not mean. Pass ONE of them. Nothing was "
                 "read." % (named, ref))
@@ -97,12 +180,13 @@ def _heal_targets(a):
     if ref:
         task = resolve_ref(ref) or load_task(ref)
         if not task:
-            return [], "No task matching '%s'.\n\n%s" % (ref, _format_list())
+            return [], _refused("No task matching '%s'.\n\n%s"
+                                % (ref, _format_list()))
         return [task], None
     task = _session_task(getattr(a, "session", None))
     if not task:
-        return [], ("No task attached — `heal --task <n>` for a specific task, or "
-                    "`heal --all` to sweep the board.")
+        return [], _refused("No task attached — `heal --task <n>` for a specific "
+                            "task, or `heal --all` to sweep the board.")
     return [task], None
 
 
@@ -535,7 +619,9 @@ def _heal_no_operations_block(task, result, ops, attempted=None):
     out.append("")
     out.append("HEALTH: %s" % _heal.health_line(h))
     out.extend(_heal.summary_lines(task, result))
-    return "\n".join(out)
+    # A REFUSAL, and the block says so in its second line. It has said so in words since
+    # 3.20.0 and reported exit 0 the whole time, which is the pair #606 exists to close.
+    return _refused("\n".join(out))
 
 
 def _heal_verb(a):
@@ -567,7 +653,8 @@ def _heal_verb(a):
     sentence, because the numbers alone read as correct whichever list they were copied
     from and the sentences do not."""
     if getattr(a, "all", False):
-        return ("heal: --split/--merge name decision numbers on ONE task, so they cannot "
+        return _refused(
+                "heal: --split/--merge name decision numbers on ONE task, so they cannot "
                 "be combined with --all. Target it with `--task <n>`.")
     tasks, err = _heal_targets(a)
     if err:
@@ -575,7 +662,8 @@ def _heal_verb(a):
     task = tasks[0]
     entries = task.get("decisions") or []
     if not entries:
-        return "heal: task #%s has no decisions to reconcile." % task.get("seq")
+        return _refused("heal: task #%s has no decisions to reconcile."
+                        % task.get("seq"))
     dry = bool(getattr(a, "dry_run", False))
     into, err = _split_decision_refs(getattr(a, "into", None), task, "--into")
     if err:
@@ -588,16 +676,19 @@ def _heal_verb(a):
         if err:
             return err
         if len(subject) != 1:
-            return ("heal --split %s: name exactly ONE decision to split — the parts go "
+            return _refused(
+                    "heal --split %s: name exactly ONE decision to split — the parts go "
                     "in `--into`. Nothing was changed." % split_ref)
         if not into:
-            return ("heal --split %s: pass `--into <n1,n2,…>` naming the decisions it "
+            return _refused(
+                    "heal --split %s: pass `--into <n1,n2,…>` naming the decisions it "
                     "became (add them first with `update --decision`)." % split_ref)
         preview = _verb_preview(task, "--split", [("splitting", subject),
                                                   ("into", into)])
         ok, e = _trial(entries, lambda es: _dec.mark_split(es, subject[0], into))
         if not ok:
-            return "\n".join(preview + ["heal: %s Nothing was changed." % e])
+            return _refused("\n".join(preview
+                                      + ["heal: %s Nothing was changed." % e]))
         if dry:
             return "\n".join(preview + [
                 "  --dry-run: nothing was changed. The batch is legal — re-run without "
@@ -627,10 +718,12 @@ def _heal_verb(a):
         if err:
             return err
         if len(into) != 1:
-            return ("heal --merge %s: pass `--into <n>` naming the ONE decision that "
+            return _refused(
+                    "heal --merge %s: pass `--into <n>` naming the ONE decision that "
                     "absorbed them (add it first with `update --decision`)." % merge_ref)
         if not members:
-            return "heal --merge: name the decisions to merge, e.g. `--merge 3,7,9`."
+            return _refused(
+                    "heal --merge: name the decisions to merge, e.g. `--merge 3,7,9`.")
         preview = _verb_preview(task, "--merge", [("merging", members),
                                                   ("into", into)])
         # TRIAL THE WHOLE BATCH ON A COPY. This loop used to write as it went and collect
@@ -644,7 +737,8 @@ def _heal_verb(a):
             return True, None
         ok, e = _trial(entries, _mark_all)
         if not ok:
-            return "\n".join(preview + ["heal: %s Nothing was changed." % e])
+            return _refused("\n".join(preview
+                                      + ["heal: %s Nothing was changed." % e]))
         if dry:
             return "\n".join(preview + [
                 "  --dry-run: nothing was changed. The batch is legal — re-run without "
@@ -661,7 +755,8 @@ def _heal_verb(a):
                     % (", ".join(str(n) for n in members), into[0],
                        _heal._task_ref(task), _heal._restore_flags(members)))
     if not msgs:
-        return "heal: nothing to do (pass --split or --merge with --into)."
+        return _refused(
+                "heal: nothing to do (pass --split or --merge with --into).")
     task["decisions"] = entries
     # A split or a merge IS reconciliation, so it stamps — same rule as any other
     # operation-performing --apply. This path used to return without stamping, which is
@@ -704,7 +799,8 @@ def _heal_reassign(a):
     the source second; unassign saves the source first. A half-write in the safe order
     leaves an index pointer the read side already drops, i.e. no visible change at all."""
     if getattr(a, "all", False):
-        return ("heal --reassign/--unassign name decision numbers on ONE task, so they "
+        return _refused(
+                "heal --reassign/--unassign name decision numbers on ONE task, so they "
                 "cannot be combined with --all. Target it with `--task <n>`.")
     tasks, err = _heal_targets(a)
     if err:
@@ -717,10 +813,12 @@ def _heal_reassign(a):
     if err:
         return err
     if reassign and unassign:
-        return ("heal: --reassign and --unassign are inverses of each other — run them as "
+        return _refused(
+                "heal: --reassign and --unassign are inverses of each other — run them as "
                 "two commands so each report says plainly what it did.")
     if not reassign and not unassign:
-        return ("heal --reassign/--unassign: name the decision numbers, e.g. "
+        return _refused(
+                "heal --reassign/--unassign: name the decision numbers, e.g. "
                 "`--reassign 30,31 --to 532` or `--reassign %s:30`. "
                 "`task-station history %s` numbers them."
                 % (_own.task_ref(task), _heal._task_ref(task)))
@@ -732,7 +830,7 @@ def _heal_reassign(a):
     linked = get_link(sid) if sid else None
     ok, refusal = _own.may_reassign_out(task, linked, load=load_task)
     if not ok:
-        return refusal
+        return _refused(refusal)
     dry = bool(getattr(a, "dry_run", False))
     if unassign:
         if dry:
@@ -742,15 +840,18 @@ def _heal_reassign(a):
         return _heal_unassign_writes(task, unassign)
     to_ref = (getattr(a, "to", None) or "").strip()
     if not to_ref:
-        return ("heal --reassign %s: pass `--to <task>` naming the task that will OWN "
+        return _refused(
+                "heal --reassign %s: pass `--to <task>` naming the task that will OWN "
                 "(render in full) those decisions."
                 % ",".join(str(n) for n in reassign))
     owner_task = resolve_ref(to_ref) or load_task(to_ref)
     if not owner_task:
-        return ("heal --reassign: no task matching --to %r. Nothing was changed." % to_ref)
+        return _refused(
+                "heal --reassign: no task matching --to %r. Nothing was changed." % to_ref)
     stub = getattr(a, "stub", None)
     if stub is not None and len(reassign) > 1:
-        return ("heal --reassign: one --stub cannot describe %d different rulings — a "
+        return _refused(
+                "heal --reassign: one --stub cannot describe %d different rulings — a "
                 "stub is that ruling's reference line, and a shared one names none of "
                 "them. Reassign them one at a time, or drop --stub and let each stub "
                 "come from its own first sentence." % len(reassign))
@@ -766,7 +867,8 @@ def _heal_reassign(a):
     for n in reassign:
         ok, err = _own.reassign(trial_src, trial_own, n, stub_text=stub)
         if not ok:
-            return "\n".join(preview + ["heal: %s Nothing was changed." % err])
+            return _refused("\n".join(preview
+                                      + ["heal: %s Nothing was changed." % err]))
     if dry:
         return "\n".join(preview + [
             "  --dry-run: nothing was changed. The batch is legal — re-run without "
@@ -795,7 +897,7 @@ def _heal_reassign(a):
 def _heal_unassign_writes(task, indices):
     """`heal --unassign N,…` — bring ownership home. The SOURCE is written first (the
     prose renders here again before the pointer goes), then each owner's index."""
-    owners, done, msgs = {}, [], []
+    owners, done, msgs, refused = {}, [], [], False
     entries = task.get("decisions") or []
     for n in indices:
         oid = None
@@ -807,6 +909,10 @@ def _heal_unassign_writes(task, indices):
         if ok:
             done.append(n)
         else:
+            # NOT all-or-nothing, and that is this verb's own rule: an unassign brings
+            # ownership HOME, so the ones that came back are safe to keep. But one member
+            # declined is still a refusal — the caller asked for N and got fewer.
+            refused = True
             msgs.append("heal: %s" % err)
     if done:
         task["updated_ts"] = _now()
@@ -819,7 +925,10 @@ def _heal_unassign_writes(task, indices):
         msgs.append("brought decision(s) %s back to #%s — it renders them in full again "
                     "and the reference stub is gone"
                     % (", ".join(str(n) for n in done), task.get("seq")))
-    return "\n".join(msgs) if msgs else "heal --unassign: nothing to do."
+    if not msgs:
+        return _refused("heal --unassign: nothing to do.")
+    out = "\n".join(msgs)
+    return _refused(out) if refused else out
 
 
 def _split_str_list(raw):
@@ -871,16 +980,19 @@ def _split_decision_refs(raw, task, flag):
             continue
         who, num = _own.parse_ref(s)
         if num is None:
-            return None, ("heal %s: %r is not a decision number. Pass `<n>`, or "
+            return None, _refused(
+                          "heal %s: %r is not a decision number. Pass `<n>`, or "
                           "`<task>:<n>` exactly as the decision list prints it. Nothing "
                           "was changed." % (flag, s))
         if who is not None:
             other = resolve_ref(who) or load_task(who)
             if not other:
-                return None, ("heal %s %s: no task matching %r. Nothing was changed."
+                return None, _refused(
+                              "heal %s %s: no task matching %r. Nothing was changed."
                               % (flag, s, who))
             if other.get("id") != task.get("id"):
-                return None, ("heal %s %s: that number is #%s's, and this command is "
+                return None, _refused(
+                              "heal %s %s: that number is #%s's, and this command is "
                               "aimed at #%s. Decision numbers are PER-TASK — re-run with "
                               "`--task %s`, or name #%s's own number. Nothing was changed."
                               % (flag, s, other.get("seq"), task.get("seq"),
@@ -948,11 +1060,16 @@ def _heal_mark(a, tasks):
 
     This is a WRITE, so it obeys the same rule as `--apply`: back up first, refuse
     without a backup. It does NOT run the mechanical plan — that is exactly the point."""
-    out = []
+    out, refused = [], False
     note = (getattr(a, "note", None) or "").strip()
     for task in tasks:
         path = _heal.backup(task, strip=store.strip_rev)
         if not path:
+            # ONE REFUSED TASK REFUSES THE INVOCATION. Under `--all` the others may well
+            # have been stamped, and their report is printed in full — but a caller
+            # reading only the status asked "did what I asked happen?", and for at least
+            # one task it did not.
+            refused = True
             out.append("[HEAL] Task #%s — REFUSED: could not write the pre-heal backup "
                        "under %s, so nothing was recorded."
                        % (task.get("seq"), _heal.gate_dir()))
@@ -973,7 +1090,8 @@ def _heal_mark(a, tasks):
                       " (no --note given; a why is worth one line)",
                       _heal.health_line(h),
                       ("YES — %s" % "; ".join(reasons)) if is_due else "no"))
-    return "\n\n".join(out)
+    joined = "\n\n".join(out)
+    return _refused(joined) if refused else joined
 
 
 def _heal_dismissals_report(task):
@@ -1017,10 +1135,14 @@ def _heal_dismiss_writes(a, task):
     # run them would refuse a legitimate `--dismiss drift:branch x` as "no such finding".
     result = _heal_scan_one(task, probe_branches=True)
     everything = (result.get("findings") or []) + (result.get("dismissed") or [])
-    lines, changed = [], False
+    lines, changed, refused = [], False, False
     for sel in undismiss:
         entry, err = _heal.undismiss(task, sel, sid=sid)
         if err:
+            # A selector that named nothing is a refusal even when a sibling selector in
+            # the same invocation worked: the ledger the caller asked for is not the
+            # ledger they got, and the ledger is the whole point of the verb.
+            refused = True
             lines.append(err)
             continue
         changed = True
@@ -1031,6 +1153,7 @@ def _heal_dismiss_writes(a, task):
     for sel in dismiss:
         entry, err = _heal.dismiss(task, everything, sel, why, sid=sid)
         if err:
+            refused = True
             lines.append(err)
             continue
         changed = True
@@ -1061,9 +1184,10 @@ def _heal_dismiss_writes(a, task):
                                      ("YES — %s" % "; ".join(reasons)) if is_due else "no"))
         lines.append("  %d dismissal(s) in force · `heal --dismissals --task %s` lists them "
                      "with their whys." % (len(_heal.active_dismissals(task)), seq))
-    return "[HEAL] Task #%s [%s] — %s\n%s" % (seq, task["id"][:8], task["title"],
-                                              "\n".join("  " + ln if ln else ""
-                                                        for ln in lines))
+    block = "[HEAL] Task #%s [%s] — %s\n%s" % (seq, task["id"][:8], task["title"],
+                                               "\n".join("  " + ln if ln else ""
+                                                         for ln in lines))
+    return _refused(block) if refused else block
 
 
 def _heal_goal_reviewed(a, tasks):
@@ -1077,10 +1201,11 @@ def _heal_goal_reviewed(a, tasks):
 
     REFUSED on a task with no goal: there is nothing to have reviewed, and stamping one
     would put a baseline on a field that does not exist."""
-    out = []
+    out, refused = [], False
     for task in tasks:
         seq = task.get("seq", task["id"][:8])
         if not str(task.get("goal") or "").strip():
+            refused = True
             out.append("[HEAL] Task #%s — REFUSED: this task has no goal line, so there is "
                        "nothing to record a review of. Set one with `update --task %s "
                        "--goal '<what done looks like>'`." % (seq, seq))
@@ -1101,7 +1226,8 @@ def _heal_goal_reviewed(a, tasks):
                       (" from %d" % before.get("since_review"))
                       if before.get("since_review") else "",
                       str(task.get("goal") or "").strip(), seq))
-    return "\n\n".join(out)
+    joined = "\n\n".join(out)
+    return _refused(joined) if refused else joined
 
 
 def _heal_candidates_report(task):
@@ -1128,13 +1254,14 @@ def _heal_dispose(a, task, result):
                                      memory=getattr(a, "memory", None),
                                      noop=getattr(a, "noop", None))
     if err:
-        return [], ("heal --dispose-acks: %s"
-                    % err.split("memo ack: ", 1)[-1])
+        return [], _refused("heal --dispose-acks: %s"
+                            % err.split("memo ack: ", 1)[-1])
     pairs, err = _heal.select_acks(task, _split_str_list(getattr(a, "dispose_acks", None)))
     if err:
-        return [], err
+        return [], _refused(err)
     if not pairs:
-        return [], ("heal --dispose-acks: task #%s has no undispositioned ack to "
+        return [], _refused(
+                    "heal --dispose-acks: task #%s has no undispositioned ack to "
                     "retro-fill — the scan reports %d."
                     % (task.get("seq"),
                        _heal.counts(result).get("ack-undispositioned", 0)))
@@ -1619,12 +1746,16 @@ def cmd_heal(a):
     ref_error = _heal_positional_ref(a)
     if ref_error:
         print(ref_error)
-        return
+        return _heal_leave(ref_error)
     tasks, err = _heal_targets(a)
     if err:
         print(err)
-        return
+        return _heal_leave(err)
     if not tasks:
+        # NOT a refusal, and the distinction is the point: `--all` on a board with no open
+        # task named no target that could be declined. Nothing was asked for and nothing
+        # was withheld, so this stays 0 — the same reading that keeps a scan finding
+        # problems at 0.
         print("No open tasks to heal.")
         return
     scan_only = getattr(a, "scan", False)
@@ -1663,7 +1794,7 @@ def cmd_heal(a):
               "combined. Scan first, then run the operations you decided on — and note "
               "that the `heal` SKILL drives that whole sequence, so you should not need "
               "to type either flag yourself.")
-        return
+        return HEAL_REFUSED
     # THE TWO READ-ONLY VIEWS, first because they write nothing and can therefore refuse
     # early and cheaply. Neither is combinable with anything else: somebody who typed a view
     # AND a write is owed a refusal rather than half of each, and a view that quietly ran
@@ -1672,14 +1803,17 @@ def cmd_heal(a):
         if listing and candidates:
             print("heal --dismissals lists the adjudication ledger and --candidates prints "
                   "the merge groups — two different reads, so run them as two commands.")
-            return
+            return HEAL_REFUSED
         flag = "--dismissals" if listing else "--candidates"
         clash = _others(flag)
         if clash:
             print("heal %s is a READ: it changes nothing, performs nothing and stamps "
                   "nothing, so it cannot be combined with %s. Run it on its own."
                   % (flag, ", ".join(clash)))
-            return
+            # A REFUSED READ IS STILL A REFUSAL. The ledger was not printed and the merge
+            # groups were not printed, so exit 0 would report success for a command that
+            # did not run. What keeps its 0 is a read that RAN — the two lines below.
+            return HEAL_REFUSED
         view = _heal_dismissals_report if listing else _heal_candidates_report
         print("\n\n".join(view(t) for t in tasks))
         return
@@ -1690,32 +1824,34 @@ def cmd_heal(a):
             print("heal --scan is read-only, so it cannot dismiss anything. Use `heal "
                   "--apply --dismiss '<check>:<ref>' --why '<reason>'` to record the "
                   "adjudication, or `heal --dismissals` to read the ledger.")
-            return
+            return HEAL_REFUSED
         clash = _others("--dismiss", "--undismiss", "--apply")
         if clash:
             print("heal --dismiss/--undismiss adjudicate what the scan REPORTS; %s "
                   "change(s) what the record SAYS. One report cannot honestly tell both "
                   "stories, and a dismissal must never stamp a heal — run them separately."
                   % ", ".join(clash))
-            return
+            return HEAL_REFUSED
         if sweeping:
             print("heal --dismiss/--undismiss name a finding on ONE task — a ref means "
                   "nothing board-wide, and one shared --why across unrelated work is not an "
                   "adjudication. Target it with `--task <n>`.")
-            return
+            return HEAL_REFUSED
         if not apply_it:
             print("heal --dismiss/--undismiss WRITE the ledger, and a bare `heal` is a dry "
                   "run that changes nothing — so this would have silently done nothing. "
                   "Re-run it as `heal --apply --dismiss '<check>:<ref>' --why '<reason>' "
                   "--task <n>`. Nothing was changed.")
-            return
-        print(_heal_dismiss_writes(a, tasks[0]))
+            return HEAL_REFUSED
+        out = _heal_dismiss_writes(a, tasks[0])
+        print(out)
         maybe_refresh_board()
-        return
+        return _heal_leave(out)
     # RECORDING A GOAL RE-READ. Allowed alongside --mark-healed and nothing else: those two
     # are the honest pair for "I read everything, including the goal, and it is all still
     # true", and requiring two commands for one pass would be ceremony. Every other
     # combination is refused, because this stamps a claim about one specific line.
+    goal_refused = False        # …unless --goal-reviewed ran and declined; see below
     if goal_reviewed:
         clash = _others("--goal-reviewed", "--mark-healed")
         if clash:
@@ -1723,12 +1859,17 @@ def cmd_heal(a):
                   "still true. It performs no operation, so it cannot be combined with %s. "
                   "It may be combined with --mark-healed, which is the honest pair for a "
                   "judgement-only pass that included the goal." % ", ".join(clash))
-            return
-        print(_heal_goal_reviewed(a, tasks))
+            return HEAL_REFUSED
+        reviewed = _heal_goal_reviewed(a, tasks)
+        print(reviewed)
         if not marking:
             maybe_refresh_board()
-            return
+            return _heal_leave(reviewed)
         print("")            # …and the judgement-only stamp follows, explicitly asked for
+        # THE PAIR REFUSES IF EITHER HALF DID. `--goal-reviewed --mark-healed` is one pass
+        # in the caller's head, so a goal-review that was refused must not be reported as
+        # success by a stamp that happened to succeed after it.
+        goal_refused = isinstance(reviewed, Refusal)
     if marking:
         # A stamp is not a scan and not a plan — refuse the combinations rather than
         # silently picking one, so nobody can think they applied a plan they didn't.
@@ -1739,15 +1880,16 @@ def cmd_heal(a):
                   "operation, so it cannot be combined with --scan, --apply, "
                   "--dispose-acks, --split or --merge. Run it on its own, after the "
                   "verbs.")
-            return
+            return HEAL_REFUSED
         if sweeping:
             print("[HEAL] SCOPE: --all covers %d open/active task(s) — %s. Each will be "
                   "BACKED UP and stamped as healed; no decision is touched."
                   % (len(tasks), ", ".join("#%s" % t.get("seq") for t in tasks)))
             print("")
-        print(_heal_mark(a, tasks))
+        marked = _heal_mark(a, tasks)
+        print(marked)
         maybe_refresh_board()
-        return
+        return _heal_leave(_refused(marked) if goal_refused else marked)
     if assigns:
         # OWNERSHIP IS ITS OWN INVOCATION, for the reason every other mode here is: it
         # writes TWO tasks, and a report that also carried a scan or a mechanical plan
@@ -1757,9 +1899,10 @@ def cmd_heal(a):
             print("heal --reassign/--unassign move a ruling's OWNERSHIP between two "
                   "tasks; %s change(s) one task's own log. One report cannot honestly "
                   "tell both stories — run them separately." % ", ".join(clash))
-            return
-        print(_heal_reassign(a))
-        return
+            return HEAL_REFUSED
+        moved = _heal_reassign(a)
+        print(moved)
+        return _heal_leave(moved)
     if getattr(a, "split", None) is not None or getattr(a, "merge", None) is not None:
         # `--into` is ONE option, so passing it twice silently keeps only the last value
         # and the other verb links to the wrong target. Refuse rather than mislink: each
@@ -1767,20 +1910,21 @@ def cmd_heal(a):
         if getattr(a, "split", None) is not None and getattr(a, "merge", None) is not None:
             print("heal: --split and --merge each need their own --into, and --into can only "
                   "be given once — run them as two separate commands.")
-            return
-        print(_heal_verb(a))
-        return
+            return HEAL_REFUSED
+        marked = _heal_verb(a)
+        print(marked)
+        return _heal_leave(marked)
     if dispose and sweeping:
         # An id8 names an ack on ONE task, and `all` means "every undispositioned ack on
         # THIS task" — sweeping the board with one disposition reason would put the same
         # sentence on acks from unrelated work.
         print("heal --dispose-acks names acks on ONE task, so it cannot be combined with "
               "--all. Target it with `--task <n>`.")
-        return
+        return HEAL_REFUSED
     if dispose and scan_only:
         print("heal --scan is read-only, so it cannot dispose of anything. Drop --scan "
               "for the dry run, or add --apply to record the dispositions.")
-        return
+        return HEAL_REFUSED
     # --all is the ONLY path that can touch more than one record. Say so loudly, and
     # say it BEFORE anything happens — including before a mutating --apply.
     if sweeping:
@@ -1849,9 +1993,10 @@ def cmd_heal(a):
         # backup is the one shape of this feature that could lose work.
         path = _heal.backup(task, strip=store.strip_rev)
         if not path:
-            blocks.append("[HEAL] Task #%s — REFUSED: could not write the pre-heal "
+            blocks.append(_refused(
+                          "[HEAL] Task #%s — REFUSED: could not write the pre-heal "
                           "backup under %s, so nothing was changed."
-                          % (task.get("seq"), _heal.gate_dir()))
+                          % (task.get("seq"), _heal.gate_dir())))
             continue
         session = getattr(a, "session", None)
 
@@ -1894,6 +2039,12 @@ def cmd_heal(a):
     print("\n\n".join(blocks))
     if apply_it and not scan_only:
         maybe_refresh_board()
+    # ONE REFUSED TASK REFUSES THE SWEEP. `"\n\n".join` flattens the type away — that is
+    # why the blocks are asked BEFORE they are joined — so a `--all --apply` in which nine
+    # tasks were reconciled and one was refused reports non-zero and prints all ten. The
+    # status answers "did everything I asked happen?", and it did not.
+    return _heal_leave(_refused("") if any(isinstance(b, Refusal) for b in blocks)
+                       else "")
 
 
 def cmd_session_start(a):
