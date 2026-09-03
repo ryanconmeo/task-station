@@ -46,9 +46,14 @@ session that never ran.
 **3.58.0's GUARANTEE SURVIVES ITS CONSTANTS.** "A handoff is never cut mid-word" is now
 true by construction. `tests/test_handoff_whole_sentence.py` asserts THAT — no ellipsis
 and no truncation marker anywhere in the written file, on a record whose every section
-overruns every cap that used to apply — instead of pinning `NEXT_CHARS == 320`. Its
-sentence-boundary coverage of `save.next_line` moved to `tests/test_save_ux.py` rather
-than being deleted alongside the cap it served.
+overruns every cap that used to apply — instead of pinning `NEXT_CHARS == 320`.
+
+**AND `save.next_line` GOES WITH THE CAP IT SERVED** — added in 3.58.0 for this one
+caller, needing the first-move sentence to fit inside a 320-character argument, and
+orphaned the moment the argument stopped carrying the handoff. So do `_ABBREV_FLOOR` and
+the tests pinning its boundary rules. A sentence-boundary helper left behind in `save.py`
+would be a FOSSIL of the argv — the next reader who found it would reasonably infer the
+relay still trims, which is the same confusion the caps created one module over.
 
 **THE SEVEN FAILING TESTS ARE REWRITTEN, NEVER DELETED.** Each greped the SPAWN COMMAND
 for content that now lives in the file, so each asserts the ARGV NAMES THE FILE and the

@@ -105,49 +105,6 @@ def leads_with_next(state):
     return str(state or "").strip().upper().startswith(NEXT_PREFIX)
 
 
-_ABBREV_FLOOR = 25      # below this a terminator is an abbreviation, not a sentence end
-
-
-def next_line(state):
-    """The NEXT: SENTENCE alone — the concrete first move, without the standing report
-    that follows it. `""` when the state does not lead with NEXT:.
-
-    THE BOUNDARY WAS ALWAYS KNOWN AND ALWAYS THROWN AWAY. `leads_with_next` answers
-    "does this open with a first move" and returns a BOOLEAN, so the relay learned that a
-    sentence was there and then clipped the whole state at a character count anyway,
-    cutting mid-word and spending most of its budget on standing detail the successor
-    could read in the digest. This returns the extent instead of the yes/no.
-
-    WHERE THE MOVE ENDS, narrowed by measurement rather than by taste. Taking the whole
-    first LINE was the obvious reading of "the NEXT: line" and it is not enough: measured
-    on this programme's own record, #444's first line runs 541 characters — well past the
-    relay's 320 bound — because sessions write the move and three sentences of rationale
-    on one line. So the move is the FIRST SENTENCE of that line, which on the same record
-    is 119 characters and is the whole actionable instruction; everything after it is
-    context the successor reads in the digest.
-
-    Order: first blank line, then first newline, then the first sentence terminator. A
-    terminator only counts when a space follows it, so `3.57.0` and `succession.py` do not
-    end a sentence — abbreviations and version numbers are exactly what a naive split on
-    "." gets wrong, and a move cut at `3.` is worse than no fix at all."""
-    import re as _re
-    text = str(state or "")
-    if not leads_with_next(text):
-        return ""
-    head = text.split("\n\n", 1)[0].split("\n", 1)[0].strip()
-    if not head:
-        head = " ".join(text.split())
-    # A terminator only counts when whitespace follows, so `3.57.0` and `succession.py`
-    # do not end a sentence. The length floor then catches the abbreviation case that
-    # rule cannot — `e.g.` and `Dr.` DO have a space after them — and it is deliberately
-    # LOW: an earlier 40 rejected "NEXT: ship 3.57.0 to main, then verify." at position
-    # 39 and handed back the whole line, which is the failure this function exists to fix.
-    m = _re.search(r"[.!?](?=\s)", head)
-    if m and m.end() >= _ABBREV_FLOOR:
-        return head[:m.end()].strip()
-    return head
-
-
 # -- the OUTWARD IMPERATIVE in a state line ----------------------------------------
 #
 # WHY THIS EXISTS, and it is the highest-consequence defect this programme has produced:

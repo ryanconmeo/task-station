@@ -268,48 +268,6 @@ class TestStalenessChecks(_Base):
         self.assertEqual(report["stale"], [])
 
 
-class TestTheFirstMoveSentence(_Base):
-    """`next_line` — the NEXT: SENTENCE alone, without the standing report after it.
-
-    MOVED HERE FROM tests/test_handoff_whole_sentence.py in 3.61.0, with the assertions
-    unchanged. It was written for the relay, which called it to fit the first move inside
-    a 320-character launch argument; the relay now writes the whole handoff to a FILE and
-    sends the state line entire, so it has no caller left in `lib/`. The coverage moves
-    to the module that owns the function rather than being deleted with the cap it used
-    to serve — the sentence boundary is the non-obvious part, and a future caller
-    (a digest line, a board row) would want it correct rather than rediscovered.
-    """
-
-    def test_the_standing_report_after_the_move_is_dropped(self):
-        state = ("NEXT: do the one thing that matters. Standing: everything else is "
-                 "fine.")
-        self.assertEqual(sv.next_line(state), "NEXT: do the one thing that matters.")
-
-    def test_only_the_first_paragraph_is_considered(self):
-        state = "NEXT: do the thing.\n\nA whole second paragraph of standing report."
-        self.assertEqual(sv.next_line(state), "NEXT: do the thing.")
-
-    def test_a_version_number_does_not_end_the_sentence(self):
-        """A move cut at `3.` is worse than no fix at all — a terminator counts only
-        when whitespace follows it."""
-        self.assertEqual(sv.next_line("NEXT: ship 3.57.0 to main, then verify. "
-                                      "Standing."),
-                         "NEXT: ship 3.57.0 to main, then verify.")
-
-    def test_a_filename_does_not_end_the_sentence(self):
-        self.assertEqual(sv.next_line("NEXT: patch succession.py and re-run. Standing."),
-                         "NEXT: patch succession.py and re-run.")
-
-    def test_an_early_abbreviation_does_not_end_the_sentence(self):
-        # `e.g.` DOES have a space after it, so the whitespace rule cannot catch it —
-        # the length floor is what does.
-        line = sv.next_line("NEXT: fix e.g. this one thing. Then everything else.")
-        self.assertTrue(line.startswith("NEXT: fix e.g. this one thing"))
-
-    def test_a_state_with_no_next_prefix_has_no_first_move(self):
-        self.assertEqual(sv.next_line("Standing report with no move at all. " * 40), "")
-
-
 class TestSinceTheLastCheckpoint(_Base):
     def test_never_checkpointed_says_so_and_does_not_call_the_log_new(self):
         t = self._task(summary=GOOD_SUMMARY, decisions=["a", "b", "c"])

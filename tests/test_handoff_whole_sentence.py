@@ -18,8 +18,13 @@ anywhere in the file a successor is sent to read.
 MEASURED, on #444's own record: the written handoff is 27,891 characters with ZERO
 ellipses. The argv prompt it replaced was 1,387 characters with SIX.
 
-The sentence-boundary tests that were here moved to tests/test_save_ux.py, beside the
-`save.next_line` function they are about. Nothing was dropped.
+AND THE SENTENCE-BOUNDARY MACHINERY IS GONE WITH THE CAP IT SERVED. `save.next_line`
+existed for exactly one caller — this relay, needing the first-move sentence to fit inside
+a 320-character launch argument. That constraint is deleted, so the function is too, along
+with `_ABBREV_FLOOR` and the tests that pinned its boundary rules. Leaving a
+sentence-boundary helper behind in `save.py` would be a FOSSIL of the argv: the next reader
+who found it would reasonably infer the relay still trims, which is the same confusion the
+caps created one module over. Git keeps it if a caller ever appears.
 """
 import os
 import sys
