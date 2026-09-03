@@ -38,6 +38,13 @@ pins one per class.
      predecessor's model selection — a relay that silently dropped a 1M window to 200k
      would hand the successor one fifth of the context to finish the same work in.
 
+  3b. ONE HANDOFF PER SUCCESSOR (`HandoffPerSuccessor`). The handoff is a file named
+     after the session it is addressed to, so two relays on one task cannot write one
+     path — they used to, and the second replaced a handoff the first successor had not
+     read yet. The stable per-task name 444:511 documents survives as a POINTER to the
+     newest one, and it moves only once a session is confirmed, for the same reason the
+     ledger entry does.
+
   4. THE HANDOFF IS GRADEABLE (`GradedHandoff`). A relay happens inside one task's life,
      so nothing about it ever reached the parent's gate — a thin handoff was invisible.
      Each one is now a ledger entry carrying the mechanical evidence a grader needs, and
@@ -59,6 +66,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 
@@ -275,18 +283,35 @@ class _SuccessionTest(unittest.TestCase):
         self.assertEqual(len(self.opened), 1, self.opened)
         return self.opened[0]
 
-    def _pointed_at(self):
+    def _pointed_at(self, text=None):
         """The handoff path the launch argument names, PARSED BACK OUT of that command.
 
         Every assertion about the file goes through here rather than rebuilding the path,
         so what is read is the file the successor was actually sent to. A relay that
         wrote a good handoff and pointed somewhere else would pass a test that looked in
-        the expected place and fail this one."""
-        m = re.search(r"\S+-CONTINUATION\.md", self._launched())
-        self.assertIsNotNone(m, self._launched())
+        the expected place and fail this one.
+
+        THE MATCH REQUIRES THE SUCCESSOR'S OWN SESSION ID, and that is the whole point of
+        the pattern rather than an extra check. This used to read `\\S+-CONTINUATION\\.md`,
+        which still matches the per-successor name — so it would have gone green against
+        the shared per-task path it replaced, proving nothing about the change it was
+        rewritten for. The id comes out of the command's own `--session-id`, so a pointer
+        naming any other session's handoff finds no match at all.
+
+        `text` is for the paths where no window opens (`--print-command`), where the
+        command reaching the human is on stdout rather than at the opener."""
+        cmd = self._launched() if text is None else text
+        sid = _sid_in(cmd)
+        self.assertIsNotNone(sid, cmd)
+        m = re.search(r"\S*%s\S*-CONTINUATION\.md" % re.escape(sid[:8]), cmd)
+        self.assertIsNotNone(m, cmd)
         path = m.group(0)
         self.assertTrue(os.path.isfile(path), path)
         return path
+
+    def _stable(self, task):
+        """The stable per-task name a human types — pinned decision 444:511's path."""
+        return _succ.stable_handoff_path(task)
 
     def _handoff_text(self):
         """The handoff the successor will read, off disk."""
@@ -1327,6 +1352,144 @@ class SuccessorSpawn(_SuccessionTest):
         out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
         self.assertEqual(code, 2)
         self.assertEqual(self.opened, [])
+
+
+# =========================================== 3b · one handoff per successor ====
+
+class HandoffPerSuccessor(_SuccessionTest):
+    """TWO RELAYS ON ONE TASK CANNOT WRITE ONE FILE.
+
+    The handoff used to be stored at one path per TASK and opened `"w"`, so the second
+    relay replaced a handoff the first successor had not read yet — and the read happens
+    in another process, minutes later, after that successor's own SessionStart, so no
+    ordering inside `relay` could have closed the window. It had already forced two
+    manual renames on #444's own handoff directory.
+
+    THE FILE IS NAMED AFTER ITS READER and the stable per-task name survives as a
+    POINTER, because pinned decision 444:511 tells a cold session to open exactly that
+    path by hand. The pointer is a claim about a session, so — like the ledger entry one
+    branch below it — it moves only once a session is confirmed.
+    """
+
+    def test_two_relays_on_one_task_leave_the_first_handoff_untouched(self):
+        """THE DEFECT, at the level a successor meets it: relay twice and read the first
+        successor's file back on the bytes. Before this change there was one file, and
+        the first successor woke to a handoff addressed to the second."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out1, code1 = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code1, 0, out1)
+        first = self._pointed_at(out1)
+        before = open(first, "rb").read()
+        out2, code2 = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code2, 0, out2)
+        second = self._pointed_at(out2)
+        self.assertNotEqual(first, second)
+        self.assertEqual(open(first, "rb").read(), before)
+
+    def test_the_pointer_names_the_successors_own_file(self):
+        """The launch argument is the only thing the successor has, so the id in the
+        path has to be the id in the command — otherwise the file is named for a
+        session nobody sent there."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        cmd = self._launched()
+        successor_sid = _sid_in(cmd)
+        self.assertIn(successor_sid[:8], os.path.basename(self._pointed_at()))
+
+    def test_a_confirmed_relay_leaves_the_stable_name_on_the_newest_handoff(self):
+        """The path a human types keeps working, and what it resolves to is the handoff
+        just written — read through the stable name, not inferred from its target."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        stable = self._stable(task)
+        with open(stable, encoding="utf-8") as fh:
+            through_the_pointer = fh.read()
+        with open(self._pointed_at(), encoding="utf-8") as fh:
+            self.assertEqual(through_the_pointer, fh.read())
+        self.assertIn(stable, out)
+
+    def test_print_command_writes_the_file_and_moves_no_pointer(self):
+        """NOTHING WAS HANDED OFF, so nothing may claim it was. The printed command has
+        to work when a human runs it — so the sid-qualified file IS written — but the
+        stable name must not resolve to a session that never ran. This is the rule the
+        ledger entry twenty lines below already keeps."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True,
+                                print_command=True)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.opened, [])
+        self.assertTrue(os.path.isfile(self._pointed_at(out)))
+        self.assertFalse(os.path.lexists(self._stable(task)), self._stable(task))
+
+    def test_a_window_that_never_registers_moves_no_pointer_either(self):
+        """The other unconfirmed path, and the one that used to leave the worst artefact:
+        an opener that exits 0 while no session comes up."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        self.window_registers = False
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(os.path.isfile(self._pointed_at()))
+        self.assertFalse(os.path.lexists(self._stable(task)), self._stable(task))
+
+    def test_a_pointer_that_cannot_be_made_is_a_named_skip_and_the_relay_succeeds(self):
+        """A SKIP, SAID OUT LOUD — never a copy, never a failed relay. The successor is
+        already pointed at a written file, so the whole cost is one `ls` for a human;
+        what would be unrecoverable is a relay that refused after the handoff was
+        written, and what would be wrong is a second copy of the record at the stable
+        name."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        os.makedirs(self._stable(task), exist_ok=True)      # something else holds the name
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        self.assertIn("NOT updated", out)
+        self.assertIn(self._stable(task), out)
+        self.assertIn("SKIPPED", out)
+        # The relay still happened: the handoff is written, and the ledger has it.
+        self.assertTrue(os.path.isfile(self._pointed_at()))
+        self.assertEqual(len(_succ.handoffs(ts.load_task(task["id"]))), 1)
+
+    def test_a_handoff_already_at_the_stable_name_is_moved_aside_and_said_so(self):
+        """Every task that relayed before 3.62.0 has a REAL handoff at the stable name,
+        and it is the only copy of itself — so it is renamed, not replaced. A file moved
+        under a human with nothing printed is a human working out where it went, so the
+        relay names the new path."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        stable = self._stable(task)
+        os.makedirs(os.path.dirname(stable), exist_ok=True)
+        with open(stable, "w", encoding="utf-8") as fh:
+            fh.write("THE OLD HANDOFF, whose only copy this is.\n")
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        aside = stable[:-len(".md")] + ".superseded.md"
+        self.assertIn(aside, out)
+        with open(aside, encoding="utf-8") as fh:
+            self.assertIn("THE OLD HANDOFF", fh.read())
+        # …and the stable name is now the pointer, reading as the handoff just written.
+        with open(stable, encoding="utf-8") as fh:
+            self.assertIn("you are session %s-1" % task["seq"], fh.read())
+
+    def test_the_written_handoff_says_who_it_is_for_who_wrote_it_and_when(self):
+        """A human who opened the path by hand needs to tell a live handoff from a spent
+        one, and the header is where that answer goes — in prose, with no front-matter
+        and no checksum."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        head = "\n".join(self._handoff_text().splitlines()[:4])
+        self.assertIn("you are session %s-1" % task["seq"], head)
+        self.assertIn("succeeding %s-0" % task["seq"], head)
+        self.assertIn(time.strftime("%Y-%m-%d %H:%M"), head)
+        self.assertIn("spent", head)
 
 
 # ==================================================== 4 · grading the handoff ====

@@ -3,6 +3,71 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.62.0] — 2026-09-03
+
+**A HANDOFF IS ADDRESSED TO ONE SESSION, SO IT IS STORED UNDER THAT SESSION'S NAME.**
+`write_handoff` computed one path per TASK — `<data>/handoff/<seq>-CONTINUATION.md` — and
+opened it `"w"`, an unconditional truncate. Two relays on one task therefore wrote ONE
+file, and the second replaced a handoff the first successor had not read yet.
+
+**NOTHING IN THE RELAY COULD HAVE CLOSED THAT WINDOW.** The read happens in another
+process, minutes later, after the successor's own SessionStart — every relayed session is
+launched pre-attached with nothing loaded and told to read first — so the gap between the
+write and the read is unbounded, and completely unbounded when the opener fails or
+`--print-command` is used.
+
+**IT HAD ALREADY BEEN PATCHED BY HAND TWICE.** `<data>/handoff/` carried
+`444-CONTINUATION.hand-2026-08-31.md` and `444-CONTINUATION.md.bak-2026-08-31`, two files
+renamed by a session to free the generated path for the next relay.
+
+```
+before   <seq>-CONTINUATION.md              one slot per task    relay 2 truncates relay 1
+after    <seq>-<sid8>-CONTINUATION.md       one file per session two relays, two files
+         <seq>-CONTINUATION.md → newest     a symlink            the path 444:511 documents
+```
+
+**NOT A LOCK AND NOT A TIMESTAMP SUFFIX.** A lock serialises the WRITERS, and the writers
+were never the problem — the READER is. A timestamp suffix leaves that reader with exactly
+the question one shared path leaves it with, *which of these is mine*. The successor's own
+session id is the one discriminator the reader already has, because its launch argument
+names it.
+
+### Added
+- `succession.write_handoff(task, prompt, sid)` writes `<seq>-<sid8>-CONTINUATION.md`.
+  `sid` is REQUIRED: a handoff addressed to nobody is the collision this name prevents, so
+  it raises rather than falling back to the per-task path.
+- `succession.link_handoff` points the stable per-task name at the newest handoff, and
+  `succession.stable_handoff_path` names it. A SYMLINK, never a second copy — two files
+  with one origin is the staleness the per-successor name just removed.
+- `tests/test_handoff_per_successor.py` — 11 tests over the writer, the pointer and the
+  header, all of them reading real files back off disk.
+
+### Changed
+- The header of a written handoff carries the WRITE TIME beside the successor ordinal and
+  the predecessor: `WRITTEN 2026-09-03 16:55 EDT. If that is not recent, or you are not
+  session 622-1, a later relay … this file is spent`. Pinned decision 444:511 tells a cold
+  session to open the stable path by hand, so a human read is a supported path, and the
+  one thing the record cannot tell that reader is whether the file is still live. Prose
+  only: no front-matter, no checksum, no machine-readable preamble.
+- The launch argument says the file is "named for your own session", which is what makes
+  it checkable by the successor that reads it.
+
+### Fixed
+- **The stable pointer moves ONLY after a session is confirmed.** `write_handoff` runs
+  before the branch that decides whether to launch, so `--print-command` and a failed
+  window opener each used to leave a file at the canonical name claiming a session that
+  never ran. The sid-qualified file is still written on those paths — the printed command
+  has to work when a human runs it — and the pointer is not moved. This is the rule the
+  same function already applied to the ledger entry: a handoff is a claim about a session.
+- A pointer that cannot be created is a NAMED SKIP in the printed report, never a copy and
+  never a failed relay: the successor is already pointed at a written file, so the whole
+  cost is one `ls`.
+- A real file already at the stable name — every task that has relayed before this release
+  has one — is moved aside to `<seq>-CONTINUATION.superseded.md` rather than replaced. It
+  is the only copy of that handoff. **The relay prints where it went**, because a file
+  renamed under a human with nothing said is a human working out where their handoff went:
+  `the handoff that was at that name … is now <path>. Nothing was overwritten.`
+
 ## [3.61.0] — 2026-09-03
 
 **THE RELAY HANDOFF IS A FILE, AND THE CAPS THAT CUT IT ARE DELETED.** The handoff
