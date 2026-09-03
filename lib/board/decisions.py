@@ -352,6 +352,81 @@ def live_texts(entries):
     return [text(e) for _i, e in live(entries)]
 
 
+DIGEST_STUB_CHARS = 120     # a tiered stub line — shorter than a reference stub, on purpose
+
+
+def _subject_is_open(entry, is_open=None):
+    """Does this decision declare a subject that is STILL OPEN? `is_open(ref)` answers
+    per qualified ref; without a resolver every declared subject counts as open.
+
+    CONSERVATIVE BY CONSTRUCTION. An unresolvable subject renders the decision IN FULL,
+    because the failure directions are not symmetric: showing a finished decision costs
+    a reader some scrolling, and stubbing a live one costs them the constraint they were
+    about to violate."""
+    subj = entry.get(SUBJECT_FIELD) if isinstance(entry, dict) else None
+    if not subj:
+        return False
+    if is_open is None:
+        return True
+    for ref in (subj if isinstance(subj, (list, tuple)) else [subj]):
+        try:
+            if is_open(ref):
+                return True
+        except Exception:
+            return True          # a resolver that raises must not silently demote a ruling
+    return False
+
+
+def renders_in_full(entry, is_open=None, advisory=None):
+    """Is this decision in the FULL tier when the digest is over budget?
+
+    FOUR WAYS IN, and each is a fact the AUTHOR put on the record rather than something
+    inferred about them — which is the whole point, because inference here measured about
+    one-in-three and that precision already killed a lint:
+
+      * PINNED — the author said this is the spine.
+      * `kind: ruling` — the author said this is constitutional, true until refuted.
+      * an OPEN declared subject — the work it governs is still in flight.
+      * SHORTER THAN THE ADVISORY — a stub of a 400-char decision saves nothing and
+        costs a hop, so the cheap thing is to print it.
+
+    Everything else stubs. Note what is NOT here: age, recency, and any judgement about
+    importance. A decision leaves the full tier only because its author never claimed it
+    binds and it is long enough for the claim to matter."""
+    advisory = LONG_DECISION_CHARS if advisory is None else advisory
+    if not isinstance(entry, dict):
+        return len(text(entry)) <= advisory
+    if entry.get("pinned") or entry.get(KIND_FIELD) == KIND_RULING:
+        return True
+    if _subject_is_open(entry, is_open):
+        return True
+    return len(text(entry)) <= advisory
+
+
+def frontier_tiers(entries, budget, is_open=None, task_id=None):
+    """Split the still-current decisions into `(full, stubbed, over_budget)`.
+
+    THE TRIP-WIRE IS SIZE; THE SELECTOR NEVER IS. Under `budget` every decision renders
+    exactly as it did before this existed, byte for byte — which is the guarantee the
+    golden test asserts and the reason 47 of 49 active tasks see no change at all. Only
+    once the record is genuinely expensive does tiering switch on, and then what a
+    decision renders as is decided by DECLARATION, not by its size or its date.
+
+    `budget` of 0 (or None) disables tiering outright — the escape hatch that makes this
+    reversible without a release."""
+    order = digest_order(entries)
+    if task_id is not None:
+        order = [(i, d) for i, d in order if renders_full(d, task_id)]
+    if not budget:
+        return order, [], False
+    if total_chars(entries) <= budget:
+        return order, [], False
+    full, stubbed = [], []
+    for i, d in order:
+        (full if renders_in_full(d, is_open) else stubbed).append((i, d))
+    return full, stubbed, True
+
+
 def pinned_count(entries):
     """How many still-current decisions are pinned (a replaced one can't be)."""
     return sum(1 for _i, e in live(entries) if is_pinned(e))

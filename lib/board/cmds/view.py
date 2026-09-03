@@ -226,6 +226,13 @@ def _format_detail(task, session, attached=True):
     # indices (so `--step-done 4` keeps meaning step 4 after step 2 was retired), which
     # is why the list can show gaps; renumbering would silently repoint every command a
     # reader had in hand. The retired steps stay in `/todo <n> history`, marked.
+    # TIERING IS DECIDED ONCE, BEFORE ANYTHING RENDERS, because it governs both the
+    # steps block and the decisions block, and the two must not disagree about whether
+    # this digest is over budget.
+    import config as _cfg          # module-local, as every other config use here is
+    shown_decisions, stubbed_decisions, _tiered = _dec.frontier_tiers(
+        task.get("decisions") or [], _cfg.digest_budget_chars(),
+        is_open=_subject_open_fn(load_task), task_id=task.get("id"))
     if steps:
         active = _steps.live(steps)
         done, total = step_progress(task)
@@ -233,9 +240,21 @@ def _format_detail(task, session, attached=True):
         out.append("")
         if active:
             out.append("Steps (%d/%d done):" % (done, total))
+            # A FINISHED STEP IS EVIDENCE, NOT AN INSTRUCTION. Open steps are what a
+            # resuming session has to act on and render in full; done ones only need to
+            # say WHICH work is already accounted for, and their full text is one
+            # `history` away. On this programme's own record the done steps were 24,497
+            # chars against 21,990 for the open ones — more than half the steps section
+            # spent restating work nobody can do again. Collapsed only when the digest
+            # is over budget, so a normal task is untouched.
+            collapse_done = _tiered
             for i, s in active:
-                mark = "✓" if _steps.is_done(s) else "☐"
-                out.append("  %s %2d. %s" % (mark, i, _steps.text(s)))
+                done_ = _steps.is_done(s)
+                mark = "✓" if done_ else "☐"
+                body = _steps.text(s)
+                if done_ and collapse_done:
+                    body = _dec.derive_stub(body, DONE_STEP_CHARS)
+                out.append("  %s %2d. %s" % (mark, i, body))
         else:
             out.append("Steps:   (none active)")
         if retired:
@@ -264,8 +283,14 @@ def _format_detail(task, session, attached=True):
     # The stubs cost ZERO loads (every field is on the entry this task already holds),
     # which is the requirement rather than an optimisation — a task with twelve children
     # must not pay twelve digest loads to print its own decision list.
-    shown_decisions = [(i, d) for i, d in _dec.digest_order(decisions)
-                       if _dec.renders_full(d, task.get("id"))]
+    # TIERED ONLY WHEN THE RECORD IS ACTUALLY EXPENSIVE. Under `digest_budget_chars`
+    # this returns exactly what `digest_order` + `renders_full` always returned, byte for
+    # byte — 47 of 49 active tasks today — and `= 0` disables it outright. Over budget the
+    # long, UNDECLARED entries collapse to numbered stubs; pinned rulings, declared
+    # rulings, anything governing open work, and anything short enough that a stub saves
+    # nothing all stay in full. Declaration decides, never age and never size: inference
+    # here measured about one in three, and that precision already killed a lint.
+
     stubs = _own.held_stubs(task)
     inherited = _decision_inheritance(task)
     #
@@ -284,6 +309,23 @@ def _format_detail(task, session, attached=True):
             out.append("  %s. %s%s" % (_own.index_label(task, i),
                                        DECISION_PIN_MARK if _dec.is_pinned(d) else "",
                                        _dec.text(d)))
+        if stubbed_decisions:
+            out.append("")
+            out.append("  — %d decision(s) collapsed to one line each, because the digest "
+                       "is over %s chars." % (len(stubbed_decisions),
+                                              _cfg.digest_budget_chars()))
+            out.append("    NOTHING IS HIDDEN: each is still current, still at its number, "
+                       "and renders in full in")
+            out.append("    `task-station history %s`. They collapsed because nobody "
+                       "declared them binding —" % task.get("seq", task["id"][:8]))
+            out.append("    `update --task %s --pin-decision <n>` or `--kind-decision "
+                       "<n>=ruling` keeps one in full;"
+                       % task.get("seq", task["id"][:8]))
+            out.append("    `config --digest-budget-chars 0` turns tiering off entirely.")
+            for i, d in stubbed_decisions:
+                out.append("  %s. %s" % (_own.index_label(task, i),
+                                         _dec.derive_stub(_dec.text(d),
+                                                          _dec.DIGEST_STUB_CHARS)))
         if stubs:
             out.append("  — reference stubs: these rulings are STILL ON THIS TASK at "
                        "these numbers, in full. Another task")
@@ -567,6 +609,34 @@ def _format_history(task):
     out.append("(Read-only history view — this did NOT attach or reopen the task. "
                "Resume with /todo %s.)" % seq)
     return "\n".join(out)
+
+
+DONE_STEP_CHARS = 60          # a finished step collapses to this; its full text is in `history`
+
+
+def _subject_open_fn(load_task):
+    """`is_open(ref)` for `decisions.frontier_tiers` — does a declared subject still name
+    unfinished work? Resolves `task:<n>` refs through the store and treats anything else,
+    and anything it cannot load, as OPEN.
+
+    FAILING TOWARDS OPEN IS DELIBERATE. A missing task, a release ref, a store hiccup —
+    every one of them renders the decision IN FULL, because the two mistakes cost very
+    different things: a finished decision shown is scrolling, a live one stubbed is a
+    constraint the reader never saw."""
+    def is_open(ref):
+        if not isinstance(ref, dict):
+            return True
+        seq = ref.get("task")
+        if seq is None:
+            return True
+        try:
+            t = load_task(str(seq))
+        except Exception:
+            return True
+        if not t:
+            return True
+        return not _loop.is_closed(t)
+    return is_open
 
 
 def _decision_inheritance(task):

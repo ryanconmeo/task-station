@@ -3,6 +3,58 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.56.0] — 2026-09-03
+
+**A DIGEST NOW COSTS WHAT THE OPEN WORK COSTS, NOT WHAT THE WHOLE HISTORY COSTS.** #444's
+digest went from **300,711 chars to 157,006** — a 48% cut with **zero writes to the store**
+and not one decision deleted, moved or reclassified.
+
+**THE PROBLEM #580 COULD NOT SOLVE.** That task halved the digest by hand — 412,114 to
+199,967, live decisions 264 to 59 — and then measured that its own 60,000 target was
+UNREACHABLE by consolidation, because everything left is load-bearing. It named two levers
+and both are worse than doing nothing much: accept a ~190,000 floor and let every session
+pay ~50,000 tokens to start, or MOVE subject-owned decisions onto their children, which
+automates precisely the misclassification #586 measured at one in three.
+
+**THE THIRD OPTION IS TO BOUND THE RENDER RATHER THAN THE RECORD.** Under
+`digest_budget_chars` (default 60,000; **`0` disables it entirely**) a task renders byte
+for byte as it did in 3.55.0 — verified on six tasks, and true for 47 of 49 active ones.
+Only once a record is genuinely expensive does tiering switch on.
+
+**SIZE IS THE TRIP-WIRE. DECLARATION IS THE SELECTOR.** What stays in full is decided by
+what the AUTHOR put on the record, never by anything inferred about it:
+
+- **pinned** — the author said this is the spine
+- **`kind: ruling`** — the author said this is constitutional
+- **an OPEN declared subject** — the work it governs is still in flight
+- **shorter than the 600-char advisory** — a stub of a short decision saves nothing
+
+Everything else collapses to a numbered 120-char stub. **Nothing is hidden**: each stub is
+still current, still at its number, still in `history`, and the header names the two
+commands that restore it in full. This is the same shape the codebase already accepted for
+inherited pins — *"one hop away instead of 48,000 chars in front of every session"*.
+
+Age was never a candidate. Decision 93 forbids it, and it is not even available — **14 of
+613 decisions on #444 can be dated at all.**
+
+**DONE STEPS COLLAPSE TOO, when over budget.** A finished step is evidence, not an
+instruction. On #444 the done steps were 24,497 chars against 21,990 for the open ones —
+over half the section restating work nobody can do again.
+
+**FAILING TOWARDS FULL IS DELIBERATE.** An unresolvable subject, a missing task, a store
+hiccup — every one renders the decision in full, because the two mistakes cost very
+different things: a finished decision shown is scrolling, a live one stubbed is a
+constraint the reader never saw.
+
+Also: `_positive_number` gains `allow_zero`, so a knob whose off-switch is `0` stops
+silently re-enabling itself at the default.
+
+**What this does NOT do:** it bounds what renders, not what accumulates. The record still
+grows; a reclamation lifecycle is separate work.
+
+### Fixed
+- …
+
 ## [3.55.0] — 2026-09-01
 
 **THREE PLACES THE LOOP REPORTED SOMETHING IT HAD NOT ESTABLISHED.** All three fail in the
