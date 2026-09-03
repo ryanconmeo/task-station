@@ -91,6 +91,9 @@ def _memo_pending_for(memo, session):
 MEMO_QUIET_AFTER = 3      # distinct dispositioning sessions that settle a memo (limb b)
 
 _MEMO_DURABLE_KINDS = ("decision", "memory")     # limb (a): a durable store took it
+# Limb (c): written by a VERB, not by a session's judgement — the completing verb
+# recording what it did. These settle alone; see `memo_settled`.
+_MEMO_VERB_KINDS = ("graded", "taken", "parked", "delivered")
 
 
 def _memo_dispositioned_by(memo):
@@ -126,6 +129,13 @@ def memo_settled(memo, after=MEMO_QUIET_AFTER):
         after = MEMO_QUIET_AFTER
     sessions, kinds = _memo_dispositioned_by(memo)
     if kinds & set(_MEMO_DURABLE_KINDS):
+        return True
+    # LIMB (c): A VERB DISPOSITION SETTLES A MEMO ON ITS OWN. `graded`, `taken`,
+    # `parked` and `delivered` are not one session's OPINION about a memo — they are
+    # facts about what happened to the work, written by the verb that did it. Quorum is
+    # the right test for judgement and the wrong test for a fact, and requiring three
+    # sessions to agree that a child was graded is how 51 of 93 memos became immortal.
+    if kinds & set(_MEMO_VERB_KINDS):
         return True
     return len(sessions) >= after
 
@@ -607,9 +617,15 @@ def report_to_parent(task, headline, session=None):
         parent = load_task(pid)
         if not parent or is_closed(parent):
             return None
-        memo_send(parent, "CHILD #%s — %s" % (task.get("seq"), headline),
-                  from_sid=session, routine=True)
-        _channel.pickup_file(parent, task, headline, from_sid=session)
+        # THE PICKUP CARRIES THE MEMO'S ID, so the rail can dispose of the memo it is
+        # the pointer to. Without it the two ledgers describe the same event and neither
+        # can close the other: the parent was genuinely forced to read the pickup, and
+        # the memo stayed "unacked" forever. The slot has always existed on pickup_file
+        # and nothing ever filled it.
+        memo = memo_send(parent, "CHILD #%s — %s" % (task.get("seq"), headline),
+                         from_sid=session, routine=True)
+        _channel.pickup_file(parent, task, headline,
+                             memo_id=(memo or {}).get("id"), from_sid=session)
         parent["updated_ts"] = _now()
         save_task(parent)
         return parent.get("seq")
