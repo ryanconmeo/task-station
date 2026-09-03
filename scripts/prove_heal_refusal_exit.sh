@@ -47,6 +47,12 @@
 #   --part radius   THE BLAST RADIUS, recomputed from origin/main's own corpus walk: the
 #                   classifier's controls all land and the flippable count is printed.
 #                                                                           → T606E-PASS
+#   --part probe    THE NINE VERBS THEMSELVES, run against a THROWAWAY store out of
+#                   origin/main's own tree — 24 invocations, 15 that must refuse and 9 that
+#                   must not, each asserting the substring its output has to carry. Every
+#                   one must report its outcome honestly. Registered as a CLAIM: it spawns
+#                   24 subprocesses and a condition that times out reports "did not run".
+#                                                                           → T606I-PASS
 #   --part suite    THE WHOLE SUITE on origin/main. Registered as a CLAIM rather than an
 #                   exit condition: it runs past the 120s an exit command gets, and a
 #                   condition that times out reports "did not run", not "no".
@@ -78,6 +84,7 @@ case "$PART" in
            TARGET="$MOD.AReadThatRanLeavesZeroWhateverItFound $MOD.AnInvocationRefusedBeforeItRanLeavesNonZero" ;;
   process) MARK="T606D-PASS"; TARGET="$MOD.TheStatusReachesTheProcess" ;;
   radius)  MARK="T606E-PASS"; TARGET="" ;;
+  probe)   MARK="T606I-PASS"; TARGET="" ;;
   suite)   MARK="T606F-PASS"; TARGET="" ;;
   merged)  MARK="T606G-PASS"; TARGET="" ;;
   mutant)  MARK="T606H-PASS"; TARGET="" ;;
@@ -172,6 +179,24 @@ if [ "$PART" = "radius" ]; then
   fi
   LINE=$(grep "T606-MEASURED" "$LOG" | tail -1)
   echo "$MARK on origin/main $SHA — $LINE (read from $FOUND)."
+  exit 0
+fi
+
+# THE VERBS THEMSELVES, run out of origin/main's tree against a throwaway store. This is
+# the measurement the fix is FOR, re-run rather than re-asserted: 15 refusing forms that
+# must leave non-zero and 9 reads and writes that must leave 0, each also asserting the
+# substring its output has to carry — because a case whose fixture went missing refuses
+# for the WRONG reason and still reads as a refusal.
+if [ "$PART" = "probe" ]; then
+  ( cd "$WORK" && python3 scripts/measure_heal_exit_blast_radius.py --probe ) >"$LOG" 2>&1
+  CODE=$?
+  HONEST=$(grep -oE "^  [0-9]+ of [0-9]+ probes report their outcome honestly; [0-9]+ do not\." "$LOG" | tail -1)
+  if [ "$CODE" -ne 0 ] || ! printf '%s' "$HONEST" | grep -qE "; 0 do not\.$"; then
+    echo "$FAIL on origin/main $SHA (--part probe, exit $CODE): ${HONEST:-no probe line printed}"
+    tail -40 "$LOG"
+    exit 1
+  fi
+  echo "$MARK on origin/main $SHA — ${HONEST# } (read from $FOUND)."
   exit 0
 fi
 
