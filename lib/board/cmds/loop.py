@@ -994,7 +994,16 @@ def cmd_invoke(a):
 
 def _predecessor_label(task, session):
     """The OUTGOING session's own ordinal — `444-32` — or its bare id when no roster can
-    name it, or `?` when the caller supplied no session at all.
+    name it, or None when the caller supplied no session at all.
+
+    NONE, NOT `"?"`, and that is a live defect rather than tidying. `relay` runs without
+    `--session` whenever the caller has no session id to pass, and the prompt built from
+    the old sentinel opened `you are session 444-34, succeeding ?` — session 444-34's own
+    launch prompt on 2026-09-03. It reads as a broken interpolation, which is a worse
+    thing to hand a successor than silence: a name it cannot resolve invites it to go
+    looking for one. `continuation_prompt` already omits the clause on a falsy
+    predecessor, so answering None deletes the sentence instead of filling it with a
+    question mark, and the surfaces that must name SOMEBODY say so in words.
 
     RESOLVED ON THE SESSION'S OWN TASK, NOT ON THE TASK BEING HANDED OFF, and that is the
     whole of #599's second defect. `ordinal_label` is per-task by construction: it reads
@@ -1011,7 +1020,7 @@ def _predecessor_label(task, session):
     worker (workers carry a descriptive name and never an ordinal, by design), genuinely
     has no ordinal — and a made-up one would be worse than an unreadable true one."""
     if not session:
-        return "?"
+        return None
     label = ordinal_label(task, session)
     if label:
         return label
@@ -1160,11 +1169,43 @@ def cmd_relay(a):
     base = "cd %s && claude --session-id %s" % (shlex.quote(where), sid)
     task = load_task(task["id"]) or task
     successor = ordinal_label(task, sid) or sid[:8]
-    verdict = _workspace.assess(cwd)
-    done = _workspace.apply(verdict)
     prompt = _succ.continuation_prompt(task, rep=rep,
                                        blockers=blockers if force else None,
                                        predecessor=predecessor, successor=successor)
+    # THE HANDOFF IS A FILE AND THE LAUNCH ARGUMENT IS A POINTER TO IT.
+    #
+    # Every cap `succession` used to carry existed because this command put the whole
+    # handoff in an argv string, where a length limit bites: it was reported cut
+    # mid-sentence four times and every fix re-cut the same string. A successor told to
+    # READ A FILE has no budget to overrun and nothing to truncate.
+    #
+    # A WRITE THAT FAILS REFUSES, and does not fall back to the argv it just replaced.
+    # With the caps gone that fallback would push a whole handoff — 27,891 characters,
+    # measured on #444 — through argv and let the kernel decide where it ends. Refusing
+    # costs one command to retry; a successor spawned on a truncated prompt looks like
+    # it worked. Nothing is launched and no handoff is recorded on this path.
+    try:
+        handoff_path = _succ.write_handoff(task, prompt)
+    except OSError as e:
+        print("  REFUSED: the handoff could not be written (%s). The successor is "
+              "launched with a POINTER to that file, so there is nothing to hand it — "
+              "and the old fallback of passing the whole handoff as a command-line "
+              "argument is what this replaced. Session %s was minted and NOT launched; "
+              "fix the path and re-run `relay --spawn`."
+              % (e, sid[:8]))
+        sys.exit(3)
+    # THE ARGUMENT STAYS SHORT BY CONSTRUCTION. It is not a summary of the handoff —
+    # a second copy of the record is the thing this module exists not to make — it is
+    # the one instruction that reaches the file, so it cannot itself go stale or be cut.
+    pointer = ("RELAY on task #%s — you are session %s. Read %s FIRST, in full: it is "
+               "your handoff, written by your predecessor, and nothing else is loaded "
+               "for you. Then read the record it points at."
+               % (ref, successor, handoff_path))
+    # THE WORKSPACE WRITES COME AFTER THE HANDOFF, because they are writes. Granting a
+    # directory trust for a successor this command then refuses to launch would leave a
+    # permission behind for a session that never existed.
+    verdict = _workspace.assess(cwd)
+    done = _workspace.apply(verdict)
     # THE SUCCESSOR RUNS THE SAME MODEL, full selection string and all. A relay continues
     # one piece of work, so there is no role to consult and nothing to choose — and the
     # `[1m]` marker has to survive, because handing a successor a 200k window to finish
@@ -1173,12 +1214,17 @@ def cmd_relay(a):
     parts = [base]
     if model:
         parts.append("--model %s" % shlex.quote(model))
-    parts.append(shlex.quote(prompt))
+    parts.append(shlex.quote(pointer))
     cmd = " ".join(parts)
+    # WHAT THIS LINE SAYS IS WHAT THE SUCCESSOR ACTUALLY GETS, which is now one hop
+    # longer than it was: the launch argument names the FILE, and the file names the
+    # record. #583 was this line claiming a delivery nothing performed, so it names the
+    # path it wrote rather than describing the shape of the handoff.
     print("  session %s (%s) is pre-attached to THIS task — no child, no new record. "
-          "Nothing is loaded into it: the continuation prompt points it at "
-          "`task-station search --detail %s`, the same record you have been working "
-          "from." % (sid[:8], successor, ref))
+          "Nothing is loaded into it: the launch argument points it at %s — the whole "
+          "handoff, written just now — and that file points at `task-station search "
+          "--detail %s`, the same record you have been working from."
+          % (sid[:8], successor, handoff_path, ref))
     for line in _workspace.lines(verdict, done):
         print(line)
     # PREPARED VERSUS HANDED OFF, and the difference is a measurement rather than a
@@ -1225,9 +1271,12 @@ def cmd_relay(a):
         task = load_task(task["id"]) or task
         entry, index1 = _succ.record_handoff(task, session, sid, rep, forced=forced,
                                              blockers=blockers)
-    head = "relay %s → %s" % (predecessor, successor) if confirmed \
+    # THE TRAIL HAS TO NAME BOTH SIDES, so where the prompt drops an unresolvable
+    # predecessor the durable event says in words that there was not one to name.
+    from_who = predecessor or "an unidentified session"
+    head = "relay %s → %s" % (from_who, successor) if confirmed \
         else "%s — relay %s → %s PREPARED, no successor confirmed" \
-             % (MANUAL_LAUNCH, predecessor, successor)
+             % (MANUAL_LAUNCH, from_who, successor)
     # THE EVENT SAYS WHAT WAS MEASURED, and says so only when something was. This line is
     # the durable one — the report scrolls away and the history entry does not — so an
     # invented `~0% of a 1000k window` here outlives every other copy of the same lie.

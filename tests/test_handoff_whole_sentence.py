@@ -1,15 +1,25 @@
-"""The relay sends the move whole instead of clipping the state mid-word (3.58.0).
+"""A HANDOFF IS NEVER CUT — and from 3.61.0 that is true by construction (3.58.0, #619).
 
-`continuation_prompt` called `leads_with_next(state)` — which returns a BOOLEAN — and
-then clipped the ENTIRE state at 320 characters. So it learned that a first-move sentence
-was there and threw the boundary away, spending most of its budget on standing detail the
-successor reads in the digest anyway, and cutting mid-word on the way.
+WHAT THIS FILE USED TO PIN, and why it changed shape rather than being deleted. The relay
+built the successor's prompt as a COMMAND-LINE ARGUMENT, so `succession` carried a budget
+and four clips to make any record fit one: PROMPT_BUDGET 1600, NEXT_CHARS 320,
+STEP_CAP/STEP_CHARS 5/60, BLOCKER_CAP/BLOCKER_CHARS 5/70. Every one of those numbers was
+correct reasoning from a false premise, and four separate fixes tuned them — 3.58.0's
+included, which sent the first-move SENTENCE instead of a 320-character prefix so the cut
+would at least land on a boundary. This file's old tests pinned that cap at 320 and asked
+the sentence-splitter not to break on `3.57.0`.
 
-THE CAP DOES NOT MOVE, and that is the point. #583's guard pins NEXT_CHARS at 320 because
-raising it turns a relay prompt into the context dump the design exists to avoid. Sending
-the MOVE instead of a prefix of the whole state makes a long state's prompt SHORTER, so
-the fix needs no cap at all: measured on #444's real 3,259-char state line, the prompt goes
-from 320 chars ending in an ellipsis to 120 chars ending in a full stop.
+THE GUARANTEE SURVIVES THE CONSTANTS. What 3.58.0 was actually promising is that a handoff
+never arrives cut mid-word. The handoff is a FILE now and the launch argument is a pointer
+to it, so there is no length to fit inside: the caps are DELETED rather than widened, and
+the promise is checked the only way it can now be broken — by finding a truncation marker
+anywhere in the file a successor is sent to read.
+
+MEASURED, on #444's own record: the written handoff is 27,891 characters with ZERO
+ellipses. The argv prompt it replaced was 1,387 characters with SIX.
+
+The sentence-boundary tests that were here moved to tests/test_save_ux.py, beside the
+`save.next_line` function they are about. Nothing was dropped.
 """
 import os
 import sys
@@ -22,87 +32,115 @@ sys.path.insert(0, LIB)
 sys.path.insert(0, os.path.join(LIB, "board"))
 os.environ.setdefault("TASK_STATION_HOME", tempfile.mkdtemp(prefix="ts-handoff-"))
 
-import save as _save              # noqa: E402
 import succession as _succ        # noqa: E402
 
+# Every marker that means "something was removed here". A file carrying any of them is a
+# handoff that was cut, whatever produced it.
+TRUNCATION_MARKERS = ("…", "...", "(trimmed", "more on the checklist",
+                      "names them all", "[truncated")
 
-def _prompt_line(state):
-    """What the relay would put on the state line."""
-    return _succ._clip(_save.next_line(state) or state, _succ.NEXT_CHARS)
-
-
-class TestTheCapIsUntouched(unittest.TestCase):
-    """The fix must not be a widening — #583 fails anyone who raises these."""
-
-    def test_the_pinned_numbers_are_unchanged(self):
-        self.assertEqual(_succ.NEXT_CHARS, 320)
-        self.assertEqual(_succ.PROMPT_BUDGET, 1600)
+# #444's real state line is 3,259 characters and its first line 541 — both far past every
+# cap that used to exist, which is what made this the record the defect was reported from.
+LONG_STATE = ("NEXT: FIX THE TRUNCATED HANDOFF — it is small and well understood. "
+              + "Standing detail that the digest already carries. " * 60).strip()
 
 
-class TestTheMoveTravelsWhole(unittest.TestCase):
+class _HandoffTest(unittest.TestCase):
+    """The generator is pure over a task dict, so these build one directly — no store,
+    no session, no relay. The WRITER is the shipped one, pointed at a temp directory."""
 
-    def test_a_long_state_yields_a_complete_sentence_with_no_ellipsis(self):
-        state = ("NEXT: FIX THE TRUNCATED HANDOFF — it is small and well understood. "
-                 + "Standing detail that the digest already carries. " * 60)
-        self.assertGreater(len(state), 2000)
-        line = _prompt_line(state)
-        self.assertFalse(line.endswith("…"))
-        self.assertTrue(line.endswith("."))
-        self.assertLess(len(line), _succ.NEXT_CHARS)
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="ts-handoff-file-")
 
-    def test_the_standing_report_after_the_move_is_dropped(self):
-        state = "NEXT: do the one thing that matters. Standing: everything else is fine."
-        self.assertEqual(_prompt_line(state), "NEXT: do the one thing that matters.")
+    def _task(self, state=LONG_STATE, steps=20, chars=200):
+        return {"seq": 619, "id": "a" * 32, "state": state,
+                "steps": [{"text": "step %d %s" % (i, "y" * chars), "done": False}
+                          for i in range(steps)]}
 
-    def test_only_the_first_paragraph_is_considered(self):
-        state = "NEXT: do the thing.\n\nA whole second paragraph of standing report."
-        self.assertEqual(_prompt_line(state), "NEXT: do the thing.")
-
-
-class TestItDoesNotSplitOnThingsThatAreNotSentences(unittest.TestCase):
-    """A move cut at `3.` is worse than no fix at all."""
-
-    def test_a_version_number_does_not_end_the_sentence(self):
-        self.assertEqual(_prompt_line("NEXT: ship 3.57.0 to main, then verify. Standing."),
-                         "NEXT: ship 3.57.0 to main, then verify.")
-
-    def test_a_filename_does_not_end_the_sentence(self):
-        self.assertEqual(_prompt_line("NEXT: patch succession.py and re-run. Standing."),
-                         "NEXT: patch succession.py and re-run.")
-
-    def test_an_early_abbreviation_does_not_end_the_sentence(self):
-        # `e.g.` DOES have a space after it, so the whitespace rule cannot catch it —
-        # the length floor is what does.
-        line = _prompt_line("NEXT: fix e.g. this one thing. Then everything else.")
-        self.assertTrue(line.startswith("NEXT: fix e.g. this one thing"))
+    def _written(self, task, **kw):
+        """The handoff as the successor will read it: generated, written by the shipped
+        writer, and read back off disk rather than asserted on in memory."""
+        prompt = _succ.continuation_prompt(task, predecessor="619-0", successor="619-1",
+                                           **kw)
+        path = _succ.write_handoff(task, prompt, root=self.tmp)
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
 
 
-class TestItCanNeverGrowUnbounded(unittest.TestCase):
+class TestTheCapsAreGone(_HandoffTest):
+    """A number that does not exist is the only one nobody can tune again."""
 
-    def test_a_move_with_no_terminator_is_still_clipped(self):
-        line = _prompt_line("NEXT: " + "x" * 500)
-        self.assertEqual(len(line), _succ.NEXT_CHARS)
-        self.assertTrue(line.endswith("…"))
-
-    def test_a_state_with_no_next_prefix_falls_back_to_the_bounded_clip(self):
-        state = "Standing report with no move at all. " * 40
-        line = _prompt_line(state)
-        self.assertEqual(_save.next_line(state), "")
-        self.assertLessEqual(len(line), _succ.NEXT_CHARS)
+    def test_not_one_of_the_five_caps_or_the_clip_remains(self):
+        for gone in ("PROMPT_BUDGET", "NEXT_CHARS", "STEP_CHARS", "STEP_CAP",
+                     "BLOCKER_CHARS", "BLOCKER_CAP", "_clip"):
+            self.assertFalse(hasattr(_succ, gone),
+                             "%s is back — a handoff written to a file has no budget "
+                             "to bound" % gone)
 
 
-class TestTheClipNeverCutsAWordInHalf(unittest.TestCase):
+class TestNothingIsCutAnywhereInTheWrittenFile(_HandoffTest):
 
-    def test_it_breaks_at_a_word_boundary(self):
-        text = "alpha bravo charlie delta echo foxtrot golf hotel india juliet"
-        out = _succ._clip(text, 30)
-        self.assertTrue(out.endswith("…"))
-        self.assertNotIn("charli…", out)          # no half word
-        self.assertTrue(out[:-1].rstrip().split()[-1] in text.split())
+    def test_a_pathological_record_carries_no_truncation_marker_at_all(self):
+        """Twenty 200-character steps, a 3,000-character state and twelve record gaps —
+        each section past every cap that used to apply. THE ASSERTION IS THE ABSENCE of
+        any marker meaning "something was removed", because that is the observable the
+        four defect reports were made of."""
+        text = self._written(self._task(),
+                             blockers=["gap %d %s" % (i, "z" * 90) for i in range(12)],
+                             rep={"window": 1000000, "used_pct": 81})
+        self.assertGreater(len(text), 6000)
+        for marker in TRUNCATION_MARKERS:
+            self.assertNotIn(marker, text, "%r in the written handoff" % marker)
 
-    def test_a_single_enormous_word_still_gets_bounded(self):
-        out = _succ._clip("x" * 100, 30)
-        self.assertEqual(len(out), 30)
+    def test_the_state_line_arrives_character_for_character(self):
+        """The half of the complaint that was visible: a prompt ending "…the balance
+        sheet recon" reads as a corrupted instruction. Identity is the only check that
+        cannot be satisfied by a cleverer cut."""
+        text = self._written(self._task())
+        self.assertGreater(len(LONG_STATE), 2900)
+        self.assertIn(LONG_STATE, text)
+
+    def test_every_open_step_is_named_and_none_is_shortened(self):
+        task = self._task()
+        text = self._written(task)
+        for step in task["steps"]:
+            self.assertIn(step["text"], text)
+
+    def test_every_record_gap_is_named(self):
+        """The gaps are the FORCED path's whole point — a successor that cannot tell how
+        incomplete its record is cannot close the difference. Five of twelve was the old
+        behaviour, with a line saying so."""
+        gaps = ["gap %d %s" % (i, "z" * 90) for i in range(12)]
+        text = self._written(self._task(), blockers=gaps)
+        for gap in gaps:
+            self.assertIn(gap, text)
+
+    def test_the_file_ends_on_a_complete_line(self):
+        """A handoff cut by the writer rather than the generator would look exactly like
+        one cut by the generator. The written file ends with the generated text's own
+        last line and a single newline."""
+        task = self._task()
+        prompt = _succ.continuation_prompt(task, predecessor="619-0", successor="619-1",
+                                           rep={"window": 1000000, "used_pct": 81})
+        path = _succ.write_handoff(task, prompt, root=self.tmp)
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertTrue(text.endswith("\n"))
+        self.assertEqual(text.splitlines()[-1], prompt.splitlines()[-1])
+        self.assertIn("81%", text)          # the tail the old clamp ate first
+
+
+class TestTheWriterRefusesRatherThanDegrading(_HandoffTest):
+    """A failed write RAISES. `relay` turns that into a refusal; what is pinned here is
+    that the writer never returns a path it did not write, because a caller that got a
+    plausible path back would spawn a successor pointed at nothing."""
+
+    def test_an_unwritable_root_raises(self):
+        blocked = os.path.join(self.tmp, "in-the-way")
+        with open(blocked, "w") as fh:
+            fh.write("a file where the directory has to be\n")
+        with self.assertRaises(OSError):
+            _succ.write_handoff(self._task(), "anything", root=blocked)
 
 
 if __name__ == "__main__":

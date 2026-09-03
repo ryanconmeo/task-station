@@ -3,6 +3,71 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.61.0] — 2026-09-03
+
+**THE RELAY HANDOFF IS A FILE, AND THE CAPS THAT CUT IT ARE DELETED.** The handoff
+travelled to the successor as a COMMAND-LINE ARGUMENT, which is exactly where a length
+limit bites. So `succession` grew a budget and four clips to make any record fit one:
+
+```
+PROMPT_BUDGET 1600 · NEXT_CHARS 320 · STEP_CAP/STEP_CHARS 5/60 · BLOCKER_CAP/CHARS 5/70
+```
+
+**EVERY ONE OF THEM WAS CORRECT REASONING FROM A FALSE PREMISE.** The truncated prompt
+was reported four times and every fix tuned those numbers — `test_no_false_injection_
+claim.py` said "THE CAPS ARE NOT THE FIX" out loud while they were being tuned again. A
+successor told to READ A FILE has no budget to overrun and nothing to truncate, so the
+caps stop being load-bearing rather than being set better.
+
+`relay --spawn` writes the whole handoff to `<data>/handoff/<seq>-CONTINUATION.md` and
+passes a POINTER — `Read <path> FIRST, in full`. **MEASURED on #444's own record:**
+
+```
+                     chars   ellipses
+before  argv         1,387      6      cut mid-sentence, two relays for two
+after   argv           274      0      a pointer; it cannot go stale or be cut
+        the FILE    27,891      0      20x what argv used to carry
+```
+
+**THE CAPS ARE DELETED, NOT MADE CONDITIONAL**, and that is the whole difference between
+this fix and the four before it. `continuation_prompt` is unconditionally whole — the
+state line entire, every open step, every record gap, no final clamp — and `_clip` goes
+with the five numbers. `lib/board/succession.py` is EIGHT LINES SHORTER than it was. A
+cap that does not exist is the only one nobody can tune again.
+
+**A FAILED WRITE REFUSES (exit 3); IT DOES NOT DEGRADE.** Falling back to the launch
+argument was merely worse while the caps existed. With them gone the fallback would push
+a whole handoff through argv and let the kernel decide where it ends — the exact failure
+the file prevents, and invisible afterwards, because it looks like it worked. `relay` now
+prints the path and the errno, launches nothing and records nothing; the workspace-trust
+writes moved BELOW the handoff write so a refusal leaves no permission behind for a
+session that never ran.
+
+**3.58.0's GUARANTEE SURVIVES ITS CONSTANTS.** "A handoff is never cut mid-word" is now
+true by construction. `tests/test_handoff_whole_sentence.py` asserts THAT — no ellipsis
+and no truncation marker anywhere in the written file, on a record whose every section
+overruns every cap that used to apply — instead of pinning `NEXT_CHARS == 320`. Its
+sentence-boundary coverage of `save.next_line` moved to `tests/test_save_ux.py` rather
+than being deleted alongside the cap it served.
+
+**THE SEVEN FAILING TESTS ARE REWRITTEN, NEVER DELETED.** Each greped the SPAWN COMMAND
+for content that now lives in the file, so each asserts the ARGV NAMES THE FILE and the
+FILE CARRIES the attribution, both ordinals, the authority warning and the honest
+occupancy line. `test_the_attribution_and_the_authority_warning_reach_the_successor` —
+the guard on 2026-08-29, where a successor read its predecessor's state line as an ORDER
+and merged another engineer's PR — is PROVEN rather than ported: the path resolves, the
+argument says read it first and in full, the attribution is POSITIONALLY before the
+predecessor's words, and the order exists NOWHERE ELSE, so no surface carries the
+instruction without the warning. What cannot be proved mechanically — that a model obeys
+"read this first" — is stated in the test rather than implied by it.
+
+**AND THE LITERAL `?` IS GONE.** `relay` with no `--session` opened `you are session
+444-34, succeeding ?` — session 444-34's own launch prompt. A name a successor cannot
+resolve is worse than silence, because it invites it to go looking for one:
+`_predecessor_label` answers None, the clause is omitted, and the durable event says
+"an unidentified session" because a history line with one side missing is unreadable
+later.
+
 ## [3.60.0] — 2026-09-03
 
 **A HEAL VERB THAT REFUSES NOW EXITS NON-ZERO.** Every `heal` path used to exit 0, so a
