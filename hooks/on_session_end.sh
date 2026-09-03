@@ -35,6 +35,6 @@ reason=$(printf '%s' "$input" | python3 "$CLAUDE_PLUGIN_ROOT/lib/hookjson.py" se
 if [ -z "$reason" ]; then
   reason=$(printf '%s' "$input" | python3 "$CLAUDE_PLUGIN_ROOT/lib/hookjson.py" reason other)
 fi
-ts_run session-end python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" session-end \
+ts_run session-end python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" hook session-end \
   --session "$session_id" --reason "$reason"
 exit 0

@@ -963,9 +963,29 @@ def cmd_invoke(a):
         print("  run it yourself:")
         print("    %s" % cmd)
     elif g("_open_jump_window")(cmd):
-        manual = False
-        print("  opened a new window running it (this one is untouched):")
-        print("    %s" % cmd)
+        # THE OPENER RETURNING IS NOT A SESSION COMING UP. It reports that a command was
+        # ISSUED; a terminal that refused, a `claude` that died at startup, or a trust
+        # dialog nobody answered all return the same True. An orchestrator that believes a
+        # child launched then waits on an idle rail for a session that never existed, and
+        # the rail cannot tell that apart from one that has simply not fired yet. So the
+        # claim is made only once `_await_registration` — the check `task-station
+        # sessions` performs — says the session is running. FAIL-CLOSED: cannot-tell
+        # prints the command, because "a window opened" is the sentence that was the
+        # defect. Same helper, same wording shape as `relay --spawn` (#603), because two
+        # spawners telling the truth differently is a third bug.
+        if _await_registration(sid):
+            manual = False
+            print("  opened a new window and CONFIRMED session %s is running (this one "
+                  "is untouched):" % sid[:8])
+            print("    %s" % cmd)
+        else:
+            waited = int(_registration_timeout())
+            print("  PREPARED ONLY — the window opener returned, but no session %s "
+                  "registered %s, so this command cannot say a window opened. Run it "
+                  "yourself (or check `task-station sessions` if you believe one came "
+                  "up late):"
+                  % (sid[:8], ("within %ds" % waited) if waited > 0 else "at all"))
+            print("    %s" % cmd)
     else:
         print("  could not open a window (macOS/Terminal only) — run it yourself:")
         print("    %s" % cmd)

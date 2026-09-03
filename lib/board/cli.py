@@ -11,6 +11,7 @@ from board.boardio import *
 from board.cmds import *
 from board.cliguard import LoudParser
 import argparse
+import sys
 
 import decisions as _dec
 from board.prose_input import annotate_prose_help, resolve_prose_args
@@ -21,6 +22,34 @@ __all__ = ["main"]
 
 
 # ------------------------------------------------------------------- main ----
+# The verbs that moved under `hook` in 3.63.0. A legacy top-level invocation is rewritten
+# to the grouped form before argparse sees it, so nothing already written down — a hook
+# script, an installed settings.json entry, a worker's subprocess call — has to change on
+# the same day the grouping lands.
+HOOK_VERBS = (
+    "session-start", "session-end", "session-tint", "session-title",
+    "prompt-context", "prompt-tint", "prompt-title",
+    "stop-gate", "stop-nudge", "post-compact",
+    "config-change", "file-changed", "mark-edited", "touch-file",
+    "capture-artifacts", "sweep-orphans", "worktree-create", "glossary-context",
+    "orchestrator-check", "register-worker-session", "add-cost", "add-project",
+)
+
+
+def _normalise_hook_argv(argv):
+    """`["session-start", …]` → `["hook", "session-start", …]`; everything else untouched.
+
+    Only the FIRST token is considered, and only when it is exactly a moved verb — so a
+    task titled "session-start" passed as a VALUE (`create --title session-start`) is
+    never rewritten, because it is not in first position. `argv is None` (the sys.argv
+    path) is handled by reading sys.argv here rather than leaving it to argparse, which
+    is the only way the rewrite can reach a real invocation."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] in HOOK_VERBS:
+        return ["hook"] + args
+    return args
+
+
 
 def main(argv=None):
     """`argv=None` reads sys.argv, exactly as before. The explicit-list form exists so
@@ -34,6 +63,25 @@ def main(argv=None):
     # flag errors are covered by this one line.
     p = LoudParser(prog="task-station")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    # ------------------------------------------------------------- hook plumbing ----
+    # THE 22 VERBS NO HUMAN TYPES. Each of these is invoked by machinery — a script in
+    # `hooks/`, the Stop hook's step runner, the worktree hook the installer writes into
+    # settings.json, or a `delegate` worker writing back — and by nothing else. They sat
+    # in the same flat namespace as `create` and `done`, where they were 22 of the 81
+    # names `--help` had to list before a reader reached a command they could use.
+    #
+    # THEY ARE STILL REACHABLE BY THEIR OLD SPELLINGS, and that is deliberate rather than
+    # generous: an installed `settings.json` WorktreeCreate entry and every hook script
+    # already on disk name the old form, and this is the only install (444:488), so a
+    # rename that broke them would break the machine with no second user to notice. The
+    # normaliser below rewrites a legacy top-level spelling into `hook <verb>` before the
+    # parser ever sees it — one lookup, no second parser, and no name that works today
+    # stops working.
+    hookp = sub.add_parser("hook",
+                           help="internal plumbing invoked by hooks and workers, "
+                                "not by people (`hook --help` lists it)")
+    hsub = hookp.add_subparsers(dest="hook_cmd", required=True)
 
     sp = sub.add_parser("create"); sp.add_argument("--session", default=None)
     sp.add_argument("--title", required=True); sp.add_argument("--summary", default="")
@@ -82,10 +130,10 @@ def main(argv=None):
     sp.add_argument("--task", required=True)
     sp.set_defaults(fn=cmd_delete)
 
-    sp = sub.add_parser("mark-edited"); sp.add_argument("--session", required=True)
+    sp = hsub.add_parser("mark-edited"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_mark_edited)   # PostToolUse(Write|Edit|NotebookEdit) one-shot reminder
 
-    sp = sub.add_parser("touch-file"); sp.add_argument("--session", required=True)
+    sp = hsub.add_parser("touch-file"); sp.add_argument("--session", required=True)
     sp.add_argument("--file", dest="file", required=True)
     sp.set_defaults(fn=cmd_touch_file)    # PostToolUse: append an edited path to the task's briefing
 
@@ -455,7 +503,7 @@ def main(argv=None):
 
     # orchestrator-check — the guard delegate.py consults before it spawns anything.
     # Silent + exit 0 when delegation is allowed; the refusal + exit 3 when it is not.
-    sp = sub.add_parser("orchestrator-check",
+    sp = hsub.add_parser("orchestrator-check",
                         help="refuse (exit 3) if this task is orchestrator-only, naming "
                              "the child that should own the work")
     sp.add_argument("--task", default=None)
@@ -684,14 +732,14 @@ def main(argv=None):
                     help="emit the resolution as JSON")
     sp.set_defaults(fn=cmd_terminal)
 
-    sp = sub.add_parser("stop-gate"); sp.add_argument("--session", required=True)
+    sp = hsub.add_parser("stop-gate"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_stop_gate)     # Stop hook: block ending an untracked edit session
 
-    sp = sub.add_parser("post-compact"); sp.add_argument("--session", required=True)
+    sp = hsub.add_parser("post-compact"); sp.add_argument("--session", required=True)
     sp.add_argument("--trigger", default="")
     sp.set_defaults(fn=cmd_post_compact)  # PostCompact hook: stash the compaction summary to history (stdin)
 
-    sp = sub.add_parser("stop-nudge"); sp.add_argument("--session", required=True)
+    sp = hsub.add_parser("stop-nudge"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_stop_nudge)    # Stop hook: non-blocking staleness nudge (opt-in auto-checkpoint)
 
     # timing — the work-boundary scheduler's verdict. A READ: it writes nothing at all, so
@@ -722,7 +770,7 @@ def main(argv=None):
                     help="list output format: ascii (default) or md (GitHub tables, printed verbatim)")
     sp.set_defaults(fn=cmd_render)
 
-    sp = sub.add_parser("add-project"); sp.add_argument("--task", required=True)
+    sp = hsub.add_parser("add-project"); sp.add_argument("--task", required=True)
     sp.add_argument("--project", required=True); sp.set_defaults(fn=cmd_add_project)
 
     # search — ranked cross-task FTS search (tier-1 hit list) + --detail digest.
@@ -758,7 +806,7 @@ def main(argv=None):
 
     # add-cost — accumulate a delegate run's worker cost onto a task (called by
     # delegate.py so per-run cost lands on the linked /todo task, not just workers.json).
-    sp = sub.add_parser("add-cost"); sp.add_argument("--task", required=True)
+    sp = hsub.add_parser("add-cost"); sp.add_argument("--task", required=True)
     sp.add_argument("--usd", required=True, help="this run's total_cost_usd")
     # Optional per-run detail — when any is given, a record is appended to task['runs'].
     sp.add_argument("--model", default=None, help="model id this run used (e.g. claude-opus-4-8)")
@@ -796,7 +844,7 @@ def main(argv=None):
 
     # register-worker-session — roster a worker session on a task record (name/model/
     # harness/status). Quiet bookkeeping; delegate.py posts it on spawn + terminal.
-    sp = sub.add_parser("register-worker-session",
+    sp = hsub.add_parser("register-worker-session",
                         help="roster a worker session on a task record (#463)")
     sp.add_argument("--task", required=True)
     sp.add_argument("--session", required=True, help="worker session uuid")
@@ -927,7 +975,7 @@ def main(argv=None):
     sp.set_defaults(fn=cmd_subscriptions)
 
     # F6 PostToolUse artifact capture — scans a tool RESULT (stdin) for PR/work-item URLs.
-    sp = sub.add_parser("capture-artifacts")
+    sp = hsub.add_parser("capture-artifacts")
     sp.add_argument("--session", required=True)
     sp.add_argument("--text", default=None,
                     help="text to scan (default: read the tool result from stdin)")
@@ -940,7 +988,7 @@ def main(argv=None):
     sp.add_argument("--session", default=None, help="session id to attribute the transition to")
     sp.set_defaults(fn=cmd_status)
 
-    sp = sub.add_parser("session-title"); sp.add_argument("--session", required=True)
+    sp = hsub.add_parser("session-title"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_session_title)
 
     sp = sub.add_parser("whoami"); sp.add_argument("--session", required=True)
@@ -1170,16 +1218,16 @@ def main(argv=None):
     sp.add_argument("--session", default=None)
     sp.set_defaults(fn=cmd_unpin)
 
-    sp = sub.add_parser("prompt-tint"); sp.add_argument("--session", default=None)
+    sp = hsub.add_parser("prompt-tint"); sp.add_argument("--session", default=None)
     sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_tint)
 
-    sp = sub.add_parser("session-tint"); sp.add_argument("--session", required=True)
+    sp = hsub.add_parser("session-tint"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_session_tint)
 
-    sp = sub.add_parser("prompt-title"); sp.add_argument("--session", default=None)
+    sp = hsub.add_parser("prompt-title"); sp.add_argument("--session", default=None)
     sp.add_argument("--prompt", default=None); sp.set_defaults(fn=cmd_prompt_title)
 
-    sp = sub.add_parser("prompt-context"); sp.add_argument("--session", required=True)
+    sp = hsub.add_parser("prompt-context"); sp.add_argument("--session", required=True)
     sp.set_defaults(fn=cmd_prompt_context)
 
     sp = sub.add_parser("native")
@@ -1193,12 +1241,12 @@ def main(argv=None):
     sp = sub.add_parser("guidance")
     sp.set_defaults(fn=cmd_guidance)
 
-    sp = sub.add_parser("session-start"); sp.add_argument("--session", required=True)
+    sp = hsub.add_parser("session-start"); sp.add_argument("--session", required=True)
     sp.add_argument("--source", default=""); sp.set_defaults(fn=cmd_session_start)
 
     # sweep-orphans — stop background workers whose spawning hub session is gone.
     # Called from the SessionStart hook; logs each reap to stderr, always exits 0.
-    sp = sub.add_parser("sweep-orphans",
+    sp = hsub.add_parser("sweep-orphans",
                         help="reap task-station workers whose spawning hub is gone")
     sp.add_argument("--session", default=None)
     sp.set_defaults(fn=cmd_sweep_orphans)
@@ -1206,7 +1254,7 @@ def main(argv=None):
     # session-end — the SessionEnd hook's exact pass (roster row + feed + reap this
     # session's own workers). Idempotent, always exits 0; the SessionStart sweep above
     # stays as the crash backstop.
-    sp = sub.add_parser("session-end",
+    sp = hsub.add_parser("session-end",
                         help="record a clean session end and stop the workers it spawned")
     sp.add_argument("--session", required=True)
     sp.add_argument("--reason", default="other",
@@ -1216,7 +1264,7 @@ def main(argv=None):
 
     # config-change — the ConfigChange hook's path validator. Exit 2 (BLOCK) only in
     # enforce mode; the hook-health record is written first either way.
-    sp = sub.add_parser("config-change",
+    sp = hsub.add_parser("config-change",
                         help="report config-declared paths that no longer resolve")
     sp.add_argument("--session", default=None)
     sp.add_argument("--source", default="",
@@ -1227,7 +1275,7 @@ def main(argv=None):
 
     # file-changed — the FileChanged hook. Acts ONLY on files inside the data dir
     # (the manifest matcher is basename-level); re-arms the checker gate.
-    sp = sub.add_parser("file-changed",
+    sp = hsub.add_parser("file-changed",
                         help="re-arm the checker gate when a station config file changes")
     sp.add_argument("--session", default=None)
     sp.add_argument("--file", dest="file", default=None)
@@ -1238,7 +1286,7 @@ def main(argv=None):
     # worktree-create — the OPT-IN WorktreeCreate hook (installed into the user's own
     # settings.json by `config --worktree-hook on`, never in the plugin manifest).
     # Payload on stdin; the worktree's absolute path is the first stdout line.
-    sp = sub.add_parser("worktree-create",
+    sp = hsub.add_parser("worktree-create",
                         help="create + provision a worktree for the WorktreeCreate hook")
     sp.set_defaults(fn=cmd_worktree_create)
 
@@ -1343,7 +1391,7 @@ def main(argv=None):
     sp.add_argument("--quiet", dest="quiet", action="store_true", help=argparse.SUPPRESS)
     sp.set_defaults(fn=cmd_recap)
 
-    sp = sub.add_parser("glossary-context")   # WS3 adapter hook: inject the block
+    sp = hsub.add_parser("glossary-context")   # WS3 adapter hook: inject the block
     sp.add_argument("--task", default=None)
     sp.add_argument("--session", default=None)
     sp.set_defaults(fn=cmd_glossary_context)
@@ -1390,7 +1438,14 @@ def main(argv=None):
     # must precede parse_args (it edits help); the resolve call must sit between
     # parse_args and dispatch, so no handler needs to know any of this exists.
     annotate_prose_help(sub)
-    a = p.parse_args(argv)
+    annotate_prose_help(hsub)      # the hook group is a second choices map, not a subset
+    a = p.parse_args(_normalise_hook_argv(argv))
+    # `hook session-start` parses as cmd="hook", hook_cmd="session-start". Everything that
+    # reads `cmd` — prose_input's flag table above all — asks WHICH COMMAND RAN, and the
+    # answer is the verb, not the group it is filed under. Folded here, once, so no
+    # consumer has to learn that this grouping exists.
+    if getattr(a, "cmd", None) == "hook":
+        a.cmd = getattr(a, "hook_cmd", None) or "hook"
     resolve_prose_args(a)
     # THE HANDLER'S RETURN VALUE IS THE PROCESS STATUS (3.60.0). Every cmd_* returned
     # None and this line threw it away, so a command that REFUSED to act exited 0 —

@@ -119,11 +119,41 @@ class _RolesTest(unittest.TestCase):
         ts.claude_code_model_selection = lambda: ""
         self.opened = []
         self._orig_open = ts._open_jump_window
-        ts._open_jump_window = lambda cmd: (self.opened.append(cmd) or True)
+        # SINCE #605 `invoke` WAITS for the launched session to register before it claims
+        # a window opened, so a fake opener that only records the command would turn every
+        # launch here into an UNCONFIRMED one (a manual launch on the trail) and make each
+        # pay the 60s production wait. These tests are not about the confirmation: the fake
+        # registers the session a real `claude --session-id <sid>` would, and the wait is
+        # cut to something a test can afford.
+        self.sessions_dir = os.path.join(self.tmp, "sessions")
+        os.makedirs(self.sessions_dir, exist_ok=True)
+        self._orig_sdir = os.environ.get("TASK_STATION_SESSIONS_DIR")
+        self._orig_confirm = os.environ.get("TASK_STATION_SPAWN_CONFIRM_S")
+        os.environ["TASK_STATION_SESSIONS_DIR"] = self.sessions_dir
+        os.environ["TASK_STATION_SPAWN_CONFIRM_S"] = "0.2"
+        ts._open_jump_window = self._fake_open
+
+    def _fake_open(self, cmd):
+        """Record the command AND register the session it launches (#605)."""
+        self.opened.append(cmd)
+        m = re.search(r"--session-id[= ]([0-9a-fA-F-]{8,})", cmd or "")
+        if m:
+            pid = os.getpid()
+            with open(os.path.join(self.sessions_dir, "%d.json" % pid), "w") as f:
+                json.dump({"pid": pid, "sessionId": m.group(1), "cwd": self.tmp,
+                           "kind": "interactive", "entrypoint": "cli",
+                           "status": "busy", "startedAt": 1000, "updatedAt": 1000}, f)
+        return True
 
     def tearDown(self):
         ts._open_jump_window = self._orig_open
         ts.claude_code_model_selection = self._orig_sel
+        for _n, _o in (("TASK_STATION_SESSIONS_DIR", self._orig_sdir),
+                       ("TASK_STATION_SPAWN_CONFIRM_S", self._orig_confirm)):
+            if _o is None:
+                os.environ.pop(_n, None)
+            else:
+                os.environ[_n] = _o
         store.reset_cache()
         os.environ.pop("TASK_STATION_HOME", None)
         if self._orig_sdir is None:

@@ -82,8 +82,11 @@ rather than breaking.
 Indices are 1-BASED throughout — they are the numbers `/todo <n> history` prints,
 and they are stable because the log is append-only.
 
-Stdlib only, no imports — this module is a leaf.
+Stdlib plus `previews` (itself a leaf that imports nothing from this package),
+so this module stays a leaf.
 """
+
+import previews as _prev
 
 
 # -- element accessors: the ONLY sanctioned way to read an element ---------------
@@ -352,7 +355,7 @@ def live_texts(entries):
     return [text(e) for _i, e in live(entries)]
 
 
-DIGEST_STUB_CHARS = 120     # a tiered stub line — shorter than a reference stub, on purpose
+DIGEST_STUB_CHARS = _prev.RECOGNISE   # a tiered stub line — the RECOGNISE tier, by name
 
 
 def _subject_is_open(entry, is_open=None):

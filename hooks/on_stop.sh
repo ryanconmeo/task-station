@@ -19,7 +19,7 @@ fi
 # Parse stdin with python3 (hard requirement) instead of jq; hookjson.py mirrors
 # `jq -r '.path // default'` and is a silent no-op on malformed input.
 session_id=$(printf '%s' "$input" | python3 "${CLAUDE_PLUGIN_ROOT}/lib/hookjson.py" session_id unknown)
-python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" stop-gate --session "$session_id"
+python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook stop-gate --session "$session_id"
 # ── Everything below the gate, in ONE python3 ────────────────────────────────────
 # These seven best-effort steps used to be seven `ts_run` lines, i.e. seven python3
 # start-ups (~90ms each) plus seven fresh imports of the engine — and, worse, seven

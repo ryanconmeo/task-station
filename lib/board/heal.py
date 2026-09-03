@@ -220,6 +220,7 @@ import time
 import config as _config
 import decisions as _dec
 import paths
+import previews as _prev
 import steps as _steps
 import timing as _timing
 
@@ -2437,7 +2438,6 @@ def steps_restating_superseded(task, minimum=STEP_RESTATEMENT_OVERLAP,
 # the health metric: being pinned is not a defect, so this never inflates the issue
 # count and never makes `Heal due?` true on its own.
 
-PINNED_PREVIEW_CHARS = 120     # enough to recognise which decision a line is about
 
 
 def decision_ages(task, now=None):
@@ -2491,8 +2491,7 @@ def pinned_review(task, now=None):
         body = _dec.text(e)
         flat = " ".join(body.split())
         out.append({"index": i, "age": ages.get(i), "chars": len(body),
-                    "preview": (flat[:PINNED_PREVIEW_CHARS - 1] + "…"
-                                if len(flat) > PINNED_PREVIEW_CHARS else flat)})
+                    "preview": _prev.line(flat)})
     return out
 
 
@@ -2541,7 +2540,6 @@ def pinned_review(task, now=None):
 
 GOAL_TOUCHED_FIELD = "goal_touched"    # {"ts": …, "decisions": N} — the write-time baseline
 GOAL_REVIEWED_FIELD = "goal_reviewed"  # {"ts": …, "decisions": N} — the RE-READ baseline
-GOAL_PREVIEW_CHARS = 200               # enough to read the goal, not enough to reprint a page
 
 
 def goal_review_due():
@@ -2659,8 +2657,7 @@ def goal_review(task, now=None):
             "review_ts": review_ts,
             "review_age": (max(0.0, now - review_ts) if review_ts else None),
             "reviewed_only": reviewed_only,
-            "preview": (flat[:GOAL_PREVIEW_CHARS - 1] + "…"
-                        if len(flat) > GOAL_PREVIEW_CHARS else flat)}
+            "preview": _prev.line(flat, _prev.READ)}
 
 
 # -- informational: what has ACCRUED, and the gap no scan can cover ----------------
@@ -3579,10 +3576,7 @@ def gate_line(task, now=None, result=None):
     return "heal first — %s. `/todo heal` is a dry run by default." % "; ".join(reasons)
 
 
-FINDING_PREVIEW_CHARS = 110    # enough to recognise WHICH finding, not to reprint its fix
-
-
-def first_finding_line(result, limit=FINDING_PREVIEW_CHARS):
+def first_finding_line(result, limit=_prev.RECOGNISE):
     """The worst finding as ONE short `<ref> — <detail>` line, or None when the scan found
     nothing.
 

@@ -94,6 +94,7 @@ import config as _config
 import exits as _exits
 import gating as _gating
 import loop as _loop
+import previews as _prev
 
 # ---------------------------------------------------------------- child states ----
 #
@@ -301,12 +302,13 @@ def report_memo(task, after=None, unacked_only=False):
 # UNACKED ONLY. An acked report has been engaged; re-surfacing it every prompt is how a nag
 # earns being ignored, which is the failure this codebase has had to fix four times over.
 
-# The bounds, mirroring the memo nag's (`_shared.MEMO_PENDING_MAX` / `MEMO_LINE_MAX`) rather
-# than importing them: this module stays stdlib-plus-config/exits/loop, which is what makes a
-# turn testable with no store at all. Two constants that must agree by eye is the cheaper
-# price than a dependency that inverts the module's direction.
+# The bounds. The COUNT still mirrors the memo nag's `_shared.MEMO_PENDING_MAX` by eye
+# rather than importing it: this module stays stdlib-plus-config/exits/loop/previews, which
+# is what makes a turn testable with no store at all, and `_shared` would invert that. The
+# LENGTH no longer has to be mirrored — `previews` is a leaf that imports nothing from this
+# package, so naming the tier costs none of that independence.
 CHILD_REPORT_MAX = 3        # report lines per block
-CHILD_REPORT_LINE_MAX = 200  # preview chars per line
+CHILD_REPORT_LINE_MAX = _prev.READ  # preview chars per line — the READ tier, by name
 
 
 def child_reports(orch, children):

@@ -2010,6 +2010,12 @@ def cmd_theme(arg):
 # /todo,/done command files, the Claude Desktop bridge entry, and the CLAUDE.md
 # delegation block. Those are reported with their off-commands, never silently
 # removed, so the user removes them deliberately.
+#
+# THIS LIST IS NO LONGER MAINTAINED BY MEMORY. tests/test_reset_keys_guard.py reads
+# the SOURCE, collects every config key the board WRITES, and fails unless each one
+# is either here or in RESET_EXCLUDED below with a reason. A key that is only ever
+# hand-edited into config.json is not reached by that scan — the guard proves the
+# list covers what the board writes, not that the list is complete for all time.
 RESET_KEYS = [
     "enabled_categories", "auto_categories", "categories", "category_pack",
     "bare_commands", "update_check", "board_autorefresh", "done_closes_window",
@@ -2063,7 +2069,47 @@ RESET_KEYS = [
     # `memo_quiet` off behind would keep re-listing settled memos on a station the user
     # just cleared, and a hand-tuned quorum would keep a threshold nobody remembers.
     "memo_quiet", "memo_quiet_after",
+    # The event stream's toggle and its external tee. Popped like everything else:
+    # `config --stream off` left behind by a reset would keep the ledger silent on a
+    # station the user had just cleared, and a stale `stream_dir` would keep teeing
+    # events into a directory chosen for the configuration that no longer exists.
+    "stream", "stream_dir",
+    # The SHARE exchange path, popped for exactly the reason `sync_dir` above is: a
+    # reset that left a share root behind would leave the machine still pointed at a
+    # partition the user had just cleared.
+    "share_dir",
 ]
+
+# The config.json keys the board writes and `--reset` deliberately does NOT pop, each
+# with the reason. This is the escape hatch the guard requires you to USE rather than
+# work around: a written key missing from BOTH lists fails tests/test_reset_keys_guard.py.
+#
+# The discriminator is the same one that governs everything in this file: a SETTING is
+# something the reset is FOR — a preference whose default the user wants back. Anything
+# else in config.json is DATA (a table the user authored, or a trail the board keeps on
+# the user's behalf), and a factory reset that deleted data would be a different, worse
+# command than the one its own help text describes.
+RESET_EXCLUDED = {
+    "repo_roots": "the repo index the user built with `repos --add`; DATA, not a "
+                  "setting, and reset_settings' own docstring has always said so.",
+    "themes": "user-authored theme snapshots written by `config --theme save`; DATA, "
+              "and the only copy — a reset that ate them would be destructive.",
+    "export_dirs": "the board's own breadcrumb trail of generic-export destinations, "
+                   "kept so `delete --prune` can find and purge a hard-deleted task's "
+                   "exported notes. tasks.db SURVIVES a reset, so clearing this trail "
+                   "would strand exported copies of tasks the user later deletes — the "
+                   "reset would make forgetting LESS complete, not more.",
+    # Neither of the next two is written by any board command — the guard's scan does not
+    # reach them, and they are named here so the next reader does not have to re-derive
+    # why the reset leaves them alone.
+    "skill_colors": "a hand-edited [pattern, color] override table read by "
+                    "categories.py; DATA the user typed into config.json, never "
+                    "board-written.",
+    "board_engine": "RETIRED. Nothing reads it (docs/specs/BOARD-RETIREMENT.md), "
+                    "`config --board-engine` refuses to write it, and "
+                    "tests/test_config.py pins both. A persisted value is inert, so "
+                    "popping it would be theatre.",
+}
 
 
 def reset_settings():

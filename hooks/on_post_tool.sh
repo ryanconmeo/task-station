@@ -18,15 +18,15 @@ fi
 # Parse stdin with python3 (hard requirement) instead of jq; hookjson.py mirrors
 # `jq -r '.path // default'` and is a silent no-op on malformed input.
 session_id=$(printf '%s' "$input" | python3 "${CLAUDE_PLUGIN_ROOT}/lib/hookjson.py" session_id unknown)
-python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" mark-edited --session "$session_id"
+python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook mark-edited --session "$session_id"
 # Best-effort briefing capture: record the edited path on the attached task's
 # `files` list (silent no-op if no attached task / no path). Never blocks the hook.
 file_path=$(printf '%s' "$input" | python3 "${CLAUDE_PLUGIN_ROOT}/lib/hookjson.py" tool_input.file_path)
 if [ -n "$file_path" ]; then
-  ts_run touch-file python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" touch-file --session "$session_id" --file "$file_path"
+  ts_run touch-file python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook touch-file --session "$session_id" --file "$file_path"
 fi
 # F6 artifact capture: scan this tool's RESULT for PR/work-item URLs and record them on the
 # attached task (deduped) + auto-link across peers. Fed the whole hook payload on stdin;
 # self-gates on an attached task and TASK_STATION_SUPPRESS. Best-effort — never blocks.
-printf '%s' "$input" | ts_run capture-artifacts python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" capture-artifacts --session "$session_id"
+printf '%s' "$input" | ts_run capture-artifacts python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook capture-artifacts --session "$session_id"
 exit 0

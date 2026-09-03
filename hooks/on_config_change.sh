@@ -30,10 +30,10 @@ changed=$(printf '%s' "$input" | python3 "$CLAUDE_PLUGIN_ROOT/lib/hookjson.py" c
 err=$(mktemp "${TMPDIR:-/tmp}/ts-hook.XXXXXX" 2>/dev/null) || err=""
 rc=0
 if [ -n "$err" ]; then
-  python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" config-change \
+  python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" hook config-change \
     --session "$session_id" --source "$source" --file "$changed" 2>"$err" || rc=$?
 else
-  python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" config-change \
+  python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" hook config-change \
     --session "$session_id" --source "$source" --file "$changed" || rc=$?
 fi
 

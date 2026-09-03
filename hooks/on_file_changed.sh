@@ -24,6 +24,6 @@ session_id=$(printf '%s' "$input" | python3 "$CLAUDE_PLUGIN_ROOT/lib/hookjson.py
 changed=$(printf '%s' "$input" | python3 "$CLAUDE_PLUGIN_ROOT/lib/hookjson.py" file_path)
 [ -n "$changed" ] || exit 0                       # nothing named → nothing to do
 change_type=$(printf '%s' "$input" | python3 "$CLAUDE_PLUGIN_ROOT/lib/hookjson.py" change_type modified)
-ts_run file-changed python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" file-changed \
+ts_run file-changed python3 "$CLAUDE_PLUGIN_ROOT/lib/task-station.py" hook file-changed \
   --session "$session_id" --file "$changed" --change "$change_type"
 exit 0

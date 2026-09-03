@@ -50,8 +50,9 @@ present. When the ledger is off/empty there is no span data to estimate from, so
 `tokens = 0` with a `tokens_estimated: true` flag.
 
 VOCABULARY (Interbrain federation): products task-station / brain-station / Interbrain;
-the event stream is the *tasklog*; sync repo, relay, registry, boundaries, private/
-public/org brain, handle (`<alias>-<n>`), memo. Self alias arrives from runtime config
+the event stream is the *tasklog*; sync repo, relay, registry, sharing rules (NOT
+"boundaries" — that word retired with the prototype: a brain is a PLACE, a sharing rule
+is an audience grant), private/public/org brain, handle (`<alias>-<n>`), memo. Self alias arrives from runtime config
 (`self_alias()`: env > config `self_alias` > OS username); demo peers `jpark`/`kosei`;
 org alias `org`.
 """

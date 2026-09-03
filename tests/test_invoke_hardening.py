@@ -46,6 +46,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -135,11 +136,44 @@ class _InvokeTest(unittest.TestCase):
         ts.claude_code_model_selection = lambda: ""
         self.opened = []
         self._orig_open = ts._open_jump_window
-        ts._open_jump_window = lambda cmd: (self.opened.append(cmd) or True)
+        # SINCE #605 A LAUNCH IS ONLY A LAUNCH ONCE THE SESSION REGISTERS, so the fake
+        # opener registers one — that is what a real `open-session-window.sh` causes, and
+        # a fake that only recorded the command would make every test in this file a test
+        # about an unconfirmed spawn. `window_registers = False` opts a test out.
+        self.sessions_dir = os.path.join(self.tmp, "sessions")
+        os.makedirs(self.sessions_dir, exist_ok=True)
+        self.window_registers = True
+        self._orig_sdir = os.environ.get("TASK_STATION_SESSIONS_DIR")
+        self._orig_confirm = os.environ.get("TASK_STATION_SPAWN_CONFIRM_S")
+        os.environ["TASK_STATION_SESSIONS_DIR"] = self.sessions_dir
+        # A short confirm wait: an UNCONFIRMED case must not pay the production timeout.
+        os.environ["TASK_STATION_SPAWN_CONFIRM_S"] = "0.2"
+        ts._open_jump_window = self._fake_open
+
+    def _fake_open(self, cmd):
+        """Stand in for `open-session-window.sh`: record the command, and — unless the
+        test says the window never comes up — write the registration file a real
+        `claude --session-id <sid>` writes."""
+        self.opened.append(cmd)
+        if self.window_registers:
+            m = re.search(r"--session-id[= ]([0-9a-fA-F-]{8,})", cmd or "")
+            if m:
+                pid = os.getpid()
+                with open(os.path.join(self.sessions_dir, "%d.json" % pid), "w") as f:
+                    json.dump({"pid": pid, "sessionId": m.group(1), "cwd": self.tmp,
+                               "kind": "interactive", "entrypoint": "cli",
+                               "status": "busy", "startedAt": 1000, "updatedAt": 1000}, f)
+        return True
 
     def tearDown(self):
         ts._open_jump_window = self._orig_open
         ts.claude_code_model_selection = self._orig_sel
+        for name, orig in (("TASK_STATION_SESSIONS_DIR", self._orig_sdir),
+                           ("TASK_STATION_SPAWN_CONFIRM_S", self._orig_confirm)):
+            if orig is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = orig
         store.reset_cache()
         os.environ.pop("TASK_STATION_HOME", None)
         if self._orig_cfg is None:
@@ -744,35 +778,74 @@ class TheLaunchLineTellsTheTruth(_InvokeTest):
         self.assertIn("task-station search --detail %s" % child["seq"], cmd)
 
 
-class InvokeKeepsItsOwnClaim(_InvokeTest):
-    """#603 CHANGED THE RELAY AND NOT THIS PATH, and that was a finding rather than a
-    scoping choice.
+class InvokeConfirmsItsWindow(_InvokeTest):
+    """`invoke` claims a window only when a session actually came up (#605).
 
-    #603 was filed against "opened a new window running it" — this line's words. The two
-    spawners share the OPENER (`_open_jump_window`) and share NO claim-printing code:
-    `cmd_invoke` and `cmd_relay` each hold their own literal. So the relay's fix could
-    not reach here, and making it reach would have been a second decision nobody asked
-    for — on 2026-08-31 this exact line was TRUE on `invoke --task 599`, where two
-    sessions registered against the child.
+    WHAT THIS CLASS USED TO SAY, AND WHY IT NO LONGER SAYS IT. It was
+    `InvokeKeepsItsOwnClaim`, and it pinned "opened a new window running it" as
+    deliberately unchanged: #603 fixed that sentence for `relay --spawn` and correctly did
+    not extend the fix here, because the two spawners share the OPENER
+    (`_open_jump_window`) and share NO claim-printing code — each holds its own literal in
+    its own branch. The test existed so a later sweep of the phrase would find a stated
+    reason instead of an oversight. That reason expires the moment the work is done, which
+    is what this change is, so the class is REWRITTEN rather than deleted.
 
-    This test exists so a later sweep of the phrase finds a stated reason instead of an
-    oversight: nothing here registers a session, and `invoke` still says what it says.
+    THE DEFECT, IN ONE LINE. The opener returning True says a command was ISSUED. It does
+    not say a session came up, and between the two sit every way a launch dies quietly: a
+    terminal that refused the Apple Event, a `claude` that exited at startup, a first-run
+    trust dialog nobody was there to answer. An orchestrator that believes a child
+    launched then waits on an idle rail for a session that never existed.
+
+    FAIL-CLOSED. Cannot-tell prints the command instead of the claim — a spawner that
+    cannot read process state must NOT print "a window opened", because that sentence is
+    the whole defect. Same helper (`_await_registration`) and the same wording shape as
+    the relay, because two spawners telling the truth differently would be a third bug.
     """
 
-    def test_the_launch_line_is_unchanged(self):
+    # -- the window came up -------------------------------------------------------
+
+    def test_a_window_that_registers_is_reported_as_opened_and_confirmed(self):
+        self.window_registers = True
         parent, child = self._pair()
         out, _ = self._invoke(parent=parent, child=child)
-        self.assertIn("opened a new window running it", out)
+        self.assertIn("opened a new window", out)
+        self.assertIn("CONFIRMED", out)
 
-    def test_the_trail_still_records_a_real_invoke(self):
-        """Not a MANUAL LAUNCH. The parent's RUNNING column reads this trail to stop a
-        double-invoke, so a launch that started reading as manual would change what the
-        loop does next."""
+    def test_a_confirmed_launch_is_not_a_manual_one_on_the_trail(self):
+        """The parent's RUNNING column reads this trail to stop a double-invoke, so a
+        real launch that started reading as manual would change what the loop does next."""
+        self.window_registers = True
         parent, child = self._pair()
         self._invoke(parent=parent, child=child)
         trail = " ".join(self._events(child))
         self.assertIn("invoked by #%s" % parent["seq"], trail)
         self.assertNotIn(ts.MANUAL_LAUNCH, trail)
+
+    # -- the window never came up -------------------------------------------------
+
+    def test_a_window_that_never_registers_is_reported_as_prepared(self):
+        """The defect's exact sentence must be absent, not merely softened."""
+        self.window_registers = False
+        parent, child = self._pair()
+        out, _ = self._invoke(parent=parent, child=child)
+        self.assertIn("PREPARED ONLY", out)
+        self.assertNotIn("opened a new window running it", out)
+
+    def test_an_unconfirmed_launch_still_prints_the_command(self):
+        """Refusing to claim is only useful if the human is left able to act."""
+        self.window_registers = False
+        parent, child = self._pair()
+        out, _ = self._invoke(parent=parent, child=child)
+        self.assertIn("claude", out)
+        self.assertIn("run it yourself", out.lower())
+
+    def test_an_unconfirmed_launch_is_a_MANUAL_launch_on_the_trail(self):
+        """Nothing is running, so nothing should stop a re-invoke — the trail must say
+        so, exactly as the relay's does."""
+        self.window_registers = False
+        parent, child = self._pair()
+        self._invoke(parent=parent, child=child)
+        self.assertIn(ts.MANUAL_LAUNCH, " ".join(self._events(child)))
 
 
 if __name__ == "__main__":

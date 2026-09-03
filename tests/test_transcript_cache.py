@@ -464,7 +464,10 @@ class StopGateUntouchedTest(unittest.TestCase):
 
     def test_stop_gate_is_still_its_own_bare_call(self):
         gate = self.lines[self._line_index("stop-gate")]
-        self.assertIn('python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" stop-gate', gate)
+        # `hook stop-gate` since 3.63.0 — the verb moved into the plumbing group, and what
+        # this test is about is that the call is BARE, not which group holds the verb.
+        self.assertIn('python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook stop-gate',
+                      gate)
         # NOT wrapped: ts_run would eat the decision JSON, ts_capture would still
         # relabel a non-zero exit as success before the harness sees it.
         self.assertFalse(gate.strip().startswith(("ts_run", "ts_capture")), gate)

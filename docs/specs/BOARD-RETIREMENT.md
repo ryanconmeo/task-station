@@ -108,6 +108,36 @@ Config surface removed with it: `--board-engine` / `config.board_engine()`, `boa
 `board_engine` key in an existing config is inert — nothing reads it. Passing
 `--board-engine` prints a one-line retirement notice and exits 0.
 
+## Two things the prototype docs owned that outlived them
+
+The board2 and board3 design docs were deleted in #623 (they described `lib/board3.py`
+and `tools/board3_shell.py`, which do not exist — a reader who opened them came away
+believing that code ships). Everything in them that is still TRUE was already written
+down in `lib/board/feeds.py`'s own module docstring: the wire form and why it is `.js`
+and not `.json` (a `file://` page can load a local `<script src>` but cannot `fetch()` a
+local file), the no-store-writes rule (the exporter never calls `ensure_seqs()`; the
+handle is display-only and falls back to the uuid8), uuid8-only relation edges, and the
+`tokens_estimated` fallback. Two things were NOT, and they are recorded here:
+
+**The feed schema number counts prototype iterations, not releases.** `FEED_SCHEMA = 3`
+in `lib/board/feeds.py` is a bare constant whose history lived only in the deleted docs:
+
+| schema | added |
+|---|---|
+| 1 | the original feed object (board2) |
+| 2 | `category.key` — the row/graph accent colour |
+| 3 | `brain` (where a task lives) and `shares` (its resolved audience) |
+
+Nothing branches on the number yet and one board writes it, so it has not moved since.
+Bump it when a field is added or a meaning changes, so a peer feed written by an older
+station stays readable.
+
+**"Boundary" was renamed to "sharing", and the two are different things.** A **brain** is
+WHERE a task lives — one owner, one brain per task, default `main`. A **sharing rule** is
+an audience GRANT — who can see a slice. The prototype's rail conflated them, and the
+board3 review split them: sharing is never a place. The feed field went `boundaries` →
+`shares` in schema 3.
+
 ## Where things stand
 
 One board (`tools/render_board.py`) + one feed layer (`lib/feeds.py`). Federation lives
@@ -115,5 +145,5 @@ in the board, gated by `config --interbrain` (`on` · `off` · `auto`). The beha
 for the board is `BOARD-BEHAVIOR.md` — including the interbrain-off parity rule, which
 this retirement did not weaken.
 
-History, not deleted: `2026-07-19-board2-prototype.md` and `2026-07-19-board3.md` carry
-`SUPERSEDED` headers pointing here.
+The two prototype design docs are gone (#623). This file is the whole record; their
+design history is in git.

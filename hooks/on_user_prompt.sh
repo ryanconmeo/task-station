@@ -35,7 +35,7 @@ _want="$CLAUDE_PLUGIN_ROOT/lib"
 session_id=$(printf '%s' "$input" | python3 "${CLAUDE_PLUGIN_ROOT}/lib/hookjson.py" session_id unknown)
 prompt=$(printf '%s' "$input" | python3 "${CLAUDE_PLUGIN_ROOT}/lib/hookjson.py" prompt)
 
-tint=$(ts_capture prompt-tint env TASK_STATION_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" prompt-tint --session "$session_id")
+tint=$(ts_capture prompt-tint env TASK_STATION_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook prompt-tint --session "$session_id")
 if [ -n "$tint" ]; then
   # Full-palette escape → write it straight to the originating window (task 119).
   # origin-tty.sh exits 1 when the tty is undeterminable (normal), and the write is
@@ -46,13 +46,13 @@ fi
 
 # Auto-set the tab/window title to '#<seq>: <title>' once attached — write the OSC
 # escape to the originating TTY (same rail as the tint; reuse _dev if resolved above).
-title=$(ts_capture prompt-title python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" prompt-title --session "$session_id")
+title=$(ts_capture prompt-title python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook prompt-title --session "$session_id")
 if [ -n "$title" ]; then
   _dev=${_dev:-$(bash "${CLAUDE_PLUGIN_ROOT}/lib/origin-tty.sh" 2>/dev/null)}
   printf '%s' "$title" > "${_dev:-/dev/tty}" 2>/dev/null
 fi
 
-TASK_STATION_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" prompt-context --session "$session_id"
+TASK_STATION_PROMPT="$prompt" python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook prompt-context --session "$session_id"
 
 # Cost HUD (WS7): finalize the just-ended turn's $ delta and re-baseline the new
 # turn (the UserPromptSubmit payload carries no cost, so the baseline is the last
