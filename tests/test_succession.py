@@ -1456,6 +1456,27 @@ class HandoffPerSuccessor(_SuccessionTest):
         self.assertTrue(os.path.isfile(self._pointed_at()))
         self.assertEqual(len(_succ.handoffs(ts.load_task(task["id"]))), 1)
 
+    def test_a_handoff_already_at_the_stable_name_is_moved_aside_and_said_so(self):
+        """Every task that relayed before 3.62.0 has a REAL handoff at the stable name,
+        and it is the only copy of itself — so it is renamed, not replaced. A file moved
+        under a human with nothing printed is a human working out where it went, so the
+        relay names the new path."""
+        task, sid = self._task()
+        self._transcript(sid, 130000)
+        stable = self._stable(task)
+        os.makedirs(os.path.dirname(stable), exist_ok=True)
+        with open(stable, "w", encoding="utf-8") as fh:
+            fh.write("THE OLD HANDOFF, whose only copy this is.\n")
+        out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
+        self.assertEqual(code, 0, out)
+        aside = stable[:-len(".md")] + ".superseded.md"
+        self.assertIn(aside, out)
+        with open(aside, encoding="utf-8") as fh:
+            self.assertIn("THE OLD HANDOFF", fh.read())
+        # …and the stable name is now the pointer, reading as the handoff just written.
+        with open(stable, encoding="utf-8") as fh:
+            self.assertIn("you are session %s-1" % task["seq"], fh.read())
+
     def test_the_written_handoff_says_who_it_is_for_who_wrote_it_and_when(self):
         """A human who opened the path by hand needs to tell a live handoff from a spent
         one, and the header is where that answer goes — in prose, with no front-matter

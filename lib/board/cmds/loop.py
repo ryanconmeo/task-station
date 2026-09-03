@@ -1280,7 +1280,7 @@ def cmd_relay(a):
     # attached and stamped its own roster entry. Saving the copy minted before the poll
     # would drop that.
     entry = index1 = None
-    linked = link_note = None
+    linked = link_note = moved_aside = None
     if confirmed:
         task = load_task(task["id"]) or task
         entry, index1 = _succ.record_handoff(task, session, sid, rep, forced=forced,
@@ -1298,7 +1298,7 @@ def cmd_relay(a):
         # one `ls` for a human; copying the handoff there instead would put two files on
         # disk with one origin, which is the staleness the sid-qualified name removed.
         try:
-            linked = _succ.link_handoff(task, handoff_path)
+            linked, moved_aside = _succ.link_handoff(task, handoff_path)
         except OSError as e:
             link_note = str(e)
     # THE TRAIL HAS TO NAME BOTH SIDES, so where the prompt drops an unresolvable
@@ -1333,6 +1333,14 @@ def cmd_relay(a):
     if linked:
         print("  %s now points at it — that is the stable name a human types, and it "
               "resolves to the newest handoff rather than storing one." % linked)
+    # A FILE MOVED UNDER A HUMAN IS SAID OUT LOUD. Before 3.62.0 the stable name held a
+    # real handoff, and every task that has relayed still has one there; it is the only
+    # copy of that handoff, so it is renamed rather than replaced. Printing where it went
+    # is what makes the rename findable without asking.
+    if moved_aside:
+        print("  the handoff that was at that name — written before the pointer existed, "
+              "and the only copy of itself — is now %s. Nothing was overwritten."
+              % moved_aside)
     elif link_note:
         print("  the stable name %s was NOT updated (%s) — SKIPPED, not copied. The "
               "successor is pointed at %s, which is written; a human reading by hand "

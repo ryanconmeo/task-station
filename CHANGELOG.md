@@ -64,7 +64,9 @@ names it.
   cost is one `ls`.
 - A real file already at the stable name — every task that has relayed before this release
   has one — is moved aside to `<seq>-CONTINUATION.superseded.md` rather than replaced. It
-  is the only copy of that handoff.
+  is the only copy of that handoff. **The relay prints where it went**, because a file
+  renamed under a human with nothing said is a human working out where their handoff went:
+  `the handoff that was at that name … is now <path>. Nothing was overwritten.`
 
 ## [3.61.0] — 2026-09-03
 

@@ -413,7 +413,8 @@ def write_handoff(task, prompt, sid, root=None):
 
 
 def link_handoff(task, path, root=None):
-    """Point the stable per-task name at `path` and return the pointer's own path.
+    """Point the stable per-task name at `path`. Returns `(link, moved_aside)`, where
+    `moved_aside` is the path a pre-existing REAL handoff was renamed to, or None.
 
     A SYMLINK, NEVER A SECOND COPY. Copying the handoff to the stable name would put
     two files on disk with one origin and no way to tell which a reader got — the
@@ -429,10 +430,17 @@ def link_handoff(task, path, root=None):
     A REAL FILE ALREADY AT THE STABLE NAME IS MOVED ASIDE, NOT DELETED. Every task that
     relayed before this release has one, and it is a genuine handoff whose only copy
     that is; `os.replace` onto it would destroy it to make room for a pointer. It
-    happens at most once per task, because afterwards the stable name is a symlink."""
+    happens at most once per task, because afterwards the stable name is a symlink.
+
+    THE MOVE IS RETURNED SO THE CALLER CAN SAY IT HAPPENED. A file renamed under a human
+    with nothing printed is a human who has to work out where their handoff went; the
+    rename is the non-destructive choice, and the caller naming it is what makes it look
+    like one."""
     link = stable_handoff_path(task, root)
+    aside = None
     if os.path.isfile(link) and not os.path.islink(link):
-        os.replace(link, link[:-len(".md")] + ".superseded.md")
+        aside = link[:-len(".md")] + ".superseded.md"
+        os.replace(link, aside)
     # RELATIVE, so the pointer survives a moved or copied data directory — an absolute
     # target would name the machine's old path from inside the new one.
     target = os.path.relpath(os.path.abspath(path), os.path.dirname(link))
@@ -451,7 +459,7 @@ def link_handoff(task, path, root=None):
         except OSError:
             pass
         raise
-    return link
+    return link, aside
 
 
 def open_steps(task):
