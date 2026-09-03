@@ -3,6 +3,46 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.58.0] — 2026-09-03
+
+**A HANDOFF NOW CARRIES A COMPLETE SENTENCE INSTEAD OF 320 CHARACTERS CUT MID-WORD.**
+Measured on this programme's own 3,259-character state line: the prompt goes from 320
+chars ending in an ellipsis to **120 chars ending in a full stop**.
+
+**THE BOUNDARY WAS ALWAYS KNOWN AND ALWAYS THROWN AWAY.** `continuation_prompt` called
+`leads_with_next(state)` — which returns a **boolean** — and then clipped the ENTIRE state
+at `NEXT_CHARS`. So it established that a first-move sentence was there, discarded where it
+ended, and spent most of its budget on standing detail the successor reads in the digest
+anyway. `save.next_line()` returns the extent instead of the yes/no.
+
+**THE CAP DOES NOT MOVE, AND DOES NOT NEED TO.** #583's guard pins `NEXT_CHARS` at 320
+because raising it turns a relay prompt into the context dump the design exists to avoid —
+and that reasoning is correct. Sending the MOVE rather than a prefix of the whole state
+makes a long state's prompt *shorter*, so the fix needs no widening at all. The guard is
+untouched and still passes.
+
+**WHERE THE MOVE ENDS, narrowed by measurement rather than taste.** Taking the whole first
+LINE was the obvious reading and is not enough: #444's first line runs **541 characters**,
+because sessions write the move plus three sentences of rationale on one line. So the move
+is the **first sentence** of that line — 119 chars on the same record, and the whole
+actionable instruction.
+
+A terminator only counts when whitespace follows, so `3.57.0` and `succession.py` do not
+end a sentence. A length floor then catches the abbreviation case that rule cannot — `e.g.`
+and `Dr.` *do* have a space after them. That floor is deliberately low: an earlier value of
+40 rejected `"NEXT: ship 3.57.0 to main, then verify."` at position 39 and handed back the
+whole line, which is the exact failure this change exists to fix.
+
+**IT CAN NEVER GROW UNBOUNDED.** A move with no terminator, and a state with no `NEXT:`
+prefix at all, both still fall back to the bounded clip.
+
+**AND `_clip` NO LONGER CUTS A WORD IN HALF** anywhere it is used. A prompt ending
+"…the balance sheet recon" reads as corrupted rather than abbreviated; the word boundary
+costs at most one word and never costs meaning.
+
+### Fixed
+- …
+
 ## [3.57.0] — 2026-09-03
 
 **THE VERB THAT COMPLETES NOW WRITES THE DISPOSITION.** Notification memos stop
