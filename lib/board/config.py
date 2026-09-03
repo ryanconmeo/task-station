@@ -797,10 +797,16 @@ def artifacts_root():
 # fail every claim before its command produced a byte. A tunable whose extreme value
 # breaks the feature is a footgun, and the cheap fix is to not accept the value.
 
-def _positive_number(env_name, key, default):
+def _positive_number(env_name, key, default, allow_zero=False):
     """A positive number from the env escape, else config, else `default`. Anything
     unparseable or <= 0 falls back — the same fail-open contract every checker entry
-    point keeps."""
+    point keeps.
+
+    `allow_zero` keeps 0 as a MEANINGFUL value rather than a fallback, for the settings
+    where zero means OFF rather than absent. Without it a knob whose off-switch is 0
+    silently re-enables itself at the default, which is the worst possible behaviour for
+    an escape hatch: the user turns the feature off, the tool agrees, and nothing
+    changes."""
     raw = os.environ.get(env_name)
     if raw is None or not str(raw).strip():
         raw = get(key)
@@ -810,7 +816,7 @@ def _positive_number(env_name, key, default):
         n = float(raw)
     except (TypeError, ValueError):
         return default
-    if n <= 0:
+    if n < 0 or (n == 0 and not allow_zero):
         return default
     return int(n) if n.is_integer() else n
 
@@ -875,6 +881,22 @@ def loop_children_max():
     """Concurrent child sessions one loop may hold open. Default 3.
     `TASK_STATION_LOOP_CHILDREN_MAX` overrides."""
     return _positive_number("TASK_STATION_LOOP_CHILDREN_MAX", "loop_children_max", 3)
+
+
+def digest_budget_chars():
+    """The size at which a task's digest starts TIERING its decisions. Default 60,000
+    (#580's target); `TASK_STATION_DIGEST_BUDGET_CHARS` overrides; **0 disables tiering
+    entirely**, which is the escape hatch that makes the whole feature reversible
+    without a release.
+
+    THIS IS A TRIP-WIRE, NOT A CAP. It never refuses a write and never drops a decision:
+    under it the digest renders byte-identically to 3.53.0, and over it the long,
+    undeclared entries collapse to numbered one-line stubs that say what they are and
+    can be opened. What renders in full is decided by DECLARATION — pinned, `kind:
+    ruling`, an open declared subject, or short enough that a stub saves nothing — never
+    by age or by size."""
+    return _positive_number("TASK_STATION_DIGEST_BUDGET_CHARS", "digest_budget_chars",
+                            60000, allow_zero=True)
 
 
 def loop_retry_max():
@@ -2012,6 +2034,7 @@ RESET_KEYS = [
     "editor_scheme",
     "workspace_dirs",
     "artifacts_root",
+    "digest_budget_chars",
     "interbrain", "org_label",
     # The checker's three thresholds. They have no board row (they are power-user
     # tunables, edited in config.json or via the env), but a reset that left them behind
