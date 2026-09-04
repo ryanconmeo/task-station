@@ -3,7 +3,7 @@
 > Never lose your place in Claude Code — every task on one board, each wired to the session that holds its context, so you pick up exactly where you left off.
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-3.65.0-blue">
+  <img alt="version" src="https://img.shields.io/badge/version-3.66.0-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-da7756">
   <img alt="CI" src="https://github.com/ryanconmeo/task-station/actions/workflows/ci.yml/badge.svg">
@@ -230,16 +230,28 @@ A plan's items normally *assert* they are done. Task Station lets each item **pr
 
 ```text
 task-station exit-add  --task 12 --step 3 --cmd 'grep -c TODO src/*.py' --expect '0'
+task-station exit-add  --task 12 --step 4 --cmd 'python3 -m unittest discover -s tests -t .' \
+                       --expect 'OK' --repo ~/code/thing --ref origin/main
 task-station exit-show --task 12                 # what is registered, how it last went — runs nothing
 task-station exit-tick --task 12                 # RUNS them; ticks what passed; exit 1 if anything is not met
 ```
 
-`exit-tick` moves the tick, so **done is computed, not asserted**. Three rules make that safe:
+`exit-tick` moves the tick, so **done is computed, not asserted**. Four rules make that safe:
 
 - **A condition with no `--expect` is refused** — it would pass forever whatever the command printed.
 - **A condition that did not run refutes nothing.** A timeout or a missing binary is *unknown*, never *unmet*, and never moves a tick in either direction.
 - **A condition that cannot run, or that can be satisfied by something other than the work, is refused before it is stored.** The shell is asked to *parse* the command (`bash -n` — never to run it; registering a condition must have no side effects), and the shape is linted for the three ways an assertion lies: a trailing `tail -N` (one extra line of stdout swallows the line the assertion is about), a **bare count** as an expected substring (`5013` is inside `15013`), and an **absence assertion** (`no failures`, `0 errors`) which nothing printed at all satisfies — so it passes hardest exactly when the command is broken. `--force` registers anyway and prints what it overrode.
 - **Ticking is automatic; unticking is opt-in** (`--untick`). A failing condition on already-ticked work is reported as a **regression** — a real regression and a moved file look identical from here, and rewriting your record of finished work on that evidence is a bigger claim than a tick.
+- **A green says which tree it read.** `--repo` and `--ref` put the repository and the ref on the condition as **data**, not as prose inside the command. The runner resolves that ref and evaluates the command in a **detached checkout** of it, so the directory the runner happened to be started from cannot decide the answer — and the verdict records the commit it actually read. There is deliberately **no run-time override**: no flag on `exit-tick`, no environment variable, and no fallback to the current directory when the checkout fails (that is a condition which *did not run*, so it refutes nothing). A condition that declares neither runs in the inherited directory exactly as it always has.
+
+`claims` takes the same two flags, and they apply to every claim the invocation registers:
+
+```text
+task-station claims --task 12 --repo ~/code/thing --ref origin/main \
+             --register 'C1|python3 -m unittest discover -s tests -t .|OK'
+```
+
+**Merge-gated is computed from the ref, never typed.** A ref that resolves under `refs/remotes/` — `origin/main`, `upstream/dev` — is one whose author cannot move it without pushing, so a condition reading it cannot go green until the work lands. `exit-show` says so, the loop reports **DONE PENDING MERGE** instead of calling a finished child unfinished, and nothing is softened: an unmet merge-gated condition still blocks the release. `--merge-gated` remains for a condition that declares no ref, and typing both is refused rather than silently resolved.
 
 ### Waves, and what is unblocked now
 

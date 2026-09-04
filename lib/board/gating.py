@@ -32,11 +32,20 @@ merge-gated condition that is UNMET is still unmet, still a gate finding, and st
 the release — closing a task whose work has not landed would settle a predecessor that
 cannot yet release anything. All the flag changes is WHAT THE READER IS TOLD.
 
-AND IT IS A DECLARATION, NEVER AN INFERENCE. Nothing here guesses. `merge_gated` is a
-boolean the condition's AUTHOR wrote at registration time, because the author is the one
-person who knows — they typed `git show origin/main:…`. An undeclared condition is
-therefore treated exactly as it was before this module existed, permanently, and that is
-the negative control every consumer of this module is tested against.
+AND IT IS NEVER AN INFERENCE. Nothing here guesses, and since 3.66.0 the boolean this
+module is handed comes from one of two places, neither of which is a heuristic:
+
+  * COMPUTED, for a condition that declares a `repo` and a `ref`. A ref that resolves
+    under `refs/remotes/` is a merge target by definition — its author cannot move it
+    without pushing, and somebody has to merge. `treeref.merge_gated` is the whole rule,
+    it is a string test on a name the runner resolved, and no flag feeds it.
+  * DECLARED BY THE AUTHOR, for a condition that declares no tree. That is every
+    condition written before 3.66.0, it is honoured permanently, and it is the negative
+    control every consumer of this module is tested against — an undeclared condition is
+    treated exactly as it was before this module existed.
+
+The two can never disagree in the store, because `exit-add` refuses `--merge-gated`
+alongside `--ref` rather than picking a winner.
 """
 
 # The state string this module compares against. It MIRRORS `exits.UNMET` and cannot

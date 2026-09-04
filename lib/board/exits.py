@@ -34,8 +34,11 @@ STORAGE — additive, on the step element itself:
 
     {"text": "…", "done": false,
      "exit": {"cmd": "…", "expect": ["…"], "added_ts": 1.7e9,
+              "repo": "/abs/path", "ref": "origin/main",
+              "refname": "refs/remotes/origin/main",
               "last": {"ts": …, "ok": …, "status": "ran", "code": 0,
-                       "missing": [], "got": "…"}}}
+                       "missing": [], "got": "…",
+                       "tree": {"repo": "…", "ref": "…", "sha": "…"}}}}
 
 On the step, not in a parallel task-level table keyed by index, because the two would
 have to be kept in step (pun intended) through every `--step-supersede`,
@@ -77,8 +80,23 @@ THE FOUR RULES, inherited from the checker and not negotiable:
      to REWRITE, because the moment an author can declare their own condition exempt
      the invariant means nothing. A non-zero exit is `unmet`, never `unknown` — rule 2
      protects commands that did not RUN, and this one ran.
+  6. A GREEN CONDITION SAYS WHICH TREE IT READ (3.66.0). `repo` and `ref` are DATA on the
+     condition, not prose inside the command, and the runner resolves that ref and
+     evaluates the command in a DETACHED CHECKOUT of it — so the directory the runner
+     happened to inherit cannot decide the answer. `merge_gated` follows from the ref
+     rather than from a flag the author typed, the run records the commit it actually
+     read (`last.tree`), and a checkout that FAILS is a condition that did not run, never
+     one that quietly fell back to the cwd. See `treeref.py` for the evidence: a probe
+     that exits 0 from the main checkout while claiming to prove something about a
+     worktree, and a merge-gated declaration nothing could check.
 
-Stdlib only. Imports `checker`, `config` and `steps`; nothing imports it back.
+     A CONDITION THAT DECLARES NOTHING IS UNCHANGED, PERMANENTLY. It runs in the
+     inherited cwd and keeps its author's `merge_gated` flag. That is the common case —
+     170 of them existed when this shipped — and no backfill is possible, because nothing
+     can recover from a command string which tree its author meant.
+
+Stdlib only. Imports `checker`, `config`, `gating`, `steps` and `treeref`; nothing imports
+it back.
 """
 import time
 
@@ -86,6 +104,7 @@ import checker as _checker
 import config as _config
 import gating as _gating
 import steps as _steps
+import treeref as _treeref
 
 # The per-step key this module owns. Additive: every other reader ignores it.
 EXIT_FIELD = "exit"
@@ -119,7 +138,15 @@ def condition(step):
     expect = [str(e) for e in (raw.get("expect") or []) if str(e).strip()]
     if not expect:
         return None
-    out = {"cmd": cmd, "expect": expect, "merge_gated": bool(raw.get("merge_gated"))}
+    decl = _treeref.declaration(raw)
+    # MERGE-GATED IS COMPUTED WHEN A TREE IS DECLARED, and only falls back to the
+    # author's flag for a condition that declares none (#604 step 4). The two can never
+    # both apply: `exit-add` refuses `--merge-gated` alongside `--ref`, because a
+    # declared ref already answers the question and letting the author answer it too is
+    # how the two would come to disagree in the store.
+    out = {"cmd": cmd, "expect": expect, "decl": decl,
+           "merge_gated": (_treeref.merge_gated(decl) if decl
+                           else bool(raw.get("merge_gated")))}
     if raw.get("added_ts"):
         out["added_ts"] = raw["added_ts"]
     last = raw.get("last")
@@ -157,7 +184,13 @@ def has_condition(step):
 # left to explain.
 
 def merge_gated(step):
-    """True iff this step's condition was DECLARED as gated on a merge."""
+    """True iff this step's condition reads the merge target.
+
+    COMPUTED from the declared ref when there is one — a remote-tracking ref is a merge
+    target because its author cannot move it without pushing (`treeref.is_merge_target`).
+    Falls back to the author's stored flag ONLY for a condition that declares no tree,
+    which is every condition written before 3.66.0 and is tolerated indefinitely: nothing
+    can recover from a command string which tree its author meant."""
     cond = condition(step)
     return bool(cond and cond.get("merge_gated"))
 
@@ -177,6 +210,27 @@ def merge_gate(task):
     return _gating.tally(
         (item_state(s), merge_gated(s))
         for _n, s in _steps.live((task or {}).get("steps") or []))
+
+
+def declared_tree(step):
+    """The `{"repo", "ref", "refname"}` this step's condition DECLARES, or None."""
+    cond = condition(step)
+    return (cond or {}).get("decl")
+
+
+def tree_of(step):
+    """The tree the LAST RUN of this condition actually read — `{"repo","ref","sha"}` —
+    or None when that run recorded none.
+
+    NONE MEANS UNRECORDED AND NEVER "the usual place". Every verdict stored before 3.66.0
+    was produced in whatever directory the runner inherited, and no surface may turn that
+    silence into a claim about which tree it was. That invention is the failure this whole
+    module is named after."""
+    cond = condition(step)
+    if cond is None:
+        return None
+    rec = (cond.get("last") or {}).get("tree")
+    return rec if isinstance(rec, dict) and rec.get("sha") else None
 
 
 def item_state(step):
@@ -212,6 +266,7 @@ def items(task):
         out.append({"n": n, "text": _steps.text(step), "done": _steps.is_done(step),
                     "cmd": cond["cmd"], "expect": cond["expect"],
                     "state": item_state(step), "merge_gated": bool(cond["merge_gated"]),
+                    "decl": cond.get("decl"), "tree": tree_of(step),
                     "last": cond.get("last") or {}})
     return out
 
@@ -291,7 +346,7 @@ def last_run_ts(task):
 # -- writing -------------------------------------------------------------------
 
 def set_condition(steps, index1, cmd, expect, now=None, flag="exit-add",
-                  merge_gated=False):
+                  merge_gated=False, decl=None):
     """Attach (or replace) the exit condition on step `index1`. `(ok, error)`.
 
     UPSERTS, like `claims --register`: re-running it on a step rewrites that step's
@@ -321,10 +376,24 @@ def set_condition(steps, index1, cmd, expect, now=None, flag="exit-add",
         return False, ("%s step %d — no --expect substring, so the condition would pass "
                        "whatever the command printed. Name at least one string that must "
                        "appear in its output." % (flag, i))
+    if decl and merge_gated:
+        return False, ("%s step %d — --merge-gated cannot be typed alongside --ref. The "
+                       "declared ref ANSWERS that question (%s is %sa merge target), and "
+                       "letting the author answer it too is how the store comes to hold "
+                       "two contradictory verdicts about one condition."
+                       % (flag, i, decl["ref"],
+                          "" if _treeref.merge_gated(decl) else "not "))
     rich = _steps.as_rich(steps[i - 1])
-    rich[EXIT_FIELD] = {"cmd": command, "expect": wanted,
-                        "merge_gated": bool(merge_gated),
-                        "added_ts": time.time() if now is None else now}
+    block = {"cmd": command, "expect": wanted,
+             "added_ts": time.time() if now is None else now}
+    # The author's flag survives ONLY for an undeclared condition. With a declaration
+    # present the key is not written at all, so nothing downstream can read a stale
+    # assertion in preference to the computed answer.
+    if decl:
+        _treeref.store_into(block, decl)
+    else:
+        block["merge_gated"] = bool(merge_gated)
+    rich[EXIT_FIELD] = block
     steps[i - 1] = _steps.compact(rich)
     return True, None
 
@@ -391,26 +460,52 @@ def evaluate(task, only=None, timeout=None, now=None, run=None):
         wanted = {int(only)} if isinstance(only, int) else {int(o) for o in only}
     steps = (task or {}).get("steps") or []
     results = []
-    for n, step in _steps.live(steps):
-        cond = condition(step)
-        if cond is None or (wanted is not None and n not in wanted):
-            continue
-        out, status, code = _checker.invoke(run, cond["cmd"], timeout)
-        missing = [e for e in cond["expect"] if e not in out]
-        ok = bool(status == "ran" and code == 0 and not missing)
-        got = ("(no output — timed out after %ss)" % timeout) if status == "timeout" \
-            else _checker.output_tail(out)
-        rich = _steps.as_rich(step)
-        block = dict(rich.get(EXIT_FIELD) or {})
-        block["last"] = {"ts": now, "ok": ok, "status": status, "code": code,
-                         "missing": missing, "got": got}
-        rich[EXIT_FIELD] = block
-        steps[n - 1] = _steps.compact(rich)
-        results.append({"n": n, "text": _steps.text(step), "cmd": cond["cmd"],
-                        "expect": cond["expect"], "ok": ok, "status": status,
-                        "code": code, "missing": missing, "got": got,
-                        "was_done": _steps.is_done(step)})
+    trees = _treeref.Trees()
+    try:
+        for n, step in _steps.live(steps):
+            cond = condition(step)
+            if cond is None or (wanted is not None and n not in wanted):
+                continue
+            results.append(_run_one(steps, n, step, cond, trees, run, timeout, now))
+    finally:
+        trees.close()
     return results
+
+
+def _run_one(steps, n, step, cond, trees, run, timeout, now):
+    """Run ONE condition in the tree it declares, record the outcome on its step, and
+    return its result row.
+
+    THE CHECKOUT COMES FIRST AND ITS FAILURE IS NOT A FALLBACK. A declared tree that
+    cannot be checked out means the command DOES NOT RUN: status `error`, which rule 2
+    turns into `unknown`, which refutes nothing and moves no tick. Running it in the
+    inherited directory instead would be the defect this whole mechanism removes, wearing
+    the fix as a disguise."""
+    decl = cond.get("decl")
+    cwd, sha, err = trees.tree(decl)
+    if err:
+        out, status, code = ("the declared tree could not be read: %s" % err), "error", None
+        missing = list(cond["expect"])
+    else:
+        out, status, code = _checker.invoke(run, cond["cmd"], timeout, cwd=cwd)
+        missing = [e for e in cond["expect"] if e not in out]
+    ok = bool(status == "ran" and code == 0 and not missing)
+    got = ("(no output — timed out after %ss)" % timeout) if status == "timeout" \
+        else _checker.output_tail(out)
+    last = {"ts": now, "ok": ok, "status": status, "code": code,
+            "missing": missing, "got": got}
+    tree = _treeref.provenance(decl, sha)
+    if tree:
+        last["tree"] = tree
+    rich = _steps.as_rich(step)
+    block = dict(rich.get(EXIT_FIELD) or {})
+    block["last"] = last
+    rich[EXIT_FIELD] = block
+    steps[n - 1] = _steps.compact(rich)
+    return {"n": n, "text": _steps.text(step), "cmd": cond["cmd"],
+            "expect": cond["expect"], "ok": ok, "status": status,
+            "code": code, "missing": missing, "got": got, "tree": tree,
+            "was_done": _steps.is_done(step)}
 
 
 def apply_results(task, results, untick=False, now=None):

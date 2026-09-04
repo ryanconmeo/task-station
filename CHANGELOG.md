@@ -3,6 +3,98 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.66.0] — 2026-09-04
+
+**THE RUNNER OWNS THE TREE — A CONDITION DECLARES ITS repo AND ref AS DATA, AND THE RUNNER
+CHECKS THAT REF OUT.** 3.49.0 made a green condition mean *the command succeeded*. It still
+did not mean *against the tree it was meant to read*: every command ran in whatever
+directory the runner inherited, and nothing anywhere recorded which one that was. This is
+the half of #595 that shipped without its other half.
+
+```
+before   exit-add --cmd 'git -C /path show origin/main:lib/x.py | grep TOKEN' --merge-gated
+         the tree is prose inside the command · merge-gated is the author's word
+         a green names no tree, and nothing can check either claim
+
+after    exit-add --cmd 'grep TOKEN lib/x.py' --repo /path --ref origin/main
+         the tree is DATA · the runner checks origin/main out and runs the command there
+         merge-gated is COMPUTED from the ref · the verdict records the commit it read
+```
+
+**WHAT THE OLD SHAPE COST, MEASURED.** #602 lost a grade point for a `cd <worktree> || cd
+<main>` probe that exits 0 from the main checkout, so it went green from a tree that did
+not contain the work; a human reading the probe caught it, and nothing mechanical could.
+And `--merge-gated` was self-declared: the author typed it, every reader took their word,
+and the count of unverifiable declarations grew with every child launched.
+
+**THE BLAST RADIUS, MEASURED BEFORE THE CHANGE FROM ONE INVOCATION** (`scripts/measure_condition_tree_blast_radius.py`,
+the shape #606's measurement established). 336 stored commands — 217 exit conditions, 119
+claims — across the whole store, closed tasks included: **159 name a repo or a ref in
+prose**, **169 hand the decision off to a hub-side checker script**, **8 simply inherit the
+runner's directory**, and **0 declared a tree**, because nothing could. The classifier
+proves itself not vacuous in the same run: thirteen controls, each of which must land in
+its class or the run refuses to report.
+
+**MERGE-GATED IS NOW COMPUTED, AND THE RULE DOES NO GUESSING.** A ref that resolves under
+`refs/remotes/` — `origin/main`, `upstream/dev` — is one its author cannot move without
+pushing, so a condition reading it cannot be green before the merge. A local branch, a tag,
+a raw sha and `HEAD` are author-movable and are not merge targets. The ref is normalised by
+git ONCE at registration, so every later read is a string test and no read surface spawns a
+subprocess. Typing `--merge-gated` alongside `--ref` is refused rather than silently
+resolved: two answers to one question is how a store comes to hold a verdict nothing
+checked.
+
+**A GREEN NOW CARRIES ITS PROVENANCE.** Each run records `{repo, ref, sha}` beside the
+verdict, and `exit-show`, `exit-tick` and `claims` print it. A verdict stored before this
+reads as UNRECORDED — never as an invented default, because naming a tree nothing measured
+is the exact failure this release is named after.
+
+**AND NOTHING WAS ADDED THAT LETS AN AUTHOR REDIRECT A CONDITION INTO PASSING** (591:4).
+No `--repo`/`--ref` on `exit-tick` or `claims verify`, no environment variable read
+anywhere in `treeref` (asserted against the module's parsed source, not grepped — the
+module explains at length why it reads none, and a grep finds its own explanation), and
+**no fallback to the inherited directory when a checkout fails**. A declared tree that
+cannot be checked out is a condition that DID NOT RUN: status `error`, state `unknown`, no
+tick moved in either direction. Falling back would have been the defect wearing its own fix
+as a disguise.
+
+**LEGACY IS TOLERATED INDEFINITELY, AND THAT IS THE COMMON CASE.** A condition or claim
+that declares no tree runs in the inherited directory exactly as it always did and keeps
+its author's `merge_gated` flag. No backfill is attempted or possible: nothing can recover,
+from a command string, which tree its author meant. The benefit arrives gradually, as new
+conditions are written.
+
+**AN UPGRADE DOES NOT RE-JUDGE HISTORY** (595:1). Stored verdicts are read, never rewritten
+— the new rules apply when a condition is RUN. Reading a legacy task through every summary
+surface leaves the task dict byte-identical, an ordinary undeclared step still round-trips
+with exactly its four historic keys, and a legacy merge-gate tally is unchanged.
+
+- New `lib/board/treeref.py` (+ `lib/treeref.py` shim): the declaration, its validation,
+  the `refs/remotes/` merge-target rule, the per-`(repo, ref)` detached-checkout cache
+  (`git worktree add --detach`, pruned before and removed after), and the provenance
+  record. Stdlib only, and it imports nothing from the package — the leaf discipline
+  `gating.py` keeps.
+- `exits.evaluate` and `checker.verify` materialise one checkout per declared ref and tear
+  them all down; `checker._run_claim` takes a `cwd`, and `checker.invoke` decides whether a
+  runner accepts one **from its signature** rather than from a caught `TypeError` — the
+  latter would swallow a genuine error inside a runner and re-run a command with side
+  effects.
+- `exit-add` and `claims` take `--repo`/`--ref`; a ref that does not resolve is refused,
+  not forced, because merge-gated has nothing to compute from without one.
+- `tests/test_condition_tree.py` — 54 tests, including the discriminating probe (a repo
+  whose commit and working tree disagree, run from inside the working tree) and its
+  negative control (the same condition, undeclared, reads the cwd and is refuted).
+
+
+### Added
+- …
+
+### Changed
+- …
+
+### Fixed
+- …
+
 ## [3.65.0] — 2026-09-03
 
 **THE HANDOFF IS NAMED FOR THE SUCCESSOR'S ROSTER NUMBER, NOT ITS SESSION ID.** 3.62.0

@@ -26,6 +26,7 @@ import exits as _exits
 import gating as _gating
 import loop as _loop
 import steps as _steps
+import treeref as _treeref
 import turn as _turn
 import succession as _succ
 from board import workspace as _workspace
@@ -148,7 +149,16 @@ def _exit_show_lines(task):
         note = _gating.step_note(item["merge_gated"])
         if note:
             out.append("            %s" % note)
+        if item.get("decl"):
+            out.append("            tree: %s" % _treeref.long_label(item["decl"]))
         out.append("            expects: %s" % " · ".join(item["expect"]))
+        # WHICH TREE THE LAST VERDICT WAS PRODUCED AGAINST, printed only when the run
+        # recorded one. A legacy result gets no line at all rather than an invented
+        # default — saying where an unrecorded run happened is the exact failure this
+        # surface exists to end.
+        prov = _treeref.provenance_line(item.get("tree"))
+        if prov:
+            out.append("            %s" % prov)
         last = item["last"] or {}
         if last.get("status") == "ran":
             note = _checker.exit_note("ran", last.get("code"), last.get("missing") or [])
@@ -248,8 +258,16 @@ def cmd_exit_add(a):
                   "anyway and have that recorded.")
             sys.exit(2)
         print("  --force: registering it anyway.")
+    decl, derr = _treeref.parse(getattr(a, "repo", None), getattr(a, "ref", None))
+    if derr:
+        # NOT FORCEABLE, unlike the shape lint above. A declaration that does not resolve
+        # has nothing for merge-gated to be computed FROM, and the moment one can be
+        # stored anyway the author is asserting merge-gatedness again by the back door.
+        print("exit-add: %s" % derr)
+        sys.exit(2)
     ok, err = _exits.set_condition(steps_list, n, cmd_raw, expect_raw,
-                                   merge_gated=bool(getattr(a, "merge_gated", False)))
+                                   merge_gated=bool(getattr(a, "merge_gated", False)),
+                                   decl=decl)
     if not ok:
         print(err)
         sys.exit(2)
@@ -257,7 +275,17 @@ def cmd_exit_add(a):
     save_task(task)
     ref = task.get("seq") or task["id"][:8]
     print("Exit condition — task #%s step %d" % (ref, n))
-    if getattr(a, "merge_gated", False):
+    if decl:
+        print("  tree:    %s" % _treeref.label(decl))
+        print("           resolved to %s — the runner checks that out and runs the "
+              "command THERE, so the directory it inherits cannot decide the answer."
+              % decl[_treeref.RESOLVED_KEY])
+        if _treeref.merge_gated(decl):
+            print("  MERGE-GATED, COMPUTED — that ref is a remote-tracking ref, so this "
+                  "condition cannot be green until the work lands there. Nobody typed "
+                  "it: it follows from the ref, and the loop can say DONE PENDING MERGE "
+                  "instead of calling a finished child unfinished.")
+    elif getattr(a, "merge_gated", False):
         print("  MERGE-GATED — it reads the merge target, so it stays red until this "
               "work lands there. That is recorded, not inferred: the loop can now say "
               "DONE PENDING MERGE instead of calling a finished child unfinished.")
@@ -374,6 +402,9 @@ def cmd_exit_tick(a):
             note = _checker.exit_note(r["status"], r.get("code"), r["missing"])
             if note:
                 print("         %s" % note)
+        prov = _treeref.provenance_line(r.get("tree"))
+        if prov:
+            print("         %s" % prov)
     if moved["ticked"]:
         print("  ticked: %s" % ", ".join("step %d" % n for n in moved["ticked"]))
     if moved["regressed"]:

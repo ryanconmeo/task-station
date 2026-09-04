@@ -238,6 +238,18 @@ def main(argv=None):
                          "interactive command, a merge, an approval), or assert only "
                          "what a permanent test already covers. Registering a claim "
                          "retracts it.")
+    sp.add_argument("--repo", default=None, metavar="ABS_PATH",
+                    help="with --register: the git repository these claims are about, as "
+                         "an ABSOLUTE path. Goes with --ref, and applies to every claim "
+                         "this invocation registers. `verify` then resolves that ref and "
+                         "runs each command in a DETACHED CHECKOUT of it, so a green says "
+                         "which tree it read. Omit both and the command runs in the "
+                         "inherited cwd, as it always did.")
+    sp.add_argument("--ref", default=None, metavar="GITREF",
+                    help="with --register: the ref these claims read — `origin/main`, a "
+                         "branch, a tag or a commit. Resolved by the RUNNER, with no "
+                         "run-time override anywhere: a claim you can re-aim is a claim "
+                         "you can talk into passing, and `verify` STORES its verdict.")
     sp.add_argument("--id", default=None, metavar="ID",
                     help="with verify: run just this one claim")
     sp.add_argument("--timeout", type=int, default=None, metavar="SECONDS",
@@ -269,15 +281,31 @@ def main(argv=None):
                          "a floor or a ceiling in the COMMAND and expect its PASS token, "
                          "because a literal count goes red on any legitimate release. "
                          "Copy tools/checker-template.sh.")
+    sp.add_argument("--repo", default=None, metavar="ABS_PATH",
+                    help="the git repository this condition is about, as an ABSOLUTE "
+                         "path. Goes with --ref. Declaring the tree as DATA is what lets "
+                         "the runner check the ref out and evaluate the command there, "
+                         "so the directory the runner inherited cannot decide the answer "
+                         "— and it is what makes merge-gated computable instead of "
+                         "asserted. Omit both and the command runs in the inherited cwd, "
+                         "exactly as every condition did before 3.66.0.")
+    sp.add_argument("--ref", default=None, metavar="GITREF",
+                    help="the ref this condition reads — `origin/main`, a branch, a tag "
+                         "or a commit. The RUNNER resolves it and evaluates the command "
+                         "in a DETACHED CHECKOUT of it; there is deliberately no way to "
+                         "override that at run time. It must resolve when you register "
+                         "it, because merge-gated is computed from what it resolves to.")
     sp.add_argument("--merge-gated", dest="merge_gated", action="store_true",
                     help="declare that this condition READS THE MERGE TARGET (origin/main "
                          "or similar), so it cannot go green until this work lands there. "
                          "Nothing is softened — an unmet merge-gated condition is still "
                          "unmet, still a gate finding, and still blocks the release. What "
                          "changes is that the loop can say DONE PENDING MERGE instead of "
-                         "reporting a finished child as unfinished. Declared rather than "
-                         "inferred: the author knows at registration, and a branch probe's "
-                         "usual answer is `unprobed`.")
+                         "reporting a finished child as unfinished. FOR A CONDITION THAT "
+                         "DECLARES NO --ref ONLY: with a ref, the runner computes this "
+                         "from what the ref resolves to and typing it as well is refused, "
+                         "because two answers to one question is how a store comes to "
+                         "hold a verdict nothing checked.")
     sp.add_argument("--force", action="store_true",
                     help="register the condition even though the self-check flagged it "
                          "(a shape that can be satisfied by something other than the "

@@ -23,6 +23,7 @@ import turn as _turn
 import hook_health
 import steps as _steps
 import store
+import treeref as _treeref
 
 g, set_g = _shared.g, _shared.set_g
 
@@ -1335,14 +1336,22 @@ def _claims_writes(a, task):
         lines.append(err if err else "unbound (the registered claims were kept)")
         changed = changed or ok
     if getattr(a, "register", None):
+        decl, derr = _treeref.parse(getattr(a, "repo", None), getattr(a, "ref", None))
+        if derr:
+            return lines + [derr], changed
         added, updated, errors = _checker.register(
-            task, a.register, replace=getattr(a, "replace", False))
+            task, a.register, replace=getattr(a, "replace", False), decl=decl)
         lines.extend(errors)
         if added or updated:
             lines.append("registered %d new claim(s), rewrote %d%s"
                          % (added, updated,
                             " (--replace: the previous list was dropped)"
                             if getattr(a, "replace", False) else ""))
+            if decl:
+                lines.append("tree: %s%s"
+                             % (_treeref.long_label(decl),
+                                " — MERGE-GATED, computed from the ref"
+                                if _treeref.merge_gated(decl) else ""))
             changed = True
     if getattr(a, "remove", None):
         removed, missing = _checker.remove(task, a.remove)
@@ -1396,7 +1405,12 @@ def _claims_show(task):
             prev = last.get(item["id"])
             mark = "     " if prev is None else ("  ok " if prev.get("ok") else " FAIL")
             out.append("   %s %-8s %s" % (mark, item["id"], item["cmd"]))
+            if item.get("decl"):
+                out.append("            tree: %s" % _treeref.long_label(item["decl"]))
             out.append("            expects: %s" % " · ".join(item["expect"]))
+            prov = _treeref.provenance_line((prev or {}).get("tree"))
+            if prov:
+                out.append("            %s" % prov)
     verified = _checker.last_verify(task)
     if verified.get("ts"):
         results = verified.get("results") or []
@@ -1471,6 +1485,9 @@ def _claims_verify(a, task):
             note = _checker.exit_note(r["status"], r.get("code"), r["missing"])
             if note:
                 print("         %s" % note)
+        prov = _treeref.provenance_line(r.get("tree"))
+        if prov:
+            print("         %s" % prov)
         if r["got"] and r["status"] == "ran" and not r["ok"]:
             print("         got (tail): %s" % " ".join(r["got"].split())[-200:])
     return (VERIFY_PASSED if not [r for r in results if not r["ok"]]
