@@ -3,6 +3,67 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.65.0] — 2026-09-03
+
+**THE HANDOFF IS NAMED FOR THE SUCCESSOR'S ROSTER NUMBER, NOT ITS SESSION ID.** 3.62.0
+keyed the handoff file on the successor — the right identity, and it does not move here —
+but it SPELLED that successor as eight hex characters: `444-be0202bd-CONTINUATION.md`. A
+human cannot read that, cannot order it, and cannot match it against anything else on the
+board. The same successor is `444-36` everywhere else the board prints it — the roster,
+the statusline, the window title, `whoami --porcelain`, the relay prompt's own first
+sentence — so that is what the file is called now.
+
+```
+before   <seq>-<sid8>-CONTINUATION.md   444-be0202bd-CONTINUATION.md   unreadable, unsortable
+after    <seq>-<n>-CONTINUATION.md      444-36-CONTINUATION.md         the roster line
+         <seq>-CONTINUATION.md          → newest, still a symlink      the path 444:658 documents
+```
+
+**NOT A REVERT, AND NOT THE BARE `<seq>`.** One slot per task, opened `"w"`, is precisely
+the collision 3.62.0 removed and it had already been patched by hand twice. Ordinals are
+assigned per task and never reused, so the name stays one file per SUCCESSOR: two relays
+on one task still write two files, proved by relaying twice and reading both paths back
+out of the launch arguments rather than by reading the code.
+
+**THE SUCCESSOR CAN NOW CHECK ITS OWN HANDOFF BY EYE.** The launch argument tells it "you
+are session 444-36" and hands it `444-36-CONTINUATION.md` — one string matching in two
+places in one sentence. An eight-hex id was something the reader had to take on trust.
+
+### Added
+- `succession.handoff_name(task, sid, label)` — the naming rule, alone, returning
+  `(<filename>, <form>)`. `label` is the roster number `relay` has ALREADY resolved one
+  line before it mints the prompt, so nothing is looked up twice and `succession` gains no
+  import: it still knows nothing about sessions.
+- `succession.ORDINAL_FORM` / `SESSION_FORM` — the two names a handoff can have, so the
+  caller can report which it got instead of inferring it from the path.
+- `tests/test_handoff_per_successor.TheNameIsTheRosterNumber` — six tests over the
+  spelling, the fallback, and the two-relays-two-files invariant RE-ASSERTED on the new
+  form, because a change that quietly went back to a per-task name would otherwise pass
+  every other class in that file on the fallback alone.
+
+### Changed
+- `succession.write_handoff(task, prompt, sid, label=None, root=None)` returns
+  `(path, form)`. `sid` stays REQUIRED — a handoff addressed to nobody is the collision
+  the signature exists to make unrepresentable — while `label` is optional, because it can
+  genuinely be unresolvable and the fallback is still per-successor.
+- The launch argument names the file and says what it is named after: "named
+  `444-36-CONTINUATION.md`, after the roster number you were just given".
+- Comments and docstrings in `succession` and `relay` that explained why the name carries a
+  SESSION ID now explain why it carries a ROSTER NUMBER. The reasoning about why the name
+  is per-successor is untouched — that is the load-bearing half and it is still correct.
+  Citations of pinned 444:511 for the stable path move to 444:658, which supersedes it.
+
+### Fixed
+- **A name that cannot resolve a number falls back AND SAYS SO.** `ordinal_label` returns
+  None for a worker or an unrostered session. The file then takes the session-blind
+  `<seq>-<sid8>` form — still unique, still one per successor — and `relay` prints
+  `NAMED BY SESSION ID, not by roster number: …`. This is the rule
+  `session_title_label`'s own docstring already sets for this codebase, applied rather
+  than reinvented; a name that silently loses its number is the bug it exists to prevent.
+- A label that is not filename-safe is treated as unresolved and takes the same fallback.
+  A label becomes a filename, and a mangled name is wrong where a session-blind one is
+  only less readable.
+
 ## [3.64.0] — 2026-09-03
 
 **THE PLUGIN'S HOOKS STOPPED BEING THE SLOWEST THING IN THE TURN, AND THE COMMAND THAT
