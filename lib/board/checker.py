@@ -72,6 +72,7 @@ import heal as _heal
 import paths
 import previews as _prev
 import steps as _steps
+import treeref as _treeref
 
 # -- thresholds (module-level so one edit retunes the whole pass) -----------------
 
@@ -727,7 +728,8 @@ def claim_items(task):
         if not cid or not cmd:
             continue
         expect = [str(e) for e in (raw.get("expect") or []) if str(e).strip()]
-        out.append({"id": cid, "cmd": cmd, "expect": expect})
+        out.append({"id": cid, "cmd": cmd, "expect": expect,
+                    "decl": _treeref.declaration(raw)})
     return out
 
 
@@ -850,7 +852,7 @@ def unbind(task):
 _UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
 
 
-def parse_registration(spec):
+def parse_registration(spec, decl=None):
     """`'C1|<cmd>|<expect>[|<expect>…]'` → `({"id","cmd","expect"}, None)`, or
     `(None, error)`.
 
@@ -884,10 +886,18 @@ def parse_registration(spec):
         return None, ("claims --register %s — no expected substring, so the claim would "
                       "pass whatever the command printed. Name at least one string that "
                       "must appear in the output." % cid)
-    return {"id": cid, "cmd": cmd, "expect": expect}, None
+    item = {"id": cid, "cmd": cmd, "expect": expect}
+    # THE DECLARED TREE RIDES ON THE INVOCATION, NOT ON THE SPEC STRING. `--repo`/`--ref`
+    # are flags on `claims` and apply to every claim this invocation registers, because
+    # squeezing two more fields into a pipe-separated spec — one whose command half is
+    # already escaping its own pipes — would make the format a puzzle for the sake of
+    # saving a flag.
+    if decl:
+        _treeref.store_into(item, decl)
+    return item, None
 
 
-def register(task, specs, replace=False):
+def register(task, specs, replace=False, decl=None):
     """Register claims from `--register` specs. `(added, updated, errors)`.
 
     UPSERT BY ID by default: re-registering `C1` rewrites C1's command and expectations
@@ -903,7 +913,7 @@ def register(task, specs, replace=False):
     Does NOT save; the caller persists."""
     parsed, errors = [], []
     for spec in (specs or []):
-        item, err = parse_registration(spec)
+        item, err = parse_registration(spec, decl=decl)
         if err:
             errors.append(err)
             continue
@@ -958,8 +968,8 @@ def remove(task, ids):
     return removed, missing
 
 
-def _run_claim(cmd, timeout):
-    """Run one claim command, returning `(combined_output, status, returncode)` where
+def _run_claim(cmd, timeout, cwd=None):
+    """Run one claim command in `cwd`, returning `(combined_output, status, returncode)` where
     status is `"ran"`, `"timeout"` or `"error"` and returncode is the process exit
     status (None when it never ran).
 
@@ -967,6 +977,12 @@ def _run_claim(cmd, timeout):
     tool chose and requiring the user to know which would make the format a puzzle.
     Never raises: a claim that could not be run is a claim that did not pass, and it
     says which of the two happened.
+
+    `cwd` IS THE DETACHED CHECKOUT THE RUNNER MADE, or None for a condition that
+    declares no tree (3.66.0). `None` means "inherit", which is what every command did
+    before declarations existed and is still what an undeclared one does. It is passed
+    straight to `subprocess.run` rather than prepended to the command as a `cd`: a `cd`
+    inside the command string is prose, and prose is what `treeref` replaced.
 
     THE RETURN CODE IS THE THIRD ELEMENT SINCE 3.49.0, and it used to be thrown away.
     `echo TOKEN; exit 1` returned `("TOKEN", "ran")` and every caller read that as a
@@ -976,7 +992,7 @@ def _run_claim(cmd, timeout):
     function: what "ran" means is still only "the process started and finished"."""
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                           timeout=timeout)
+                           timeout=timeout, cwd=cwd)
         return ((r.stdout or "") + (r.stderr or "")), "ran", int(r.returncode)
     except subprocess.TimeoutExpired:
         return "", "timeout", None
@@ -984,7 +1000,28 @@ def _run_claim(cmd, timeout):
         return str(exc), "error", None
 
 
-def invoke(run, cmd, timeout):
+def _takes_cwd(run):
+    """True iff `run` accepts a third `cwd` argument.
+
+    ASKED OF THE SIGNATURE, NEVER OF A `TypeError`. Catching one would swallow a genuine
+    TypeError raised INSIDE a runner and re-run the command a second time, which for a
+    command with side effects is a bug nobody could see. Fail-open to False: a runner
+    whose signature cannot be read is a test fake, and a fake ignoring the checkout is
+    harmless — a fake never had one."""
+    try:
+        import inspect
+        params = inspect.signature(run).parameters
+    except Exception:                                   # noqa: BLE001
+        return False
+    if any(p.kind == p.VAR_KEYWORD or p.kind == p.VAR_POSITIONAL
+           for p in params.values()):
+        return True
+    return "cwd" in params or len([p for p in params.values()
+                                   if p.kind in (p.POSITIONAL_ONLY,
+                                                 p.POSITIONAL_OR_KEYWORD)]) >= 3
+
+
+def invoke(run, cmd, timeout, cwd=None):
     """Call a runner and normalise its answer to `(out, status, code)`.
 
     THE COMPATIBILITY SHIM IS THE POINT. `verify(run=…)` and `exits.evaluate(run=…)`
@@ -993,8 +1030,13 @@ def invoke(run, cmd, timeout):
     RAN and does not mention an exit status is stating the case it was written to
     state — the command produced this output and did not fail — so it normalises to
     code 0. Anything that did not run normalises to None, which no caller can mistake
-    for success."""
-    res = run(cmd, timeout)
+    for success.
+
+    `cwd` IS THE SAME KIND OF SHIM, one argument later (3.66.0): the real runner takes
+    the detached checkout, and the several dozen two-argument fakes in the suite are
+    called exactly as they always were."""
+    res = run(cmd, timeout, cwd) if (cwd is not None and _takes_cwd(run)) \
+        else run(cmd, timeout)
     if isinstance(res, (tuple, list)) and len(res) >= 3:
         out, status, code = res[0], res[1], res[2]
     else:
@@ -1065,6 +1107,12 @@ def verify(task, only=None, timeout=None, now=None, run=None):
     function called that a pass. A non-zero exit is `unmet`, never `unknown` — the command
     ran, and it disagreed.
 
+    THE CLAIM RUNS IN THE TREE IT DECLARES (3.66.0). `--repo`/`--ref` put a repo and a
+    ref on the claim as DATA; this resolves that ref and runs the command in a detached
+    checkout of it, and records the commit it read on the result (`tree`). A claim that
+    declares none runs in the inherited cwd exactly as it always did — permanently, since
+    nothing can recover a tree from a command string.
+
     `only` restricts to one id (or a list). `run` is injected by the tests so the suite
     never spawns a shell. Stamps `task["claims"]["last_verify"]` and does NOT save — the
     caller persists."""
@@ -1075,19 +1123,37 @@ def verify(task, only=None, timeout=None, now=None, run=None):
     if only:
         wanted = {str(only)} if isinstance(only, str) else {str(o) for o in only}
     results = []
-    for item in claim_items(task):
-        if wanted is not None and item["id"] not in wanted:
-            continue
-        out, status, code = invoke(run, item["cmd"], timeout)
-        missing = [e for e in item["expect"] if e not in out]
-        if status == "timeout":
-            got = "(no output — timed out after %ss)" % timeout
-        else:
-            got = _tail(out)
-        results.append({"id": item["id"], "cmd": item["cmd"],
-                        "ok": bool(status == "ran" and code == 0 and not missing),
-                        "status": status, "code": code,
-                        "missing": missing, "got": got})
+    trees = _treeref.Trees()
+    try:
+        for item in claim_items(task):
+            if wanted is not None and item["id"] not in wanted:
+                continue
+            decl = item.get("decl")
+            cwd, sha, err = trees.tree(decl)
+            if err:
+                # THE CHECKOUT FAILED, SO THE CLAIM DID NOT RUN. `error` is the checker's
+                # own "uncountable is never zero": nothing was refuted. Running it in the
+                # inherited directory instead would be the defect `treeref` removes.
+                out, status, code = ("the declared tree could not be read: %s" % err,
+                                     "error", None)
+                missing = list(item["expect"])
+            else:
+                out, status, code = invoke(run, item["cmd"], timeout, cwd=cwd)
+                missing = [e for e in item["expect"] if e not in out]
+            if status == "timeout":
+                got = "(no output — timed out after %ss)" % timeout
+            else:
+                got = _tail(out)
+            row = {"id": item["id"], "cmd": item["cmd"],
+                   "ok": bool(status == "ran" and code == 0 and not missing),
+                   "status": status, "code": code,
+                   "missing": missing, "got": got}
+            tree = _treeref.provenance(decl, sha)
+            if tree:
+                row["tree"] = tree
+            results.append(row)
+    finally:
+        trees.close()
     if results:
         _block(task)["last_verify"] = {"ts": now, "results": results}
     return results
