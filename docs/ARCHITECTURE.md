@@ -992,11 +992,11 @@ names directly.
 
 | Hook | Script | What it does |
 |---|---|---|
-| `SessionStart` | `on_session_start.sh` | Refresh the `~/.claude/task-station-engine` symlink → the active `lib/`; self-register the status-line segment; (opt-in) install bare `/todo` `/done` `/repos` aliases; emit the open-tasks / attached-task context + one-time setup nudge; set the session title; **tint the originating window** to the attached task's category (`session-tint`). |
+| `SessionStart` | `on_session_start.sh` | Refresh the `~/.claude/task-station-engine` symlink → the active `lib/`; self-register the status-line segment; (opt-in) install bare `/todo` `/done` `/repos` aliases; emit the open-tasks / attached-task context + one-time setup nudge; set the session title; **tint the originating window** to the attached task's category (`session-tint`). Its four SILENT steps — obsidian/usage flush, the orphan sweep, and the plugin-cache prune — moved into `lib/hook_steps.py` in 3.64.0 and run DETACHED, because the session waited 22.0s of a 23.0s hook for them (`hook sweep-orphans` alone was 20.7s). |
 | `UserPromptSubmit` | `on_user_prompt.sh` | Re-point the engine symlink (so bare aliases track an in-session `/plugin update`); **tint instantly when a known skill runs** (`prompt-tint` → escape written to the origin TTY); auto-title the tab `#<seq>: <title>`; inject the compact track-or-fold guidance. |
 | `PreToolUse` (`Bash`) | `lib/brain/hooks/guard.py` | The brain plane's **secret guard**: deny a Bash command that would write a secret into the transcript (a JWT or opaque token as a literal flag value, or a secret-reading command whose output is neither suppressed nor captured). Brain-only event, so it is registered **directly, by path** — no mux — and it **fails open**: any parse or logic error allows the command. |
 | `PostToolUse` (`Write\|Edit\|NotebookEdit`) | `on_post_tool.sh` | Attached session → auto-promote `open → active`; untracked session → a **one-shot** reminder the first time it edits a file (gated by the `edited` marker, ~one injection per session). |
-| `Stop` | `on_stop.sh` | Refuse to end the turn while the session has edited files but tracked no task (`{"decision":"block"}`). Self-healing (attach/create/skip/`/done` clears it) and **capped at two blocks** so a non-complying loop can't wedge the session. Then `lib/stop_steps.py` runs the seven best-effort turn-end steps (nudge, board refresh, obsidian/usage flush, subscriptions, recap, cost HUD) in **one** interpreter — `stop-gate` keeps its own process because the harness reads its stdout for the block contract. |
+| `Stop` | `on_stop.sh` | Refuse to end the turn while the session has edited files but tracked no task (`{"decision":"block"}`). Self-healing (attach/create/skip/`/done` clears it) and **capped at two blocks** so a non-complying loop can't wedge the session. Then `lib/hook_steps.py` runs the seven best-effort turn-end steps (nudge, board refresh, obsidian/usage flush, subscriptions, recap, cost HUD) in **one** interpreter, and since 3.64.0 the turn waits only for `stop-nudge` — the one step whose stdout the harness reads — while the other six run in a DETACHED session (`board --refresh-if-live` alone MEASURED 11.3s of a 12.5s hook). `stop-gate` keeps its own process because the harness reads its stdout for the block contract. |
 | `SessionEnd` | `on_session_end.sh` | The **exact** end-of-session pass (`session-end`): stamp this session's roster row with `ended_ts` + `end_reason`, put one `session-end` event on the attached task's feed, and stop the delegate workers **this** session spawned. Idempotent, always exits 0. |
 | `ConfigChange` (`user_settings\|project_settings\|local_settings`) | `on_config_change.sh` | Before a settings change takes effect, check the **paths it declares** (`config-change`). WARN by default — one hook-health record, exit 0; `config_change_enforce` turns it into a **block** (exit 2). |
 | `FileChanged` (`config.json\|categories.json\|repos.json\|brains.json\|workers.json`) | `on_file_changed.sh` | A station config file changed on disk → drop the attached task's **checker gate** (`file-changed`) so the pointer/drift nags re-evaluate against the new config at the next session start. Prints nothing. |
@@ -1094,7 +1094,7 @@ the engine, so stdout and the exit status pass through untouched).
 
 There are two WRITERS for that one log, in the same format and under the same cap:
 `_ts_lib.sh::ts_health_record` for call sites that really are separate processes, and
-`hook_health.record()` for the Stop steps that now run inside `lib/stop_steps.py`. A step
+`hook_health.record()` for the Stop steps that now run inside `lib/hook_steps.py`. A step
 there that raises is caught, recorded under the SAME label `ts_run` used, and the remaining
 steps still run — the shell's per-step isolation, kept after the calls were merged.
 
@@ -1430,8 +1430,9 @@ warning and the hint's "protected folder" framing.
 sandbox only permits writes under the session cwd + `$TMPDIR`, so a vault in `~/Documents` is
 unwritable from a project session — but **hooks run UNSANDBOXED** (same trust level as
 monitors). So `on_stop.sh` and `on_session_start.sh` each invoke `task-station obsidian --flush
---quiet` (routed to `/dev/null`; on the Stop side that call now runs inside `lib/stop_steps.py`
-with the other turn-end steps, one interpreter instead of seven), which re-exports the dirty
+--quiet` (routed to `/dev/null`; on BOTH sides that call now runs inside `lib/hook_steps.py`
+with the event's other silent steps — one interpreter instead of seven, and since 3.64.0 a
+DETACHED one, so neither hook waits for it), which re-exports the dirty
 tasks from outside the sandbox and succeeds where the hot path couldn't. This is what makes a protected-folder vault work with no
 configuration. The Stop-hook flush is **independent** of the stop-gate — it never touches the
 gate decision or delays the turn — and both are suppressed inside delegate workers by the

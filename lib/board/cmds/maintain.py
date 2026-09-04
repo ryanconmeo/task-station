@@ -109,7 +109,7 @@ def _heal_leave(text):
     """The exit status `text` reports: `HEAL_REFUSED` for a `Refusal`, else None (0).
 
     RETURNED, NOT `sys.exit`ed, and that is deliberate. `cmd_heal` is called IN PROCESS by
-    the whole of tests/test_heal.py and by `lib/stop_steps.py`, and a handler that starts
+    the whole of tests/test_heal.py and by `lib/hook_steps.py`, and a handler that starts
     raising SystemExit where it never did makes every one of those callers catch an
     exception to read a status. `cli.main` returns whatever the handler returns and the
     entry point exits on it, so the process status is identical and no in-process caller

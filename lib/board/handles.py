@@ -101,13 +101,29 @@ def _abbrev(handle, width):
     return owner + SEP + uuid[:w]
 
 
+# The last display_map answer, keyed by exactly what it was computed from. A board
+# render asks the same question hundreds of times — 491 calls over the same handle
+# set in one `board --refresh-if-live`, MEASURED on 3.63.0, which is 8.0s of a 16.4s
+# refresh, because the ambiguity search is quadratic in the pool. The pool is a
+# value, the answer is a pure function of it, so one slot is enough: consecutive
+# callers share a pool, and a caller with a different pool simply misses and pays
+# what it always paid. Never invalidated because nothing can go stale — a different
+# input is a different key.
+_DISPLAY_MEMO = (None, None)
+
+
 def display_map(handles, min_width=MIN_WIDTH):
     """`{full handle: displayed handle}` — each cut to the SHORTEST prefix that is
     unambiguous among `handles`, floored at `min_width` uuid characters.
 
     Ambiguity is judged on the WHOLE handle, so two owners never lengthen each other:
     `kosei-aaaa…` and `jpark-aaaa…` are already distinct at the floor."""
+    global _DISPLAY_MEMO
     hs = sorted({str(h) for h in handles if h})
+    key = (tuple(hs), min_width)
+    memo_key, memo_val = _DISPLAY_MEMO
+    if memo_key == key:
+        return dict(memo_val)                # a copy: the caller may mutate its map
     out = {}
     for h in hs:
         owner, uuid = split(h)
@@ -121,6 +137,7 @@ def display_map(handles, min_width=MIN_WIDTH):
                 break
             w += 1
         out[h] = _abbrev(h, w)
+    _DISPLAY_MEMO = (key, dict(out))
     return out
 
 

@@ -1778,7 +1778,16 @@ def sweep_orphan_workers(current_sid=None, adapter=None, now=None):
     on it), so a user who turned reaping off gets no sweep either.
 
     Wholly best-effort: never raises. `adapter` is injectable for tests; production
-    passes None and `reap_task_workers` builds the real one."""
+    builds ONE here and hands the SAME one to every reap.
+
+    WHY ONE ADAPTER AND ONE TASK LOOKUP (3.64.0). Passing `adapter=None` made
+    `reap_task_workers` build a fresh adapter per candidate, and each fresh adapter
+    re-ran `claude agents --json`; `resolve_ref` likewise re-read and re-sorted every
+    task per candidate. MEASURED on 3.63.0 with 104 candidates: 15.4s in those
+    subprocesses and 4.7s in those lookups, of a 20.7s sweep. The candidate list is
+    decided BEFORE the loop and the loop changes neither the agents list nor the task
+    seqs, so both are read once here — which is also why the adapter may carry a TTL
+    at all: the batch is the one place a reused answer is still the right answer."""
     reaped = []
     try:
         cands = _orphaned_workers(current_sid=current_sid, now=now)
@@ -1789,9 +1798,22 @@ def sweep_orphan_workers(current_sid=None, adapter=None, now=None):
     dg = g("_delegate_module")()
     if dg is None:
         return reaped
+    if adapter is None:
+        try:
+            adapter = dg.harness.get_adapter(None)
+            adapter.index_ttl = ORPHAN_SWEEP_INDEX_TTL_SECS
+        except Exception:
+            adapter = None               # no adapter → each reap builds its own, as before
+    by_seq = {}
+    try:
+        for t in sorted_tasks():
+            if t.get("seq") is not None:
+                by_seq.setdefault(int(t["seq"]), t)
+    except Exception:
+        by_seq = {}
     for seq, sid in cands:
         try:
-            task = resolve_ref(str(seq))
+            task = by_seq.get(int(seq)) or resolve_ref(str(seq))
             if not task:
                 continue
             got = dg.reap_task_workers(seq, adapter=adapter,

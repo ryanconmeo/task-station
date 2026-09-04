@@ -78,6 +78,16 @@ class MuxTestCase(unittest.TestCase):
             else:
                 os.environ[k] = v
 
+    def assertNoComplaint(self, err):
+        """stderr carries diagnostics, and on a clean run the ONLY thing on it is the
+        mux's own per-child timing line (3.64.0) — that line is the instrument, not a
+        complaint. Anything else there means a child broke."""
+        rest = [ln for ln in err.splitlines()
+                if ln.strip() and not ln.startswith("hookmux: timing ")]
+        self.assertEqual(rest, [])
+        self.assertEqual(sum(1 for ln in err.splitlines()
+                             if ln.startswith("hookmux: timing ")), 1, err)
+
     # --- fixtures ----------------------------------------------------------
     def child(self, name, body):
         """Write a fake child script and return its mux table entry."""
@@ -131,7 +141,29 @@ class MergeTest(MuxTestCase):
         doc, out, err = self.run_mux("session-start", children)
         self.assertIsNone(doc)
         self.assertEqual(out, "")
-        self.assertEqual(err, "")
+        self.assertNoComplaint(err)
+
+    def test_every_run_leaves_a_per_child_timing_line(self):
+        """The harness times the COMMAND, and this command is several programs. Without
+        this line a slow mux convicts nobody — which is exactly how a SessionStart
+        spike stayed an inference for a month. So it is emitted on EVERY run, clean
+        or not, and it names each child."""
+        children = [self.child("a.sh", "cat >/dev/null\n"),
+                    self.child("b.sh", "cat >/dev/null\n")]
+        _doc, _out, err = self.run_mux("session-start", children)
+        line = [ln for ln in err.splitlines() if ln.startswith("hookmux: timing ")]
+        self.assertEqual(len(line), 1, err)
+        self.assertIn("session-start", line[0])
+        self.assertIn("a.sh=", line[0])
+        self.assertIn("b.sh=", line[0])
+        self.assertIn("total=", line[0])
+
+    def test_a_broken_child_is_still_timed(self):
+        """A child that fails is the one whose cost you most want to see."""
+        children = [self.child("boom.sh", "cat >/dev/null\nexit 3\n")]
+        _doc, _out, err = self.run_mux("stop", children)
+        self.assertIn("boom.sh: exit 3", err)
+        self.assertIn("boom.sh=", err)
 
     def test_a_childs_hook_event_name_never_overrides_the_events(self):
         """A child that names the wrong event (or an old spelling) cannot make the
@@ -147,7 +179,7 @@ class PlainStdoutTest(MuxTestCase):
         children = [self.child("plain.sh", "cat >/dev/null\nprintf 'just words\\n'\n")]
         doc, _, err = self.run_mux("session-start", children)
         self.assertEqual(doc["hookSpecificOutput"]["additionalContext"], "just words")
-        self.assertEqual(err, "")
+        self.assertNoComplaint(err)
 
     def test_plain_stdout_is_context_on_user_prompt(self):
         """The board's UserPromptSubmit hook prints its guidance as bare text."""
@@ -329,7 +361,7 @@ class ManifestAgreesWithTheMuxTest(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom) and node.module:
                 names.add(node.module.split(".")[0])
         self.assertEqual(names & {"brain", "board", "core"}, set())
-        self.assertEqual(names, {"json", "os", "subprocess", "sys"})
+        self.assertEqual(names, {"json", "os", "subprocess", "sys", "time"})
 
 
 class GuardRegistrationTest(unittest.TestCase):
