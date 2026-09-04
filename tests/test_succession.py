@@ -39,10 +39,10 @@ pins one per class.
      would hand the successor one fifth of the context to finish the same work in.
 
   3b. ONE HANDOFF PER SUCCESSOR (`HandoffPerSuccessor`). The handoff is a file named
-     after the session it is addressed to, so two relays on one task cannot write one
-     path — they used to, and the second replaced a handoff the first successor had not
-     read yet. The stable per-task name 444:511 documents survives as a POINTER to the
-     newest one, and it moves only once a session is confirmed, for the same reason the
+     after the session it is addressed to — spelled as that session's ROSTER NUMBER,
+     `622-1-CONTINUATION.md` — so two relays on one task cannot write one path. They used
+     to, and the second replaced a handoff the first successor had not read yet. The
+     stable per-task name 444:658 documents survives as a POINTER to the newest one, and it moves only once a session is confirmed, for the same reason the
      ledger entry does.
 
   4. THE HANDOFF IS GRADEABLE (`GradedHandoff`). A relay happens inside one task's life,
@@ -80,6 +80,7 @@ os.environ["TASK_STATION_HOME"] = _TMP_HOME
 import store                                                            # noqa: E402
 import succession as _succ                                              # noqa: E402
 import loop as _loop                                                    # noqa: E402
+from board import sessions as _sessions                                  # noqa: E402
 # The scan's row RENDERER is seam-private (not in the seam's __all__, so not on the
 # facade). Reached through the seam directly, the way test_invoke_hardening reaches
 # `board.workspace` — the alternative is widening a public surface for one assertion.
@@ -291,19 +292,26 @@ class _SuccessionTest(unittest.TestCase):
         wrote a good handoff and pointed somewhere else would pass a test that looked in
         the expected place and fail this one.
 
-        THE MATCH REQUIRES THE SUCCESSOR'S OWN SESSION ID, and that is the whole point of
-        the pattern rather than an extra check. This used to read `\\S+-CONTINUATION\\.md`,
+        THE MATCH REQUIRES THE SUCCESSOR'S OWN NAME, and that is the whole point of the
+        pattern rather than an extra check. This used to read `\\S+-CONTINUATION\\.md`,
         which still matches the per-successor name — so it would have gone green against
         the shared per-task path it replaced, proving nothing about the change it was
-        rewritten for. The id comes out of the command's own `--session-id`, so a pointer
-        naming any other session's handoff finds no match at all.
+        rewritten for.
+
+        THE NAME IS THE ROSTER NUMBER the same command claims one clause earlier ("you are
+        session 622-1"), and the file is `622-1-CONTINUATION.md`. Tying the path to the
+        sentence beside it is STRICTER than tying it to the session id was: a relay that
+        told the successor one identity and pointed it at another session's handoff now
+        fails here, and that is the failure a pointer can actually have. The session id is
+        still checked, because the command must carry one for the label to belong to.
 
         `text` is for the paths where no window opens (`--print-command`), where the
         command reaching the human is on stdout rather than at the opener."""
         cmd = self._launched() if text is None else text
-        sid = _sid_in(cmd)
-        self.assertIsNotNone(sid, cmd)
-        m = re.search(r"\S*%s\S*-CONTINUATION\.md" % re.escape(sid[:8]), cmd)
+        self.assertIsNotNone(_sid_in(cmd), cmd)
+        who = re.search(r"you are session (\S+)\.", cmd)
+        self.assertIsNotNone(who, cmd)
+        m = re.search(r"\S*%s-CONTINUATION\.md" % re.escape(who.group(1)), cmd)
         self.assertIsNotNone(m, cmd)
         path = m.group(0)
         self.assertTrue(os.path.isfile(path), path)
@@ -1388,16 +1396,27 @@ class HandoffPerSuccessor(_SuccessionTest):
         self.assertEqual(open(first, "rb").read(), before)
 
     def test_the_pointer_names_the_successors_own_file(self):
-        """The launch argument is the only thing the successor has, so the id in the
-        path has to be the id in the command — otherwise the file is named for a
-        session nobody sent there."""
+        """The launch argument is the only thing the successor has, so the NAME in the
+        path has to be the name in the command — otherwise the file is named for a
+        session nobody sent there.
+
+        THE NAME IS THE ROSTER NUMBER, which is what makes this checkable by the reader
+        rather than only by a test: the successor is told "you are session 1-1" and handed
+        `1-1-CONTINUATION.md`, and the minted `--session-id` in the same command is the
+        session that number belongs to. An eight-hex id was a string the successor had to
+        trust; a number it already reads on the statusline it can simply match."""
         task, sid = self._task()
         self._transcript(sid, 130000)
         out, code = self._relay(task=str(task["seq"]), session=sid, spawn=True)
         self.assertEqual(code, 0, out)
         cmd = self._launched()
         successor_sid = _sid_in(cmd)
-        self.assertIn(successor_sid[:8], os.path.basename(self._pointed_at()))
+        successor = _sessions.ordinal_label(ts.load_task(task["id"]), successor_sid)
+        self.assertIsNotNone(successor, cmd)
+        self.assertEqual(os.path.basename(self._pointed_at()),
+                         "%s-CONTINUATION.md" % successor)
+        self.assertIn("you are session %s." % successor, cmd)
+        self.assertNotIn(successor_sid[:8], os.path.basename(self._pointed_at()))
 
     def test_a_confirmed_relay_leaves_the_stable_name_on_the_newest_handoff(self):
         """The path a human types keeps working, and what it resolves to is the handoff
@@ -1415,7 +1434,7 @@ class HandoffPerSuccessor(_SuccessionTest):
 
     def test_print_command_writes_the_file_and_moves_no_pointer(self):
         """NOTHING WAS HANDED OFF, so nothing may claim it was. The printed command has
-        to work when a human runs it — so the sid-qualified file IS written — but the
+        to work when a human runs it — so the per-successor file IS written — but the
         stable name must not resolve to a session that never ran. This is the rule the
         ledger entry twenty lines below already keeps."""
         task, sid = self._task()

@@ -19,8 +19,18 @@ WHAT THIS FILE PINS, one class per guarantee:
      Not a lock — the writers were never the problem. Not a timestamp suffix — that leaves
      the reader with the same question, which of these is mine.
 
+  1b. AND IT SPELLS THE SUCCESSOR AS ITS ROSTER NUMBER (`TheNameIsTheRosterNumber`).
+     `444-36-CONTINUATION.md`, the `<seq>-<n>` every other surface on this board already
+     prints, rather than `444-be0202bd-CONTINUATION.md`. SAME identity, readable spelling:
+     ordinals are per task and never reused, so the per-successor uniqueness pinned above
+     is asserted AGAIN on this form — two relays, two files — because a change that
+     quietly went back to a per-task name would otherwise pass class 1 on the fallback
+     alone. Where no ordinal resolves, the name falls back to the session-blind form and
+     the writer SAYS which of the two it emitted; a name that silently loses its number is
+     the bug that rule exists to prevent.
+
   2. THE STABLE NAME IS A POINTER (`TheStableNameIsAPointer`). `<seq>-CONTINUATION.md`
-     keeps resolving, because pinned decision 444:511 tells a cold session to open exactly
+     keeps resolving, because pinned decision 444:658 tells a cold session to open exactly
      that path by hand. It resolves to the NEWEST handoff and stores none: a second copy
      would reintroduce the staleness the per-successor name just removed.
 
@@ -46,6 +56,8 @@ os.environ.setdefault("TASK_STATION_HOME", tempfile.mkdtemp(prefix="ts-handoff-p
 
 import succession as _succ        # noqa: E402
 
+_UNSET = object()
+
 FIRST = "aaaa1111-0000-0000-0000-00000000000a"
 SECOND = "bbbb2222-0000-0000-0000-00000000000b"
 
@@ -62,10 +74,21 @@ class _PerSuccessorTest(unittest.TestCase):
                 "steps": [{"text": "wire the name", "done": False}]}
 
     def _write(self, task, sid, successor):
-        """One relay's write, end to end through both shipped functions."""
+        """One relay's write, end to end through both shipped functions.
+
+        `successor` is the ROSTER NUMBER `relay` resolves before it mints the prompt, and
+        it is handed to the prompt and to the writer exactly as `relay` hands it — so
+        what these tests exercise is the shipped call, not a reconstruction of it."""
+        path, _form = self._write2(task, sid, successor)
+        return path
+
+    def _write2(self, task, sid, successor, label=_UNSET):
+        """The same write, returning `(path, form)`. `label` defaults to `successor`;
+        pass None to exercise the successor that has no number to spell."""
         prompt = _succ.continuation_prompt(task, predecessor="622-0",
                                            successor=successor)
-        return _succ.write_handoff(task, prompt, sid, root=self.tmp)
+        lab = successor if label is _UNSET else label
+        return _succ.write_handoff(task, prompt, sid, label=lab, root=self.tmp)
 
     def _read(self, path):
         with open(path, encoding="utf-8") as fh:
@@ -104,7 +127,7 @@ class TheNameCarriesTheSuccessor(_PerSuccessorTest):
         task = self._task()
         for sid, who in ((FIRST, "622-1"), (SECOND, "622-2")):
             path = self._write(task, sid, who)
-            self.assertIn(sid[:8], os.path.basename(path))
+            self.assertEqual(os.path.basename(path), "%s-CONTINUATION.md" % who)
             self.assertIn("you are session %s" % who, self._read(path))
 
     def test_a_handoff_addressed_to_nobody_is_refused(self):
@@ -113,6 +136,73 @@ class TheNameCarriesTheSuccessor(_PerSuccessorTest):
         for nobody in (None, ""):
             with self.assertRaises(ValueError):
                 _succ.write_handoff(self._task(), "anything", nobody, root=self.tmp)
+
+
+class TheNameIsTheRosterNumber(_PerSuccessorTest):
+    """THE SPELLING, asserted on files that exist rather than on the format string."""
+
+    def test_the_file_is_named_for_the_roster_number(self):
+        path, form = self._write2(self._task(), FIRST, "622-1")
+        self.assertEqual(os.path.basename(path), "622-1-CONTINUATION.md")
+        self.assertEqual(form, _succ.ORDINAL_FORM)
+
+    def test_the_bare_task_seq_is_NOT_the_name(self):
+        """The collision this whole file exists for was `<seq>-CONTINUATION.md`, one slot
+        per task. The ordinal form starts with the same seq, so the assertion has to be
+        that the name is not the STABLE one — a per-task handoff would be indexed under a
+        name a second relay truncates, and the stable name stores no handoff at all."""
+        path, _ = self._write2(self._task(), FIRST, "622-1")
+        self.assertNotEqual(os.path.abspath(path),
+                            os.path.abspath(self._stable(self._task())))
+
+    def test_two_relays_on_one_task_still_write_TWO_files(self):
+        """THE COLLISION, re-proved on the new spelling by WRITING TWO — not by reading
+        the format string. #622's own condition read files=1 red / files=2 green, and it
+        is re-run here because a change that reverted to a per-task path would leave one
+        file and every other assertion in this class would still pass."""
+        task = self._task()
+        first, f1 = self._write2(task, FIRST, "622-1")
+        with open(first, "rb") as fh:
+            before = fh.read()
+        second, f2 = self._write2(task, SECOND, "622-2")
+        self.assertEqual([f1, f2], [_succ.ORDINAL_FORM, _succ.ORDINAL_FORM])
+        self.assertNotEqual(first, second)
+        names = sorted(n for n in os.listdir(self.tmp) if n.endswith("-CONTINUATION.md"))
+        self.assertEqual(names, ["622-1-CONTINUATION.md", "622-2-CONTINUATION.md"])
+        with open(first, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+        self.assertIn("you are session 622-1", self._read(first))
+        self.assertIn("you are session 622-2", self._read(second))
+
+    def test_a_successor_with_no_number_falls_back_AND_the_writer_says_so(self):
+        """`ordinal_label` returns None for a worker or an unrostered session. The name
+        must not silently lose its number: it takes the session-blind form, which is still
+        unique per successor, and the returned form is what lets the caller report it."""
+        path, form = self._write2(self._task(), FIRST, "622-1", label=None)
+        self.assertEqual(os.path.basename(path),
+                         "622-%s-CONTINUATION.md" % FIRST[:8])
+        self.assertEqual(form, _succ.SESSION_FORM)
+
+    def test_the_fallback_name_is_distinct_from_every_ordinal_name(self):
+        """Two relays where only one resolved a number still write two files. An eight-hex
+        session id can never equal a decimal ordinal, so the two forms cannot collide —
+        asserted on disk rather than argued."""
+        task = self._task()
+        numbered, _ = self._write2(task, FIRST, "622-1")
+        blind, _ = self._write2(task, SECOND, "622-2", label=None)
+        self.assertNotEqual(numbered, blind)
+        self.assertEqual(len([n for n in os.listdir(self.tmp)
+                              if n.endswith("-CONTINUATION.md")]), 2)
+
+    def test_a_label_that_is_not_filename_safe_takes_the_fallback(self):
+        """A label becomes a filename. Anything that is not one is treated as unresolved
+        rather than written — a mangled name is wrong, a session-blind one is only less
+        readable."""
+        for bad in ("../escape", "622/1", "", "62 2"):
+            path, form = self._write2(self._task(), FIRST, "622-1", label=bad)
+            self.assertEqual(form, _succ.SESSION_FORM, bad)
+            self.assertEqual(os.path.dirname(os.path.abspath(path)),
+                             os.path.abspath(self.tmp), bad)
 
 
 class TheStableNameIsAPointer(_PerSuccessorTest):

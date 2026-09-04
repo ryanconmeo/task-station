@@ -71,7 +71,8 @@ class _HandoffTest(unittest.TestCase):
         writer, and read back off disk rather than asserted on in memory."""
         prompt = _succ.continuation_prompt(task, predecessor="619-0", successor="619-1",
                                            **kw)
-        path = _succ.write_handoff(task, prompt, self.SID, root=self.tmp)
+        path, _form = _succ.write_handoff(task, prompt, self.SID,
+                                          root=self.tmp)
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
@@ -131,7 +132,8 @@ class TestNothingIsCutAnywhereInTheWrittenFile(_HandoffTest):
         task = self._task()
         prompt = _succ.continuation_prompt(task, predecessor="619-0", successor="619-1",
                                            rep={"window": 1000000, "used_pct": 81})
-        path = _succ.write_handoff(task, prompt, self.SID, root=self.tmp)
+        path, _form = _succ.write_handoff(task, prompt, self.SID,
+                                          root=self.tmp)
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
         self.assertTrue(text.endswith("\n"))

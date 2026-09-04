@@ -1188,7 +1188,12 @@ def cmd_relay(a):
     sid, base = fresh_resume_command(task, preborn=True, cwd=where)
     base = "cd %s && claude --session-id %s" % (shlex.quote(where), sid)
     task = load_task(task["id"]) or task
-    successor = ordinal_label(task, sid) or sid[:8]
+    # THE ORDINAL IS KEPT, NOT JUST COLLAPSED. It was already resolved here to name the
+    # successor in the prompt; the handoff's FILENAME is built from the same value, so it
+    # is held separately rather than folded into the `or sid[:8]` fallback. One lookup,
+    # two uses — a second resolution could disagree with the first.
+    ordinal = ordinal_label(task, sid)
+    successor = ordinal or sid[:8]
     prompt = _succ.continuation_prompt(task, rep=rep,
                                        blockers=blockers if force else None,
                                        predecessor=predecessor, successor=successor)
@@ -1205,15 +1210,22 @@ def cmd_relay(a):
     # costs one command to retry; a successor spawned on a truncated prompt looks like
     # it worked. Nothing is launched and no handoff is recorded on this path.
     #
-    # THE FILE IS NAMED AFTER THE SUCCESSOR, which is why `sid` is passed here and why
-    # this write happens after the mint. Two relays on one task used to write one path —
-    # `<seq>-CONTINUATION.md`, opened `"w"` — so the second silently replaced a handoff
-    # the first successor had not read yet. It reads minutes later, in its own process,
-    # after its own SessionStart, so no ordering here could have closed that window. The
-    # STABLE per-task name survives as a pointer, and it moves further down: only once a
-    # session is confirmed.
+    # THE FILE IS NAMED AFTER THE SUCCESSOR, which is why the mint happens first and why
+    # both the successor's session id and its ROSTER NUMBER are passed here. Two relays on
+    # one task used to write one path — `<seq>-CONTINUATION.md`, opened `"w"` — so the
+    # second silently replaced a handoff the first successor had not read yet. It reads
+    # minutes later, in its own process, after its own SessionStart, so no ordering here
+    # could have closed that window. The STABLE per-task name survives as a pointer, and
+    # it moves further down: only once a session is confirmed.
+    #
+    # THE NUMBER IS HOW THE SUCCESSOR IS SPELLED, not a second identity. `444-36` keys the
+    # file on the same session `444-be0202bd` did, in the notation every other surface on
+    # this board already prints — so a human can read it, sort it, and match it against
+    # the roster. Ordinals are per task and never reused, so per-successor uniqueness is
+    # untouched. `handoff_name` falls back to the session-blind form when there is no
+    # number to spell, and `form` is what lets the next lines SAY which one was written.
     try:
-        handoff_path = _succ.write_handoff(task, prompt, sid)
+        handoff_path, form = _succ.write_handoff(task, prompt, sid, label=ordinal)
     except OSError as e:
         print("  REFUSED: the handoff could not be written (%s). The successor is "
               "launched with a POINTER to that file, so there is nothing to hand it — "
@@ -1222,18 +1234,34 @@ def cmd_relay(a):
               "fix the path and re-run `relay --spawn`."
               % (e, sid[:8]))
         sys.exit(3)
+    # A NAME THAT LOST ITS NUMBER IS REPORTED, never emitted quietly. `ordinal_label`
+    # returns None for a worker or an unrostered session, and the fallback name is still
+    # unique and still per-successor — but it is not a number a human can match against
+    # the roster, so the human is told that is what they got. This is the rule
+    # `session_title_label`'s own docstring already sets for this codebase, applied
+    # rather than reinvented.
+    if form != _succ.ORDINAL_FORM:
+        print("  NAMED BY SESSION ID, not by roster number: no ordinal could be resolved "
+              "for session %s on this task (workers have none by design), so the handoff "
+              "is `%s` rather than `<seq>-<n>-CONTINUATION.md`. Still one file per "
+              "successor — just not a name that sorts or matches the roster."
+              % (sid[:8], os.path.basename(handoff_path)))
     # THE ARGUMENT STAYS SHORT BY CONSTRUCTION. It is not a summary of the handoff —
     # a second copy of the record is the thing this module exists not to make — it is
     # the one instruction that reaches the file, so it cannot itself go stale or be cut.
     #
     # AND THE PATH IT NAMES IS NAMED AFTER THE READER, which the sentence says out loud
-    # because that is what makes it checkable: a successor handed a path carrying its
-    # own session id can tell the file is addressed to it without asking anything.
+    # because that is what makes it checkable — and it is now checkable BY EYE: the
+    # successor is told it is `444-36` and handed `444-36-CONTINUATION.md`, one string
+    # matching in two places in one sentence, where an eight-hex-character id was a thing
+    # a reader had to trust rather than read.
+    named = ("named %s, after the roster number you were just given"
+             if form == _succ.ORDINAL_FORM
+             else "named %s, after your own session id") % os.path.basename(handoff_path)
     pointer = ("RELAY on task #%s — you are session %s. Read %s FIRST, in full: it is "
-               "your handoff, named for your own session and written by your "
-               "predecessor, and nothing else is loaded for you. Then read the record "
-               "it points at."
-               % (ref, successor, handoff_path))
+               "your handoff, %s and written by your predecessor, and nothing else is "
+               "loaded for you. Then read the record it points at."
+               % (ref, successor, handoff_path, named))
     # THE WORKSPACE WRITES COME AFTER THE HANDOFF, because they are writes. Granting a
     # directory trust for a successor this command then refuses to launch would leave a
     # permission behind for a session that never existed.
@@ -1306,17 +1334,17 @@ def cmd_relay(a):
         entry, index1 = _succ.record_handoff(task, session, sid, rep, forced=forced,
                                              blockers=blockers)
         # THE STABLE POINTER MOVES ONLY HERE, FOR THE SAME REASON THE LEDGER ENTRY DOES.
-        # `<seq>-CONTINUATION.md` is the path pinned decision 444:511 tells a cold
+        # `<seq>-CONTINUATION.md` is the path pinned decision 444:658 tells a cold
         # session to open by hand, so it has to keep resolving — and what it resolves to
         # is a CLAIM ABOUT A SESSION. Moved before this branch it would name a successor
         # that never ran on every `--print-command` and every failed opener, which is
         # the phantom the sentence above refuses for the ledger.
         #
         # A POINTER THAT CANNOT BE MADE IS A NAMED SKIP, never a second copy and never a
-        # failed relay. The sid-qualified file is already written and the successor's
+        # failed relay. The per-successor file is already written and the successor's
         # launch argument already names it, so the whole cost of a missing pointer is
         # one `ls` for a human; copying the handoff there instead would put two files on
-        # disk with one origin, which is the staleness the sid-qualified name removed.
+        # disk with one origin, which is the staleness the per-successor name removed.
         try:
             linked, moved_aside = _succ.link_handoff(task, handoff_path)
         except OSError as e:
@@ -1348,7 +1376,7 @@ def cmd_relay(a):
               "command still works when a human runs it; what is withheld is a ledger "
               "entry claiming a handoff that has not happened.")
     # WHAT THE STABLE NAME NOW POINTS AT, and where it does not, said out loud. A skip
-    # that nobody printed would leave a human typing the path from 444:511 at a name
+    # that nobody printed would leave a human typing the path from 444:658 at a name
     # that resolves to an older handoff — or to nothing — with no way to learn why.
     if linked:
         print("  %s now points at it — that is the stable name a human types, and it "

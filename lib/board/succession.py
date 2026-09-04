@@ -72,6 +72,7 @@ The one exception is the two tunables, which read `config` through the same fail
 `_tunable` boundary `nudges` and `checker` use.
 """
 import os
+import re
 import time
 
 import config as _config
@@ -362,16 +363,55 @@ def handoff_dir(root=None):
 
 def stable_handoff_path(task, root=None):
     """`<data>/handoff/<seq>-CONTINUATION.md` — the STABLE PER-TASK name, which is a
-    POINTER and never a handoff. Pinned decision 444:511 tells a cold session to open
+    POINTER and never a handoff. Pinned decision 444:658 tells a cold session to open
     this exact path by hand, so it has to keep working; what it must not be is the place
     a handoff is stored, because one storage slot per task is what two relays collide
     over."""
     return os.path.join(handoff_dir(root), "%s-CONTINUATION.md" % _seq_of(task))
 
 
-def write_handoff(task, prompt, sid, root=None):
-    """Write ONE successor's handoff to `<data>/handoff/<seq>-<sid8>-CONTINUATION.md`
-    and return its path.
+# THE TWO NAMES A HANDOFF CAN HAVE, and there are only two. `ORDINAL_FORM` is the one a
+# relay emits when the successor has a roster number — `444-36-CONTINUATION.md`, the same
+# `<seq>-<n>` the roster, the statusline, the window title, `whoami --porcelain` and the
+# relay prompt already spell it. `SESSION_FORM` is the fallback for a successor that has
+# no number to spell. The caller MUST report which of the two it got: a name that silently
+# lost its number is exactly the bug `session_title_label`'s own rule exists to prevent,
+# and this module states the rule once so no caller has to invent a second one.
+ORDINAL_FORM = "ordinal"
+SESSION_FORM = "session"
+
+# A LABEL BECOMES A FILENAME, so it may hold only what a filename may. An ordinal is
+# `<seq>-<n>` and always passes; anything else is treated as UNRESOLVED and takes the
+# fallback, because a session-blind name is merely less readable while a mangled one is
+# wrong. This is the same call the docstring below makes, mechanised.
+_LABEL_OK = re.compile(r"\A[A-Za-z0-9._-]+\Z")
+
+
+def handoff_name(task, sid, label=None):
+    """`(<filename>, <form>)` for ONE successor's handoff — the naming rule, alone.
+
+    `label` is the successor's roster number, already resolved by the caller. `relay`
+    computes `ordinal_label(task, sid)` one line before it mints the prompt, so the value
+    exists at the call site and nothing here looks it up again: this module knows nothing
+    about sessions and gains no import by spelling a name.
+
+    WHY THE ORDINAL AND NOT THE SESSION ID. Both name the SAME successor — the identity
+    the file is keyed on does not move, which is what #622 fixed and what stays fixed
+    here. `be0202bd` is a discriminator a human cannot read, cannot order, and cannot
+    match against any other surface on the board. `444-36` is that identity written in
+    the notation every other surface already uses, and it sorts. Ordinals are per task
+    and never reused, so uniqueness per successor is preserved exactly.
+
+    AND NOT THE BARE `<seq>`, which is what the collision was: one slot per task, opened
+    `"w"`. The ordinal is what makes the name per-successor rather than per-task, so it
+    is not optional decoration."""
+    if label and _LABEL_OK.match(str(label)):
+        return "%s-CONTINUATION.md" % label, ORDINAL_FORM
+    return "%s-%s-CONTINUATION.md" % (_seq_of(task), sid[:8]), SESSION_FORM
+
+
+def write_handoff(task, prompt, sid, label=None, root=None):
+    """Write ONE successor's handoff and return `(path, form)`.
 
     THE PATH CARRIES THE SUCCESSOR, so two relays on one task cannot name one file.
     The old name was per TASK and opened `"w"` — an unconditional truncate at a shared
@@ -381,17 +421,23 @@ def write_handoff(task, prompt, sid, root=None):
     is a claim about ONE session, so it is named after that session and the collision
     is impossible by construction rather than avoided by timing.
 
+    HOW THAT SESSION IS SPELLED is `handoff_name`'s call and the only thing that has
+    moved: `444-36-CONTINUATION.md` when the successor has a roster number, and the
+    session-blind `444-be0202bd-CONTINUATION.md` when it has none. `form` says which was
+    emitted so the caller can SAY so — reported, never silent.
+
     NOT A LOCK AND NOT A TIMESTAMP SUFFIX, both refused on the record. A lock
     serialises the WRITERS, and the writers were never the problem — the READER is: it
     reads minutes later, in another process, after its own SessionStart. A timestamp
     suffix leaves that reader with exactly the question the single path leaves it with,
-    which is *which of these is mine*. The successor's own id is the one discriminator
+    which is *which of these is mine*. The successor's own name is the one discriminator
     the reader already knows, because its launch argument names it.
 
     A HANDOFF WITH NO SUCCESSOR TO NAME IS NOT WRITABLE, and `sid` is required for that
-    reason. Defaulting it would put the per-task name back — silently, on exactly the
-    path that has no successor yet — which is the defect this signature exists to make
-    unrepresentable.
+    reason. `label` is not, because it can genuinely be unresolvable and the fallback is
+    still per-successor; `sid` defaulting would put the per-task name back — silently, on
+    exactly the path that has no successor yet — which is the defect this signature
+    exists to make unrepresentable.
 
     RAISES ON FAILURE, DELIBERATELY, and this is the one design call in the function.
     The old shape fell back to putting the prompt in the launch argument, which was
@@ -405,11 +451,11 @@ def write_handoff(task, prompt, sid, root=None):
         raise ValueError("write_handoff needs the successor's session id — the file is "
                          "named after the session it is addressed to, and a handoff "
                          "addressed to nobody is the collision this name prevents.")
-    path = os.path.join(handoff_dir(root),
-                        "%s-%s-CONTINUATION.md" % (_seq_of(task), sid[:8]))
+    name, form = handoff_name(task, sid, label)
+    path = os.path.join(handoff_dir(root), name)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(prompt.rstrip() + "\n")
-    return path
+    return path, form
 
 
 def link_handoff(task, path, root=None):
@@ -418,13 +464,13 @@ def link_handoff(task, path, root=None):
 
     A SYMLINK, NEVER A SECOND COPY. Copying the handoff to the stable name would put
     two files on disk with one origin and no way to tell which a reader got — the
-    staleness the sid-qualified name just removed, reintroduced one line later — and
+    staleness the per-successor name just removed, reintroduced one line later — and
     `relay`'s own comment says why it does not do this: a second copy of the record is
     the thing that module exists not to make. So the stable name resolves to the newest
     handoff and stores none.
 
     RAISES OSError, and the caller degrades to a NAMED SKIP rather than to a copy. The
-    sid-qualified file is already written and the successor is already pointed at it, so
+    per-successor file is already written and the successor is already pointed at it, so
     a missing pointer costs a human one `ls` — while a failed relay costs the handoff.
 
     A REAL FILE ALREADY AT THE STABLE NAME IS MOVED ASIDE, NOT DELETED. Every task that
@@ -490,7 +536,7 @@ def continuation_prompt(task, rep=None, blockers=None, predecessor=None, success
     attribution arrives after the instruction it qualifies.
 
     THE HEADER SAYS WHO IT WAS WRITTEN FOR AND WHEN, because a human read of the file is
-    a SUPPORTED path: pinned decision 444:511 tells a cold session to open the stable
+    a SUPPORTED path: pinned decision 444:658 tells a cold session to open the stable
     per-task name by hand, and that name resolves to whichever handoff is newest. A
     reader who arrives that way needs one thing the record cannot give them — whether
     this file is still the live one — and a write time answers it without a roster
