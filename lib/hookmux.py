@@ -47,6 +47,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 _LIB = os.path.dirname(os.path.abspath(__file__))
 
@@ -114,6 +115,42 @@ def _child_env():
 def _breadcrumb(label, what):
     """One line on stderr. A hook's stderr is diagnostics, never session output."""
     sys.stderr.write("hookmux: %s: %s\n" % (label, what))
+
+
+def _version():
+    """The plugin version this mux is running as, from the manifest beside it.
+
+    A latency number whose version is ambiguous is unusable — the cache can be a
+    release behind the checkout, and two versions' numbers then look like one
+    population. ``"?"`` when the manifest is unreadable: a timing line without a
+    version is still worth having, a hook that died reading one is not."""
+    try:
+        with open(os.path.join(_plugin_root(), ".claude-plugin", "plugin.json"),
+                  "r", encoding="utf-8") as fh:
+            return str(json.load(fh).get("version") or "?")
+    except Exception:
+        return "?"
+
+
+def _timing_line(event, timings):
+    """The one stderr line that says what each child cost, version-stamped.
+
+    WHY STDERR. The harness stores a hook's stderr on the same transcript record
+    as its ``durationMs``, so this rides home with the number it explains and
+    ``tools/hooklat.py`` reads both from the one place. WHY AT ALL: the harness
+    times the COMMAND, and this command is several programs — without this line
+    every child of a slow mux is equally suspect and none is convicted, which is
+    exactly the hole that made a SessionStart spike an inference for a month.
+
+    Shape (``tools/hooklat.py`` parses it; the two are pinned to each other by
+    tests/test_hooklat.py)::
+
+        hookmux: timing session-start v3.64.0 total=241ms on_session_start.sh=180ms …
+    """
+    parts = ["%s=%.0fms" % (label, ms) for label, ms in timings]
+    total = sum(ms for _label, ms in timings)
+    return "hookmux: timing %s v%s total=%.0fms %s\n" % (
+        event, _version(), total, " ".join(parts))
 
 
 def _read_stdin():
@@ -218,10 +255,13 @@ def run(event, payload, children=None, stdout=None):
     name = EVENT_NAMES[event]
     table = CHILDREN[event] if children is None else children
     env = _child_env()
-    merged, inner, contexts = {}, {}, []
+    merged, inner, contexts, timings = {}, {}, [], []
     for child in table:
+        started = time.time()
         try:
-            for kind, value in _child_items(_spawn(child, payload, env)):
+            output = _spawn(child, payload, env)
+            timings.append((_label(child), (time.time() - started) * 1000.0))
+            for kind, value in _child_items(output):
                 if kind == "doc":
                     _absorb(value, merged, inner, contexts)
                 elif event == "stop":
@@ -233,6 +273,7 @@ def run(event, payload, children=None, stdout=None):
         except Exception as e:                   # a broken child is never fatal
             _breadcrumb(_label(child), "unreadable output (%s: %s)"
                         % (type(e).__name__, e))
+    sys.stderr.write(_timing_line(event, timings))
     if contexts:
         inner["additionalContext"] = "\n\n".join(contexts)
     if inner:

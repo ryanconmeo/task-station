@@ -3,6 +3,84 @@
 All notable changes to Task Station are documented here. This project adheres to
 [Semantic Versioning](https://semver.org).
 
+## [3.64.0] — 2026-09-03
+
+**THE PLUGIN'S HOOKS STOPPED BEING THE SLOWEST THING IN THE TURN, AND THE COMMAND THAT
+MADE THEM SLOW WAS NOT THE ONE THE RECORD NAMED.** `/doctor` reported a SessionStart hook
+spiking to 78s and named the throttled org-brain `git pull` as the cause — in its own
+words, an INFERENCE, because it aggregates hook latency per hook EVENT and three plugins
+register SessionStart on that machine. Measuring first refuted it twice over: the org-brain
+pull has been detached since 3.0.0 and cannot block anything, and the whole brain plane
+costs 34ms of a 23-second hook. The time was the BOARD'S OWN, in two commands nobody had
+timed.
+
+**MEASURED, on 3.63.0, against real sessions** (`tools/hooklat.py`, reading the harness's
+own transcript records):
+
+| | before | after |
+|---|---|---|
+| `hookmux session-start` | 24.50s p50 | **0.80s p50** |
+| `hook sweep-orphans` (inside it) | 20.7s | detached |
+| `hookmux stop` | 11.3s p50 (n=121 real sessions) | **0.26s p50** |
+| `board --refresh-if-live` (inside it) | 11.3s | detached |
+| plugin cache | 36 versions, 325 MB | registered version + 2 rollbacks |
+
+The SessionStart pair is a SINGLE-SESSION A/B: both trees' hooks ran on the same three
+real sessions, and both numbers come from one pass of one reader.
+
+### Added
+- **`lib/board/plugincache.py` — the plugin cache prunes itself, inside the activate
+  flow.** `/plugin update` ADDS an install directory and never removes one; the authoring
+  machine reached 36 versions and 325 MB while `installed_plugins.json` registered exactly
+  one. `hook prune-cache` runs as a detached SessionStart step, right after the hook
+  re-points the engine symlink at the active version — never by hand, because
+  hand-editing that symlink is a known way to break activation. It keeps the registered
+  version, the running version, the symlink's target, `KEEP_ROLLBACKS` (2) further
+  versions newest-first by semver, and anything a LIVE process still marks in `.in_use/`.
+  A STALE marker pins nothing, or the cache would be pinned by its own history and could
+  never shrink again.
+- **`tools/hooklat.py` — hook latency per COMMAND, not per event.** The transcript the
+  harness writes is finer than the report built from it: every hook run is stored with its
+  literal `command` and `durationMs`. `--split-at` cuts one population in two and reports
+  both sides from ONE pass, because a delta assembled from two invocations on two days is
+  two measurements of two things. `--assert-p50-under MS` turns the same reader into a
+  re-runnable gate: the CEILING goes in the command and the caller expects the pass
+  token, because an expectation like "740ms" is falsified by the next honest
+  improvement. An EMPTY population FAILS it — nothing measured is nothing proved.
+- **`lib/hookmux.py` prints one version-stamped timing line per run.** The harness times
+  the command; this command is several programs. The line names each child's cost and the
+  plugin version it ran as, on stderr, which the harness stores on the same record as the
+  duration it explains. Without it a slow mux convicts nobody — which is exactly how the
+  SessionStart spike stayed an inference for a month.
+
+### Changed
+- **`lib/stop_steps.py` → `lib/hook_steps.py`, and the steps that print are the only ones
+  the turn waits for.** Both hooks now hand their silent steps to a runner that executes
+  them in a DETACHED session of its own — the same detachment `brain.hooks.inject` has used
+  in production since 3.0.0, not a second mechanism. Stop waits for `stop-nudge` alone (its
+  additionalContext is read by the harness) and detaches the other six; SessionStart waits
+  for nothing and detaches `obsidian-flush`, `usage-flush`, `sweep-orphans` and the new
+  `prune-cache`. `stop-gate` is untouched: the harness reads its stdout for the block
+  contract, so it keeps its own process, its own position and its exact output.
+  **The work is not dropped** — same steps, same order, same per-step isolation, same
+  hook-health labels; a failure still lands in `hook-health.log` under the name it always
+  had, and a detachment that CANNOT happen is recorded rather than vanishing.
+
+### Fixed
+- **The orphan sweep asked the same question once per task.** `sweep_orphan_workers`
+  passed `adapter=None` to every reap, so each of 104 candidates built a fresh adapter and
+  re-ran `claude agents --json` (~148ms), and `resolve_ref` re-read and re-sorted every
+  task per candidate: 15.4s and 4.7s of a 20.7s sweep. The candidate list is decided before
+  the loop and the loop changes neither the agents list nor the task seqs, so both are now
+  read ONCE. `HarnessAdapter.index_ttl` (0 by default — the agents list is live state and a
+  stale row is a wrong answer) lets the ONE adapter a batch holds reuse its answer for
+  `ORPHAN_SWEEP_INDEX_TTL_SECS`; `_canonicalize_id` bypasses it, because a poll that
+  cached its own first answer would conclude the agent never appeared.
+- **The board rebuilt the same handle map 491 times per render.** `handles.display_map` is
+  a pure function of its handle pool and its search for an unambiguous prefix is quadratic
+  in it — 8.0s of a 16.4s board refresh, over one pool. One memo slot keyed on the pool
+  itself; a different pool is a different key, so nothing can go stale.
+
 ## [3.63.0] — 2026-09-03
 
 **SIX MECHANICAL SIMPLIFICATIONS, AND ONE RULE THAT DECIDED WHICH ONES WERE SAFE.** A

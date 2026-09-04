@@ -24,7 +24,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook stop-gate --session "$s
 # These seven best-effort steps used to be seven `ts_run` lines, i.e. seven python3
 # start-ups (~90ms each) plus seven fresh imports of the engine — and, worse, seven
 # cold starts of the in-process transcript caches, so the parsing the board refresh
-# had just done was discarded and redone. lib/stop_steps.py runs the same seven, in
+# had just done was discarded and redone. lib/hook_steps.py runs the same seven, in
 # the same order, in one interpreter:
 #
 #   stop-nudge           opt-in auto-checkpoint / staleness nudge. The ONLY step that
@@ -39,12 +39,18 @@ python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook stop-gate --session "$s
 #   recap-auto           once-a-week private recap, stamp-throttled, config-gated OFF.
 #   hud-turn-end         freeze this turn's $ delta into the idle status bar.
 #
-# Per-step isolation is preserved INSIDE stop_steps.py: a step that raises is caught,
+# Per-step isolation is preserved INSIDE hook_steps.py: a step that raises is caught,
 # recorded to <data_dir>/logs/hook-health.log under the same label ts_run used, and
 # the rest still run. The runner is invoked through ts_capture — capture, because the
 # stop-nudge step's stdout must still reach the harness — so a failure of the runner
 # ITSELF is recorded too, under the label `stop-steps`. stop-gate above is deliberately
 # NOT part of this: the harness reads its stdout for the block contract, so it keeps
 # its own process, its own position, and its exact output.
-ts_capture stop-steps python3 "${CLAUDE_PLUGIN_ROOT}/lib/stop_steps.py" --session "$session_id"
+#
+# ONLY stop-nudge IS WAITED FOR (3.64.0). Of the seven, it alone prints something the
+# harness reads; the runner therefore runs it inline and DETACHES the other six, which
+# is where the turn's time actually went — `board --refresh-if-live` alone MEASURED
+# 11.3s of a 12.5s Stop hook on 3.63.0. The six still run, in order, through the same
+# isolation and the same hook-health labels; the turn simply stops waiting for them.
+ts_capture stop-steps python3 "${CLAUDE_PLUGIN_ROOT}/lib/hook_steps.py" --event stop --session "$session_id"
 exit 0

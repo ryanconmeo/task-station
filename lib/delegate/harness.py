@@ -12,6 +12,14 @@ class HarnessAdapter:
     supports_bg = False            # detached background-agent spawn
     supports_agent_view = False    # rows in `claude agents` / attach-inspect
     supports_named_sessions = False
+    # How long (seconds) THIS adapter may reuse its own `agents_index` answer. 0 =
+    # never, which is the default and the right answer for a caller asking about one
+    # session: the list is live state. A caller that asks about MANY sessions at one
+    # decision point sets this on the single adapter it holds for that batch — see
+    # `agents_index`. Per instance, never global: a cache with no owner is a bug
+    # waiting for the one caller that needed the truth.
+    index_ttl = 0.0
+    _index_cache = None            # {cwd: (monotonic-ish stamp, index)}, lazily made
 
     def spawn_cmd(self, brief, name=None, model=None, session_id=None,
                   resume=False):
@@ -119,7 +127,7 @@ class ClaudeAdapter(HarnessAdapter):
         """Resolve a short/partial launch id to the FULL agents-list sessionId
         (prefix match). Returns None if it never appears (caller keeps the partial)."""
         for _ in range(max(1, tries)):
-            idx = self.agents_index(cwd=cwd)
+            idx = self.agents_index(cwd=cwd, fresh=True)
             if partial in idx:
                 return partial
             hit = [sid for sid in idx if sid.startswith(partial)]
@@ -128,9 +136,28 @@ class ClaudeAdapter(HarnessAdapter):
             time.sleep(delay)
         return None
 
-    def agents_index(self, cwd=None):
+    def agents_index(self, cwd=None, fresh=False):
         """{sessionId: row} from `claude agents --json` (global; --cwd filters).
-        {} on any failure — callers treat absence as 'unknown', never 'dead'."""
+        {} on any failure — callers treat absence as 'unknown', never 'dead'.
+
+        REUSE IS OPT-IN, PER ADAPTER. This shells out, and one call MEASURED ~148ms
+        on 3.63.0. That is nothing once and 15.4 seconds across the 104 tasks the
+        SessionStart orphan sweep used to ask about one at a time, each through a
+        brand-new adapter. So an adapter can be told how long its answer stays good
+        (`index_ttl`, in seconds) and a caller that asks about many sessions at one
+        decision point holds ONE adapter for the batch. The default is 0 — never
+        reuse — because for every other caller the list is live state and a stale
+        row is a wrong answer, not a fast one.
+
+        `fresh=True` bypasses the memo unconditionally. `_canonicalize_id` polls
+        for a row that does not exist yet, so a cache there would make it poll its
+        own first answer five times and conclude the agent never appeared."""
+        key = cwd or ""
+        ttl = float(getattr(self, "index_ttl", 0.0) or 0.0)
+        if not fresh and ttl > 0:
+            stamp, cached = (self._index_cache or {}).get(key, (0.0, None))
+            if cached is not None and (time.time() - stamp) < ttl:
+                return cached
         cmd = ["claude", "agents", "--json"]
         if cwd:
             cmd += ["--cwd", cwd]
@@ -138,9 +165,14 @@ class ClaudeAdapter(HarnessAdapter):
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
             rows = json.loads(r.stdout or "[]")
         except Exception:
-            return {}
-        return {row["sessionId"]: row for row in rows
-                if isinstance(row, dict) and row.get("sessionId")}
+            return {}                        # NOT cached: unknown must stay askable
+        idx = {row["sessionId"]: row for row in rows
+               if isinstance(row, dict) and row.get("sessionId")}
+        if ttl > 0:
+            if self._index_cache is None:
+                self._index_cache = {}
+            self._index_cache[key] = (time.time(), idx)
+        return idx
 
     def worker_status(self, worker_id):
         """{'state': <agents state | 'gone'>, 'pid': int|None, 'kind': str|None,

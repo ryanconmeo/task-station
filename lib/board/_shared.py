@@ -61,6 +61,7 @@ __all__ = [
     "_REL_KIND_RANK", "_REL_KIND_RANK_UNKNOWN", "_SEMANTIC_WEIGHTS",
     "_REL_LINE_WORDS", "_REL_LINE_DEFAULT", "_REL_LINE_LABELS",
     "_REL_LINE_LABELS_DEFAULT", "ORPHAN_SWEEP_GRACE_SECS",
+    "ORPHAN_SWEEP_INDEX_TTL_SECS",
     "SESSION_END_AGENTS_TIMEOUT", "SESSION_END_REASON_MAX",
     "STATION_WATCHED_FILES", "_MD_HEADER", "_PR_URL_RE", "_LOCAL_ONLY_KINDS",
     "_FOREIGN_HANDLE_RE", "DEFAULT_CLOSED_LIST", "_NO_TASK_ATTACHED",
@@ -384,6 +385,14 @@ _REL_LINE_LABELS_DEFAULT = ("related", "related")
 # Workers younger than this are skipped: a just-spawned worker's hub may not have its
 # session file on disk yet, which would make a live hub look dead.
 ORPHAN_SWEEP_GRACE_SECS = 120
+
+# How long the sweep's ONE adapter may reuse its `claude agents --json` answer. The
+# sweep decides its candidate list before it starts and cannot change the agents list
+# while it runs, so every candidate is entitled to the same reading — asking again per
+# candidate cost 15.4s of a 20.7s sweep on 3.63.0 (104 candidates x ~148ms). Sized to
+# outlast a whole sweep and nothing more, so an adapter that somehow outlives one
+# still cannot serve a minute-old list.
+ORPHAN_SWEEP_INDEX_TTL_SECS = 30
 
 
 # `claude agents --json` is the one subprocess this pass can need. harness's own

@@ -83,23 +83,34 @@ fi
 
 # Auto-label the window for an attached task (task-station-<seq> · <title>) — the hub can't
 # be programmatically renamed, but its title CAN be set via the SessionStart hook.
-# Obsidian sandbox auto-flush (Fix B): heal any exports the SANDBOXED hot path
-# couldn't write (vault under ~/Documents/iCloud). Hooks run UNSANDBOXED, so this
-# write succeeds. Silent + self-gating (--quiet: no-op unless a task is pending);
-# routed to /dev/null so it never pollutes the SessionStart JSON on stdout.
-ts_run obsidian-flush python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" obsidian --flush --quiet
-# Usage ledger auto-flush (WS1): same rail as the obsidian flush — rescan open/active
-# tasks' transcripts so a resumed session's /todo detail shows current derived $/mix.
-# Local-only, self-gating on `usage_tracking`, error-swallowing; routed to /dev/null
-# so it never pollutes the SessionStart JSON on stdout.
-ts_run usage-flush python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" usage --flush --quiet
-# Orphan sweep: stop background workers whose SPAWNING HUB SESSION IS GONE (a hub that
-# crashed leaves its workers running forever). Same rail as the flushes above — stdout
-# is routed away so it can never pollute the SessionStart JSON, and a failed sweep
-# never fails the session start (it is now RECORDED instead of silently swallowed).
-# Reaps nothing whenever liveness is unknown; `--session` is passed so it can never
-# reap this session's own workers.
-ts_run sweep-orphans python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook sweep-orphans --session "$session_id"
+# ── The three silent steps, DETACHED (3.64.0) ───────────────────────────────────
+# obsidian-flush, usage-flush and sweep-orphans were three `ts_run` python3 calls
+# here, and the session waited for all three. MEASURED on 3.63.0 against a real
+# session: sweep-orphans 20.7s, usage-flush 1.1s, obsidian-flush 0.2s — 22.0s of a
+# 23.0s SessionStart hook, spent before the user could type. None of them prints
+# anything: their stdout was routed to /dev/null precisely because the SessionStart
+# JSON on stdout is a contract they must not touch.
+#
+# So they now run in a session of their own and this hook does not wait. Same three
+# steps, same order, same per-step isolation, same hook-health labels — see
+# lib/hook_steps.py, which owns the table and the detachment. What each does:
+#
+#   obsidian-flush   heal exports the SANDBOXED hot path couldn't write (vault under
+#                    ~/Documents/iCloud); hooks run UNSANDBOXED, so this write lands.
+#   usage-flush      rescan open/active tasks' transcripts so /todo detail's %/$ is
+#                    current. Local-only, self-gating on `usage_tracking`.
+#   sweep-orphans    stop background workers whose SPAWNING HUB SESSION IS GONE (a
+#                    crashed hub leaves its workers running forever). Reaps nothing
+#                    when liveness is unknown, and `--session` is passed so it can
+#                    never reap this session's own workers.
+#   prune-cache      delete plugin-cache versions that are neither registered, in use,
+#                    nor within the rollback window. It runs HERE, after the engine
+#                    symlink above has been re-pointed at the active version, because
+#                    that symlink is what makes one version the live one.
+#
+# The launcher itself is a `ts_run`, so a detachment that CANNOT happen is recorded
+# to hook-health under `session-start-steps` rather than vanishing.
+ts_run session-start-steps python3 "${CLAUDE_PLUGIN_ROOT}/lib/hook_steps.py" --event session-start --session "$session_id"
 
 title=$(python3 "${CLAUDE_PLUGIN_ROOT}/lib/task-station.py" hook session-title --session "$session_id")
 if [ -n "$ctx" ] || [ -n "$title" ]; then

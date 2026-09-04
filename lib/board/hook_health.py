@@ -12,7 +12,7 @@ This module turns that file into the one-line SessionStart nag, into
 `task-station hook-health`, and provides the clear. Bounding the file is the
 WRITER's job (keep the newest TS_HOOK_LOG_MAX lines), and `record()` here is the
 second writer — the python-side twin of the shell one, for the Stop-hook steps
-that now run inside one interpreter (`lib/stop_steps.py`) instead of one process
+that now run inside one interpreter (`lib/hook_steps.py`) instead of one process
 each. It honors the same format and the same cap, so the file stays bounded no
 matter which side appended last.
 
@@ -171,7 +171,7 @@ def record(label, code, detail="", path=None, now=None):
 
     Why a second writer exists: hooks/on_stop.sh used to spend a whole python3
     start-up per best-effort step, partly so the SHELL could see an exit code and log
-    it. Those steps now run in one interpreter (`lib/stop_steps.py`), so the failure
+    it. Those steps now run in one interpreter (`lib/hook_steps.py`), so the failure
     log needs a writer on this side of the boundary. Same format, same cap, same
     fail-open contract — this function never raises, because its callers are hooks.
 

@@ -14,6 +14,7 @@ import argparse
 import sys
 
 import decisions as _dec
+from board import plugincache as _plugincache
 from board.prose_input import annotate_prose_help, resolve_prose_args
 
 g, set_g = _shared.g, _shared.set_g
@@ -54,7 +55,7 @@ def _normalise_hook_argv(argv):
 def main(argv=None):
     """`argv=None` reads sys.argv, exactly as before. The explicit-list form exists so
     a caller already holding this module can run a subcommand through the REAL parser
-    and dispatch without paying another interpreter start-up — lib/stop_steps.py runs
+    and dispatch without paying another interpreter start-up — lib/hook_steps.py runs
     the Stop hook's seven best-effort steps that way."""
     # LoudParser, not ArgumentParser: a usage error must land on STDOUT and still
     # exit non-zero. argparse's stderr-only default made a mistyped or unwired
@@ -1251,6 +1252,20 @@ def main(argv=None):
     sp.add_argument("--session", default=None)
     sp.set_defaults(fn=cmd_sweep_orphans)
 
+    # prune-cache — keep the plugin cache to the registered version plus N rollbacks.
+    # A DETACHED SessionStart step (lib/hook_steps.py), never a hand-run one: it must
+    # happen right after the hook re-points the engine symlink at the active version,
+    # and hand-editing that cache is a known way to break activation.
+    sp = hsub.add_parser("prune-cache",
+                        help="delete plugin-cache versions that are neither registered, "
+                             "in use, nor within the rollback window")
+    sp.add_argument("--keep", type=int, default=None,
+                    help="rollback versions to keep besides the one in use "
+                         "(default: %d)" % _plugincache.KEEP_ROLLBACKS)
+    sp.add_argument("--dry-run", action="store_true",
+                    help="print the plan and delete nothing")
+    sp.set_defaults(fn=_plugincache.cmd_prune_cache)
+
     # session-end — the SessionEnd hook's exact pass (roster row + feed + reap this
     # session's own workers). Idempotent, always exits 0; the SessionStart sweep above
     # stays as the crash backstop.
@@ -1456,7 +1471,7 @@ def main(argv=None):
     # every other handler still returns None, which `sys.exit(None)` reports as 0.
     #
     # RETURNED RATHER THAN `sys.exit`ed INSIDE THE HANDLER, because cmd_* functions are
-    # called IN PROCESS — by the whole of tests/test_heal.py and by lib/stop_steps.py's
+    # called IN PROCESS — by the whole of tests/test_heal.py and by lib/hook_steps.py's
     # `main(argv)` — and raising SystemExit where none was raised before would make every
     # one of those callers catch an exception to read a status.
     return a.fn(a)

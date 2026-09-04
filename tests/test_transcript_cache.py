@@ -16,7 +16,7 @@ What these tests pin down:
     for any subset of uuids, from ONE parse
   • the on_stop.sh consolidation left `stop-gate` alone: same process, same
     position, same stdout — the harness reads it for the block contract
-  • one failing step inside stop_steps.py doesn't stop the others, and is logged
+  • one failing step inside hook_steps.py doesn't stop the others, and is logged
 
 Stdlib-only unittest, no LLM, never touches the real store.
 """
@@ -41,7 +41,7 @@ ts = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ts)
 
 import hook_health  # noqa: E402
-import stop_steps  # noqa: E402
+import hook_steps  # noqa: E402
 
 
 class _CacheMixin:
@@ -477,10 +477,10 @@ class StopGateUntouchedTest(unittest.TestCase):
 
     def test_stop_gate_runs_before_the_consolidated_steps(self):
         self.assertLess(self._line_index("stop-gate"),
-                        self._line_index("stop_steps.py"))
+                        self._line_index("hook_steps.py"))
 
     def test_the_seven_steps_are_one_call_now(self):
-        self.assertEqual(self.body.count("stop_steps.py"), 1)
+        self.assertEqual(self.body.count("hook_steps.py"), 1)
         # The old per-step python3 invocations are gone from the shell.
         for old in ("board --refresh-if-live", "obsidian --flush",
                     "usage --flush", "subscriptions check", "recap --auto-if-due",
@@ -490,11 +490,11 @@ class StopGateUntouchedTest(unittest.TestCase):
     def test_the_runner_is_masked_like_every_other_call_site(self):
         """A failure of the runner ITSELF still has to be recorded, and its stdout
         still has to reach the harness — so ts_capture, not ts_run, not bare."""
-        runner = self.lines[self._line_index("stop_steps.py")]
+        runner = self.lines[self._line_index("hook_steps.py")]
         self.assertTrue(runner.strip().startswith("ts_capture stop-steps "), runner)
 
     def test_stop_gate_is_not_one_of_the_consolidated_steps(self):
-        for label, _target, argv in stop_steps.STEPS:
+        for label, _target, argv in hook_steps.STEPS:
             self.assertNotEqual(label, "stop-gate")
             self.assertNotIn("stop-gate", argv)
 
@@ -505,7 +505,12 @@ class StopGateUntouchedTest(unittest.TestCase):
 
 class StopStepsRunnerTest(unittest.TestCase):
     """Per-step failure isolation is what ts_run gave us for free across seven
-    processes. Inside one interpreter it has to be written down — so it is tested."""
+    processes. Inside one interpreter it has to be written down — so it is tested.
+
+    These run `--phase all`, which is the runner with the SCHEDULING taken out:
+    isolation is a property of running a step, and it has to hold identically
+    whether the step runs inline or in the detached child. The scheduling itself —
+    which steps wait and which detach — is tested in tests/test_hook_phases.py."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="ts-steps-")
@@ -513,11 +518,11 @@ class StopStepsRunnerTest(unittest.TestCase):
                            ("TASK_STATION_HOME", "CLAUDE_CONFIG_DIR", "XDG_STATE_HOME")}
         os.environ["TASK_STATION_HOME"] = self.tmp
         self.log = os.path.join(self.tmp, "logs", "hook-health.log")
-        self._saved_steps = stop_steps.STEPS
+        self._saved_steps = hook_steps.STEPS
         self.ran = []
 
     def tearDown(self):
-        stop_steps.STEPS = self._saved_steps
+        hook_steps.STEPS = self._saved_steps
         for k, v in self._saved_env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -543,10 +548,10 @@ class StopStepsRunnerTest(unittest.TestCase):
                     sys.stdout.write(behaviour)
                 return 0
 
-        real_engine = stop_steps._engine
-        stop_steps._engine = lambda: _FakeTarget
-        self.addCleanup(setattr, stop_steps, "_engine", real_engine)
-        stop_steps.STEPS = tuple(
+        real_engine = hook_steps._engine
+        hook_steps._engine = lambda: _FakeTarget
+        self.addCleanup(setattr, hook_steps, "_engine", real_engine)
+        hook_steps.STEPS = tuple(
             (label, "engine", [label, behaviour]) for label, behaviour in specs)
 
     def _log_lines(self):
@@ -559,14 +564,14 @@ class StopStepsRunnerTest(unittest.TestCase):
         self._fake_steps(("first", "ok"), ("boom", "raise"), ("third", "ok"))
         buf = io.StringIO()
         with redirect_stdout(buf):
-            rc = stop_steps.main(["--session", "sid1"])
+            rc = hook_steps.main(["--phase", "all", "--session", "sid1"])
         self.assertEqual(rc, 0)
         self.assertEqual(self.ran, ["first", "boom", "third"])
 
     def test_a_failing_step_is_recorded_with_its_label(self):
         self._fake_steps(("boom", "raise"))
         with redirect_stdout(io.StringIO()):
-            stop_steps.main(["--session", "sid1"])
+            hook_steps.main(["--phase", "all", "--session", "sid1"])
         entries = [hook_health.parse_line(ln) for ln in self._log_lines()]
         entries = [e for e in entries if e]
         self.assertEqual(len(entries), 1)
@@ -577,14 +582,14 @@ class StopStepsRunnerTest(unittest.TestCase):
     def test_a_sys_exit_is_recorded_with_its_code(self):
         self._fake_steps(("bye", "exit"))
         with redirect_stdout(io.StringIO()):
-            stop_steps.main(["--session", "sid1"])
+            hook_steps.main(["--phase", "all", "--session", "sid1"])
         entries = [e for e in (hook_health.parse_line(ln) for ln in self._log_lines()) if e]
         self.assertEqual([(e["label"], e["code"]) for e in entries], [("bye", 7)])
 
     def test_a_clean_run_logs_nothing(self):
         self._fake_steps(("a", "ok"), ("b", "ok"))
         with redirect_stdout(io.StringIO()):
-            stop_steps.main(["--session", "sid1"])
+            hook_steps.main(["--phase", "all", "--session", "sid1"])
         self.assertEqual(self._log_lines(), [])
 
     def test_only_the_nudge_reaches_stdout(self):
@@ -594,7 +599,7 @@ class StopStepsRunnerTest(unittest.TestCase):
                          ("board-refresh", "BOARD-NOISE"))
         buf = io.StringIO()
         with redirect_stdout(buf):
-            stop_steps.main(["--session", "sid1"])
+            hook_steps.main(["--phase", "all", "--session", "sid1"])
         out = buf.getvalue()
         self.assertIn("NUDGE-TEXT", out)
         self.assertNotIn("BOARD-NOISE", out)
@@ -608,19 +613,20 @@ class StopStepsRunnerTest(unittest.TestCase):
                 seen["argv"] = list(argv)
                 return 0
 
-        real_engine = stop_steps._engine
-        stop_steps._engine = lambda: _Target
-        self.addCleanup(setattr, stop_steps, "_engine", real_engine)
-        stop_steps.STEPS = (("s", "engine", ["cmd", "--session", stop_steps.SESSION]),)
+        real_engine = hook_steps._engine
+        hook_steps._engine = lambda: _Target
+        self.addCleanup(setattr, hook_steps, "_engine", real_engine)
+        hook_steps.STEPS = (("s", "engine", ["cmd", "--session", hook_steps.SESSION]),)
         with redirect_stdout(io.StringIO()):
-            stop_steps.main(["--session", "100%-not-a-format-string"])
+            hook_steps.main(["--phase", "all",
+                             "--session", "100%-not-a-format-string"])
         self.assertEqual(seen["argv"],
                          ["cmd", "--session", "100%-not-a-format-string"])
 
     def test_missing_session_arg_still_runs(self):
         self._fake_steps(("a", "ok"))
         with redirect_stdout(io.StringIO()):
-            self.assertEqual(stop_steps.main([]), 0)
+            self.assertEqual(hook_steps.main(["--phase", "all"]), 0)
         self.assertEqual(self.ran, ["a"])
 
 
